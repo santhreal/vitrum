@@ -55,6 +55,13 @@ jobs:
         if: runner.os == 'Linux'
         run: ./.github/system-webview.sh
 
+      # `vitrum-vt` builds the Ghostty engine from source. Every release target
+      # needs the toolchain, not just Linux.
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       # The script names the archive from the host triple, which is the same
       # rule the updater uses to look for it. Cross-compiling is not attempted:
       # both binaries link against the platform's own webview and PTY.

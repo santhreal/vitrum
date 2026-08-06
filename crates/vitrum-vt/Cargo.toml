@@ -1,0 +1,40 @@
+[package]
+name = "vitrum-vt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Ghostty-powered VT engine that drives a vitrum-grid CellGrid."
+readme = "README.md"
+rust-version = "1.90"
+keywords = ["terminal", "vt", "ghostty", "ansi", "emulator"]
+categories = ["command-line-interface", "emulators", "parsing"]
+
+[dependencies]
+vitrum-grid = { workspace = true }
+# Ghostty's own terminal state machine, the one shipped in the Ghostty terminal.
+# `kitty-graphics` is off because the cell grid has nowhere to put an image, and
+# leaving it on would buffer image payloads no renderer ever reads.
+libghostty-vt = { version = "0.2.1", default-features = false }
+# A direct handle on the sys crate exists only to reach its `pkg-config`
+# feature, which `libghostty-vt` does not re-export. Cargo features are additive
+# across the graph, so enabling it here enables it on the same copy that
+# `libghostty-vt` links against.
+libghostty-vt-sys = { version = "0.2.1", optional = true }
+
+[build-dependencies]
+# Used to prove a system libghostty is really there before the sys crate can
+# quietly build a vendored one instead.
+pkg-config = "0.3"
+
+[features]
+# How libghostty is obtained. Vendored is the default because it is the only
+# option that needs nothing preinstalled beyond a Zig toolchain, and it pins the
+# exact engine commit the tests ran against.
+default = ["vendored"]
+vendored = []
+# Link a libghostty the platform already provides (a distribution package, or a
+# Ghostty install). No Zig toolchain, and the engine tracks whatever the system
+# ships, so the host is responsible for the ABI matching.
+system = ["libghostty-vt/link-dynamic", "dep:libghostty-vt-sys", "libghostty-vt-sys/pkg-config"]

@@ -691,7 +691,7 @@ mod tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 7, "the set of internal dependencies changed");
+        assert_eq!(checked, 8, "the set of internal dependencies changed");
     }
 
     /// The publish list must name every crate AFTER the crates it depends on.

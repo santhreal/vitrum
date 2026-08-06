@@ -45,6 +45,12 @@ jobs:
       - name: system webview
         run: ./.github/system-webview.sh
 
+      # `vitrum-vt` builds the Ghostty engine from source when it is packaged.
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       # A tag whose version does not match the workspace would publish the old
       # version under a new tag and there is no way to take it back.
       - name: the tag must match the workspace version
@@ -59,7 +65,7 @@ jobs:
         if: inputs.dry_run
         run: |
           for c in vitrum-dioxus-desktop vitrum-portable-pty vitrum-proto \
-                   vitrum-fmt vitrum-search vitrum-grid vitrum-model \
+                   vitrum-fmt vitrum-search vitrum-grid vitrum-vt vitrum-model \
                    vitrum-os vitrum-core vitrum-server vitrum-replay vitrum; do
             cargo package -p "$c" --allow-dirty
           done
@@ -70,7 +76,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           for c in vitrum-dioxus-desktop vitrum-portable-pty vitrum-proto \
-                   vitrum-fmt vitrum-search vitrum-grid vitrum-model \
+                   vitrum-fmt vitrum-search vitrum-grid vitrum-vt vitrum-model \
                    vitrum-os vitrum-core vitrum-server vitrum-replay vitrum; do
             # Already at this version: a re-run after a partial failure must
             # finish the list rather than stop on the crates that succeeded.

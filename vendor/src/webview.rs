@@ -477,20 +477,11 @@ impl WebviewInstance {
             move |payload: wry::http::Request<String>| {
                 // Defer events to the main thread with high-throughput batching support
                 let body = payload.into_body();
-                if let Ok(msg) = serde_json::from_str::<crate::ipc::IpcMessage>(&body) {
+                let msgs: Vec<crate::ipc::IpcMessage> = serde_json::from_str(&body)
+                    .or_else(|_| serde_json::from_str(&body).map(|msg| vec![msg]))
+                    .unwrap_or_default();
+                for msg in msgs {
                     _ = proxy.send_event(UserWindowEvent::Ipc { id: window_id, msg });
-                } else if let Ok(msgs) = serde_json::from_str::<Vec<crate::ipc::IpcMessage>>(&body) {
-                    for msg in msgs {
-                        _ = proxy.send_event(UserWindowEvent::Ipc { id: window_id, msg });
-                    }
-                } else if let Ok(mut batch) = serde_json::from_str::<serde_json::Value>(&body) {
-                    if let Some(arr) = batch.as_array_mut() {
-                        for item in arr.drain(..) {
-                            if let Ok(msg) = serde_json::from_value::<crate::ipc::IpcMessage>(item) {
-                                _ = proxy.send_event(UserWindowEvent::Ipc { id: window_id, msg });
-                            }
-                        }
-                    }
                 }
             }
         };

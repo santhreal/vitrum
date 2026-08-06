@@ -297,6 +297,12 @@ pub struct RootedProject<'a> {
     /// and a header must not be renamed by a second client registering the
     /// directory a second time.
     pub lead: &'a ProjectInfo,
+    /// Where [`RootedProject::lead`] sits in the list this was folded from.
+    ///
+    /// Carried rather than recovered, because the only way to recover it from
+    /// the reference is a `ptr::eq` scan of the whole list per group, which is
+    /// quadratic and has to `expect` on a case the fold makes unreachable.
+    pub lead_at: usize,
 }
 
 /// The daemon's project list, folded so one directory is one project.
@@ -335,20 +341,21 @@ impl<'a> RootedProjects<'a> {
 pub fn coalesce_projects(projects: &[ProjectInfo]) -> RootedProjects<'_> {
     let mut groups: Vec<RootedProject> = Vec::new();
     let mut index: Vec<(ProjectId, usize)> = Vec::with_capacity(projects.len());
-    for project in projects {
+    for (at, project) in projects.iter().enumerate() {
         let key = project_key(&project.root);
-        let at = match groups.iter().position(|group| group.key == key) {
-            Some(at) => at,
+        let group = match groups.iter().position(|group| group.key == key) {
+            Some(group) => group,
             None => {
                 groups.push(RootedProject {
                     id: ProjectId(fnv1a(key.as_bytes())),
                     key,
                     lead: project,
+                    lead_at: at,
                 });
                 groups.len() - 1
             }
         };
-        index.push((project.id, at));
+        index.push((project.id, group));
     }
     index.sort_unstable_by_key(|(id, _)| *id);
     RootedProjects { groups, index }
@@ -931,24 +938,25 @@ pub(crate) fn build_group<'a>(
 
     let rollup = Some(rollup_rows(label, rows.iter().copied(), clock, policy));
 
-    let ids: Vec<SessionId> = active.iter().map(|row| row.id()).collect();
-    let split = preview_sessions(&ids, focused, preview_expanded, PREVIEW_LIMIT);
-    // ONE pass, in lockstep with the split's own order.
+    // ONE pass, and only when there is a cut to make.
     //
-    // This used to run `split.hidden.contains(..)` once per active row to
-    // build `hidden` and once more to `retain` the remainder: two O(n*h)
-    // scans and a third allocation, per bucket, per paint, to rediscover a
-    // partition `preview_sessions` had just computed and returned. Measured
-    // at 20 sessions in 11 buckets it was 5.445us and 92 allocations for one
-    // arrangement, and a daemon pushing a frame a second pays it every time.
+    // `preview_sessions` copies the whole id list into `split.visible`, and
+    // this reads only `split.hidden`, so the uncut case used to allocate two
+    // vectors of every active id per bucket per paint and discard both. The
+    // limit is eight and most buckets are under it, so that was the common
+    // case: at 20 sessions in 11 buckets, 22 allocations a paint for a
+    // partition that was always empty.
     //
-    // `preview_sessions` emits both halves in the caller's order, which IS
-    // this vector's order, so a single cursor into `split.hidden` answers
-    // "was this row cut" in O(1) as `retain` walks. The common bucket has
-    // nothing hidden at all — the limit is eight and most buckets are under
-    // it — and that case now allocates nothing and touches no row twice.
-    let mut hidden: Vec<&SessionView> = Vec::with_capacity(split.hidden.len());
-    if !split.hidden.is_empty() {
+    // When there IS a cut, `preview_sessions` emits both halves in the
+    // caller's order, which IS this vector's order, so a single cursor into
+    // `split.hidden` answers "was this row cut" in O(1) as `retain` walks.
+    // Doing it with `contains` was two O(n*h) scans and a third allocation,
+    // measured at 5.445us and 92 allocations for one arrangement.
+    let mut hidden: Vec<&SessionView> = Vec::new();
+    if !preview_expanded && active.len() > PREVIEW_LIMIT {
+        let ids: Vec<SessionId> = active.iter().map(|row| row.id()).collect();
+        let split = preview_sessions(&ids, focused, false, PREVIEW_LIMIT);
+        hidden.reserve_exact(split.hidden.len());
         let mut cut = 0usize;
         active.retain(|row| {
             if cut < split.hidden.len() && split.hidden[cut] == row.id() {

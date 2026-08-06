@@ -1,7 +1,7 @@
 //! Column measurement. Everything else in the crate is built on `display_width`
 //! being right, so a wrong answer here silently corrupts every layout.
 
-use crate::text::{cluster_width, display_width, fits};
+use crate::text::{cluster_width, display_width, fits, truncate_end, truncate_middle};
 
 /// ASCII must measure one column per byte.
 ///
@@ -124,4 +124,17 @@ fn ascii_fastpath_width_and_fits() {
     assert_eq!(display_width(with_ctrl), 10);
     assert!(fits(with_ctrl, 10));
     assert!(!fits(with_ctrl, 9));
+}
+
+#[test]
+fn ascii_truncate_matches_width_not_byte_length() {
+    // More bytes than budget, but printable width fits: must not ellipsize.
+    let padded = "hello\x07\x07\x07world";
+    assert_eq!(display_width(padded), 10);
+    assert_eq!(truncate_end(padded, 10), padded);
+    assert_eq!(truncate_middle(padded, 10), padded);
+
+    // Over budget on width still truncates like the grapheme path.
+    assert_eq!(truncate_end("hello world", 8), "hello w\u{2026}");
+    assert_eq!(display_width(&truncate_end("hello world", 8)), 8);
 }

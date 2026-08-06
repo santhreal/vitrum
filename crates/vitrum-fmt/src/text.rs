@@ -99,10 +99,12 @@ pub fn truncate_end(text: &str, budget: usize) -> String {
         return String::new();
     }
     if text.is_ascii() {
-        let bytes = text.as_bytes();
-        if bytes.len() <= budget {
+        // Width, not byte length: controls are zero columns, so a long byte
+        // string can still fit and must not grow an ellipsis.
+        if fits(text, budget) {
             return text.to_owned();
         }
+        let bytes = text.as_bytes();
         let keep = budget - 1;
         let mut used = 0usize;
         let mut end = 0usize;
@@ -113,9 +115,6 @@ pub fn truncate_end(text: &str, budget: usize) -> String {
             }
             used += width;
             end = i + 1;
-        }
-        if end == bytes.len() {
-            return text.to_owned();
         }
         let head = text[..end].trim_end();
         let mut out = String::with_capacity(head.len() + ELLIPSIS.len_utf8());
@@ -168,11 +167,11 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
     }
 
     if text.is_ascii() {
-        let bytes = text.as_bytes();
-        if bytes.len() <= budget {
+        if fits(text, budget) {
             return text.to_owned();
         }
 
+        let bytes = text.as_bytes();
         let available = budget - 1;
         let tail_budget = available / 2;
 

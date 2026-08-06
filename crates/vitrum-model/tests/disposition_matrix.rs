@@ -101,22 +101,23 @@ impl Row {
     /// nonzero code raises `failed`. Building a dead row with `waiting:
     /// Some(true)` would model a state the daemon cannot produce.
     fn exited(mut self, code: i32) -> Self {
-        self.0.info.status = SessionStatus::Exited { code: Some(code) };
-        self.0.info.attention.failed = code != 0;
-        self.0.info.attention.waiting = None;
+        let info = self.0.info_mut();
+        info.status = SessionStatus::Exited { code: Some(code) };
+        info.attention.failed = code != 0;
+        info.attention.waiting = None;
         self
     }
 
     /// The operating system's answer to "is the foreground process blocked
     /// reading the terminal". `None` is a platform that cannot tell.
     fn waiting(mut self, waiting: Option<bool>) -> Self {
-        self.0.info.attention.waiting = waiting;
+        self.0.info_mut().attention.waiting = waiting;
         self
     }
 
     /// An OSC 7373 declaration landing at `received_at_ms`.
     fn hint(mut self, state: HintState, received_at_ms: u64) -> Self {
-        self.0.info.hint = Some(AgentHint {
+        self.0.info_mut().hint = Some(AgentHint {
             state,
             label: None,
             received_at_ms,
@@ -126,14 +127,15 @@ impl Row {
 
     /// Output arrived while nobody was watching this session.
     fn unread(mut self) -> Self {
-        self.0.info.unread = true;
+        self.0.info_mut().unread = true;
         self
     }
 
     fn last_activity(mut self, last_activity_ms: u64) -> Self {
-        self.0.info.last_activity_ms = last_activity_ms;
+        self.0.info_mut().last_activity_ms = last_activity_ms;
         self
     }
+
 
     fn visited(mut self, visited_ms: u64) -> Self {
         self.0.last_visited_ms = Some(visited_ms);
@@ -951,10 +953,11 @@ fn a_row_walks_the_cycle_and_a_spent_park_mints_only_one_badge() {
 
     // An hour later the agent finishes. That is ordinary unseen work, not a
     // second wake.
-    row.info.status = SessionStatus::Exited { code: Some(0) };
-    row.info.attention.waiting = None;
-    row.info.last_activity_ms = NOW + 2 * HOUR;
-    row.info.unread = true;
+    let info = row.info_mut();
+    info.status = SessionStatus::Exited { code: Some(0) };
+    info.attention.waiting = None;
+    info.last_activity_ms = NOW + 2 * HOUR;
+    info.unread = true;
     let done = Clock::utc(NOW + 3 * HOUR);
     assert_eq!(
         row.woke_at(done),
@@ -966,7 +969,7 @@ fn a_row_walks_the_cycle_and_a_spent_park_mints_only_one_badge() {
     assert_eq!(row.disposition(done, manual()), Disposition::Active);
 
     row.last_visited_ms = Some(NOW + 2 * HOUR + SECOND);
-    row.info.unread = false;
+    row.info_mut().unread = false;
     assert_eq!(row.disposition(done, manual()), Disposition::Settled);
     assert_eq!(row.disposition(done, manual()).label(), Some("Settled"));
 }

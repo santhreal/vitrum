@@ -421,7 +421,7 @@ mod tests {
         assert!(raised.raised_hand());
 
         let mut cleared = raised.clone();
-        cleared.info.hint = None;
+        cleared.info_mut().hint = None;
         assert!(!cleared.raised_hand());
         assert!(cleared.effective_snoozed(clock()));
         assert_eq!(cleared.disposition(clock(), policy()), Disposition::Snoozed);
@@ -823,16 +823,17 @@ mod tests {
         // The agent finishes. The spent snooze must NOT mint a second Woke
         // badge for this: the wake already happened and was seen, so a later
         // completion is ordinary unseen work.
-        row.info.status = vitrum_proto::SessionStatus::Exited { code: Some(0) };
-        row.info.last_activity_ms = NOW + 9 * HOUR;
-        row.info.unread = true;
+        let info = row.info_mut();
+        info.status = vitrum_proto::SessionStatus::Exited { code: Some(0) };
+        info.last_activity_ms = NOW + 9 * HOUR;
+        info.unread = true;
         let done = Clock::utc(NOW + 10 * HOUR);
         assert_eq!(row.woke_at(done), Some(NOW + 8 * HOUR), "still the one wake");
         assert!(row.has_unseen_completion());
         assert_eq!(row.disposition(done, policy()), Disposition::Active);
 
         // The operator drains it.
-        row.info.unread = false;
+        row.info_mut().unread = false;
         row.last_visited_ms = Some(NOW + 9 * HOUR + 1);
         assert_eq!(row.disposition(done, policy()), Disposition::Settled);
     }

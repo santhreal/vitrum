@@ -11,8 +11,24 @@
 //! so the whole sidebar is reproducible from a snapshot and testable without a
 //! daemon.
 
+use std::sync::Arc;
+
 use vitrum_proto::{ProjectId, SessionId, SessionInfo};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+fn serialize_arc_info<S>(info: &Arc<SessionInfo>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    info.as_ref().serialize(serializer)
+}
+
+fn deserialize_arc_info<'de, D>(deserializer: D) -> Result<Arc<SessionInfo>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    SessionInfo::deserialize(deserializer).map(Arc::new)
+}
 
 use crate::disposition::SettleOverride;
 use crate::snooze::Snooze;
@@ -49,26 +65,42 @@ impl Clock {
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
     /// The daemon's projection. Replaced wholesale on every `SessionUpdated`.
-    pub info: SessionInfo,
+    #[serde(serialize_with = "serialize_arc_info", deserialize_with = "deserialize_arc_info")]
+    pub info: Arc<SessionInfo>,
+    /// When this operator last had the row focused. `None` means never, which
+    /// is different from "long ago".
+    pub last_visited_ms: Option<u64>,
     /// Set while this operator has the row parked.
     pub snooze: Option<Snooze>,
     /// The operator's explicit ruling on whether they are done with this row.
     /// `None` leaves it to the automatic rules in [`crate::disposition`].
     pub settle_override: Option<SettleOverride>,
-    /// When this operator last had the row focused. `None` means never, which
-    /// is different from "long ago".
-    pub last_visited_ms: Option<u64>,
 }
 
 impl SessionView {
     /// A view over a freshly received session, never visited and not snoozed.
     pub fn new(info: SessionInfo) -> Self {
         SessionView {
-            info,
+            info: Arc::new(info),
+            last_visited_ms: None,
             snooze: None,
             settle_override: None,
-            last_visited_ms: None,
         }
+    }
+
+    /// A view over a session projection already wrapped in an [`Arc`].
+    pub fn with_arc(info: Arc<SessionInfo>) -> Self {
+        SessionView {
+            info,
+            last_visited_ms: None,
+            snooze: None,
+            settle_override: None,
+        }
+    }
+
+    /// Mutable access to the inner [`SessionInfo`], cloning on write if shared.
+    pub fn info_mut(&mut self) -> &mut SessionInfo {
+        Arc::make_mut(&mut self.info)
     }
 
     pub fn id(&self) -> SessionId {
@@ -581,5 +613,21 @@ mod tests {
         assert_eq!(back, row);
         assert!(json.contains("\"lastVisitedMs\":3"));
         assert!(json.contains("\"snooze\":{\"snoozedAtMs\":1,\"wakeAtMs\":2}"));
+    }
+    #[test]
+    fn session_view_arc_info_cheap_cloning_and_mutation() {
+        let row = view(42);
+        let cloned = row.clone();
+
+        // Arc pointers share the exact same underlying heap allocation
+        assert!(Arc::ptr_eq(&row.info, &cloned.info));
+
+        let mut mutated = row.clone();
+        mutated.info_mut().unread = true;
+
+        // Mutation via info_mut performs copy-on-write so row.info is unmodified
+        assert!(!Arc::ptr_eq(&row.info, &mutated.info));
+        assert!(!row.info.unread);
+        assert!(mutated.info.unread);
     }
 }

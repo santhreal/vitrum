@@ -111,9 +111,10 @@ pub fn fits(text: &str, budget: usize) -> bool {
 /// zero-width column renders nothing at all.
 #[must_use]
 pub fn truncate_end(text: &str, budget: usize) -> String {
-    let mut out = String::new();
-    truncate_end_into(text, budget, &mut out);
-    out
+    with_buffer(|out| {
+        truncate_end_into(text, budget, out);
+        out.clone()
+    })
 }
 
 /// Truncate into `out`, avoiding allocation when `out` has existing capacity.
@@ -157,9 +158,10 @@ pub fn truncate_end_into(text: &str, budget: usize, out: &mut String) {
 /// The result is never wider than `budget` and never splits a cluster.
 #[must_use]
 pub fn truncate_middle(text: &str, budget: usize) -> String {
-    let mut out = String::new();
-    truncate_middle_into(text, budget, &mut out);
-    out
+    with_buffer(|out| {
+        truncate_middle_into(text, budget, out);
+        out.clone()
+    })
 }
 
 /// Truncate to `budget` columns by removing the middle into `out`.
@@ -237,9 +239,10 @@ pub fn truncate_middle_into(text: &str, budget: usize, out: &mut String) {
 /// them.
 #[must_use]
 pub fn sanitize_line(text: &str) -> String {
-    let mut out = String::new();
-    sanitize_line_into(text, &mut out);
-    out
+    with_buffer(|out| {
+        sanitize_line_into(text, out);
+        out.clone()
+    })
 }
 
 /// Strip escape sequences and control characters into `out`.
@@ -313,9 +316,10 @@ fn skip_escape_tail(second: char, chars: &mut std::str::Chars<'_>) {
 /// The one call a view layer should make for an untrusted single-line title.
 #[must_use]
 pub fn title(text: &str, budget: usize) -> String {
-    let mut out = String::new();
-    title_into(text, budget, &mut out);
-    out
+    with_buffer(|out| {
+        title_into(text, budget, out);
+        out.clone()
+    })
 }
 
 /// Sanitize, collapse runs of whitespace, trim, then truncate to `budget` into `out`.
@@ -346,9 +350,10 @@ pub fn title_into(text: &str, budget: usize, out: &mut String) {
 /// For fixed-column layouts where a short label must still consume its cell.
 #[must_use]
 pub fn pad_end(text: &str, budget: usize) -> String {
-    let mut out = String::new();
-    pad_end_into(text, budget, &mut out);
-    out
+    with_buffer(|out| {
+        pad_end_into(text, budget, out);
+        out.clone()
+    })
 }
 
 /// Pad on the right with spaces to exactly `budget` columns into `out`.

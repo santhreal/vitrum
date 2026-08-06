@@ -554,6 +554,92 @@ fn anything_typed_is_still_launchable() {
     assert!(typed_intent(&rows, &st, "/src/vitrum", "   ", "/home/u").is_none());
 }
 
+/// The one rule three surfaces obey.
+///
+/// The list, the typed row and the refusal message all ask this, so a query
+/// that is a command cannot be shown a directory list, and a query that is a
+/// directory cannot be offered as a command.
+#[test]
+fn a_path_stops_being_a_path_once_it_carries_an_argument() {
+    assert!(is_dir_search("/src"));
+    assert!(is_dir_search("~/src"));
+    assert!(is_dir_search("./app"));
+    assert!(is_dir_search("  /src  "));
+    assert!(!is_dir_search("/bin/sh -c \"printf hi\""));
+    assert!(!is_dir_search("/usr/bin/env FOO=1 agent"));
+    assert!(!is_dir_search("claude"));
+    assert!(!is_dir_search("cargo test"));
+    assert!(!is_dir_search(""));
+}
+
+/// A program named by absolute path is launchable WITH arguments.
+///
+/// Found by running the product: typing `/bin/sh -c "printf hi"` and pressing
+/// Enter did nothing at all. The query was classified as a directory on its
+/// first character, so no row was offered, and Enter is guarded on there being
+/// a row. The launcher's own list offers `/bin/bash`, so a rooted program is
+/// ordinary; only a rooted query with NO arguments is a directory.
+#[test]
+fn a_rooted_command_with_arguments_is_a_command_not_a_directory() {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum", "/src/vitrum")];
+    let rows = intents(
+        &st,
+        &store_with(&[("claude", 3)]),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
+
+    let line = "/bin/sh -c \"printf hi\"";
+    let extra = typed_intent(&rows, &st, "/src/vitrum", line, "/home/u")
+        .expect("a rooted line with arguments is a command");
+    assert_eq!(extra.command, line);
+    assert_eq!(extra.band, Band::Typed);
+
+    // A rooted query on its own is still the directory list's business, and a
+    // home-relative one too.
+    assert!(typed_intent(&rows, &st, "/src/vitrum", "/src/other", "/home/u").is_none());
+    assert!(typed_intent(&rows, &st, "/src/vitrum", "~/src", "/home/u").is_none());
+    // A path WITH arguments is a command line: the program happens to live at
+    // an absolute path, which is what `/usr/bin/env FOO=1 agent` looks like.
+    assert!(typed_intent(&rows, &st, "/src/vitrum", "/usr/bin/env agent", "/home/u").is_some());
+}
+
+/// An Enter with nothing to take must say why.
+///
+/// The guard on the key is right; silence is not. A launcher that swallows
+/// Enter is indistinguishable from one that is broken, and this was the second
+/// half of the defect above: the only thing on screen was "Nothing matches".
+#[test]
+fn an_enter_with_no_rows_says_what_is_wrong() {
+    // A quote pair is a real empty argument, so a lone quote parses to a
+    // command whose program is the empty string: nothing to run.
+    let why = no_row_reason("\"\"");
+    assert!(why.contains("names no program"), "{why}");
+
+    // A NUL cannot survive `exec`, which takes a C string.
+    let why = no_row_reason("agent\0name");
+    assert!(why.contains("names no program"), "{why}");
+
+    // An unterminated quote is NOT this case: the parser ends the word and the
+    // program is real, so the line is launchable and never reaches here.
+    assert!(crate::launch::split_command("\"unclosed").is_some());
+
+    // Rooted, no arguments, and the directory list came back empty.
+    let why = no_row_reason("/nowhere/at/all");
+    assert!(why.contains("not a directory"), "{why}");
+
+    // Nothing typed at all: say what to do instead of what is wrong.
+    let why = no_row_reason("   ");
+    assert!(why.contains("Type a command"), "{why}");
+
+    // Every answer names the query, so the message is about what was typed.
+    assert!(no_row_reason("/nowhere/at/all").contains("/nowhere/at/all"));
+}
+
 /// Recents in this project outrank agents merely present on PATH.
 ///
 /// The defect: ranking by what the machine has installed rather than by

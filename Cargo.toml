@@ -9,6 +9,7 @@ members = [
     "crates/vitrum-fmt",
     "crates/vitrum-os",
     "crates/vitrum-search",
+    "crates/vitrum-bench",
     "app",
     "vendor",
 ]

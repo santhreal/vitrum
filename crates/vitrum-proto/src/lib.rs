@@ -707,12 +707,21 @@ mod tests {
     /// need this test edited by the same person in the same commit, which is
     /// exactly the step that gets skipped.
     ///
+    /// A member that opts out with `publish = false` is not counted. Not every
+    /// member is a product: a test harness belongs in the workspace and not on
+    /// crates.io, and the opt-out is the deliberate decision this test wants,
+    /// so it accepts either answer and only rejects silence.
+    ///
     /// The two lists are compared to each other as well. A dry run that
     /// packages a different set from what the publish step uploads verifies
     /// nothing about the release it is supposed to be rehearsing.
     #[test]
     fn the_publish_workflow_covers_every_workspace_member() {
         let manifest = include_str!("../../../Cargo.toml");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("the crate sits two levels under the workspace root");
         let members = manifest
             .split("members = [")
             .nth(1)
@@ -720,7 +729,13 @@ mod tests {
             .expect("the workspace lists members")
             .0
             .lines()
-            .filter(|l| l.contains('"'))
+            .filter_map(|l| l.split('"').nth(1))
+            .filter(|dir| {
+                let path = root.join(dir).join("Cargo.toml");
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("member {dir} has no manifest at {path:?}: {e}"));
+                !text.contains("publish = false")
+            })
             .count();
 
         let workflow = include_str!("../../../.github/workflows/publish.yml");

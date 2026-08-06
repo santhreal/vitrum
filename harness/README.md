@@ -303,6 +303,48 @@ whose `WM_NAME` is exactly `vitrum`. The rig resolves by pid and rejects the
 app opened no window". And the display is private to the run, so you cannot
 photograph another instance's window.
 
+## Load, concurrency and fuzzing
+
+```
+harness/run.sh stress
+```
+
+This one needs no display. It starts a throwaway daemon on the remote box and
+runs `vitrum-bench` against it over the same WebSocket transport the client
+uses, so what it measures is the product rather than a copy of it. Three
+workloads run in order, each sampling the daemon's whole process tree while it
+works, and each writing `report.json` and `report.md` next to the other:
+
+- **load** creates sessions, has each write a known number of known-length
+  lines, and closes the ledger: `delivered + pre_attach + lost == generated`.
+  Loss is proven from the `seq` byte offsets in the output frames, not inferred
+  from a total, so a gap says how many bytes went missing and from which
+  session. Delivery is compared with `==`; a surplus means the expected total
+  was computed from a wrong assumption about the pty and is a failure too.
+- **race** opens many connections at once, has all of them create and rename
+  concurrently, then closes everything. It asserts distinct ids for concurrent
+  creates, that every connection agrees on every session after the rename
+  storm, and that no connection still lists a closed one.
+- **fuzz** feeds hostile frames to one connection and asks a second, healthy
+  connection to answer `List` afterwards. Rejection, silence and a dropped
+  connection are all acceptable answers to garbage; the only failure is the
+  oracle connection no longer working. The generator is a seeded
+  xorshift64\*, and the seed is in the report, because a run you cannot
+  replay is an anecdote.
+
+Reports land in `harness/out/stress-<stamp>/stress/`, with the daemon's log
+beside them. Each report carries the profile of the daemon during that
+workload under `extra.daemon_profile`: peak RSS and PSS, peak thread count,
+mean and peak CPU, and how many processes were alive at the peak. A profile is
+only interpretable next to what was running, so the two are one file.
+
+The knob most likely to need changing is `HARNESS_STRESS_SETTLE`. `race`
+waits for the broadcast traffic to go quiet rather than sleeping a fixed
+amount, and the traffic scales with connections times renames: at the default
+twelve connections there are tens of thousands of frames to read back, which
+takes tens of seconds. A budget sized for a handful of connections fails the
+run for not converging when nothing is wrong.
+
 ## What a remote box cannot tell you honestly
 
 The banner at the top of this file states the baseline rule. This is the
@@ -515,6 +557,16 @@ fetched. Set `HARNESS_KEEP_REMOTE=1` to keep it.
 | `HARNESS_BENCH_TOKENS` | `200` | tokens in each mock response |
 | `HARNESS_BENCH_TPS` | `30` | tokens per second the mock streams at |
 | `HARNESS_BENCH_SEED` | `1` | the seed both halves run under |
+| `HARNESS_STRESS_SESSIONS` | `60` | sessions the load workload opens |
+| `HARNESS_STRESS_LINES` | `60000` | lines each of them writes |
+| `HARNESS_STRESS_DRAIN` | `180` | seconds load waits for the last byte |
+| `HARNESS_STRESS_CONNECTIONS` | `12` | connections the race workload opens |
+| `HARNESS_STRESS_RACE_SESSIONS` | `6` | sessions each connection creates |
+| `HARNESS_STRESS_RENAMES` | `8` | rename rounds per connection |
+| `HARNESS_STRESS_SETTLE` | `90` | seconds race waits for convergence |
+| `HARNESS_STRESS_CASES` | `4000` | hostile inputs the fuzzer sends |
+| `HARNESS_STRESS_SEED` | `1` | the fuzzer's seed |
+| `HARNESS_STRESS_INTERVAL` | `0.25` | seconds between profiler samples |
 
 ## What has been exercised, and what has not
 

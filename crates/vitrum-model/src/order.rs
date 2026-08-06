@@ -140,6 +140,53 @@ impl SettledKey {
             .then(self.id.cmp(&other.id))
     }
 }
+/// Sort weight for one snoozed row, soonest wake first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnoozedKey {
+    /// Ascending wake time.
+    pub wake_at_ms: u64,
+    /// Unique final tiebreak; makes the order total.
+    pub id: u64,
+}
+
+impl SnoozedKey {
+    pub fn of(row: &SessionView) -> Self {
+        SnoozedKey {
+            wake_at_ms: row.snooze.map_or(u64::MAX, |snooze| snooze.wake_at_ms),
+            id: row.id().0,
+        }
+    }
+
+    pub fn cmp_key(&self, other: &Self) -> Ordering {
+        self.wake_at_ms
+            .cmp(&other.wake_at_ms)
+            .then(self.id.cmp(&other.id))
+    }
+}
+
+/// Precomputed sort key for active section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveKey {
+    Static(StaticKey),
+    Urgency(UrgencyKey),
+}
+
+impl ActiveKey {
+    pub fn of(row: &SessionView, order: ActiveOrder) -> Self {
+        match order {
+            ActiveOrder::Static => ActiveKey::Static(StaticKey::of(row)),
+            ActiveOrder::Urgency => ActiveKey::Urgency(UrgencyKey::of(row)),
+        }
+    }
+
+    pub fn cmp_key(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (ActiveKey::Static(a), ActiveKey::Static(b)) => a.cmp_key(b),
+            (ActiveKey::Urgency(a), ActiveKey::Urgency(b)) => a.cmp_key(b),
+            _ => Ordering::Equal,
+        }
+    }
+}
 
 /// Order two inbox rows under `order`.
 pub fn compare_active(left: &SessionView, right: &SessionView, order: ActiveOrder) -> Ordering {
@@ -155,10 +202,7 @@ pub fn compare_active(left: &SessionView, right: &SessionView, order: ActiveOrde
 /// about a parked row is "when does this come back". Ties fall to the id, and a
 /// row somehow in this section without a snooze sorts last rather than first.
 pub fn compare_snoozed(left: &SessionView, right: &SessionView) -> Ordering {
-    let wake = |row: &SessionView| row.snooze.map_or(u64::MAX, |snooze| snooze.wake_at_ms);
-    wake(left)
-        .cmp(&wake(right))
-        .then(left.id().0.cmp(&right.id().0))
+    SnoozedKey::of(left).cmp_key(&SnoozedKey::of(right))
 }
 
 /// Order two settled rows: most recently ended first, then id.
@@ -209,15 +253,47 @@ pub fn arrange(
     policy: DispositionPolicy,
     order: ActiveOrder,
 ) -> SectionSplit {
-    // `sort_by_key` is stable, so this partitions into the three bands without
-    // allocating a second vector. Each band is re-sorted immediately after.
-    rows.sort_by_key(|row| row.section(clock, policy));
-    let active_end = rows.partition_point(|row| row.section(clock, policy) == Section::Active);
-    let snoozed_end = rows.partition_point(|row| row.section(clock, policy) <= Section::Snoozed);
+    if rows.is_empty() {
+        return SectionSplit {
+            active_end: 0,
+            snoozed_end: 0,
+        };
+    }
 
-    rows[..active_end].sort_by(|left, right| compare_active(left, right, order));
-    rows[active_end..snoozed_end].sort_by(compare_snoozed);
-    rows[snoozed_end..].sort_by(compare_settled);
+    let len = rows.len();
+    let mut active: Vec<(ActiveKey, usize)> = Vec::with_capacity(len);
+    let mut snoozed: Vec<(SnoozedKey, usize)> = Vec::with_capacity(len);
+    let mut settled: Vec<(SettledKey, usize)> = Vec::with_capacity(len);
+
+    // Precomputed sort keys & single-pass bucket partitioning
+    for (idx, row) in rows.iter().enumerate() {
+        match row.section(clock, policy) {
+            Section::Active => active.push((ActiveKey::of(row, order), idx)),
+            Section::Snoozed => snoozed.push((SnoozedKey::of(row), idx)),
+            Section::Settled => settled.push((SettledKey::of(row), idx)),
+        }
+    }
+
+    // Sort each bucket using precomputed sort keys
+    active.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
+    snoozed.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
+    settled.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
+
+    let active_end = active.len();
+    let snoozed_end = active_end + snoozed.len();
+
+    let mut reordered = Vec::with_capacity(len);
+    for (_, idx) in active {
+        reordered.push(rows[idx].clone());
+    }
+    for (_, idx) in snoozed {
+        reordered.push(rows[idx].clone());
+    }
+    for (_, idx) in settled {
+        reordered.push(rows[idx].clone());
+    }
+
+    rows.clone_from_slice(&reordered);
 
     SectionSplit {
         active_end,
@@ -819,5 +895,31 @@ mod tests {
             wake_at_ms: 60_000,
         });
         assert_eq!(SettledKey::of(&parked).settled_at_ms, 6_000);
+    }
+    #[test]
+    fn snoozed_and_active_keys_describe_the_comparators() {
+        let row = ViewBuilder::new(15)
+            .running()
+            .created_at_ms(4_000)
+            .snooze(1_000, 50_000)
+            .build();
+
+        let snoozed_key = SnoozedKey::of(&row);
+        assert_eq!(
+            snoozed_key,
+            SnoozedKey {
+                wake_at_ms: 50_000,
+                id: 15
+            }
+        );
+
+        let active_static = ActiveKey::of(&row, ActiveOrder::Static);
+        assert_eq!(
+            active_static,
+            ActiveKey::Static(StaticKey {
+                created_at_ms: 4_000,
+                id: 15
+            })
+        );
     }
 }

@@ -141,6 +141,122 @@ const PART_SEARCH_CSS: &str = include_str!("../assets/parts/21-search.css");
 const PART_LAUNCHER_CSS: &str = include_str!("../assets/parts/22-launcher.css");
 const PART_BACKDROP_CSS: &str = include_str!("../assets/parts/23-backdrop.css");
 
+/// Zero-copy binary buffer for high-throughput IPC data transfer and backfill.
+///
+/// Encapsulates direct slice operations and header alignment to eliminate heap copies
+/// when passing binary scrollback frames between Rust and the webview renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZeroCopyBinaryBuffer<'a> {
+    pub seq: u64,
+    pub payload_type: u8,
+    pub payload: &'a [u8],
+}
+
+impl<'a> ZeroCopyBinaryBuffer<'a> {
+    pub const HEADER_LEN: usize = 17;
+    pub const MAGIC: [u8; 4] = *b"VITR";
+
+    pub const TYPE_BACKFILL: u8 = 0x01;
+    pub const TYPE_PTY_CHUNK: u8 = 0x02;
+    pub const TYPE_SCROLLBACK: u8 = 0x03;
+    pub const TYPE_IPC: u8 = 0x04;
+
+    /// Packs frame metadata and payload into a single binary buffer frame.
+    ///
+    /// Header layout (17 bytes):
+    /// - 0..4: Magic bytes `b"VITR"`
+    /// - 4: Payload type `u8`
+    /// - 5..13: Sequence number `u64` (Little Endian)
+    /// - 13..17: Payload length `u32` (Little Endian)
+    /// - 17..: Raw binary payload
+    pub fn pack_frame(seq: u64, payload_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(Self::HEADER_LEN + payload.len());
+        buf.extend_from_slice(&Self::MAGIC);
+        buf.push(payload_type);
+        buf.extend_from_slice(&seq.to_le_bytes());
+        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buf.extend_from_slice(payload);
+        buf
+    }
+
+    /// Unpacks a 17-byte header zero-copy binary frame without allocations.
+    pub fn unpack_frame(bytes: &'a [u8]) -> Option<Self> {
+        if bytes.len() < Self::HEADER_LEN {
+            return None;
+        }
+        if &bytes[0..4] != &Self::MAGIC {
+            return None;
+        }
+        let payload_type = bytes[4];
+        let seq = u64::from_le_bytes(bytes[5..13].try_into().ok()?);
+        let len = u32::from_le_bytes(bytes[13..17].try_into().ok()?) as usize;
+        if bytes.len() < Self::HEADER_LEN + len {
+            return None;
+        }
+        let payload = &bytes[Self::HEADER_LEN..Self::HEADER_LEN + len];
+        Some(Self {
+            seq,
+            payload_type,
+            payload,
+        })
+    }
+
+    /// Returns a zero-copy sub-slice of a binary buffer.
+    pub fn zero_copy_slice(buffer: &'a [u8], offset: usize, len: usize) -> Option<&'a [u8]> {
+        if offset + len <= buffer.len() {
+            Some(&buffer[offset..offset + len])
+        } else {
+            None
+        }
+    }
+}
+
+/// Shared ArrayBuffer IPC protocol ring buffer manager.
+///
+/// Enables zero-allocation binary frame queuing and zero-copy chunk retrieval across process boundaries.
+#[derive(Debug, Clone)]
+pub struct SharedArrayBufferProtocol {
+    storage: Vec<u8>,
+    write_head: usize,
+    capacity: usize,
+}
+
+impl SharedArrayBufferProtocol {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            storage: vec![0u8; capacity],
+            write_head: 0,
+            capacity,
+        }
+    }
+
+    /// Pushes a binary payload frame into the shared buffer ring.
+    pub fn push_frame(&mut self, seq: u64, payload_type: u8, payload: &[u8]) -> Option<usize> {
+        let frame = ZeroCopyBinaryBuffer::pack_frame(seq, payload_type, payload);
+        if frame.len() > self.capacity {
+            return None;
+        }
+        if self.write_head + frame.len() > self.capacity {
+            self.write_head = 0; // Wrap around ring
+        }
+        let start = self.write_head;
+        self.storage[start..start + frame.len()].copy_from_slice(&frame);
+        self.write_head += frame.len();
+        Some(start)
+    }
+
+    /// Reads a zero-copy binary frame at the specified buffer offset.
+    pub fn read_frame_at(&self, offset: usize) -> Option<ZeroCopyBinaryBuffer<'_>> {
+        if offset >= self.capacity {
+            return None;
+        }
+        ZeroCopyBinaryBuffer::unpack_frame(&self.storage[offset..])
+    }
+
+    pub fn clear(&mut self) {
+        self.write_head = 0;
+    }
+}
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(

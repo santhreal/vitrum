@@ -21,8 +21,15 @@ cargo build --release --locked
 bin=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
   | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release
 
+# Windows names the same two binaries with an extension, and the archive has to
+# carry whatever is actually on disk or tar fails with nothing to add.
+case "$target" in
+  *windows*) files="vitrum.exe vitrum-server.exe" ;;
+  *) files="vitrum vitrum-server" ;;
+esac
+
 mkdir -p "$out"
-tar czf "$out/$name" -C "$bin" vitrum vitrum-server
+tar czf "$out/$name" -C "$bin" $files
 
 # One SHA256SUMS lists every platform's archive and each platform runs this
 # script on its own machine, so this appends rather than overwrites. It first

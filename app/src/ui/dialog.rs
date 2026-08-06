@@ -712,6 +712,36 @@ pub fn go_tip(word: Option<&str>, place: &str) -> String {
 // Rows
 // ---------------------------------------------------------------------------
 
+/// Directories worth offering in the `in` field, most recently used first.
+///
+/// Where you have worked, not a walk of `$HOME`: the operator is nearly always
+/// going back somewhere they have already been, and a walk to answer that
+/// would be a syscall storm for a question the daemon has already answered.
+/// Distinct, because twenty sessions in one checkout is one place to offer.
+pub fn recent_dirs(state: &UiState, last_cwd: &str) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut rows: Vec<&vitrum_model::SessionView> = state.daemon.sessions.iter().collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.info.last_activity_ms.max(r.info.created_at_ms)));
+    for r in rows {
+        let d = launch::tidy_dir(&r.info.cwd);
+        if !seen.contains(&d) {
+            seen.push(d);
+        }
+    }
+    for pr in &state.daemon.projects {
+        let d = launch::tidy_dir(&pr.root);
+        if !seen.contains(&d) {
+            seen.push(d);
+        }
+    }
+    let last = launch::tidy_dir(last_cwd);
+    if !last.is_empty() && !seen.contains(&last) {
+        seen.push(last);
+    }
+    seen.truncate(DIR_MAX);
+    seen
+}
+
 /// One thing a row does when it is taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
@@ -906,16 +936,49 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
             String::new()
         }
     });
-    let entries = use_resource(move || {
-        let dir = scan_dir();
-        async move {
-            if dir.is_empty() {
-                Vec::new()
-            } else {
-                off_thread(move || launch::list_dirs(&dir)).await
-            }
+    let entries = scanned_dirs(scan_dir);
+
+    // What is typed in the `in` field, which is not the same thing as `here`.
+    // `here` is the resolved directory a launch would use; this is the text,
+    // including the trailing separator that means "show me what is inside".
+    // Completing against `here` would drop that separator and re-offer the
+    // folder you just descended into.
+    let mut dir_text = use_signal(move || shorten_home(&here.read(), &home.read()));
+    let dir_scan = use_memo(move || launch::split_dir_input(&dir_text.read(), &home.read()).0);
+    let dir_entries = scanned_dirs(dir_scan);
+
+    // Completions for the `in` field, or the directories you have launched in
+    // before when there is nothing to complete against.
+    //
+    // One list, not a filesystem popup beside a recents datalist. Two lists
+    // under one field is two things to learn and two ways to be surprised, and
+    // the platform datalist could not be keyboard-driven from here anyway.
+    let dir_picks = use_memo(move || {
+        let typed = dir_text.read().clone();
+        // Nothing typed is not "no answer": it is the moment the operator has
+        // said least and where you last worked is the most useful thing on
+        // screen. Completing an empty field against the filesystem would offer
+        // the root's children, which is never where anybody is going.
+        if typed.trim().is_empty() {
+            return recent_dirs(&state.peek(), &store.read().last_cwd);
         }
+        let fragment = launch::split_dir_input(&typed, &home.read()).1;
+        let scanned = dir_entries.read();
+        let list: &[String] = match (*scanned).as_ref() {
+            Some(l) => l.as_slice(),
+            None => &[],
+        };
+        let hits = launch::filter_dirs(list, &fragment, DIR_MAX);
+        // An exact, complete directory name is not a suggestion: offering
+        // `software/` while `software/` is what the field already says makes
+        // Tab a no-op and the list a mirror of the input.
+        let whole = launch::tidy_dir(&launch::expand_home(&typed, &home.read()));
+        if hits.len() == 1 && launch::tidy_dir(&hits[0]) == whole {
+            return Vec::new();
+        }
+        hits
     });
+    let mut dir_hi = use_signal(|| 0usize);
 
     // Two memos rather than one. Ranking depends on the profile, the place and
     // the PATH answer; filtering depends only on the query. Split, a keystroke
@@ -1045,39 +1108,6 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
     // runs in home: five rows reading `~`, none of which was a fact the
     // operator needed per row. Said once, above the list, it is context; said
     // on every row it is noise.
-    // Directories worth offering in the `in` field, most recently used first.
-    //
-    // Recents, not a filesystem walk: the operator is nearly always going back
-    // somewhere they have already worked, and a walk of `$HOME` would be a
-    // syscall storm to answer a question the daemon already knows. Distinct,
-    // because twenty sessions in one checkout is one place to offer.
-    let recent_dirs: Vec<String> = {
-        let st = state.peek();
-        let mut seen: Vec<String> = Vec::new();
-        let mut rows: Vec<&vitrum_model::SessionView> = st.daemon.sessions.iter().collect();
-        rows.sort_by_key(|r| {
-            std::cmp::Reverse(r.info.last_activity_ms.max(r.info.created_at_ms))
-        });
-        for r in rows {
-            let d = launch::tidy_dir(&r.info.cwd);
-            if !seen.contains(&d) {
-                seen.push(d);
-            }
-        }
-        for pr in &st.daemon.projects {
-            let d = launch::tidy_dir(&pr.root);
-            if !seen.contains(&d) {
-                seen.push(d);
-            }
-        }
-        let last = launch::tidy_dir(&store.read().last_cwd);
-        if !last.is_empty() && !seen.contains(&last) {
-            seen.push(last);
-        }
-        seen.truncate(8);
-        seen
-    };
-
     let here_now = launch::tidy_dir(&here.read());
 
     rsx! {
@@ -1108,7 +1138,9 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                         r#type: "text",
                         spellcheck: false,
                         autocomplete: "off",
-                        list: "rg-launch-dirs",
+                        role: "combobox",
+                        aria_expanded: if dir_picks.read().is_empty() { "false" } else { "true" },
+                        aria_controls: "rg-launch-dirs",
                         placeholder: "Directory",
                         initial_value: "{shorten_home(&here.read(), &home_now)}",
                         oninput: move |e| {
@@ -1119,16 +1151,100 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                             // session in a directory called `~`.
                             let full = launch::expand_home(&typed, &home.read());
                             here.set(launch::tidy_dir(&full));
+                            dir_text.set(typed);
+                            dir_hi.set(0);
                             said.set(None);
                         },
+                        onkeydown: move |e: KeyboardEvent| {
+                            let hits = dir_picks.read().clone();
+                            let count = hits.len();
+                            let cur = dir_hi().min(count.saturating_sub(1));
+                            match e.key() {
+                                Key::ArrowDown if count > 0 => {
+                                    e.prevent_default();
+                                    dir_hi.set((cur + 1) % count);
+                                }
+                                Key::ArrowUp if count > 0 => {
+                                    e.prevent_default();
+                                    dir_hi.set((cur + count - 1) % count);
+                                }
+                                // Descend, exactly as a shell does. The
+                                // separator is what makes the next Tab offer
+                                // what is INSIDE rather than re-offer this.
+                                Key::Tab if !e.modifiers().shift() && count > 0 => {
+                                    e.prevent_default();
+                                    let mut next = shorten_home(&hits[cur], &home.read());
+                                    next.push(MAIN_SEPARATOR);
+                                    here.set(launch::tidy_dir(&hits[cur]));
+                                    push_dir(&next);
+                                    dir_text.set(next);
+                                    dir_hi.set(0);
+                                    said.set(None);
+                                }
+                                // Tab with nothing to complete moves to `run`,
+                                // because a dead key in a two-field form reads
+                                // as the field being broken.
+                                Key::Tab if !e.modifiers().shift() => {
+                                    e.prevent_default();
+                                    push_query(&query.read().clone());
+                                }
+                                // The directory is set as you type, so Enter
+                                // here means "done with this field", not
+                                // "launch": launching from the place field
+                                // would start whatever the other field happens
+                                // to hold.
+                                Key::Enter => {
+                                    e.prevent_default();
+                                    if count > 0 {
+                                        let mut next = shorten_home(&hits[cur], &home.read());
+                                        next.push(MAIN_SEPARATOR);
+                                        here.set(launch::tidy_dir(&hits[cur]));
+                                        push_dir(&next);
+                                        dir_text.set(next);
+                                        dir_hi.set(0);
+                                    }
+                                    push_query(&query.read().clone());
+                                }
+                                _ => {}
+                            }
+                        },
                     }
-                    // Recents, offered by the platform's own completion so
-                    // there is no second popup to keyboard-navigate and no
-                    // filesystem walk to answer a question the daemon has
-                    // already answered.
-                    datalist { id: "rg-launch-dirs",
-                        for d in recent_dirs.iter() {
-                            option { key: "{d}", value: "{shorten_home(d, &home_now)}" }
+                    if !dir_picks.read().is_empty() {
+                        ul {
+                            class: "rg-launch__dirs",
+                            id: "rg-launch-dirs",
+                            role: "listbox",
+                            aria_label: "Directories",
+                            for (i, full) in dir_picks.read().iter().enumerate() {
+                                li {
+                                    class: if i == dir_hi().min(dir_picks.read().len() - 1) {
+                                        "rg-launch__diropt rg-launch__diropt--on"
+                                    } else {
+                                        "rg-launch__diropt"
+                                    },
+                                    key: "{full}",
+                                    role: "option",
+                                    aria_selected: i == dir_hi().min(dir_picks.read().len() - 1),
+                                    title: "{full}",
+                                    // Kept off mousedown so the field never
+                                    // loses focus: a blur would move the caret
+                                    // out from under the click.
+                                    onmousedown: move |e| e.prevent_default(),
+                                    onclick: {
+                                        let full = full.clone();
+                                        move |_| {
+                                            let mut next = shorten_home(&full, &home.read());
+                                            next.push(MAIN_SEPARATOR);
+                                            here.set(launch::tidy_dir(&full));
+                                            push_dir(&next);
+                                            dir_text.set(next);
+                                            dir_hi.set(0);
+                                            said.set(None);
+                                        }
+                                    },
+                                    span { class: "rg-launch__dirleaf", "{launch::leaf(full)}" }
+                                }
+                            }
                         }
                     }
                 }
@@ -1379,6 +1495,29 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
     }
 }
 
+/// The directories inside `dir`, scanned off the UI thread, empty while `dir`
+/// is empty.
+///
+/// One scanner, called once per field. The `run` field completes a path typed
+/// as a query and the `in` field completes the place, which are two questions
+/// with one answer: what is inside this directory. Written twice they were two
+/// `read_dir` walks that could disagree, and the second one was free to be the
+/// one that forgot [`off_thread`]. A directory on an unreachable mount blocks
+/// in the kernel for as long as the mount wants, so that is a frozen window,
+/// not a slow list.
+fn scanned_dirs(dir: Memo<String>) -> Resource<Vec<String>> {
+    use_resource(move || {
+        let dir = dir();
+        async move {
+            if dir.is_empty() {
+                Vec::new()
+            } else {
+                off_thread(move || launch::list_dirs(&dir)).await
+            }
+        }
+    })
+}
+
 /// Write `value` into the query element and put the caret after it.
 ///
 /// The query input is UNCONTROLLED: it carries `initial_value`, which sets
@@ -1401,11 +1540,25 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
 /// when the launcher itself sets the query from a Tab or a directory pick.
 /// That only ever happens on a key or a click, with no keystrokes in flight.
 fn push_query(value: &str) {
+    push_input("rg-launch-q", value);
+}
+
+/// Write `value` into the `in` field and put the caret after it.
+///
+/// Same reason as [`push_query`]: the directory field is uncontrolled, so a
+/// completion the launcher chooses has to be written to the element.
+fn push_dir(value: &str) {
+    push_input("rg-launch-dir", value);
+}
+
+/// Write `value` into the element with `id` and put the caret after it.
+fn push_input(id: &str, value: &str) {
     // Escaped through serde rather than by hand: `~/it's "here"` is a legal
     // directory name and pasting it into a script raw is a syntax error.
     let text = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string());
+    let el = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
     document::eval(&format!(
-        "{{const el=document.getElementById(\"rg-launch-q\");\
+        "{{const el=document.getElementById({el});\
          if(el){{el.value={text};\
          el.setSelectionRange(el.value.length,el.value.length);el.focus();}}}}"
     ));

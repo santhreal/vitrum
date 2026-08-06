@@ -337,3 +337,186 @@ impl fmt::Display for PathError {
 }
 
 impl core::error::Error for PathError {}
+
+/// Pure, fast syntactic path normalization without filesystem IO.
+///
+/// Resolves `.`, `..`, redundant separators (`//`), and trailing slashes while preserving
+/// leading root slashes or Windows drive/UNC prefixes.
+pub fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+    let mut components = Vec::new();
+    let mut is_absolute = false;
+
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_prefix) => {
+                components.push(component.as_os_str());
+            }
+            std::path::Component::RootDir => {
+                is_absolute = true;
+                components.clear();
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !components.is_empty() {
+                    if let Some(last) = components.last() {
+                        if *last != std::ffi::OsStr::new("..") {
+                            components.pop();
+                            continue;
+                        }
+                    }
+                }
+                if !is_absolute {
+                    components.push(std::ffi::OsStr::new(".."));
+                }
+            }
+            std::path::Component::Normal(c) => {
+                components.push(c);
+            }
+        }
+    }
+
+    let mut result = PathBuf::new();
+    if is_absolute {
+        result.push(std::path::MAIN_SEPARATOR.to_string());
+    }
+
+    for comp in &components {
+        result.push(comp);
+    }
+
+    if result.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        result
+    }
+}
+
+/// Preallocated high-performance path buffer with inline stack storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FastPathBuf {
+    inline_buf: [u8; 256],
+    len: usize,
+    heap_fallback: Option<PathBuf>,
+}
+
+impl Default for FastPathBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FastPathBuf {
+    /// Create an empty `FastPathBuf`.
+    pub fn new() -> Self {
+        Self {
+            inline_buf: [0u8; 256],
+            len: 0,
+            heap_fallback: None,
+        }
+    }
+
+    /// Construct from an existing path.
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
+        let mut buf = Self::new();
+        buf.push(path);
+        buf
+    }
+
+    /// Appends path segment, using inline storage if under 256 bytes.
+    pub fn push<P: AsRef<Path>>(&mut self, path: P) {
+        if let Some(heap) = &mut self.heap_fallback {
+            heap.push(path);
+            return;
+        }
+
+        let bytes = path.as_ref().as_os_str().as_encoded_bytes();
+        let added_sep = if self.len > 0 && !self.as_slice().ends_with(&[std::path::MAIN_SEPARATOR as u8]) {
+            1
+        } else {
+            0
+        };
+
+        if self.len + bytes.len() + added_sep <= 256 {
+            if added_sep > 0 {
+                self.inline_buf[self.len] = std::path::MAIN_SEPARATOR as u8;
+                self.len += 1;
+            }
+            self.inline_buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+            self.len += bytes.len();
+        } else {
+            // Spill to heap
+            let mut heap = PathBuf::from(self.as_path());
+            heap.push(path);
+            self.heap_fallback = Some(heap);
+        }
+    }
+
+    /// Get current path slice as bytes.
+    fn as_slice(&self) -> &[u8] {
+        if let Some(heap) = &self.heap_fallback {
+            heap.as_os_str().as_encoded_bytes()
+        } else {
+            &self.inline_buf[..self.len]
+        }
+    }
+
+    /// Convert to standard `PathBuf`.
+    pub fn to_path_buf(&self) -> PathBuf {
+        if let Some(heap) = &self.heap_fallback {
+            heap.clone()
+        } else {
+            PathBuf::from(std::str::from_utf8(&self.inline_buf[..self.len]).unwrap_or(""))
+        }
+    }
+
+    /// Borrow as `Path`.
+    pub fn as_path(&self) -> &Path {
+        if let Some(heap) = &self.heap_fallback {
+            heap.as_path()
+        } else {
+            Path::new(std::str::from_utf8(&self.inline_buf[..self.len]).unwrap_or(""))
+        }
+    }
+
+    /// Syntactically normalize this path in place.
+    pub fn normalize_in_place(&mut self) {
+        let normalized = normalize_path(self.as_path());
+        self.clear();
+        self.push(normalized);
+    }
+
+    /// Clear internal buffer for reuse in pooling.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.heap_fallback = None;
+    }
+}
+
+/// Simple pool of reusable preallocated `FastPathBuf` instances for hot paths.
+#[derive(Debug, Default)]
+pub struct PreallocatedPathPool {
+    pool: Vec<FastPathBuf>,
+}
+
+impl PreallocatedPathPool {
+    /// Create a new path buffer pool.
+    pub fn new() -> Self {
+        Self { pool: Vec::new() }
+    }
+
+    /// Acquire a cleaned `FastPathBuf` instance from pool or create new.
+    pub fn acquire(&mut self) -> FastPathBuf {
+        let mut buf = self.pool.pop().unwrap_or_default();
+        buf.clear();
+        buf
+    }
+
+    /// Return a `FastPathBuf` instance to pool.
+    pub fn release(&mut self, mut buf: FastPathBuf) {
+        buf.clear();
+        if self.pool.len() < 64 {
+            self.pool.push(buf);
+        }
+    }
+}

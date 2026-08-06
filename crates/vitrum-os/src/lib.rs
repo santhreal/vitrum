@@ -51,7 +51,9 @@ pub mod window_state;
 
 pub use badge::WindowHandle;
 pub use capability::{CapabilityReport, Feature, Support, Unavailable, UnavailableKind};
-pub use paths::{AppPaths, PathEnv, PathError, Platform};
+pub use paths::{
+    normalize_path, AppPaths, FastPathBuf, PathEnv, PathError, Platform, PreallocatedPathPool,
+};
 
 #[cfg(test)]
 mod tests;

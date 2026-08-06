@@ -28,7 +28,7 @@ fn io<E: core::fmt::Display>(context: &str) -> impl FnOnce(E) -> SingleInstanceE
     move |e| SingleInstanceError::Io { context: context.to_string(), detail: e.to_string() }
 }
 
-pub struct UnixGuard {
+pub(crate) struct UnixGuard {
     /// Held open for the process lifetime; closing it releases the `flock`.
     _lock: std::fs::File,
     socket_path: PathBuf,

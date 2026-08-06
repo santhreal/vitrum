@@ -27,7 +27,7 @@ use crate::deeplink::{self, DeepLink};
 use crate::notify::{ActivationHandler, Notification, NotificationHandle, Notifier};
 
 /// What an installer must do for toasts to work at all.
-pub const AUMID_INSTALL_NOTE: &str = "Windows attributes a toast to an AppUserModelID that \
+pub(crate) const AUMID_INSTALL_NOTE: &str = "Windows attributes a toast to an AppUserModelID that \
 resolves to a Start Menu shortcut. The installer must create \
 %APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Vitrum.lnk with its \
 System.AppUserModel.ID property set to dev.santhreal.vitrum, pointing at the \
@@ -37,7 +37,7 @@ is ever shown.";
 /// Group name for every toast this app raises, so `History` can clear them.
 const TOAST_GROUP: &str = "vitrum-sessions";
 
-pub struct ToastNotifier {
+pub(crate) struct ToastNotifier {
     handler: Arc<Mutex<Option<ActivationHandler>>>,
     /// Live toasts keyed by handle. Held because the `Activated` event stops
     /// firing once the `ToastNotification` is released.

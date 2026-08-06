@@ -31,7 +31,7 @@ struct Shared {
     handler: Mutex<Option<ThemeHandler>>,
 }
 
-pub struct PortalThemeWatcher {
+pub(crate) struct PortalThemeWatcher {
     conn: Connection,
     shared: Arc<Shared>,
     listener_started: Mutex<bool>,

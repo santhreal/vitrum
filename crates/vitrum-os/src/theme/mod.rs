@@ -24,11 +24,15 @@ mod windows;
 /// The two appearances an application has to draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Theme {
+    /// Dark text on a light background.
     Light,
+    /// Light text on a dark background. Also what [`NO_PREFERENCE_THEME`]
+    /// resolves to, so this is what an undecided user gets.
     Dark,
 }
 
 impl Theme {
+    /// Stable machine token, used in reports and tests.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Light => "light",

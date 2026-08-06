@@ -26,7 +26,7 @@ use crate::tray::{
     tray_tooltip,
 };
 
-pub struct DesktopTray {
+pub(crate) struct DesktopTray {
     icon: Option<TrayIcon>,
     handler: TrayCommandHandler,
     count: u32,

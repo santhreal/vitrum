@@ -53,7 +53,7 @@ pub fn overlay_description(count: u32) -> String {
 
 /// A value in the Unity LauncherEntry property dictionary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnityValue {
+pub(crate) enum UnityValue {
     Int64(i64),
     Bool(bool),
 }
@@ -61,7 +61,7 @@ pub enum UnityValue {
 /// `application://<desktop file>`, the URI the LauncherEntry signal is keyed
 /// by. A launcher matches it against the desktop file of the window it is
 /// showing, so it must be the file name, not a path.
-pub fn unity_app_uri() -> String {
+pub(crate) fn unity_app_uri() -> String {
     format!("application://{DESKTOP_FILE_NAME}")
 }
 
@@ -69,18 +69,18 @@ pub fn unity_app_uri() -> String {
 ///
 /// The protocol does not care about the path, only the interface and the app
 /// URI, but it must be a valid, stable, app-specific path.
-pub const UNITY_OBJECT_PATH: &str = "/com/canonical/Unity/LauncherEntry";
+pub(crate) const UNITY_OBJECT_PATH: &str = "/com/canonical/Unity/LauncherEntry";
 /// Interface carrying the `Update` signal.
-pub const UNITY_INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
+pub(crate) const UNITY_INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
 /// Well-known name whose presence means something is listening.
-pub const UNITY_BUS_NAME: &str = "com.canonical.Unity";
+pub(crate) const UNITY_BUS_NAME: &str = "com.canonical.Unity";
 
 /// Properties for the LauncherEntry `Update` signal.
 ///
 /// `count-visible` is separate from `count` on purpose: a launcher that is only
 /// sent `count = 0` keeps showing a "0" badge, so zero has to be expressed as
 /// "hide it".
-pub fn unity_properties(count: u32) -> Vec<(&'static str, UnityValue)> {
+pub(crate) fn unity_properties(count: u32) -> Vec<(&'static str, UnityValue)> {
     vec![
         ("count", UnityValue::Int64(i64::from(count))),
         ("count-visible", UnityValue::Bool(count > 0)),
@@ -114,7 +114,7 @@ pub fn register_main_window(handle: WindowHandle) {
 
 /// The registered main window, or `None` if no window has registered yet.
 #[must_use]
-pub fn main_window() -> Option<WindowHandle> {
+pub(crate) fn main_window() -> Option<WindowHandle> {
     match MAIN_WINDOW.load(Ordering::Relaxed) {
         0 => None,
         raw => Some(WindowHandle(raw)),
@@ -128,7 +128,7 @@ pub fn main_window() -> Option<WindowHandle> {
 /// fills in. Pure and two-argument so the precedence is testable without
 /// mutating process-wide state.
 #[must_use]
-pub fn resolve_window(
+pub(crate) fn resolve_window(
     explicit: Option<WindowHandle>,
     registered: Option<WindowHandle>,
 ) -> Option<WindowHandle> {

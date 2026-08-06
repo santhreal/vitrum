@@ -34,6 +34,8 @@
 //! activation listener parks on a socket read; the single-instance listener
 //! parks in `accept`. There is no timer anywhere in this crate.
 
+#![deny(missing_docs)]
+
 pub mod badge;
 pub mod branding;
 pub mod capability;

@@ -37,9 +37,9 @@ mod windows;
 
 /// Longest notification title. Past this every desktop truncates anyway, and
 /// truncating here means the ellipsis lands where we chose it to.
-pub const MAX_TITLE_CHARS: usize = 72;
+pub(crate) const MAX_TITLE_CHARS: usize = 72;
 /// Longest notification body.
-pub const MAX_BODY_CHARS: usize = 240;
+pub(crate) const MAX_BODY_CHARS: usize = 240;
 
 /// Which of the three moments this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -82,6 +82,8 @@ impl NotificationKind {
         format!("x-{APP_NAME}.session.{leaf}")
     }
 
+    /// Stable machine token, used in reports and tests. Hyphenated, unlike
+    /// the prose label a user sees.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Finished => "finished",
@@ -103,8 +105,14 @@ impl fmt::Display for NotificationKind {
 /// because the concept is identical and the mapping is one match arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Urgency {
+    /// Informational. Some servers show it without a popup at all.
     Low,
+    /// A popup that expires on its own.
     Normal,
+    /// Never expires on a spec-compliant server and is exempt from
+    /// do-not-disturb. Reserved for state that blocks the agent, because a
+    /// desktop that learns to ignore these has lost the one signal that
+    /// mattered.
     Critical,
 }
 
@@ -125,6 +133,8 @@ pub struct Notification {
     /// Which session this is about. Carried through activation, so a click
     /// arrives at the handler as this id and nothing else has to be looked up.
     pub session: SessionId,
+    /// What happened. Fixes the urgency, the category and how long the popup
+    /// stays up, so no backend decides any of that for itself.
     pub kind: NotificationKind,
     /// Already sanitised and length-limited.
     pub title: String,
@@ -166,6 +176,7 @@ impl Notification {
         Self::new(NotificationKind::Failed, session, session_title, detail)
     }
 
+    /// Shorthand for the urgency implied by `kind`.
     pub fn urgency(&self) -> Urgency {
         self.kind.urgency()
     }
@@ -264,22 +275,37 @@ impl Notification {
 /// A value in the `a{sv}` hints dictionary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HintValue {
+    /// D-Bus `y`, the type the `urgency` hint is required to carry.
     Byte(u8),
+    /// D-Bus `b`, for flags such as `resident` and `transient`.
     Bool(bool),
+    /// D-Bus `i`, for the `x` and `y` positioning hints.
     Int32(i32),
+    /// D-Bus `s`, for `category`, `desktop-entry` and `sound-name`.
     Str(String),
 }
 
 /// Exactly the eight arguments of `org.freedesktop.Notifications.Notify`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbusNotifyArgs {
+    /// Sender name. Must match the desktop entry's name or the server will
+    /// not resolve the application icon.
     pub app_name: String,
+    /// Server id of a notification to update in place, or `0` to post a new
+    /// one. Updating is how a session's progress avoids stacking popups.
     pub replaces_id: u32,
+    /// A themed icon name or a file URI. Empty leaves the choice to the
+    /// server.
     pub app_icon: String,
+    /// The single line of the popup, already sanitised.
     pub summary: String,
+    /// Detail below the summary, already sanitised. Servers advertising the
+    /// `body-markup` capability parse this as markup, which is why the text
+    /// reaching here must not carry raw `<`.
     pub body: String,
     /// Flat `[key, label, key, label, ...]`, as the wire format requires.
     pub actions: Vec<String>,
+    /// The `a{sv}` dictionary, in the order it should be serialised.
     pub hints: Vec<(String, HintValue)>,
     /// Milliseconds; `0` never expires, `-1` lets the server decide.
     pub expire_timeout: i32,
@@ -314,11 +340,20 @@ impl MacInterruptionLevel {
 /// Everything the macOS backend needs, computed without touching AppKit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacNotificationPlan {
+    /// `UNNotificationRequest` identifier. Reusing one replaces the delivered
+    /// notification, the macOS equivalent of a D-Bus `replaces_id`.
     pub identifier: String,
+    /// The bold first line, already sanitised.
     pub title: String,
+    /// Detail, already sanitised. May be empty.
     pub body: String,
+    /// Groups one session's notifications into a single stack in Notification
+    /// Center instead of a run of separate rows.
     pub thread_identifier: String,
+    /// Handed back verbatim on activation. How a click finds its session
+    /// without the process keeping a side table alive.
     pub user_info: Vec<(String, String)>,
+    /// Whether this is allowed to break through Focus.
     pub interruption_level: MacInterruptionLevel,
 }
 
@@ -345,7 +380,7 @@ pub fn session_label(session: SessionId, title: &str) -> String {
 /// Handles CSI (`ESC [ ... final`), OSC and the other string-terminated
 /// sequences (`ESC ] / P / X / ^ / _ ... BEL | ESC \`), and two-character
 /// designators (`ESC ( B`). Anything else after `ESC` drops just the `ESC`.
-pub fn sanitize_pty_text(input: &str) -> String {
+pub(crate) fn sanitize_pty_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
@@ -409,7 +444,7 @@ pub fn sanitize_pty_text(input: &str) -> String {
 /// Only `&`, `<` and `>`: quotes are significant only inside a tag attribute
 /// and our bodies never contain a tag, so escaping them would show a literal
 /// `&quot;` to the user for no gain.
-pub fn escape_body_markup(s: &str) -> String {
+pub(crate) fn escape_body_markup(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -425,7 +460,7 @@ pub fn escape_body_markup(s: &str) -> String {
 /// Escape for an XML text node or a double-quoted attribute value.
 ///
 /// The toast `launch` attribute is quoted, so quotes must go too.
-pub fn escape_xml(s: &str) -> String {
+pub(crate) fn escape_xml(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

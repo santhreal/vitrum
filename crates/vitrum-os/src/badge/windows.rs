@@ -32,7 +32,7 @@ use crate::icon::render_count_icon;
 /// bitmap font.
 const OVERLAY_SIZE: u32 = 16;
 
-pub struct TaskbarOverlayBadge {
+pub(crate) struct TaskbarOverlayBadge {
     taskbar: ITaskbarList3,
     hwnd: HWND,
 }

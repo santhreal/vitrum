@@ -25,20 +25,20 @@ pub const STATE_FORMAT_VERSION: u32 = 1;
 
 /// Smallest window that is still usable: sidebar plus a terminal wide enough
 /// for 80 columns at a normal font size.
-pub const MIN_WIDTH: u32 = 720;
+pub(crate) const MIN_WIDTH: u32 = 720;
 /// Smallest usable height: tab strip plus roughly 20 terminal rows.
-pub const MIN_HEIGHT: u32 = 480;
+pub(crate) const MIN_HEIGHT: u32 = 480;
 /// Geometry for a first launch, or a restore that could not be validated.
-pub const DEFAULT_WIDTH: u32 = 1280;
+pub(crate) const DEFAULT_WIDTH: u32 = 1280;
 /// Geometry for a first launch, or a restore that could not be validated.
-pub const DEFAULT_HEIGHT: u32 = 800;
+pub(crate) const DEFAULT_HEIGHT: u32 = 800;
 /// Narrowest sidebar that still shows a session title and its status pill.
-pub const MIN_SIDEBAR_WIDTH: u32 = 180;
+pub(crate) const MIN_SIDEBAR_WIDTH: u32 = 180;
 /// Widest sidebar. Beyond this the terminal is the smaller pane, which is
 /// backwards for a terminal-first product.
-pub const MAX_SIDEBAR_WIDTH: u32 = 560;
+pub(crate) const MAX_SIDEBAR_WIDTH: u32 = 560;
 /// Terminal width the sidebar is never allowed to eat into.
-pub const MIN_CONTENT_WIDTH: u32 = 360;
+pub(crate) const MIN_CONTENT_WIDTH: u32 = 360;
 /// Sidebar width on a first launch.
 pub const DEFAULT_SIDEBAR_WIDTH: u32 = 280;
 
@@ -46,13 +46,22 @@ pub const DEFAULT_SIDEBAR_WIDTH: u32 = 280;
 /// manager reports window positions in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Monitor {
+    /// Left edge. Negative for a monitor placed left of the primary.
     pub x: i32,
+    /// Top edge. Negative for a monitor placed above the primary.
     pub y: i32,
+    /// Work area width, with panels and docks already excluded.
     pub width: u32,
+    /// Work area height, with panels and docks already excluded.
     pub height: u32,
 }
 
 impl Monitor {
+    /// Take a work area the platform already reported.
+    ///
+    /// Nothing is validated: a zero-sized rectangle is a real thing to see
+    /// while a display is being reconfigured, and rejecting it here would only
+    /// move the problem to the caller.
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
         Self { x, y, width, height }
     }
@@ -70,14 +79,22 @@ impl Monitor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowState {
+    /// Restore position, left edge. Clamped onto the monitors that exist at
+    /// load time, never trusted as written.
     pub x: i32,
+    /// Restore position, top edge. Clamped the same way as `x`.
     pub y: i32,
+    /// Restore width. Clamped on load so the window still fits a monitor.
     pub width: u32,
+    /// Restore height. Clamped on load alongside `width`.
     pub height: u32,
     /// Whether the window was maximised. The `x`/`y`/`width`/`height` above
     /// remain the *restore* geometry, which is what the window manager needs to
     /// un-maximise back onto a sane rectangle.
     pub maximized: bool,
+    /// Sidebar width in logical pixels. Clamped on load so it can never eat
+    /// into the terminal's minimum content width, however the window shrank
+    /// since it was written.
     pub sidebar_width: u32,
 }
 
@@ -186,7 +203,7 @@ fn pick_monitor<'a>(state: &WindowState, monitors: &'a [Monitor]) -> Option<&'a 
 /// When the window is too narrow to hold both minimums the terminal wins and
 /// the sidebar takes whatever is left, possibly zero. Preferring the sidebar
 /// would leave a terminal too narrow to render a prompt.
-pub fn clamp_sidebar(sidebar_width: u32, window_width: u32) -> u32 {
+pub(crate) fn clamp_sidebar(sidebar_width: u32, window_width: u32) -> u32 {
     let hi = window_width.saturating_sub(MIN_CONTENT_WIDTH).min(MAX_SIDEBAR_WIDTH);
     let lo = MIN_SIDEBAR_WIDTH.min(hi);
     sidebar_width.clamp(lo, hi)
@@ -211,11 +228,20 @@ pub enum StateLoad {
     /// No file yet. First launch.
     Missing,
     /// The file exists and the filesystem refused it.
-    Unreadable { detail: String },
+    Unreadable {
+        /// The filesystem error, verbatim.
+        detail: String,
+    },
     /// The file exists and is not valid state.
-    Corrupt { detail: String },
+    Corrupt {
+        /// What the parser objected to.
+        detail: String,
+    },
     /// Written by a newer build.
-    UnsupportedVersion { found: u32 },
+    UnsupportedVersion {
+        /// The version the file declares, higher than this build understands.
+        found: u32,
+    },
     /// Read and parsed. Not yet clamped.
     Loaded(WindowState),
 }

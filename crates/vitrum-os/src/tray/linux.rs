@@ -105,7 +105,7 @@ impl ksni::Tray for SniTray {
     }
 }
 
-pub struct SniTrayHandle {
+pub(crate) struct SniTrayHandle {
     handle: Handle<SniTray>,
 }
 

@@ -62,12 +62,15 @@ impl fmt::Display for UnavailableKind {
 /// A feature that is not usable, and precisely why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unavailable {
+    /// Which failure class this is, so a caller can choose between retrying
+    /// later and hiding the control for good.
     pub kind: UnavailableKind,
     /// What is missing, in words a maintainer can act on. Never empty.
     pub detail: String,
 }
 
 impl Unavailable {
+    /// Pair a failure class with the detail naming the exact missing piece.
     pub fn new(kind: UnavailableKind, detail: impl Into<String>) -> Self {
         Self { kind, detail: detail.into() }
     }
@@ -111,6 +114,8 @@ pub enum Support {
 }
 
 impl Support {
+    /// True only when a probe actually reached the service, never merely
+    /// because no error was raised.
     pub fn is_available(&self) -> bool {
         matches!(self, Self::Available)
     }
@@ -145,13 +150,23 @@ impl fmt::Display for Support {
 /// report can be iterated rather than hand-listed at every call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Desktop notifications for session state changes.
     Notifications,
+    /// The attention count drawn on the dock, taskbar or launcher icon.
     Badge,
+    /// The status area icon and its menu.
     Tray,
+    /// The cross-process claim that stops a second launch opening a second
+    /// window, and the handoff that gives the first one the new arguments.
     SingleInstance,
+    /// Reading the OS light/dark preference and subscribing to changes.
     Theme,
+    /// Persisting window geometry between runs and clamping it back onto
+    /// whatever monitors exist at the next launch.
     WindowState,
+    /// Handling `vitrum://` URLs opened from outside the application.
     DeepLinks,
+    /// Resolving the per-user config, data, cache and runtime directories.
     Paths,
 }
 
@@ -168,6 +183,7 @@ impl Feature {
         Feature::Paths,
     ];
 
+    /// Stable machine token, used in reports and tests.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Notifications => "notifications",
@@ -209,10 +225,12 @@ impl CapabilityReport {
         Self { entries }
     }
 
+    /// Support for one feature, or `None` when this report does not cover it.
     pub fn get(&self, feature: Feature) -> Option<&Support> {
         self.entries.iter().find(|(f, _)| *f == feature).map(|(_, s)| s)
     }
 
+    /// Every entry, in [`Feature::ALL`] order.
     pub fn iter(&self) -> impl Iterator<Item = (Feature, &Support)> {
         self.entries.iter().map(|(f, s)| (*f, s))
     }

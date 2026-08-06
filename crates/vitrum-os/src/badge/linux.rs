@@ -14,7 +14,7 @@ use crate::badge::{
 };
 use crate::capability::{Support, Unavailable};
 
-pub struct UnityBadge {
+pub(crate) struct UnityBadge {
     conn: Connection,
     app_uri: String,
 }

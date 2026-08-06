@@ -30,7 +30,7 @@ use crate::paths::{AppPaths, Platform};
 ///
 /// Well past any legitimate `vitrum://` link and short enough that a hostile
 /// megabyte-long argument costs one length check instead of a scan.
-pub const MAX_URL_LEN: usize = 2048;
+pub(crate) const MAX_URL_LEN: usize = 2048;
 
 /// Longest accepted identifier text. `u64::MAX` is 20 digits.
 const MAX_ID_DIGITS: usize = 20;
@@ -74,25 +74,49 @@ pub enum DeepLinkError {
     /// Nothing but whitespace.
     Empty,
     /// Longer than [`MAX_URL_LEN`].
-    TooLong { len: usize },
+    TooLong {
+        /// Length of the rejected URL in bytes.
+        len: usize,
+    },
     /// A control character anywhere in the URL. A NUL or an ESC in an argument
     /// is an injection attempt, never a real link.
-    ControlCharacter { at: usize },
+    ControlCharacter {
+        /// Byte offset of the first control character found.
+        at: usize,
+    },
     /// Not `vitrum:`, or no scheme at all.
-    WrongScheme { found: String },
+    WrongScheme {
+        /// The scheme as it appeared, or the whole input when there was no `:`.
+        found: String,
+    },
     /// `vitrum:` without the `//` that introduces the authority. Rejected
     /// rather than guessed, because `vitrum:session/42` and
     /// `vitrum://session/42` would otherwise both parse and only one is what
     /// the registered handlers emit.
     MissingAuthority,
     /// The authority named something that is not a known target.
-    UnknownTarget { target: String },
+    UnknownTarget {
+        /// The authority as it appeared, already lowercased.
+        target: String,
+    },
     /// A target that needs an identifier got none.
-    MissingId { target: &'static str },
+    MissingId {
+        /// The target that requires an identifier.
+        target: &'static str,
+    },
     /// The identifier was not a bare unsigned decimal that fits in `u64`.
-    InvalidId { target: &'static str, value: String },
+    InvalidId {
+        /// The target whose identifier was rejected.
+        target: &'static str,
+        /// The identifier text as received, for the operator to compare against
+        /// what the link actually contained.
+        value: String,
+    },
     /// More path segments than the target accepts.
-    TrailingSegments { target: &'static str },
+    TrailingSegments {
+        /// The target that was handed more path than it accepts.
+        target: &'static str,
+    },
 }
 
 impl fmt::Display for DeepLinkError {
@@ -247,7 +271,11 @@ pub enum RegistrationPlan {
         note: String,
     },
     /// Windows: per-user protocol registration under `HKCU\Software\Classes`.
-    RegistryValues { values: Vec<RegistryValue> },
+    RegistryValues {
+        /// The values to write, parents before children, so applying them in
+        /// order never writes under a key that does not exist yet.
+        values: Vec<RegistryValue>,
+    },
 }
 
 /// Build the registration plan for a platform without touching anything.

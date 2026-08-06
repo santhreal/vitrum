@@ -34,14 +34,14 @@ mod windows;
 
 /// Protocol banner. Bumped if the line format changes, so a mismatched pair of
 /// builds refuses rather than misreads.
-pub const ACTIVATION_PROTOCOL: &str = "vitrum-instance/1";
+pub(crate) const ACTIVATION_PROTOCOL: &str = "vitrum-instance/1";
 
 /// Longest activation message accepted, in bytes.
 ///
 /// A deep link is capped at [`deeplink::MAX_URL_LEN`]; this leaves room for the
 /// banner and the verb and nothing else, so a peer cannot make the primary
 /// allocate.
-pub const MAX_ACTIVATION_LEN: usize = deeplink::MAX_URL_LEN + 64;
+pub(crate) const MAX_ACTIVATION_LEN: usize = deeplink::MAX_URL_LEN + 64;
 
 /// What a second launch asks the first to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +78,7 @@ impl Activation {
 }
 
 /// Serialise for the handoff channel. Always ends in a newline.
-pub fn encode_activation(activation: &Activation) -> Vec<u8> {
+pub(crate) fn encode_activation(activation: &Activation) -> Vec<u8> {
     let line = match activation {
         Activation::Focus => format!("{ACTIVATION_PROTOCOL} focus\n"),
         Activation::Open(link) => format!("{ACTIVATION_PROTOCOL} open {}\n", link.to_url()),
@@ -88,7 +88,7 @@ pub fn encode_activation(activation: &Activation) -> Vec<u8> {
 
 /// Why an activation message was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActivationError {
+pub(crate) enum ActivationError {
     TooLong { len: usize },
     NotUtf8,
     WrongProtocol { found: String },
@@ -124,7 +124,7 @@ impl core::error::Error for ActivationError {}
 /// socket is reachable by anything running as this user, so a message that is
 /// not exactly one of the two known forms is a bug or a probe, and quietly
 /// treating it as "raise the window" would hide both.
-pub fn decode_activation(bytes: &[u8]) -> Result<Activation, ActivationError> {
+pub(crate) fn decode_activation(bytes: &[u8]) -> Result<Activation, ActivationError> {
     if bytes.len() > MAX_ACTIVATION_LEN {
         return Err(ActivationError::TooLong { len: bytes.len() });
     }
@@ -160,7 +160,7 @@ pub fn decode_activation(bytes: &[u8]) -> Result<Activation, ActivationError> {
 /// sandboxed `$TMPDIR` on macOS gets genuinely close, and `bind` fails with
 /// `ENAMETOOLONG` rather than truncating, which is why it is checked up front
 /// with a message naming the path.
-pub const fn unix_socket_path_limit(platform: Platform) -> usize {
+pub(crate) const fn unix_socket_path_limit(platform: Platform) -> usize {
     match platform {
         Platform::MacOs => 104,
         Platform::Linux => 108,
@@ -170,7 +170,7 @@ pub const fn unix_socket_path_limit(platform: Platform) -> usize {
 }
 
 /// Reject a socket path that will not fit in `sockaddr_un`.
-pub fn check_socket_path(platform: Platform, path: &Path) -> Result<(), SingleInstanceError> {
+pub(crate) fn check_socket_path(platform: Platform, path: &Path) -> Result<(), SingleInstanceError> {
     let limit = unix_socket_path_limit(platform);
     let len = path.as_os_str().as_encoded_bytes().len();
     // The stored path must be NUL-terminated, so the usable length is one less.
@@ -211,12 +211,28 @@ pub fn windows_pipe_name(user: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SingleInstanceError {
     /// The socket path exceeds `sockaddr_un`.
-    SocketPathTooLong { path: PathBuf, len: usize, limit: usize },
+    SocketPathTooLong {
+        /// The path that did not fit.
+        path: PathBuf,
+        /// Its length in bytes.
+        len: usize,
+        /// The platform's `sun_path` capacity.
+        limit: usize,
+    },
     /// A filesystem or syscall failure, with what was being attempted.
-    Io { context: String, detail: String },
+    Io {
+        /// What was being attempted, as a sentence fragment the message prefixes
+        /// the detail with.
+        context: String,
+        /// The underlying error text.
+        detail: String,
+    },
     /// Another instance holds the lock but did not accept the handoff. Usually
     /// means it is still starting, or wedged.
-    PrimaryUnreachable { detail: String },
+    PrimaryUnreachable {
+        /// What went wrong reaching the primary.
+        detail: String,
+    },
 }
 
 impl fmt::Display for SingleInstanceError {
@@ -238,6 +254,8 @@ impl fmt::Display for SingleInstanceError {
 impl core::error::Error for SingleInstanceError {}
 
 impl SingleInstanceError {
+    /// Classify for a capability report. Only an unreachable primary is
+    /// transient: the other two will fail the same way on a retry.
     pub fn to_unavailable(&self) -> Unavailable {
         match self {
             Self::SocketPathTooLong { .. } => Unavailable::runtime_error(self.to_string()),
@@ -264,6 +282,8 @@ pub enum Acquisition {
 }
 
 impl Acquisition {
+    /// True when this process won the race and must keep its guard alive for
+    /// the rest of its life.
     pub fn is_primary(&self) -> bool {
         matches!(self, Self::Primary(_))
     }

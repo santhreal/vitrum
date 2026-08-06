@@ -23,7 +23,7 @@ use crate::theme::{Theme, ThemeHandler, ThemeWatcher, deduplicate, theme_from_ns
 
 const CHANGE_NOTIFICATION: &str = "AppleInterfaceThemeChangedNotification";
 
-pub struct AppKitThemeWatcher {
+pub(crate) struct AppKitThemeWatcher {
     handler: Arc<Mutex<Option<ThemeHandler>>>,
     /// Token returned by `addObserverForName:`; the observer is removed when
     /// this is released, so it is held for the watcher's lifetime.

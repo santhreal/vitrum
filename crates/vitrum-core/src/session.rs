@@ -891,18 +891,25 @@ fn read_loop(
             Ok(n) => {
                 let mut bytes = &buf[..n];
                 let stripped;
+                let mut just_answered = false;
                 if awaiting_handshake {
                     if let Some(rest) = take_cursor_query(bytes) {
                         awaiting_handshake = false;
+                        just_answered = true;
                         answer_cursor_query(&input, &handshakes, &answered_nothing_since);
                         stripped = rest;
                         bytes = &stripped;
                     }
                 }
+                // The read that carried the query usually carries the host's
+                // preamble too, and forwarding that is not the host acting on an
+                // answer it has not seen yet. Only a later read acknowledges.
+                if !just_answered {
+                    answered_nothing_since.store(false, Ordering::Relaxed);
+                }
                 if bytes.is_empty() {
                     continue;
                 }
-                answered_nothing_since.store(false, Ordering::Relaxed);
                 if out.send(bytes.to_vec()).is_err() {
                     break;
                 }

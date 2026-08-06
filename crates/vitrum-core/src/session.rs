@@ -113,6 +113,13 @@ pub(crate) struct Session {
     /// honest way to show that nothing here runs on a timer: a session left
     /// alone must hold this count still forever.
     probes: AtomicU64,
+    /// How many times the pseudoconsole's startup query has been answered.
+    ///
+    /// Diagnostic, and Windows only in practice. A session that produces its
+    /// preamble and then nothing is either waiting for an answer that was never
+    /// sent or waiting for something else entirely, and those two have different
+    /// fixes. Shared with the reader thread, which is where the answer is sent.
+    handshakes: Arc<AtomicU64>,
     /// Raised when the operator does something the probe's last answer may not
     /// survive, so a settled session is re-examined without a periodic tick.
     activity: Notify,
@@ -447,6 +454,8 @@ impl SessionManager {
         // The reader answers the pseudoconsole's startup query on Windows, so
         // it needs a way back into the pty.
         let handshake_tx = input_tx.clone();
+        let handshakes = Arc::new(AtomicU64::new(0));
+        let reader_handshakes = Arc::clone(&handshakes);
 
         let info = SessionInfo {
             id,
@@ -483,6 +492,7 @@ impl SessionManager {
             viewers: Mutex::new(BTreeMap::new()),
             resizes: AtomicU64::new(0),
             probes: AtomicU64::new(0),
+            handshakes,
             activity: Notify::new(),
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(killer),
@@ -499,7 +509,16 @@ impl SessionManager {
         // shutdown wait on a read that only ends when the child exits.
         std::thread::Builder::new()
             .name(format!("vitrum-pty-read-{}", id.0))
-            .spawn(move || read_loop(reader, child, raw_tx, exit_tx, handshake_tx))
+            .spawn(move || {
+                read_loop(
+                    reader,
+                    child,
+                    raw_tx,
+                    exit_tx,
+                    handshake_tx,
+                    reader_handshakes,
+                )
+            })
             .context("starting the pty reader thread")?;
 
         std::thread::Builder::new()
@@ -723,6 +742,17 @@ impl SessionManager {
         Some(self.get(id)?.probes.load(Ordering::Relaxed))
     }
 
+    /// How many times this session answered the pseudoconsole's startup query.
+    ///
+    /// Diagnostic, and Windows only in practice. `PSEUDOCONSOLE_INHERIT_CURSOR`
+    /// makes conhost withhold the child until the cursor is reported, so a
+    /// session that produced its preamble and then stopped is a different fault
+    /// depending on whether this is zero or one: nothing answered, or something
+    /// answered and the host wanted more than an answer.
+    pub fn handshake_count(&self, id: SessionId) -> Option<u64> {
+        Some(self.get(id)?.handshakes.load(Ordering::Relaxed))
+    }
+
     /// Process id of this session's child, while that child is still live.
     ///
     /// `None` covers three distinct cases and deliberately collapses them,
@@ -832,6 +862,7 @@ fn read_loop(
     out: mpsc::UnboundedSender<Vec<u8>>,
     exit: oneshot::Sender<Option<i32>>,
     input: mpsc::UnboundedSender<Vec<u8>>,
+    handshakes: Arc<AtomicU64>,
 ) {
     if let Err(e) = std::thread::Builder::new()
         .name("vitrum-pty-wait".to_string())
@@ -861,6 +892,7 @@ fn read_loop(
                     if let Some(rest) = take_cursor_query(bytes) {
                         awaiting_handshake = false;
                         let _ = input.send(CONPTY_CURSOR_REPLY.to_vec());
+                        handshakes.fetch_add(1, Ordering::Relaxed);
                         stripped = rest;
                         bytes = &stripped;
                     }

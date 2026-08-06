@@ -24,7 +24,7 @@ use crate::{OutputChunk, SessionManager, SessionSpec};
 /// taken twenty, with the difference being how long a shell waits to be
 /// scheduled, so a ten second bound was measuring the runner rather than the
 /// product.
-pub(crate) const DEADLINE: Duration = Duration::from_secs(90);
+pub(crate) const DEADLINE: Duration = Duration::from_secs(30);
 
 /// Window used by negative assertions ("nothing should arrive"). Deliberately
 /// short because it is a bound on absence, not a wait for a result.
@@ -295,8 +295,9 @@ pub(crate) async fn settled(
         }
         assert!(
             Instant::now() < deadline,
-            "session {} never settled (head {head}): {:?}",
+            "session {} never settled (head {head}, handshakes {:?}): {:?}",
             id.0,
+            mgr.handshake_count(id),
             String::from_utf8_lossy(&bytes)
         );
         previous = Some(head);

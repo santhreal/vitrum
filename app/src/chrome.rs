@@ -203,7 +203,7 @@ pub(crate) fn window_config(
     scale: f64,
     os_scale: f64,
 ) -> Config {
-    Config::new()
+    let config = Config::new()
         .with_window(window_builder(state, scale, os_scale))
         .with_custom_head(document_head(opts).to_string())
         // A terminal shell has no use for a File/Edit/View menu, and on Linux
@@ -218,9 +218,29 @@ pub(crate) fn window_config(
             (0, 0, 0, 0)
         } else {
             (6, 6, 8, 255)
-        })
-        .with_custom_protocol("vitrum-backdrop".to_string(), backdrop_protocol)
+        });
+
+    // The scheme is registered exactly once for the process, not once per
+    // window, and the second window is the one that proves it: every webview
+    // is built from one leaked `WebContext` (`vendor/src/webview.rs`,
+    // `shared_web_context`), a custom scheme belongs to the context rather
+    // than the webview, and registering the same name twice against it is a
+    // hard `DuplicateCustomProtocol` error. Attaching this to every config
+    // panicked the moment a second window opened. The vendored fork already
+    // guards its own `dioxus` scheme this way.
+    //
+    // Registering once is not a workaround: `backdrop_protocol` is a free
+    // function that resolves the path out of the URL, so it holds nothing
+    // window-specific, and the context outlives every window it serves.
+    if BACKDROP_SCHEME_REGISTERED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return config;
+    }
+    config.with_custom_protocol("vitrum-backdrop".to_string(), backdrop_protocol)
 }
+
+/// Whether this process has already registered the `vitrum-backdrop` scheme.
+static BACKDROP_SCHEME_REGISTERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Serve the operator's backdrop image to the document.
 ///

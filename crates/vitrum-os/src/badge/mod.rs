@@ -18,6 +18,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Only `unity_app_uri` needs this, and that is gated to the same platforms.
+#[cfg(any(target_os = "linux", test))]
 use crate::branding::DESKTOP_FILE_NAME;
 use crate::capability::{Support, Unavailable};
 
@@ -51,7 +53,14 @@ pub fn overlay_description(count: u32) -> String {
     }
 }
 
+// The LauncherEntry protocol below is Linux-only: `badge/linux.rs` is its only
+// caller, and a Windows or macOS build has no launcher that speaks it. `test`
+// is in each cfg because the wire contract is asserted on every platform, and
+// a D-Bus name that only gets checked on Linux is a name that drifts on the
+// day someone edits it from a Mac.
+
 /// A value in the Unity LauncherEntry property dictionary.
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnityValue {
     Int64(i64),
@@ -61,6 +70,7 @@ pub(crate) enum UnityValue {
 /// `application://<desktop file>`, the URI the LauncherEntry signal is keyed
 /// by. A launcher matches it against the desktop file of the window it is
 /// showing, so it must be the file name, not a path.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn unity_app_uri() -> String {
     format!("application://{DESKTOP_FILE_NAME}")
 }
@@ -69,10 +79,13 @@ pub(crate) fn unity_app_uri() -> String {
 ///
 /// The protocol does not care about the path, only the interface and the app
 /// URI, but it must be a valid, stable, app-specific path.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const UNITY_OBJECT_PATH: &str = "/com/canonical/Unity/LauncherEntry";
 /// Interface carrying the `Update` signal.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const UNITY_INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
 /// Well-known name whose presence means something is listening.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const UNITY_BUS_NAME: &str = "com.canonical.Unity";
 
 /// Properties for the LauncherEntry `Update` signal.
@@ -80,6 +93,7 @@ pub(crate) const UNITY_BUS_NAME: &str = "com.canonical.Unity";
 /// `count-visible` is separate from `count` on purpose: a launcher that is only
 /// sent `count = 0` keeps showing a "0" badge, so zero has to be expressed as
 /// "hide it".
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn unity_properties(count: u32) -> Vec<(&'static str, UnityValue)> {
     vec![
         ("count", UnityValue::Int64(i64::from(count))),

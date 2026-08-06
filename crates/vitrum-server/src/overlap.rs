@@ -66,6 +66,13 @@ pub type Publish = Arc<dyn Fn(ServerMsg) + Send + Sync>;
 /// grow this map without limit. Dropping the oldest is right because a
 /// collision is about recent concurrent work, and a file nobody has touched
 /// in a thousand writes is not being fought over now.
+//
+// Gated with the write tracking below: only the inotify reader records writes,
+// so on a platform with no watcher this bound bounds nothing and the compiler
+// is right to say so. `test` is in the cfg because the eviction rule is tested
+// everywhere, and a bound that is only exercised on one platform is a bound
+// that breaks on the others.
+#[cfg(any(target_os = "linux", test))]
 const PATHS_PER_SESSION: usize = 512;
 
 /// How long a write stays eligible to be a collision, in milliseconds.
@@ -89,6 +96,7 @@ struct Watched {
     id: SessionId,
     root: PathBuf,
     /// The PTY child. Its descendants are what actually write.
+    #[cfg(any(target_os = "linux", test))]
     pid: u32,
     /// Path to this session's writes on it. Bounded by [`PATHS_PER_SESSION`].
     writes: HashMap<PathBuf, Write>,
@@ -96,7 +104,11 @@ struct Watched {
     unattributed: u64,
 }
 
-/// The live watcher: an inotify fd, its watch descriptors, and the sessions.
+/// The live watcher: the sessions, and on Linux an inotify fd and its watch
+/// descriptors. The two inotify fields are `cfg`-gated because a watch
+/// descriptor is an inotify concept: carrying them everywhere obliged every
+/// platform that has no watcher to invent values for them, and the Windows
+/// build failed to compile rather than doing so.
 struct Watcher {
     /// Set false to make the reader thread exit at its next wake.
     running: Arc<AtomicBool>,
@@ -108,8 +120,10 @@ struct Watcher {
     /// a client that subscribes on connect subscribes before any session
     /// exists: the set would be empty for the life of the daemon and nothing
     /// would ever be detected. The reader thread owns the other handle.
+    #[cfg(target_os = "linux")]
     adder: Option<Arc<std::fs::File>>,
     /// Watch descriptor to the directory it watches, shared with the reader.
+    #[cfg(target_os = "linux")]
     wds: Arc<Mutex<std::collections::HashMap<i32, PathBuf>>>,
 }
 
@@ -123,6 +137,7 @@ struct Tracked {
 
 impl Tracked {
     /// Record a write to `path`, credited to `id`.
+    #[cfg(any(target_os = "linux", test))]
     fn record(&mut self, id: SessionId, path: &Path, now_ms: u64, credit: Credit) {
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else {
             return;
@@ -158,6 +173,7 @@ impl Tracked {
     }
 
     /// Count a change nobody could be credited with.
+    #[cfg(any(target_os = "linux", test))]
     fn unattributed(&mut self, root: &Path) {
         if let Some(s) = self.sessions.iter_mut().find(|s| s.root == root) {
             s.unattributed = s.unattributed.saturating_add(1);
@@ -293,7 +309,7 @@ impl OverlapService {
     /// to the compiler and to every pure-function test in this file. It
     /// shipped broken exactly once, because a client subscribes on connect and
     /// therefore subscribes before any session exists.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     #[must_use]
     pub fn watch_count(&self) -> usize {
         self.inner

@@ -268,3 +268,47 @@ fn the_capture_list_covers_every_variable_resolution_reads() {
     // means the loop above tested nothing.
     assert!(checked > 0, "no directory variable was set, so nothing was verified");
 }
+#[test]
+fn normalize_path_resolves_dots_and_redundant_slashes() {
+    use crate::paths::normalize_path;
+    use std::path::PathBuf;
+
+    assert_eq!(
+        normalize_path("/foo/bar/./baz/../qux"),
+        PathBuf::from("/foo/bar/qux")
+    );
+    assert_eq!(
+        normalize_path("a/b/c/../../d"),
+        PathBuf::from("a/d")
+    );
+    assert_eq!(
+        normalize_path("./foo/bar/.."),
+        PathBuf::from("foo")
+    );
+}
+
+#[test]
+fn fast_path_buf_inline_and_spill_operations() {
+    use crate::paths::{FastPathBuf, PreallocatedPathPool};
+    use std::path::{Path, PathBuf};
+
+    let mut buf = FastPathBuf::new();
+    buf.push("usr");
+    buf.push("local");
+    buf.push("bin");
+
+    assert_eq!(buf.as_path(), Path::new("usr/local/bin"));
+
+    buf.normalize_in_place();
+    assert_eq!(buf.to_path_buf(), PathBuf::from("usr/local/bin"));
+
+    // Test pooling
+    let mut pool = PreallocatedPathPool::new();
+    let mut acquired = pool.acquire();
+    acquired.push("var/log/syslog");
+    assert_eq!(acquired.as_path(), Path::new("var/log/syslog"));
+
+    pool.release(acquired);
+    let reacquired = pool.acquire();
+    assert_eq!(reacquired.as_path(), Path::new(""));
+}

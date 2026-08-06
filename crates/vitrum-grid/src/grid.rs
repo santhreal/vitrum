@@ -539,8 +539,7 @@ impl CellGrid {
     /// bottom of the region with `fill`.
     ///
     /// `count == 0` is a no-op and records no damage. A `count` at or beyond the
-    /// region height clears the whole region. The move is a single
-    /// `copy_within` on the flat cell array; nothing is allocated.
+    /// region height clears the whole region.
     ///
     /// # Errors
     ///
@@ -553,7 +552,30 @@ impl CellGrid {
         count: u16,
         fill: Cell,
     ) -> Result<(), GridError> {
-        self.scroll(top, bottom, count, fill, true)
+        if top > bottom || bottom >= self.rows {
+            return Err(GridError::InvalidRegion { top, bottom });
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let height = bottom - top + 1;
+        let w = self.cols as usize;
+        let count_usize = (count as usize).min(height as usize);
+        let top_u = top as usize;
+        let bottom_u = bottom as usize;
+
+        self.row_slots[top_u..=bottom_u].rotate_left(count_usize);
+        let vacated_start = (bottom_u + 1).saturating_sub(count_usize);
+        for r in vacated_start..=bottom_u {
+            let phys_row = self.row_slots[r];
+            let base = phys_row * w;
+            self.cells[base..base + w].fill(fill);
+        }
+
+        for row in top..=bottom {
+            self.damage[row as usize].extend(0, self.cols);
+        }
+        Ok(())
     }
 
     /// Move rows `top..=bottom` down by `count`, filling the vacated rows at the
@@ -570,17 +592,6 @@ impl CellGrid {
         count: u16,
         fill: Cell,
     ) -> Result<(), GridError> {
-        self.scroll(top, bottom, count, fill, false)
-    }
-
-    fn scroll(
-        &mut self,
-        top: u16,
-        bottom: u16,
-        count: u16,
-        fill: Cell,
-        up: bool,
-    ) -> Result<(), GridError> {
         if top > bottom || bottom >= self.rows {
             return Err(GridError::InvalidRegion { top, bottom });
         }
@@ -593,22 +604,12 @@ impl CellGrid {
         let top_u = top as usize;
         let bottom_u = bottom as usize;
 
-        if up {
-            self.row_slots[top_u..=bottom_u].rotate_left(count_usize);
-            let vacated_start = (bottom_u + 1).saturating_sub(count_usize);
-            for r in vacated_start..=bottom_u {
-                let phys_row = self.row_slots[r];
-                let base = phys_row * w;
-                self.cells[base..base + w].fill(fill);
-            }
-        } else {
-            self.row_slots[top_u..=bottom_u].rotate_right(count_usize);
-            let vacated_end = top_u + count_usize - 1;
-            for r in top_u..=vacated_end {
-                let phys_row = self.row_slots[r];
-                let base = phys_row * w;
-                self.cells[base..base + w].fill(fill);
-            }
+        self.row_slots[top_u..=bottom_u].rotate_right(count_usize);
+        let vacated_end = top_u + count_usize - 1;
+        for r in top_u..=vacated_end {
+            let phys_row = self.row_slots[r];
+            let base = phys_row * w;
+            self.cells[base..base + w].fill(fill);
         }
 
         for row in top..=bottom {

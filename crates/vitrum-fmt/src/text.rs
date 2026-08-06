@@ -44,14 +44,7 @@ pub fn cluster_width(cluster: &str) -> usize {
 #[must_use]
 pub fn display_width(text: &str) -> usize {
     if text.is_ascii() {
-        let bytes = text.as_bytes();
-        let mut width = 0;
-        for &b in bytes {
-            if b >= 0x20 && b != 0x7F {
-                width += 1;
-            }
-        }
-        return width;
+        return text.bytes().filter(|&b| b >= 0x20 && b != 0x7F).count();
     }
     text.graphemes(true).map(cluster_width).sum()
 }

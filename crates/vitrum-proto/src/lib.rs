@@ -694,6 +694,128 @@ mod tests {
         assert_eq!(checked, 7, "the set of internal dependencies changed");
     }
 
+    /// The publish list must name every crate AFTER the crates it depends on.
+    ///
+    /// This is the half the count above cannot see. `cargo publish` resolves a
+    /// crate's dependencies from the registry and nowhere else, so publishing
+    /// `vitrum` before `vitrum-proto` does not fail late or produce a broken
+    /// crate: it fails on the first upload, having already released whatever
+    /// came before it at a version crates.io will never hand back. The order is
+    /// the only part of a release that cannot be corrected afterwards.
+    ///
+    /// Proven locally as well: `cargo package -p vitrum` fails today with "no
+    /// matching package named `vitrum-dioxus-desktop` found", because the fork
+    /// is not on the registry yet. That is the same failure, one crate early.
+    ///
+    /// The graph is read from `path` dependencies rather than from names, so a
+    /// dependency renamed on the way in, as `portable-pty` is, still counts.
+    #[test]
+    fn the_publish_list_names_a_crate_after_everything_it_depends_on() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("the crate sits two levels under the workspace root");
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml"))
+            .expect("the workspace manifest is readable");
+
+        // Every member directory, and the package name it publishes under.
+        let dirs: Vec<String> = manifest
+            .split("members = [")
+            .nth(1)
+            .and_then(|rest| rest.split_once(']'))
+            .expect("the workspace lists members")
+            .0
+            .lines()
+            .filter_map(|l| l.split('"').nth(1))
+            .map(str::to_string)
+            .collect();
+        let package_of = |dir: &str| -> String {
+            let text = std::fs::read_to_string(root.join(dir).join("Cargo.toml"))
+                .unwrap_or_else(|e| panic!("member {dir} has no manifest: {e}"));
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix("name = "))
+                .map(|n| n.trim().trim_matches('"').to_string())
+                .unwrap_or_else(|| panic!("member {dir} declares no package name"))
+        };
+
+        // `dir -> package` for members, and `path -> package` so a workspace
+        // dependency can be resolved to the member it points at.
+        let by_dir: Vec<(String, String)> =
+            dirs.iter().map(|d| (d.clone(), package_of(d))).collect();
+
+        // The workspace declares every internal dependency once, by path. The
+        // key a member writes may differ from the package name.
+        let mut key_to_package: Vec<(String, String)> = Vec::new();
+        for line in manifest.lines() {
+            let Some((key, rest)) = line.split_once(" = {") else {
+                continue;
+            };
+            let Some(path) = rest.split("path = \"").nth(1).and_then(|r| r.split('"').next())
+            else {
+                continue;
+            };
+            if let Some((_, package)) = by_dir.iter().find(|(dir, _)| dir == path) {
+                key_to_package.push((key.trim().to_string(), package.clone()));
+            }
+        }
+        assert!(
+            !key_to_package.is_empty(),
+            "no internal path dependencies were found, so this test proves nothing"
+        );
+
+        // What each member depends on, as package names.
+        let mut edges: Vec<(String, String)> = Vec::new();
+        for (dir, package) in &by_dir {
+            let text = std::fs::read_to_string(root.join(dir).join("Cargo.toml"))
+                .expect("a member manifest just read is still readable");
+            for line in text.lines() {
+                let key = line
+                    .trim()
+                    .split_once(".workspace")
+                    .or_else(|| line.trim().split_once(" = {"))
+                    .map(|(k, _)| k.trim());
+                let Some(key) = key else { continue };
+                if let Some((_, dep)) = key_to_package.iter().find(|(k, _)| k == key) {
+                    edges.push((package.clone(), dep.clone()));
+                }
+            }
+        }
+
+        let workflow = std::fs::read_to_string(root.join(".github/workflows/publish.yml"))
+            .expect("the publish workflow is readable");
+        let order: Vec<String> = workflow
+            .split("for c in ")
+            .nth(1)
+            .and_then(|rest| rest.split_once("; do"))
+            .expect("the first publish loop closes")
+            .0
+            .split_whitespace()
+            .filter(|w| *w != "\\")
+            .map(str::to_string)
+            .collect();
+        let position = |name: &str| order.iter().position(|c| c == name);
+
+        for (crate_name, dep) in &edges {
+            let Some(at) = position(crate_name) else {
+                // The count test owns coverage; a member that opts out of
+                // publishing has no position and nothing to order.
+                continue;
+            };
+            let Some(dep_at) = position(dep) else {
+                panic!(
+                    "{crate_name} depends on {dep}, which publish.yml never publishes, \
+                     so {crate_name} cannot resolve it from the registry"
+                );
+            };
+            assert!(
+                dep_at < at,
+                "publish.yml publishes {crate_name} at position {at} but its dependency \
+                 {dep} at {dep_at}; the release fails on {crate_name} with the earlier \
+                 crates already uploaded and their versions gone: {order:?}"
+            );
+        }
+    }
+
     /// Every workspace member must be in both publish lists, in one order.
     ///
     /// `cargo publish` resolves each crate's dependencies from the registry, so

@@ -308,9 +308,27 @@ fn scan_one(
     let mut draining = false;
     let mut global_cap_reached = false;
 
+    let chunk_possible: Vec<bool> = haystack
+        .chunks
+        .iter()
+        .map(|chunk| matcher.is_possible_match(chunk))
+        .collect();
+
     for span in Lines::new(haystack.chunks) {
         results.lines_scanned += 1;
         scanned_to = (span.offset + span.len as u64 + 1).min(total);
+
+        // Chunk prefilter: skip line materialization, stripping, and matching for non-matching chunks.
+        let (chunk_idx, _) = view.locate(span.offset).unwrap_or((0, 0));
+        if state.pending.is_empty() && !chunk_possible.get(chunk_idx).copied().unwrap_or(true) {
+            if context_before > 0 {
+                if state.before.len() == context_before {
+                    state.before.pop_front();
+                }
+                state.before.push_back(span);
+            }
+            continue;
+        }
 
         let bytes = view.materialize(span, &mut state.join);
 
@@ -334,16 +352,6 @@ fn scan_one(
         if draining {
             if state.pending.is_empty() {
                 break;
-            }
-            continue;
-        }
-        // SIMD prefilter: skip stripping and matching if the line cannot match.
-        if state.pending.is_empty() && !matcher.is_possible_match(bytes) {
-            if context_before > 0 {
-                if state.before.len() == context_before {
-                    state.before.pop_front();
-                }
-                state.before.push_back(span);
             }
             continue;
         }

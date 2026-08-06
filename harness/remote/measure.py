@@ -15,6 +15,13 @@ same two numbers GOAL.md's table is built from:
         wall-clock window, as a percentage of ONE core. A twenty-window client
         that wakes on nothing should read hundredths of a percent.
 
+  footprint
+        The same sum as `pss` for a tree, but labelled, and falling back to
+        RSS for the whole tree when any process in it will not give up
+        `smaps_rollup`. The bench comparison needs it because it measures a
+        foreign product as well as this one, and cannot assume the kernel
+        answers for both.
+
 Both walk the tree by ppid at the moment of the call. A process that starts or
 exits inside a CPU window is reported by name rather than silently folded in,
 because "the tree changed under the measurement" is the single most common way
@@ -100,6 +107,26 @@ def pss_kb(pid):
     except OSError:
         return None
     return None
+
+
+def rss_kb(pid):
+    """VmRSS for `pid` in kB, or None if it is gone.
+
+    The fallback for a host or a process where `smaps_rollup` cannot be read.
+    It is a worse number than Pss and must never be mixed with one in a total:
+    RSS charges a shared page to every process mapping it, so a tree sharing
+    one renderer reads far higher than it costs. `cmd_footprint` therefore
+    picks one metric for the whole tree and labels it.
+    """
+    try:
+        with open(f"/proc/{pid}/status", "rb") as fh:
+            for line in fh:
+                if line.startswith(b"VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
+
 
 
 def mb(kb):
@@ -241,13 +268,84 @@ def cmd_cpu(root, seconds):
     print(f"pss {mb(pss0):.1f} MB -> {mb(pss1):.1f} MB   (drift {mb(pss1 - pss0):+.1f} MB)")
 
 
+def cmd_footprint(root, label):
+    """One labelled memory total for a whole process tree, PSS or RSS.
+
+    `pss` exists for the vitrum client, whose tree the harness knows. This
+    exists for the comparison in `rig.sh bench`, which measures a foreign
+    product too and cannot assume its kernel will hand over `smaps_rollup` for
+    every process in it. So the metric is decided by what the tree actually
+    yielded and printed next to the number, rather than assumed.
+
+    One metric for the whole tree, never a mixture. A total of Pss for the
+    processes that allowed it and RSS for the rest is not a quantity, and the
+    comparison it feeds is the entire point of the run.
+    """
+    table = all_procs()
+    pids = tree(root, table)
+    if not pids:
+        sys.exit(f"measure: no process {root}")
+
+    seen = []
+    missing = []
+    for pid in pids:
+        pss = pss_kb(pid)
+        rss = rss_kb(pid)
+        if rss is None and pss is None:
+            missing.append((pid, table[pid][1]))
+            continue
+        seen.append((pid, table[pid][1], pss, rss))
+
+    metric = "pss" if seen and all(pss is not None for _, _, pss, _ in seen) else "rss"
+    rows = []
+    for pid, comm, pss, rss in seen:
+        kb = pss if metric == "pss" else rss
+        if kb is None:
+            missing.append((pid, comm))
+            continue
+        rows.append((pid, comm, kb))
+    total = sum(kb for _, _, kb in rows)
+
+    rows.sort(key=lambda r: -r[2])
+    for pid, comm, kb in rows:
+        print(f"  {pid:>8}  {comm:<24} {mb(kb):>9.1f} MB")
+    for pid, comm in missing:
+        print(f"  {pid:>8}  {comm:<24}   unreadable (exited or zombie)")
+
+    kinds = {}
+    for _, comm, kb in rows:
+        acc = kinds.setdefault(comm, [0, 0])
+        acc[0] += 1
+        acc[1] += kb
+    print()
+    for comm in sorted(kinds):
+        count, kb = kinds[comm]
+        print(f"  {comm:<24} x{count:<3} {mb(kb):>9.1f} MB")
+    print()
+    if metric == "rss":
+        print("  metric is RSS: at least one process would not give up smaps_rollup,")
+        print("  and a shared page is charged to every process mapping it, so this")
+        print("  total is an upper bound rather than the cost of the tree")
+    for pid, comm in strays(set(pids), table):
+        print(f"  WARNING {pid} {comm} looks like ours and is NOT in this tree")
+    print(f"machine {machine()}")
+    # Parsed by rig.sh to build the comparison, so the shape is fixed.
+    print(f"footprint {label} metric={metric} processes={len(rows)} total_kb={total}")
+    print(f"{metric} {mb(total):.1f} MB across {len(rows)} process(es)")
+
+
 def main(argv):
     if len(argv) >= 3 and argv[1] == "pss":
         cmd_pss(int(argv[2]))
     elif len(argv) >= 4 and argv[1] == "cpu":
         cmd_cpu(int(argv[2]), float(argv[3]))
+    elif len(argv) >= 4 and argv[1] == "footprint":
+        cmd_footprint(int(argv[2]), argv[3])
     else:
-        sys.exit("usage: measure.py pss <pid> | measure.py cpu <pid> <seconds>")
+        sys.exit(
+            "usage: measure.py pss <pid> | measure.py cpu <pid> <seconds>"
+            " | measure.py footprint <pid> <label>"
+        )
 
 
 if __name__ == "__main__":

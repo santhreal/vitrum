@@ -20,6 +20,8 @@ static DOM_HANDLE_VTABLE: RawWakerVTable = RawWakerVTable::new(
     drop_raw,
 );
 
+// SAFETY: `ptr` is always an `Arc<DomHandle>` produced by `Arc::into_raw` /
+// `clone_raw`. These four vtable entries uphold the `RawWaker` contract.
 unsafe fn clone_raw(ptr: *const ()) -> RawWaker {
     Arc::increment_strong_count(ptr as *const DomHandle);
     RawWaker::new(ptr, &DOM_HANDLE_VTABLE)
@@ -49,5 +51,8 @@ pub fn tao_waker(proxy: EventLoopProxy<UserWindowEvent>, id: WindowId) -> Waker 
     let handle = Arc::new(DomHandle { id, proxy });
     let ptr = Arc::into_raw(handle) as *const ();
     let raw_waker = RawWaker::new(ptr, &DOM_HANDLE_VTABLE);
+    // SAFETY: `DOM_HANDLE_VTABLE` matches `RawWaker` contracts: clone bumps the
+    // `Arc`, wake/wake_by_ref send exactly one poll event, and drop releases the
+    // `Arc`. The pointer is the value produced by `Arc::into_raw`.
     unsafe { Waker::from_raw(raw_waker) }
 }

@@ -79,6 +79,8 @@ impl WryQueue {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<()> {
         let mut self_mut = self.inner.borrow_mut();
+        // SAFETY: `server_location_changed_future` stays in this struct field
+        // for the duration of the poll. It is only replaced after Ready.
         let poll = unsafe { Pin::new_unchecked(&mut self_mut.server_location_changed_future) }
             .poll(cx);
         if poll.is_ready() {
@@ -491,6 +493,12 @@ pub(crate) struct OwnedNotifyFuture {
 
 impl OwnedNotifyFuture {
     pub(crate) fn new(notify: Arc<Notify>) -> Self {
+        // SAFETY: `Notified` borrows from `notify`. We immediately store that
+        // same `Arc<Notify>` in `_notify`, and field drop order drops `notified`
+        // before `_notify`, so the borrowed `Notify` outlives `Notified`.
+        // The `'static` transmute only erases the lifetime the compiler cannot
+        // express for this self-referential pair; it does not extend the
+        // allocation beyond `_notify`.
         let notified = unsafe {
             std::mem::transmute::<
                 tokio::sync::futures::Notified<'_>,
@@ -509,12 +517,16 @@ impl Future for OwnedNotifyFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        // SAFETY: we never move `self` after pinning; `Notified` is only
+        // re-pinned from this stable field address.
         let this = unsafe { self.get_unchecked_mut() };
         if !this.yielded {
             this.yielded = true;
             cx.waker().wake_by_ref();
             return std::task::Poll::Pending;
         }
+        // SAFETY: `this.notified` is never moved while polled; it lives in a
+        // struct field that is only replaced after a Ready poll completes.
         unsafe { Pin::new_unchecked(&mut this.notified) }.poll(cx)
     }
 }

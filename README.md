@@ -137,8 +137,35 @@ Run it in place to check the build before installing anything:
 
 ## Install
 
-`vitrum` and `vitrum-server` must end up in the same directory, because `vitrum`
-looks for the daemon beside itself first and then on `PATH`.
+One paste. Pick your platform.
+
+### Linux
+
+```sh
+mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-unknown-linux-gnu.tar.gz" | tar xz -C ~/.local/bin && vitrum
+```
+
+### macOS
+
+```sh
+mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz" | tar xz -C ~/.local/bin && vitrum
+```
+
+### Windows (PowerShell)
+
+```powershell
+$b="$env:LOCALAPPDATA\Programs\vitrum"; mkdir -Force $b >$null; $v=(irm https://api.github.com/repos/santhreal/vitrum/releases/latest).tag_name.TrimStart('v'); iwr "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-pc-windows-msvc.tar.gz" -OutFile "$b\v.tgz"; tar xzf "$b\v.tgz" -C $b; del "$b\v.tgz"; [Environment]::SetEnvironmentVariable('Path',"$([Environment]::GetEnvironmentVariable('Path','User'));$b",'User'); & "$b\vitrum.exe"
+```
+
+If `vitrum` is not found afterwards, `~/.local/bin` is not on your `PATH` (or on
+Windows, open a new terminal).
+
+Requires a WebKit runtime, which is the only system dependency. Debian and
+Ubuntu: `sudo apt install libwebkit2gtk-4.1`. Fedora: `sudo dnf install
+webkit2gtk4.1`. Arch: `sudo pacman -S webkit2gtk-4.1`. macOS and Windows ship
+one.
+
+Update in place with `vitrum update`.
 
 ### From crates.io
 
@@ -146,24 +173,15 @@ looks for the daemon beside itself first and then on `PATH`.
 cargo install vitrum vitrum-server
 ```
 
-Both names in one command, because installing only `vitrum` gives you a client
-with no daemon to talk to. Cargo puts them both in `~/.cargo/bin`, which
-satisfies the beside-itself rule above.
+Builds from source, so it needs the development packages listed under
+[Requirements](#requirements). Both names in one command: `vitrum` looks for the
+daemon beside itself, so a client without `vitrum-server` has nothing to talk
+to.
 
-This builds a webview client from source, so it needs the same system
-development packages as a repository build: see [Build](#build). It gives you
-no launcher entry and no icon. The platform blocks below do, and they are the
-better choice on a desktop.
+### Desktop entry and icon
 
-### From a repository build
-
-Each block below is one paste. Run it from the repository root after building.
-Each one puts the binaries on your `PATH`, adds a launcher entry and a `vu`
-shortcut for `vitrum update`, and prints what it did.
-
-The build directory is read from cargo rather than assumed to be
-`target/release`, so the paste also works if you have `CARGO_TARGET_DIR` or a
-`build.target-dir` set.
+The pastes above install the command. These add a launcher entry, an icon, and a
+`vu` shortcut for `vitrum update`. Run from a repository checkout.
 
 ### Linux
 

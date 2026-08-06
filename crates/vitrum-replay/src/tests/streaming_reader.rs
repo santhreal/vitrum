@@ -1,7 +1,7 @@
 use crate::asciicast::{EventRef, StreamingReader, read};
 
 #[test]
-fn test_streaming_reader_zero_alloc() {
+fn streaming_reader_emits_borrowed_event_refs() {
     let text = "{\"version\":2,\"width\":80,\"height\":24}\n\
                 [0.000000, \"o\", \"hello\"]\n\
                 [0.500000, \"m\", \"chapter 1\"]\n\
@@ -49,7 +49,7 @@ fn test_streaming_reader_zero_alloc() {
 }
 
 #[test]
-fn test_streaming_reader_matches_read_roundtrip() {
+fn read_uses_streaming_reader_for_escaped_output() {
     let text = "{\"version\":2,\"width\":80,\"height\":24}\n\
                 [0.000000, \"o\", \"hello \\u001b[32mworld\\u001b[0m\\r\\n\"]\n\
                 [0.500000, \"m\", \"start\"]\n";

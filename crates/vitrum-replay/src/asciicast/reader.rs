@@ -151,7 +151,7 @@ impl Recording {
     }
 }
 
-/// A zero-allocation reference to a parsed event line in an asciicast stream.
+/// Borrowed view of one parsed event line from an asciicast stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventRef<'a> {
     /// Output event ("o"). `micros` is timestamp, `raw_data` is string body.
@@ -195,7 +195,7 @@ pub enum EventRef<'a> {
     },
 }
 
-/// Zero-allocation streaming event reader over an asciicast v2 text recording.
+/// Streaming event reader over an asciicast v2 text recording.
 #[derive(Debug, Clone)]
 pub struct StreamingReader<'a> {
     lines: core::str::Lines<'a>,
@@ -297,7 +297,7 @@ impl<'a> Iterator for StreamingReader<'a> {
     }
 }
 
-/// Parse an asciicast v2 recording using zero-allocation streaming event reader.
+/// Parse an asciicast v2 recording via [`StreamingReader`].
 pub fn read(text: &str) -> Result<Recording, CastError> {
     let reader = StreamingReader::new(text)?;
     let header = reader.header().clone();
@@ -416,7 +416,6 @@ fn parse_event_ref<'a>(line: &'a str, number: usize, buf: &mut Vec<u8>) -> Resul
 
     Ok((micros, code, data_body))
 }
-
 
 /// The text between the next pair of quotes, escapes left intact.
 ///

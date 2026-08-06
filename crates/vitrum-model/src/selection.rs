@@ -12,34 +12,10 @@
 //! narrowing a range by repeated shift-clicks pivots around the row you started
 //! on rather than the row you touched last.
 
-use vitrum_proto::SessionId;
 use std::collections::BTreeSet;
+
+use vitrum_proto::SessionId;
 use serde::{Deserialize, Serialize};
-
-#[derive(Default)]
-pub struct FxHasher(u64);
-
-impl std::hash::Hasher for FxHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = self.0.rotate_left(5) ^ u64::from(byte);
-        }
-    }
-
-    #[inline]
-    fn write_u64(&mut self, i: u64) {
-        self.0 = self.0.wrapping_add(i).wrapping_mul(0x517cc1b727220a95);
-    }
-}
-
-pub type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
-pub type FxHashSet<V> = std::collections::HashSet<V, FxBuildHasher>;
 
 use crate::disposition::Disposition;
 use crate::view::{Clock, SessionView};
@@ -138,7 +114,7 @@ impl Selection {
     /// and a count in a menu label that does not match what the operator can see
     /// is worse than useless.
     pub fn retain_visible(&mut self, visible: &[SessionId]) {
-        let on_screen: FxHashSet<SessionId> = visible.iter().copied().collect();
+        let on_screen: BTreeSet<SessionId> = visible.iter().copied().collect();
         self.selected.retain(|session| on_screen.contains(session));
         if self.anchor.is_some_and(|anchor| !on_screen.contains(&anchor)) {
             self.anchor = None;
@@ -151,7 +127,6 @@ impl Selection {
     pub fn contains(&self, session: SessionId) -> bool {
         self.selected.contains(&session)
     }
-
 
     pub fn len(&self) -> usize {
         self.selected.len()

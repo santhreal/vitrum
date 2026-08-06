@@ -5726,7 +5726,6 @@ name = "vitrum-dioxus-desktop"
 version = "0.7.10"
 dependencies = [
  "anyhow",
- "async-trait",
  "base64",
  "bytes",
  "cocoa",
@@ -5741,14 +5740,12 @@ dependencies = [
  "dioxus-html",
  "dioxus-interpreter-js",
  "dioxus-signals",
- "dunce",
  "futures-channel",
  "futures-util",
  "generational-box",
  "global-hotkey",
  "gtk",
  "image",
- "infer",
  "jni 0.21.1",
  "lazy-js-bundle",
  "libc",

@@ -3,7 +3,7 @@
 //! wrong bytes.
 
 use crate::SessionManager;
-use crate::tests::helpers::{shell_spec, wait_exit, whole_stream};
+use crate::tests::helpers::{settled_head, shell_spec, wait_exit, whole_stream};
 
 /// Long enough to overflow every ring these tests configure, on a platform that
 /// prepends a pty preamble as well as one that does not.
@@ -12,6 +12,31 @@ const PAYLOAD: &str = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstu
 /// The script every test in this file runs.
 fn script() -> String {
     format!("echo {PAYLOAD}")
+}
+
+/// A finished session running [`script`], and the whole stream one run produces.
+///
+/// The head is read back from the session rather than derived from the payload,
+/// because a pty may prepend bytes of its own and they count towards the ring.
+/// The reference stream is a separate run in a ring that evicts nothing, so what
+/// these tests assert is that a small ring holds exactly the tail of a large one.
+async fn overflowed(cap: usize) -> (SessionManager, vitrum_proto::SessionId, Vec<u8>, u64) {
+    let whole = whole_stream(&script()).await;
+    assert!(
+        whole.len() > cap,
+        "{} bytes did not overflow a {cap} byte ring",
+        whole.len()
+    );
+    let mgr = SessionManager::new(cap);
+    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
+    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    let head = settled_head(&mgr, id).await;
+    assert_eq!(
+        head,
+        whole.len() as u64,
+        "two runs of the same command wrote different amounts"
+    );
+    (mgr, id, whole, head)
 }
 
 /// A session that produced more than its capacity must report the correct
@@ -24,18 +49,12 @@ fn script() -> String {
 #[tokio::test]
 async fn a_session_over_capacity_reports_the_correct_oldest_seq() {
     let cap = 32;
-    let whole = whole_stream(&script()).await;
-    let total = whole.len() as u64;
-    assert!(total > cap as u64, "the payload did not overflow the ring");
-
-    let mgr = SessionManager::new(cap);
-    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    let (mgr, id, whole, head) = overflowed(cap).await;
 
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert_eq!(
         from,
-        total - cap as u64,
+        head - cap as u64,
         "oldest retained byte is capacity bytes back from the head"
     );
     assert!(
@@ -51,14 +70,9 @@ async fn a_session_over_capacity_reports_the_correct_oldest_seq() {
 /// "everything up to now".
 #[tokio::test]
 async fn scrollback_clamps_before_seq_to_the_head() {
-    let cap = 32;
-    let mgr = SessionManager::new(cap);
-    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    let (mgr, id, _, head) = overflowed(32).await;
 
     let unbounded = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
-    // An unbounded read reaches the head, so its own answer names it.
-    let head = unbounded.0 + unbounded.1.len() as u64;
     let at_head = mgr.scrollback(id, head, 4096).expect("session exists");
     let past_head = mgr
         .scrollback(id, head + 10_000, 4096)
@@ -73,13 +87,9 @@ async fn scrollback_clamps_before_seq_to_the_head() {
 #[tokio::test]
 async fn scrollback_before_the_oldest_byte_is_empty_and_final() {
     let cap = 32;
-    let total = whole_stream(&script()).await.len() as u64;
+    let (mgr, id, _, head) = overflowed(cap).await;
 
-    let mgr = SessionManager::new(cap);
-    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
-
-    let oldest = total - cap as u64;
+    let oldest = head - cap as u64;
     let (from, bytes, more) = mgr.scrollback(id, oldest, 4096).expect("session exists");
     assert_eq!(from, oldest);
     assert_eq!(bytes, b"");
@@ -96,16 +106,10 @@ async fn scrollback_before_the_oldest_byte_is_empty_and_final() {
 /// viewport like a scrollbar does.
 #[tokio::test]
 async fn scrollback_returns_the_newest_slice_first() {
-    let cap = 32;
-    let whole = whole_stream(&script()).await;
-    let total = whole.len() as u64;
-
-    let mgr = SessionManager::new(cap);
-    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    let (mgr, id, whole, head) = overflowed(32).await;
 
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 8).expect("session exists");
-    assert_eq!(from, total - 8);
+    assert_eq!(from, head - 8);
     assert_eq!(bytes, &whole[whole.len() - 8..]);
     assert!(more, "24 retained bytes are still older than this page");
 }
@@ -119,8 +123,12 @@ async fn a_zero_capacity_session_reports_no_history() {
     let mgr = SessionManager::new(0);
     let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    // A zero ring keeps nothing, so `from` is the head itself. It still has to
+    // stop moving before it can be compared against a completed run.
+    let head = settled_head(&mgr, id).await;
+    assert_eq!(head, total, "the head is still counted");
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
-    assert_eq!(from, total, "the head is still counted");
+    assert_eq!(from, total);
     assert_eq!(bytes, b"");
     assert!(!more);
 }

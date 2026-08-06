@@ -5,7 +5,7 @@
 use vitrum_proto::SessionStatus;
 
 use crate::SessionManager;
-use crate::tests::helpers::{attach, collect, shell_spec, wait_exit};
+use crate::tests::helpers::{attach, collect, settled_head, shell_spec, wait_exit};
 
 /// The bytes a child writes must arrive on the broadcast channel byte for byte.
 ///
@@ -47,6 +47,11 @@ async fn broadcast_and_scrollback_agree_byte_for_byte() {
     c.until(|b| b.ends_with(b"agreement\r\n")).await;
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
+    // Both sides have to be finished before they can be compared. The ring stops
+    // growing first, and the collector is then read up to that same head so the
+    // comparison is the whole stream against the whole stream.
+    let head = settled_head(&mgr, id).await;
+    c.until(|b| b.len() as u64 >= head).await;
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert_eq!(from, 0);
     assert!(!more, "nothing older than the first byte can exist");

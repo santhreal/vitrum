@@ -2,7 +2,7 @@
 //! their ring, because a GUI restart or a tab switch must not cost history.
 
 use crate::SessionManager;
-use crate::tests::helpers::{collect, shell_spec, wait_exit};
+use crate::tests::helpers::{collect, settled_head, shell_spec, wait_exit};
 
 /// Scrollback must be recorded when no client has ever subscribed.
 ///
@@ -17,6 +17,7 @@ async fn scrollback_is_recorded_with_no_subscriber() {
         .expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
+    settled_head(&mgr, id).await;
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert_eq!(from, 0);
     assert!(!more);
@@ -73,6 +74,7 @@ async fn re_attaching_delivers_no_backlog() {
     let mut late = collect(&mgr, id);
     late.expect_quiet().await;
     assert_eq!(late.bytes, b"", "attach must not replay");
+    settled_head(&mgr, id).await;
     let (_, bytes, _) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert!(
         bytes.ends_with(b"history\r\n"),

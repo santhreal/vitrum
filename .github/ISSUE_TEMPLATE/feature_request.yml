@@ -1,0 +1,47 @@
+name: Feature request
+description: Something vitrum should do and does not
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What you were trying to get done, and where vitrum got in the way.
+        Describe the situation, not the feature; a problem stated well often has
+        a smaller answer than the one you had in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: The behaviour you want
+      description: >-
+        What should happen, concretely. Name the surface it touches: the
+        launcher, the sidebar, search, settings, a chord, the daemon, or the
+        command line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: unchanged
+    attributes:
+      label: What this must not change
+      description: >-
+        Existing chords, saved commands, settings, the daemon protocol, or the
+        way sessions survive a closed window. Say which of these your idea
+        leaves alone, and which it would have to move.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: >-
+        Including doing it outside vitrum, in your shell, your agent, or a
+        script. If one of those works today, say why it is not enough.
+    validations:
+      required: true

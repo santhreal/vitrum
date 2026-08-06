@@ -1,0 +1,61 @@
+version: 2
+
+# `vendor/` and `vendor-pty/` are not updated here. They are forks carried in
+# tree, tracked by hand against the crates they forked, and
+# `.github/workflows/upstream.yml` is what asks the question: it runs weekly and
+# on any change under `vendor/` or `tools/upstream/`, downloads the pristine
+# upstream crate named in `vendor/UPSTREAM.toml`, and fails when the real
+# divergence stops matching the divergence that file lists. Absorbing an
+# upstream release is a deliberate edit to the fork, not a version bump.
+
+updates:
+  # Cargo dependencies of the workspace root. One manifest covers every member,
+  # so there is nothing to configure per crate.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      # Patch and minor releases arrive constantly in a GUI tree and almost
+      # never need thought. One PR per week for the lot keeps the queue short
+      # enough that the majors, which do need thought, are visible in it.
+      cargo-patch-and-minor:
+        update-types: ["minor", "patch"]
+    ignore:
+      # The vendored dioxus-desktop fork pins the whole dioxus family at the
+      # version it forked from, and `vendor/UPSTREAM.toml` is the record of
+      # that. Bumping one of them out from under the fork breaks the divergence
+      # check rather than upgrading anything.
+      - dependency-name: "dioxus*"
+      # The vendored portable-pty fork replaces the published crate outright;
+      # a PR raising it would change nothing that is built.
+      - dependency-name: "portable-pty"
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: "deps"
+      include: scope
+
+  # Actions used by the workflows under .github/workflows/.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      actions-patch-and-minor:
+        update-types: ["minor", "patch"]
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+      include: scope

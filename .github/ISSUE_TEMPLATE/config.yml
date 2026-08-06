@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/santhreal/vitrum/security/advisories/new
+    about: >-
+      Report it privately here, not as an issue. vitrum spawns processes and the
+      daemon listens on loopback, so a report filed in public is a working
+      recipe until it is fixed.

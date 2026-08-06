@@ -130,6 +130,9 @@ struct Outcome {
     panics: Vec<String>,
     /// How many inputs exceeded the allocation bound.
     oversized: Vec<String>,
+    /// Exact inputs that panicked or blew the bound, keyed by a stable
+    /// filename so the report can dump them under `repro/`.
+    repros: Vec<(String, Vec<u8>)>,
     errors: [usize; 6],
 }
 
@@ -144,6 +147,20 @@ impl Outcome {
         }
         self.digest = h;
     }
+
+    fn capture(&mut self, kind: &str, label: String, input: &[u8]) {
+        let name = format!(
+            "{kind}-{:04}-{:02x}.bin",
+            self.repros.len(),
+            self.digest as u8
+        );
+        let msg = format!("{label} [repro: {name}]");
+        match kind {
+            "panic" => self.panics.push(msg),
+            _ => self.oversized.push(msg),
+        }
+        self.repros.push((name, input.to_vec()));
+    }
 }
 
 /// Run one input through every target. Returns `Ok(())` or a descriptive
@@ -156,14 +173,22 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
         // --- decode_output: hostile binary frames --------------------------
         let r = catch_unwind(AssertUnwindSafe(|| decode_output(input)));
         match r {
-            Err(_) => out.panics.push(format!("decode_output case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("decode_output case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(Ok((_, _, payload))) => {
                 if payload.len() > bound {
-                    out.oversized.push(format!(
-                        "decode_output case {idx} variant {which}: {} bytes from {} input",
-                        payload.len(),
-                        input.len()
-                    ));
+                    out.capture(
+                        "oversize",
+                        format!(
+                            "decode_output case {idx} variant {which}: {} bytes from {} input",
+                            payload.len(),
+                            input.len()
+                        ),
+                        input,
+                    );
                 }
                 out.allocated += payload.len() as u64;
                 out.hash(payload);
@@ -177,14 +202,22 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
         out.hash(encoded.as_bytes());
         let r = catch_unwind(AssertUnwindSafe(|| b64::decode(&encoded)));
         match r {
-            Err(_) => out.panics.push(format!("b64 encode case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("b64 encode case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(Ok(round)) => {
                 if round.len() > bound {
-                    out.oversized.push(format!(
-                        "b64 case {idx} variant {which}: decoded {} bytes from {} input",
-                        round.len(),
-                        input.len()
-                    ));
+                    out.capture(
+                        "oversize",
+                        format!(
+                            "b64 case {idx} variant {which}: decoded {} bytes from {} input",
+                            round.len(),
+                            input.len()
+                        ),
+                        input,
+                    );
                 }
                 out.allocated += round.len() as u64;
                 out.hash(&round);
@@ -195,14 +228,22 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
         let hostile = String::from_utf8_lossy(input);
         let r = catch_unwind(AssertUnwindSafe(|| b64::decode(&hostile)));
         match r {
-            Err(_) => out.panics.push(format!("b64 decode case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("b64 decode case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(Ok(dec)) => {
                 if dec.len() > bound {
-                    out.oversized.push(format!(
-                        "b64 hostile case {idx} variant {which}: decoded {} bytes from {} input",
-                        dec.len(),
-                        input.len()
-                    ));
+                    out.capture(
+                        "oversize",
+                        format!(
+                            "b64 hostile case {idx} variant {which}: decoded {} bytes from {} input",
+                            dec.len(),
+                            input.len()
+                        ),
+                        input,
+                    );
                 }
                 out.allocated += dec.len() as u64;
                 out.hash(&dec);
@@ -215,14 +256,22 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
         // --- asciicast: hostile cast files ---------------------------------
         let r = catch_unwind(AssertUnwindSafe(|| asciicast::read(&text)));
         match r {
-            Err(_) => out.panics.push(format!("asciicast case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("asciicast case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(Ok(rec)) => {
                 if rec.bytes().len() > bound {
-                    out.oversized.push(format!(
-                        "asciicast case {idx} variant {which}: {} payload bytes from {} input",
-                        rec.bytes().len(),
-                        input.len()
-                    ));
+                    out.capture(
+                        "oversize",
+                        format!(
+                            "asciicast case {idx} variant {which}: {} payload bytes from {} input",
+                            rec.bytes().len(),
+                            input.len()
+                        ),
+                        input,
+                    );
                 }
                 out.allocated += rec.bytes().len() as u64;
                 out.hash(rec.bytes());
@@ -237,14 +286,22 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
             strip.text().to_vec()
         }));
         match r {
-            Err(_) => out.panics.push(format!("stripper case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("stripper case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(stripped) => {
                 if stripped.len() > bound {
-                    out.oversized.push(format!(
-                        "stripper case {idx} variant {which}: {} bytes from {} input",
-                        stripped.len(),
-                        input.len()
-                    ));
+                    out.capture(
+                        "oversize",
+                        format!(
+                            "stripper case {idx} variant {which}: {} bytes from {} input",
+                            stripped.len(),
+                            input.len()
+                        ),
+                        input,
+                    );
                 }
                 out.allocated += stripped.len() as u64;
                 out.hash(&stripped);
@@ -255,7 +312,11 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
         let query = Query::literal(String::from_utf8_lossy(input).into_owned());
         let r = catch_unwind(AssertUnwindSafe(|| Matcher::compile(&query)));
         match r {
-            Err(_) => out.panics.push(format!("matcher compile case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("matcher compile case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(Ok(m)) => {
                 let hit = m.find_at(input, 0);
                 out.hash(&[hit.is_some() as u8]);
@@ -272,7 +333,11 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
             grid.row_text((idx % 24) as u16).unwrap_or_default()
         }));
         match r {
-            Err(_) => out.panics.push(format!("grid write case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("grid write case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(row) => {
                 out.allocated += row.len() as u64;
                 out.hash(row.as_bytes());
@@ -298,7 +363,11 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
             (parser.rejected(), decls)
         }));
         match r {
-            Err(_) => out.panics.push(format!("osc feed case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("osc feed case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok((rejected, decls)) => {
                 out.hash(&rejected.to_le_bytes());
                 for d in &decls {
@@ -306,24 +375,109 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
                     out.hash(&[d.state as u8]);
                 }
                 if decls.len() > bound {
-                    out.oversized.push(format!(
-                        "osc case {idx} variant {which}: {} decls from {} input",
-                        decls.len(),
-                        input.len()
-                    ));
+                    out.capture(
+                        "oversize",
+                        format!(
+                            "osc case {idx} variant {which}: {} decls from {} input",
+                            decls.len(),
+                            input.len()
+                        ),
+                        input,
+                    );
                 }
             }
         }
         // The one-shot parser over a payload slice.
         let r = catch_unwind(AssertUnwindSafe(|| parse_payload(input)));
         match r {
-            Err(_) => out.panics.push(format!("osc payload case {idx} variant {which} panicked")),
+            Err(_) => out.capture(
+                "panic",
+                format!("osc payload case {idx} variant {which} panicked"),
+                input,
+            ),
             Ok(Some(decl)) => {
                 out.hash(decl.label.as_deref().unwrap_or("").as_bytes());
                 out.hash(&[decl.state as u8]);
             }
             Ok(None) => out.errors[5] += 1,
         }
+    }
+}
+
+/// Build a Case from raw bytes, with the usual all-zeros / all-0xFF variants.
+fn case_from(bytes: Vec<u8>) -> Case {
+    let zeros = vec![0u8; bytes.len()];
+    let ones = vec![0xFFu8; bytes.len()];
+    Case { bytes, zeros, ones }
+}
+
+/// Structured hostile inputs mixed into the random corpus.
+///
+/// Random bytes eventually find most of these, but slowly. Seeding a few
+/// shapes we already know are dangerous — length-claiming headers, unterminated
+/// OSC, valid-looking frames with garbage interiors — means a short seeded run
+/// still exercises the paths that have historically been where panics hide.
+fn structured_case(idx: usize, rng: &mut Rng) -> Option<Case> {
+    match idx % 23 {
+        0 => {
+            // Valid-looking output frame: kind + session + seq + noise payload.
+            let mut frame = Vec::with_capacity(17 + 64);
+            frame.push(1); // FRAME_KIND_OUTPUT
+            frame.extend_from_slice(&rng.next().to_le_bytes());
+            frame.extend_from_slice(&rng.next().to_le_bytes());
+            let mut payload = vec![0u8; 1 + rng.below(64)];
+            rng.bytes(&mut payload);
+            frame.extend_from_slice(&payload);
+            Some(case_from(frame))
+        }
+        1 => {
+            // OSC 7373 terminated with BEL, label full of noise.
+            let mut seq = b"\x1b]7373;approval;".to_vec();
+            let mut label = vec![0u8; 1 + rng.below(200)];
+            rng.bytes(&mut label);
+            // Keep it printable-ish so the one-shot parser reaches the label path.
+            for b in &mut label {
+                *b = b'a' + (*b % 26);
+            }
+            seq.extend_from_slice(&label);
+            seq.push(0x07);
+            Some(case_from(seq))
+        }
+        2 => {
+            // OSC introduced then abandoned: ESC ] then a flood of bytes with
+            // no terminator. The parser must abandon at MAX_SEQUENCE_BYTES.
+            let mut seq = b"\x1b]".to_vec();
+            seq.extend(std::iter::repeat(b'x').take(512));
+            Some(case_from(seq))
+        }
+        3 => {
+            // Asciicast v2 header claiming absurd geometry, then one event.
+            let header = format!(
+                "{{\"version\":2,\"width\":{},\"height\":{}}}\n[0.0,\"o\",\"hello\"]\n",
+                rng.next() as u32,
+                rng.next() as u32
+            );
+            Some(case_from(header.into_bytes()))
+        }
+        4 => {
+            // Base64 alphabet with wrong padding length.
+            let mut s = vec![0u8; 1 + rng.below(64)];
+            for b in &mut s {
+                *b = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[*b as usize % 64];
+            }
+            s.extend(b"===");
+            Some(case_from(s))
+        }
+        5 => {
+            // Nested ESC inside an OSC payload (the PayloadEscape path).
+            let mut seq = b"\x1b]7373;working;hi\x1b".to_vec();
+            let mut rest = vec![0u8; rng.below(32)];
+            rng.bytes(&mut rest);
+            seq.extend_from_slice(&rest);
+            seq.extend_from_slice(b"\x1b\\");
+            Some(case_from(seq))
+        }
+        _ => None,
     }
 }
 
@@ -336,12 +490,15 @@ fn run_corpus(spec: &ProbeSpec, _thread: usize) -> Outcome {
     let mut rng = Rng::new(spec.seed);
     let mut buf = vec![0u8; 256];
     for idx in 0..spec.cases {
-        let len = 1 + rng.below(256);
-        buf.resize(len, 0);
-        rng.bytes(&mut buf);
-        let zeros = vec![0u8; len];
-        let ones = vec![0xFFu8; len];
-        probe_one(&mut out, &Case { bytes: buf.clone(), zeros, ones }, idx);
+        let case = if let Some(s) = structured_case(idx, &mut rng) {
+            s
+        } else {
+            let len = 1 + rng.below(256);
+            buf.resize(len, 0);
+            rng.bytes(&mut buf);
+            case_from(buf.clone())
+        };
+        probe_one(&mut out, &case, idx);
     }
     out
 }
@@ -393,6 +550,7 @@ pub fn run(spec: &ProbeSpec) -> anyhow::Result<Report> {
     for o in &mut outcomes {
         report.failures.extend(std::mem::take(&mut o.panics));
         report.failures.extend(std::mem::take(&mut o.oversized));
+        report.artifacts.extend(std::mem::take(&mut o.repros));
     }
     let allocated: u64 = outcomes.iter().map(|o| o.allocated).sum();
     let cases_run = spec.cases * spec.threads;
@@ -467,5 +625,29 @@ mod tests {
         let report = run(&spec).expect("probe runs");
         assert!(!report.failed(), "failures: {:?}", report.failures);
         assert!(report.checks_passed.len() >= 3);
+    }
+
+    /// A captured failure writes its exact input under `repro/` next to the
+    /// report, so a finding is a file you can feed back into a target and not
+    /// a sentence you have to reverse-engineer from a seed.
+    #[test]
+    fn a_captured_failure_writes_a_repro_file() {
+        let mut report = Report::new("probe", "in-process", serde_json::json!({}));
+        report.failures.push("synthetic panic [repro: panic-0000-ab.bin]".into());
+        report.artifacts.push(("panic-0000-ab.bin".into(), b"hostile-bytes".to_vec()));
+        let dir = tempfile_dir();
+        let out = report.write(&dir).expect("write");
+        let bytes = std::fs::read(out.join("repro/panic-0000-ab.bin")).expect("repro");
+        assert_eq!(bytes, b"hostile-bytes");
+        let md = std::fs::read_to_string(out.join("report.md")).expect("md");
+        assert!(md.contains("panic-0000-ab.bin"), "markdown must name the repro");
+    }
+
+    fn tempfile_dir() -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("vitrum-probe-repro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        dir
     }
 }

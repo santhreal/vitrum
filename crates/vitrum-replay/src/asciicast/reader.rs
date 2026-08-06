@@ -202,6 +202,7 @@ pub struct StreamingReader<'a> {
     line_number: usize,
     previous_micros: u64,
     header: Header,
+    decode_buf: Vec<u8>,
 }
 
 impl<'a> StreamingReader<'a> {
@@ -228,6 +229,7 @@ impl<'a> StreamingReader<'a> {
             line_number: 1,
             previous_micros: 0,
             header,
+            decode_buf: Vec::new(),
         })
     }
 
@@ -249,7 +251,9 @@ impl<'a> Iterator for StreamingReader<'a> {
                 continue;
             }
 
-            let (micros, code_byte, data_body) = match parse_event_ref(line, self.line_number) {
+            let line_number = self.line_number;
+            let decode_buf = &mut self.decode_buf;
+            let (micros, code_byte, data_body) = match parse_event_ref(line, line_number, decode_buf) {
                 Ok(val) => val,
                 Err(err) => return Some(Err(err)),
             };
@@ -272,9 +276,9 @@ impl<'a> Iterator for StreamingReader<'a> {
                             return Some(Ok(EventRef::Resize { micros, cols, rows }));
                         }
                     }
-                    let mut buf = Vec::new();
-                    if decode(data_body, self.line_number, &mut buf).is_ok() {
-                        if let Some((cols, rows)) = parse_geometry(&buf) {
+                    self.decode_buf.clear();
+                    if decode(data_body, self.line_number, &mut self.decode_buf).is_ok() {
+                        if let Some((cols, rows)) = parse_geometry(&self.decode_buf) {
                             return Some(Ok(EventRef::Resize { micros, cols, rows }));
                         }
                     }
@@ -359,7 +363,7 @@ pub fn read(text: &str) -> Result<Recording, CastError> {
     Ok(recording)
 }
 
-fn parse_event_ref<'a>(line: &'a str, number: usize) -> Result<(u64, u8, &'a str), CastError> {
+fn parse_event_ref<'a>(line: &'a str, number: usize, buf: &mut Vec<u8>) -> Result<(u64, u8, &'a str), CastError> {
     let bytes = line.as_bytes();
     let mut at = 0usize;
 
@@ -384,9 +388,9 @@ fn parse_event_ref<'a>(line: &'a str, number: usize) -> Result<(u64, u8, &'a str
     let code = if code_body.len() == 1 && !code_body.starts_with('\\') {
         code_body.as_bytes()[0]
     } else {
-        let mut code_bytes = Vec::new();
-        decode(code_body, number, &mut code_bytes)?;
-        let [code] = code_bytes[..] else {
+        buf.clear();
+        decode(code_body, number, buf)?;
+        let [code] = buf[..] else {
             return Err(CastError::EventCode { line: number });
         };
         code

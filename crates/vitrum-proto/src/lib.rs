@@ -27,6 +27,8 @@ pub mod text;
 pub use text::{display_safe, error_text, is_display_safe, MAX_ERROR_CHARS};
 
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::sync::Mutex;
 
 /// Control-plane schema version. Bump only when old clients and servers must
 /// refuse each other; additive fields do not warrant a bump because both sides
@@ -578,6 +580,109 @@ impl ServerMsg {
             message: text::error_text(message.as_ref()),
         }
     }
+}
+/// Default initial buffer capacity for IPC serde operations (4 KiB).
+pub const DEFAULT_SCRATCH_BUF_CAPACITY: usize = 4096;
+
+/// Default maximum retained capacity per pooled buffer (64 KiB) before shrinking.
+pub const MAX_RETAINED_BUF_CAPACITY: usize = 64 * 1024;
+
+thread_local! {
+    static THREAD_SCRATCH_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(DEFAULT_SCRATCH_BUF_CAPACITY));
+}
+
+/// A pre-allocated scratch buffer pool for zero-allocation IPC serialization and deserialization.
+pub struct SerdeScratchPool {
+    pool: Mutex<Vec<Vec<u8>>>,
+    max_retained_capacity: usize,
+    default_buf_capacity: usize,
+}
+
+impl Default for SerdeScratchPool {
+    fn default() -> Self {
+        Self::new(DEFAULT_SCRATCH_BUF_CAPACITY, MAX_RETAINED_BUF_CAPACITY)
+    }
+}
+
+impl SerdeScratchPool {
+    /// Create a new scratch pool with specified initial and maximum retained capacities.
+    pub fn new(default_buf_capacity: usize, max_retained_capacity: usize) -> Self {
+        Self {
+            pool: Mutex::new(Vec::new()),
+            max_retained_capacity,
+            default_buf_capacity,
+        }
+    }
+
+    /// Acquire a buffer from the pool or allocate a fresh one.
+    pub fn acquire(&self) -> Vec<u8> {
+        if let Ok(mut pool) = self.pool.lock() {
+            if let Some(mut buf) = pool.pop() {
+                buf.clear();
+                return buf;
+            }
+        }
+        Vec::with_capacity(self.default_buf_capacity)
+    }
+
+    /// Release a buffer back to the pool, capping capacity to avoid memory bloat.
+    pub fn release(&self, mut buf: Vec<u8>) {
+        buf.clear();
+        if buf.capacity() > self.max_retained_capacity {
+            buf.shrink_to(self.max_retained_capacity);
+        }
+        if let Ok(mut pool) = self.pool.lock() {
+            if pool.len() < 32 {
+                pool.push(buf);
+            }
+        }
+    }
+
+    /// Execute a closure with a pooled scratch buffer.
+    pub fn with_buffer<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Vec<u8>) -> R,
+    {
+        let mut buf = self.acquire();
+        let result = f(&mut buf);
+        self.release(buf);
+        result
+    }
+
+    /// Serialize any [`Serialize`] value to JSON using a pooled buffer.
+    pub fn serialize_json<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, serde_json::Error> {
+        self.with_buffer(|buf| {
+            serde_json::to_writer(&mut *buf, value)?;
+            Ok(buf.clone())
+        })
+    }
+}
+
+/// Global thread-local scratch buffer helper for zero-allocation inline IPC tasks.
+pub fn with_thread_scratch<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Vec<u8>) -> R,
+{
+    THREAD_SCRATCH_BUFFER.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        let res = f(&mut buf);
+        if buf.capacity() > MAX_RETAINED_BUF_CAPACITY {
+            buf.shrink_to(MAX_RETAINED_BUF_CAPACITY);
+        }
+        res
+    })
+}
+
+/// Serialize `value` to JSON using the thread-local scratch buffer, calling `f` with the serialized bytes slice.
+pub fn serialize_json_with_thread_scratch<T: Serialize, F, R>(value: &T, f: F) -> Result<R, serde_json::Error>
+where
+    F: FnOnce(&[u8]) -> R,
+{
+    with_thread_scratch(|buf| {
+        serde_json::to_writer(&mut *buf, value)?;
+        Ok(f(buf))
+    })
 }
 
 /// Errors from decoding a data-plane frame.
@@ -1409,5 +1514,27 @@ mod tests {
             serde_json::from_str::<ServerMsg>(&json).expect("round trips"),
             chunk
         );
+    }
+    #[test]
+    fn serde_scratch_pool_reuses_buffers_and_serializes_correctly() {
+        let pool = SerdeScratchPool::default();
+        let msg = ClientMsg::Hello { protocol: PROTOCOL_VERSION };
+
+        let buf1 = pool.acquire();
+        assert_eq!(buf1.len(), 0);
+        let cap1 = buf1.capacity();
+        assert!(cap1 >= DEFAULT_SCRATCH_BUF_CAPACITY);
+        pool.release(buf1);
+
+        let serialized_bytes = pool.serialize_json(&msg).expect("must serialize json");
+        assert!(serialized_bytes.len() > 0);
+        let back: ClientMsg = serde_json::from_slice(&serialized_bytes).expect("must deserialize json");
+        assert_eq!(back, msg);
+
+        let res = serialize_json_with_thread_scratch(&msg, |bytes| {
+            let back2: ClientMsg = serde_json::from_slice(bytes).expect("must deserialize json from scratch");
+            back2
+        }).expect("scratch serialization succeeded");
+        assert_eq!(res, msg);
     }
 }

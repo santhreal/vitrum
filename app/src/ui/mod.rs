@@ -5,6 +5,7 @@ pub mod icons;
 pub mod keybinds;
 pub mod menu;
 pub mod onboarding;
+pub mod presets;
 pub mod recents;
 pub mod search;
 pub mod settings;

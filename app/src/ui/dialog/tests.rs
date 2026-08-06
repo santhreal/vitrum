@@ -1390,3 +1390,89 @@ fn the_one_click_control_actually_launches() {
          nothing when the launcher declines to guess"
     );
 }
+
+/// The band above the list draws every saved preset, so the list must not draw
+/// them again. Two copies of one button under two different affordances is the
+/// defect that made the band worth adding in the first place.
+#[test]
+fn a_saved_preset_is_not_listed_twice_while_the_band_shows_it() {
+    let rows = vec![
+        Intent::new(
+            "claude --permission-mode plan".to_string(),
+            "/src/vitrum".to_string(),
+            "vitrum".to_string(),
+            None,
+            Band::Preset,
+            "saved".to_string(),
+            None,
+        ),
+        Intent::new(
+            "claude".to_string(),
+            "/src/vitrum".to_string(),
+            "vitrum".to_string(),
+            None,
+            Band::Agent,
+            "on PATH".to_string(),
+            None,
+        ),
+    ];
+    let shown: Vec<&str> = listed(&rows, "")
+        .into_iter()
+        .map(|i| rows[i].command.as_str())
+        .collect();
+    assert_eq!(shown, vec!["claude"], "the band's preset is listed as well");
+}
+
+/// Typing takes the band away, so the preset has to come back: it is still the
+/// operator's own command and searching for it must find it.
+#[test]
+fn typing_brings_the_preset_back_into_the_list() {
+    let rows = vec![Intent::new(
+        "claude --permission-mode plan".to_string(),
+        "/src/vitrum".to_string(),
+        "vitrum".to_string(),
+        None,
+        Band::Preset,
+        "saved".to_string(),
+        None,
+    )];
+    assert!(listed(&rows, "").is_empty(), "the band already draws it");
+    assert_eq!(listed(&rows, "plan"), vec![0], "it did not come back");
+}
+
+/// Tab on a command row fills the line in rather than launching it, which is
+/// what lets a remembered command be edited instead of retyped. It used to do
+/// nothing at all, and a dead key in a form reads as the form being broken.
+#[test]
+fn tab_completes_a_command_row_into_the_field() {
+    let pick = Pick::Go(Intent::new(
+        "claude --permission-mode plan".to_string(),
+        "/src/vitrum".to_string(),
+        "vitrum".to_string(),
+        None,
+        Band::Recent,
+        "used twice".to_string(),
+        None,
+    ));
+    assert_eq!(
+        completion(&pick, "cla").as_deref(),
+        Some("claude --permission-mode plan")
+    );
+    // Already complete. Rewriting the field with what it holds would move the
+    // caret to the end mid-edit.
+    assert_eq!(completion(&pick, "claude --permission-mode plan"), None);
+}
+
+/// A directory completes with a separator, because the separator is what makes
+/// the next Tab offer what is inside it rather than offer the folder again.
+#[test]
+fn tab_descends_into_a_directory_row() {
+    let sep = std::path::MAIN_SEPARATOR;
+    let pick = Pick::Cd(format!("{sep}src{sep}vitrum"));
+    assert_eq!(
+        completion(&pick, "").as_deref(),
+        Some(&*format!("{sep}src{sep}vitrum{sep}"))
+    );
+    // Already descended: the field says exactly what this pick completes to.
+    assert_eq!(completion(&pick, &format!("{sep}src{sep}vitrum{sep}")), None);
+}

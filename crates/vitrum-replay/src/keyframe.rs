@@ -64,7 +64,7 @@ impl Keyframe {
     }
 }
 /// Compact diff of VT terminal state between a baseline keyframe and a target keyframe.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct KeyframeDelta {
     /// Target keyframe sequence number.
     pub seq: u64,
@@ -72,8 +72,48 @@ pub struct KeyframeDelta {
     pub base_seq: u64,
     /// Target cursor state.
     pub cursor: crate::screen::Cursor,
+    /// Target pen style.
+    pub pen: vitrum_grid::Style,
+    /// Target active modes.
+    pub modes: crate::screen::Modes,
+    /// Target scroll region.
+    pub region: crate::screen::ScrollRegion,
+    /// Target saved cursor.
+    pub saved: crate::screen::SavedCursor,
+    /// Target saved primary cursor.
+    pub saved_primary: crate::screen::SavedCursor,
+    /// Target alternate screen state.
+    pub on_alt: bool,
+    /// Inactive screen buffer if on alternate screen.
+    pub inactive: Option<vitrum_grid::CellGrid>,
+    /// Tab stops.
+    pub tabs: crate::screen::TabStops,
+    /// Active charsets.
+    pub charsets: crate::screen::Charsets,
+    /// Window title.
+    pub title: String,
+    /// Color palette.
+    pub palette: crate::palette::Palette,
     /// Vector of (column, row, cell) diffs compared to baseline.
     pub cell_diffs: Vec<(u16, u16, vitrum_grid::Cell)>,
+}
+impl PartialEq for KeyframeDelta {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+            && self.base_seq == other.base_seq
+            && self.cursor == other.cursor
+            && self.pen == other.pen
+            && self.modes == other.modes
+            && self.region == other.region
+            && self.saved == other.saved
+            && self.saved_primary == other.saved_primary
+            && self.on_alt == other.on_alt
+            && self.tabs == other.tabs
+            && self.charsets == other.charsets
+            && self.title == other.title
+            && self.palette == other.palette
+            && self.cell_diffs == other.cell_diffs
+    }
 }
 
 /// Storage strategy for keyframes in index: anchor keyframe or compact delta.
@@ -106,20 +146,28 @@ impl Keyframe {
 
         for r in 0..rows {
             for c in 0..cols {
-                let cell_self = self.screen.grid().cell(c, r);
-                let cell_base = base.screen.grid().cell(c, r);
+                let cell_self = self.screen.cell_at(c, r);
+                let cell_base = base.screen.cell_at(c, r);
                 if cell_self != cell_base {
-                    if let Some(cell) = cell_self {
-                        cell_diffs.push((c, r, cell.clone()));
-                    }
+                    cell_diffs.push((c, r, cell_self));
                 }
             }
         }
-
         KeyframeDelta {
             seq: self.seq,
             base_seq: base.seq,
             cursor: self.screen.cursor(),
+            pen: self.screen.pen(),
+            modes: self.screen.modes(),
+            region: self.screen.region(),
+            saved: self.screen.saved(),
+            saved_primary: self.screen.saved_primary(),
+            on_alt: self.screen.on_alt_screen(),
+            inactive: self.screen.inactive().cloned(),
+            tabs: self.screen.tabs().clone(),
+            charsets: self.screen.charsets(),
+            title: self.screen.title().to_string(),
+            palette: *self.screen.palette(),
             cell_diffs,
         }
     }
@@ -128,7 +176,7 @@ impl Keyframe {
     #[must_use]
     pub fn apply_delta(base_screen: &Screen, delta: &KeyframeDelta) -> Screen {
         let mut screen = base_screen.clone();
-        *screen.cursor_mut() = delta.cursor;
+        screen.apply_non_grid_state_from_delta(delta);
         for &(c, r, ref cell) in &delta.cell_diffs {
             let _ = screen.grid_mut().set_cell(c, r, cell.clone());
         }
@@ -139,7 +187,7 @@ impl Keyframe {
 /// Seekable snapshots over one stream.
 #[derive(Clone, Debug)]
 pub struct KeyframeIndex {
-    frames: Vec<Keyframe>,
+    frames: Vec<KeyframeStorage>,
     stride: usize,
     /// Bytes that had no reachable ground boundary, so no keyframe was taken.
     skipped: usize,
@@ -158,6 +206,8 @@ impl KeyframeIndex {
         let mut frames = Vec::new();
         let mut skipped = 0usize;
         let mut at = stream.base_seq();
+        const ANCHOR_INTERVAL: usize = 4;
+        let mut last_frame: Option<Keyframe> = None;
 
         while at < head {
             let boundary = (at + config.keyframe_stride as u64).min(head);
@@ -171,10 +221,16 @@ impl KeyframeIndex {
             match ground_boundary(&mut emulator, stream, at, config.ground_scan) {
                 Some(consumed) => {
                     at += consumed;
-                    frames.push(Keyframe {
-                        seq: at,
-                        screen: emulator.screen().clone(),
-                    });
+                    let kf = Keyframe::new(at, emulator.screen().clone());
+                    if frames.len() % ANCHOR_INTERVAL == 0 || last_frame.is_none() {
+                        frames.push(KeyframeStorage::Anchor(kf.clone()));
+                        last_frame = Some(kf);
+                    } else {
+                        let prev = last_frame.as_ref().unwrap();
+                        let delta = kf.compute_delta(prev);
+                        frames.push(KeyframeStorage::Delta(delta));
+                        last_frame = Some(kf);
+                    }
                 }
                 None => {
                     // The scan fed bytes without finding a boundary. Those bytes
@@ -194,19 +250,39 @@ impl KeyframeIndex {
 
     /// The newest keyframe at or before `seq`, or `None` when the only sound start
     /// is the beginning of the stream.
-    #[must_use]
-    pub fn latest_at_or_before(&self, seq: u64) -> Option<&Keyframe> {
-        let index = self.frames.partition_point(|frame| frame.seq <= seq);
+    pub fn latest_at_or_before(&self, seq: u64) -> Option<Keyframe> {
+        let index = self.frames.partition_point(|frame| frame.seq() <= seq);
         if index == 0 {
             None
         } else {
-            self.frames.get(index - 1)
+            let target_idx = index - 1;
+            match &self.frames[target_idx] {
+                KeyframeStorage::Anchor(k) => Some(k.clone()),
+                KeyframeStorage::Delta(_) => {
+                    let mut anchor_idx = target_idx;
+                    while anchor_idx > 0 && !matches!(self.frames[anchor_idx], KeyframeStorage::Anchor(_)) {
+                        anchor_idx -= 1;
+                    }
+                    if let KeyframeStorage::Anchor(ref anchor_k) = self.frames[anchor_idx] {
+                        let mut current_screen = anchor_k.screen().clone();
+                        for idx in (anchor_idx + 1)..=target_idx {
+                            if let KeyframeStorage::Delta(ref d) = self.frames[idx] {
+                                current_screen = Keyframe::apply_delta(&current_screen, d);
+                            }
+                        }
+                        let target_seq = self.frames[target_idx].seq();
+                        Some(Keyframe::new(target_seq, current_screen))
+                    } else {
+                        None
+                    }
+                }
+            }
         }
     }
 
-    /// Every keyframe, in stream order.
+    /// Every keyframe storage entry, in stream order.
     #[must_use]
-    pub fn frames(&self) -> &[Keyframe] {
+    pub fn frames(&self) -> &[KeyframeStorage] {
         &self.frames
     }
 
@@ -243,34 +319,8 @@ impl KeyframeIndex {
     /// Bytes this index holds on the heap.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        let frames: usize = self.frames.iter().map(|frame| frame.screen.heap_bytes()).sum();
-        frames + self.frames.capacity() * core::mem::size_of::<Keyframe>()
-    }
-    /// Build delta-encoded keyframes storage table with periodic anchor intervals.
-    pub fn build_delta_encoded_storage(&self, anchor_interval: usize) -> Vec<KeyframeStorage> {
-        let anchor_interval = anchor_interval.max(1);
-        let mut storage = Vec::with_capacity(self.frames.len());
-        let mut last_anchor: Option<Keyframe> = None;
-
-        for (i, frame) in self.frames.iter().enumerate() {
-            if i % anchor_interval == 0 || last_anchor.is_none() {
-                storage.push(KeyframeStorage::Anchor(frame.clone()));
-                last_anchor = Some(frame.clone());
-            } else {
-                let anchor = last_anchor.as_ref().unwrap();
-                let delta = frame.compute_delta(anchor);
-                storage.push(KeyframeStorage::Delta(delta));
-            }
-        }
-        storage
-    }
-
-    /// Calculate heap bytes required when keyframe index is delta-encoded with anchor_interval.
-    #[must_use]
-    pub fn delta_encoded_heap_bytes(&self, anchor_interval: usize) -> usize {
-        let storage = self.build_delta_encoded_storage(anchor_interval);
-        let mut bytes = storage.capacity() * core::mem::size_of::<KeyframeStorage>();
-        for entry in storage {
+        let mut bytes = self.frames.capacity() * core::mem::size_of::<KeyframeStorage>();
+        for entry in &self.frames {
             match entry {
                 KeyframeStorage::Anchor(k) => bytes += k.screen.heap_bytes(),
                 KeyframeStorage::Delta(d) => {

@@ -114,12 +114,13 @@ impl<'a> Replay<'a> {
             });
         }
 
-        let keyframe_seq = self.index.latest_at_or_before(seq).map(|frame| frame.seq);
+        let keyframe = self.index.latest_at_or_before(seq);
+        let keyframe_seq = keyframe.as_ref().map(|frame| frame.seq);
         let rewinding = seq < self.at;
         let keyframe_is_closer = keyframe_seq.is_some_and(|at| at > self.at);
 
         if rewinding || keyframe_is_closer {
-            match self.index.latest_at_or_before(seq) {
+            match keyframe {
                 Some(frame) => {
                     self.emulator = Emulator::resume(frame.screen().clone());
                     self.at = frame.seq;

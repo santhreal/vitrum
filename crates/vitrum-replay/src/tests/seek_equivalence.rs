@@ -265,7 +265,7 @@ fn a_forward_seek_from_a_position_past_the_last_keyframe_does_not_rewind() {
     let mut replay = Replay::build(stream, &config).expect("build");
 
     let head = replay.stream().head_seq();
-    let last_keyframe = replay.index().frames().last().expect("keyframes").seq;
+    let last_keyframe = replay.index().frames().last().expect("keyframes").seq();
     let start = head - 20;
     assert!(start > last_keyframe, "the fixture must end past its last keyframe");
     replay.seek(start).expect("in range");

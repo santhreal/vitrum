@@ -1,0 +1,24 @@
+[package]
+name = "vitrum-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Seekable session replay over scrollback bytes, with asciicast v2 import and export."
+
+[dependencies]
+vitrum-grid = { workspace = true }
+vitrum-proto = { workspace = true }
+vitrum-model = { workspace = true }
+vitrum-search = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+memchr = { workspace = true }
+
+# The VT byte-level state machine, and nothing else. `vitrum-grid` owns the cell
+# grid and states plainly that it has no VT parser; this crate needs one and does
+# not write one. `default-features = false` turns off vte's `no_std` mode, whose
+# only effect is swapping a `Vec` for an `ArrayVec`, so the whole dependency is
+# vte plus `memchr`, which this workspace already builds.
+vte = { version = "0.14", default-features = false }

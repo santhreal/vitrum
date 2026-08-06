@@ -1,0 +1,1212 @@
+/* Every interactive control in the window: its material, its five states, and
+ * the one focus treatment they all share.
+ *
+ * Loaded after sidebar.css, settings.css, app.css and 10-spacing.css, so
+ * nothing here needs `!important`; where a declaration below repeats a
+ * selector those files carry, later-wins is doing the work.
+ *
+ * ---------------------------------------------------------------------------
+ * What was wrong, measured
+ * ---------------------------------------------------------------------------
+ *
+ * The filter field was `--rg-surface-raised` on `--rg-surface` behind a
+ * `--rg-border` hairline at 0.08 alpha: eight luminance points of fill and a
+ * border you cannot see at arm's length, which is not a field, it is a
+ * rectangle. The new-session `+` beside it was 28px, transparent and 6px
+ * away, so a 32px filled box and a 28px invisible one sat side by side
+ * claiming no relationship. Half the controls in the product were a 1px
+ * outline drawn on the background colour. Hit targets ran from 18px
+ * (`.rg-chip`) through 20px (`.rg-session__close`, the collapsed workspace chip)
+ * to 24px (`.rg-attn-count`), all under every platform minimum. Focus was
+ * declared eleven times across three files at three different offsets, and
+ * two controls answered bare `:focus`, which fires on a mouse click.
+ *
+ * ---------------------------------------------------------------------------
+ * The four rules everything below follows
+ * ---------------------------------------------------------------------------
+ *
+ * 1. A CONTROL HAS A MATERIAL, and the material is relative to its ground.
+ *    `--rg-ctl-rest`, `--rg-ctl-hover` and `--rg-ctl-press` are set once per
+ *    surface and inherited. On the sidebar a control sits
+ *    ON the panel, so it lifts: raised at rest, overlay on hover, back to the
+ *    panel colour when pressed. On the settings sheet, whose own ground is
+ *    already `--rg-surface-overlay`, a control sits IN the panel, so it
+ *    recedes: the panel colour at rest, raised on hover, sunken when pressed.
+ *    Both directions come out of ColorDepth's four greys, one rule set drives
+ *    both, and a control never has to know which surface it landed on.
+ *
+ *    Two exceptions, both deliberate. ICON-ONLY AFFORDANCES are ghosts:
+ *    transparent at rest, white-alpha on hover. There are ten of them across
+ *    two strips of chrome and giving each a resting box would turn the frame
+ *    into a row of buttons competing with the list. FULL-BLEED ROWS, meaning
+ *    context menu entries, are ghosts for the same reason plus one more: a
+ *    menu row that recedes on hover is a hole opening under the pointer, and
+ *    every menu ever shipped highlights upward.
+ *
+ * 2. ONE FOCUS TREATMENT, `:focus-visible` ONLY. 2px of `--rg-focus-ring` at
+ *    1px offset, on every control in the product. Never bare `:focus`: the
+ *    two rules that used it, `.rg-select:focus` and `.rg-field__input:focus`,
+ *    are reset below, because a control that lights up under the pointer is
+ *    saying something about the keyboard that is not true. Text inputs still
+ *    show the ring when clicked, which is correct and free: the spec has a
+ *    focused text field match `:focus-visible` however it was reached.
+ *
+ *    Five selectors take the same ring inset instead of offset, and only
+ *    these: full-bleed rows inside a box that clips (`.rg-menu__item` and the
+ *    sidebar's three disclosure rows) and the 8px resize handle, which is
+ *    half over the terminal pane. Same width, same colour, placed where it
+ *    can be seen.
+ *
+ * 3. ONE CONTROL HEIGHT, 32px, `--rg-control-h`, which is SpacingSystem's.
+ *    `--rg-control-h-sm` is 28px, the pointer-target floor, and exactly ONE
+ *    control takes it: `.rg-session__close`, in a sidebar row, where a 32px
+ *    control would leave 2px of air and the focus ring needs 3. That is a
+ *    BAND constraint, not a second tier. The titlebar was 36 for the same
+ *    reason and is 40 now, so the switcher and the titlebar actions came back
+ *    up to 32 with everything else.
+ *
+ * 4. DISABLED LOSES ITS MATERIAL. Not dimmer: gone. No fill, no border, faint
+ *    text, no hover, no press. A disabled control stops being an object and
+ *    becomes a label, which is the difference between "you cannot press this
+ *    yet" and "the screen is a bit dark today". `pointer-events` is left on
+ *    so the `title` still answers why, which for the `+` is the only place
+ *    "Not connected" is written. The whole block sits at the END of this file
+ *    rather than beside each control: `.rg-chip.rg-chip--on` and
+ *    `.rg-sidebar__toolbar .rg-sidebar__action` both outweigh a bare
+ *    `:disabled`, so source order is what makes disabled actually win.
+ *
+ * ---------------------------------------------------------------------------
+ * Motion
+ * ---------------------------------------------------------------------------
+ *
+ * `transform` and `opacity` only, 90ms, one shot, no keyframes anywhere in
+ * this file. Every fill change is instantaneous on purpose: a control that
+ * fades under the pointer feels slower than one that answers, and a paint
+ * transition on ten chrome controls is ten composited layers this client does
+ * not need. The press scale is the only motion carrying information, and
+ * `--rg-t-press` is the only duration token declared here, zeroed in the
+ * reduced-motion block at the bottom along with the transforms it drives. */
+
+:root {
+  /* -- Control geometry ---------------------------------------------------
+   * 32px is SpacingSystem's control height and the one this file uses. 28 is
+   * the pointer floor and belongs to three controls in two 36px bands; see
+   * rule 3 above. Nothing here is a half step: the 30px `--rg-set-control-h`
+   * and the 6px resize handle that were are corrected below. */
+  --rg-control-h: 2rem;
+  --rg-control-h-sm: 1.75rem;
+  --rg-control-pad-x: 0.5rem;
+  --rg-control-pad-x-lg: 0.75rem;
+
+  /* 8px on a 32px control is a quarter of the height, which is the corner
+   * proportion every macOS control holds. 4px is for the two things smaller
+   * than a control: the keycap and the icon-only ghosts. */
+  --rg-control-radius: var(--rg-radius-md);
+  --rg-control-radius-sm: var(--rg-radius-sm);
+
+  /* A control's border has to read as an edge on its own, which
+   * `--rg-border` at 0.08 alpha does not. */
+  --rg-control-border: var(--rg-border-strong);
+
+  /* Focus, declared once. `--rg-focus-ring-w` is 2px and already exists. */
+  --rg-focus-offset: 1px;
+
+  /* Motion tokens are NOT declared here. They are on `.rg-app` below, and the
+   * reason is a bug this file had: a custom property is substituted where it
+   * is DECLARED, so `--rg-t-press: var(--rg-t-fast)` written in `:root` reads
+   * :root's copy of `--rg-t-fast`. The in-app Reduce Motion switch
+   * (ui/settings.rs `root_style`) writes `--rg-t-fast:0s` INLINE on
+   * `div.rg-app`, one element below :root, which :root never sees, so every
+   * press kept animating for an operator who had asked it not to. Declared on
+   * `.rg-app` the alias resolves at the element the switch writes to. */
+
+  /* -- Settings sheet, brought onto the product's control height ----------
+   * 1.875rem was 30px: off the grid, and two pixels short of the filter field
+   * it is meant to match. */
+  --rg-set-control-h: var(--rg-control-h);
+
+  /* -- Switch -------------------------------------------------------------
+   * Was 36x20, a 20px hit target. 48x32 with a 24px knob and 4px of inset
+   * clears the floor with no wrapper element and no `background-clip` trick,
+   * and every number is a grid multiple: 4 + 24 + 4 = 32 exactly, and the
+   * knob's 16px of travel leaves the same 4px at the far end. The track's
+   * edge is an inset shadow rather than a border precisely so that arithmetic
+   * holds: a border would eat 1px off each side and put the knob 5px from one
+   * end and 3px from the other. */
+  --rg-switch-w: 3rem;
+  --rg-switch-h: var(--rg-control-h);
+  --rg-switch-pad: 0.25rem;
+  --rg-switch-knob-size: 1.5rem;
+  --rg-switch-travel: 1rem;
+
+  /* -- Collapsed workspace strip ------------------------------------------
+   * The collapsed chip was a 20px click target in a 24px band. The chip comes
+   * up to the control height and the band has to come with it, or a 32px
+   * control overflows a 24px strip, which is the overlap class of defect.
+   * Collapsing the strip now buys 8px of height rather than 12; the label it
+   * keeps is worth more than either. */
+  --rg-wsbar-chip-h: var(--rg-control-h);
+  --rg-wsbar-h-collapsed: 2.5rem;
+
+  /* -- Resize handle -------------------------------------------------------
+   * 6px was a half step. 8px is on the grid and still inside the sidebar's
+   * 12px content inset, so the col-resize cursor never covers row content. */
+  --rg-resizer-w: 0.5rem;
+}
+
+/* -------------------------------------------------------------------- */
+/* The material, per ground                                              */
+/* -------------------------------------------------------------------- */
+
+/* On `--rg-surface` a control LIFTS off the panel.
+ *
+ * This block also carries the press tokens, for the reason given above: they
+ * have to resolve at the element the in-app Reduce Motion switch writes to.
+ * `--rg-t-press` is an alias of `--rg-t-fast` rather than a second literal so
+ * that 17-motion.css, which declares the same alias in the same place and
+ * loads after this file, agrees with it whichever way load order falls. */
+.rg-app {
+  --rg-ctl-rest: var(--rg-surface-raised);
+  --rg-ctl-hover: var(--rg-surface-overlay);
+  --rg-ctl-press: var(--rg-surface);
+
+  --rg-t-press: var(--rg-t-fast);
+  --rg-press-scale: 0.96;
+  /* The icon-only ghosts are small, so they need a deeper press to read. */
+  --rg-press-scale-sm: 0.92;
+}
+
+/* On `--rg-surface-overlay` it sinks INTO the panel, because there is nothing
+ * lighter left in the ramp and a control that matched its own sheet on hover
+ * would vanish at the exact moment it was being aimed at. */
+.rg-sheet {
+  --rg-ctl-rest: var(--rg-surface);
+  --rg-ctl-hover: var(--rg-surface-raised);
+  --rg-ctl-press: var(--rg-surface-sunken);
+}
+
+/* -------------------------------------------------------------------- */
+/* Focus: one ring, one offset, everywhere                               */
+/* -------------------------------------------------------------------- */
+
+/* Standalone controls: the ring sits outside the edge, where macOS puts it.
+ * Every band holding one of these clears 3px, which is what a 2px ring at 1px
+ * offset costs. */
+.rg-btn:focus-visible,
+.rg-btn-inline:focus-visible,
+.rg-chip:focus-visible,
+.rg-select:focus-visible,
+.rg-switch:focus-visible,
+.rg-field__input:focus-visible,
+.rg-sidebar__search:focus-within,
+.rg-sidebar__action:focus-visible,
+.rg-attn-count:focus-visible,
+.rg-titlebar__action:focus-visible,
+.rg-wsw:focus-visible,
+.rg-wsbar__item:focus-visible,
+.rg-wsbar__add:focus-visible,
+.rg-wsbar__manage:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: var(--rg-focus-offset);
+}
+
+/* Full-bleed rows inside a box that clips, plus the resize handle, which is
+ * an edge and has no outside to put a ring on. Same ring, drawn inward. */
+.rg-menu__item:focus-visible,
+.rg-project__header:focus-visible,
+.rg-project__section-head:focus-visible,
+.rg-project__more:focus-visible,
+.rg-sidebar__resizer:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: calc(-1 * var(--rg-focus-ring-w));
+}
+
+/* The two bare `:focus` rules in the product, reset. Both are text-entry
+ * controls whose accent border fired on a mouse click, which is a keyboard
+ * signal spent on a pointer event; the `:focus-visible` rule below is the
+ * only thing that should answer, and on a text field it still answers to the
+ * click. Declared after the ring above so equal specificity resolves the
+ * right way, and re-stated after itself for the same reason. */
+.rg-select:focus,
+.rg-field__input:focus {
+  outline: none;
+  border-color: var(--rg-control-border);
+}
+
+.rg-select:focus-visible,
+.rg-field__input:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: var(--rg-focus-offset);
+  border-color: var(--rg-control-border);
+}
+
+/* -------------------------------------------------------------------- */
+/* The sidebar toolbar cluster: filter field + new session                */
+/* -------------------------------------------------------------------- */
+
+/* One object, not two strangers. Same height, same fill, same border, same
+ * radius, 4px apart inside a 12px inset, so proximity and material both say
+ * "these belong together" and the 12px says "and this row is one band".
+ *
+ * 4px rather than the 6px half step that was here. ChromeBands is not writing
+ * this rule and SpacingSystem left the gap to the lane that owns the cluster;
+ * the gap IS the cluster, so it belongs with the controls. */
+.rg-sidebar__toolbar {
+  gap: var(--rg-space-1);
+}
+
+/* Padding and gap are SpacingSystem's: the field's content box starts exactly
+ * 24px from the window edge and this file must not move it. What is added
+ * here is the material, the anchor for the keycap, and a floor on the width.
+ *
+ * The floor is 7.5rem and it is measured, not chosen. At the 224px sidebar
+ * minimum the toolbar has 200px of content between its two 12px insets, of
+ * which the `+` takes 32 and the two gaps take 8. What is left for the field
+ * and the waiting chip together is 160. The field needs 120 to show the word
+ * "Filter" without slicing it: 2 border, 14 padding, 16 icon, 8 gap and the
+ * 48px keycap reserve leave 32px of text, and "Filter" is 34. So the field
+ * floor is 120 and the chip lives on what is left. */
+.rg-sidebar__search {
+  position: relative;
+  flex: 1 1 auto;
+  /* 116px, and it is the toolbar's arithmetic rather than a preference. At
+   * the 224px sidebar minimum the band has 192px between its 16px insets; the
+   * `+` takes 32, the chip's floor is 36 and the two gaps are 8, so 116 is
+   * exactly what is left. Those 116 give the input 68 after border, padding,
+   * icon and gap, and 68 less the 36 keycap reserve is 32 against the 29 that
+   * "Filter" inks in the running binary.
+   *
+   * It was 120 first, and the row overflowed its right padding by 8px in the
+   * binary: the `+` sat seven pixels from the panel edge against sixteen on
+   * the left, which is the ragged-edge defect this batch exists to remove.
+   *
+   * The floor is not the ordinary case. The sidebar resolves near 422 now
+   * that the `vw` bug is fixed, so this is what happens when someone drags
+   * the edge all the way in; there the input has 128px of text room. */
+  min-width: 7.25rem;
+
+  /* 4px, not SpacingSystem's 8. Their gap is the right default for a field
+   * with room; this one has 120px at the sidebar floor and the placeholder
+   * was measured clipped to "Filte" in the running binary at 8. The icon is
+   * 16 and reads as attached to the word at 4 without touching it. */
+  gap: var(--rg-space-1);
+  height: var(--rg-control-h);
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-control-radius);
+  background-color: var(--rg-ctl-rest);
+  /* No colour transition. The border resolves on hover in one frame. */
+  transition: none;
+}
+
+.rg-sidebar__search:hover,
+.rg-sidebar__search:active {
+  border-color: var(--rg-fg-faint);
+}
+
+/* THREE CONTROLS HAVE NO DISABLED STATE AND CANNOT BE GIVEN ONE. This field
+ * wrapper and `.rg-sidebar__resizer` are divs, and `:disabled` matches form
+ * elements only; the input inside the field is never emitted disabled by
+ * sidebar.rs. So there is no rule for them below, and adding one would be
+ * dead CSS asserting a state the markup cannot reach. The other eighteen
+ * controls all have one. */
+
+/* Focus is the ring, declared with every other control above, and the border
+ * stays put. An accent border under an accent ring is the same statement
+ * twice at two radii. */
+.rg-sidebar__search:focus-within {
+  border-color: var(--rg-control-border);
+}
+
+.rg-sidebar__search-icon {
+  /* 12px, and the glyph is sized by `font-size`, so only the BOX narrows.
+   * SpacingSystem sets 16 and that is the right default; these 4px are the
+   * last ones available to the placeholder at the 224px floor, and a 13px
+   * glyph centred in a 12px box overflows half a pixel into a 4px gap, which
+   * nothing can see. `--rg-glyph-w` is 18 and belongs to the row's project
+   * mark, a different column in a different band. */
+  width: 0.75rem;
+  color: var(--rg-fg-faint);
+}
+
+/* THE KEYCAP IS TAKEN OUT OF THE FLEX ROW.
+ *
+ * As a flex sibling of an input at `flex: 1 1 auto`, the input is the only
+ * thing in the field that can give, so at the 224px sidebar floor the typing
+ * area collapses toward zero while the keycap keeps its full width: the field
+ * stops being a field before it stops being legible. Positioned against the
+ * field instead, the keycap costs a fixed reserve inside the input's own
+ * padding and can never squeeze it.
+ *
+ * It goes when the field takes focus, and the reserve goes with it, so the
+ * whole width is available for the query being typed. The padding snaps
+ * rather than animating: the caret is at the left edge at the moment focus
+ * lands, so nothing the eye is tracking moves. */
+.rg-sidebar__search-kbd {
+  position: absolute;
+  top: 50%;
+  right: var(--rg-space-1);
+  transform: translateY(-50%);
+
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+
+  /* NO BOX. Not a style preference: an arithmetic one, and it is the only
+   * reason the 224px floor closes.
+   *
+   * The field's content box at its 120px floor is 96px wide. The icon and its
+   * gap take 24, the placeholder "Filter" takes 31, and 4px of clearance is
+   * the minimum before the hint starts reading as part of the word. That
+   * leaves 37 for the keycap and its offset. As a bordered, padded box the
+   * keycap measured 47.6 wide, which is 15px over, and every other lever
+   * (icon, gap, inset, placeholder) belongs to a different lane or to the
+   * markup. Stripping the border, the fill and the padding takes it to 39.6
+   * and the row closes with room to spare.
+   *
+   * It is also just the right drawing. A bordered box inside a bordered box,
+   * 4px apart, is two edges arguing; faint mono text at the field's right
+   * edge is what a shortcut hint looks like in every editor that has one. */
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  color: var(--rg-fg-faint);
+
+  pointer-events: none;
+  transition: opacity var(--rg-t-press) linear;
+}
+
+/* 36px, and it is a SPLIT OF A FIXED BUDGET rather than a chosen number.
+ *
+ * At the 224px sidebar floor with the waiting chip present the field is at
+ * its 112 floor, so the input's box is 64: 112, less 2 of border, less the 30
+ * of padding SpacingSystem sets, less the 12 icon and the 4 gap. Those 64
+ * hold both the placeholder and the keycap's reserve and there is nothing
+ * else to draw on.
+ *
+ * Measured, in the running binary: "Filter" inks 29px, and the keycap is 41.8
+ * wide since TypeHierarchy moved inline keycaps off the mono face. The keycap
+ * sits 4px in from the padding box behind a 1px border, and the field already
+ * carries 15px of right padding, so clearance is `reserve + 15 - 46.8`. At 36
+ * that is 4.2px of clearance against 28px of text.
+ *
+ * 28 against 29 is one pixel short, and it is the single known degradation in
+ * this file: at the 224px minimum, with a waiting chip beside it, the
+ * placeholder loses the tail of its "r". Every other width clears easily; at
+ * the sidebar's resolved 422 the input has 128px of text room. The fix is not
+ * in CSS. sidebar.rs emits the keycap unconditionally, and gating it on the
+ * sidebar width would return 36px to the field and remove the corner
+ * outright; that is reported rather than done here, because this file does
+ * not own the markup. Clipping the hint would have been the wrong trade in
+ * the other direction: the reserve is what keeps the two off each other, and
+ * an overlap is a defect where a tight placeholder is a compromise. */
+.rg-sidebar__search-input {
+  padding-right: 2.25rem;
+}
+
+/* THE INVARIANT: THESE TWO SELECTOR LISTS MUST STAY IDENTICAL.
+ *
+ * The reserve above exists only to keep the text off the keycap, so it is
+ * dropped in exactly the states where the keycap is not drawn, and the keycap
+ * is hidden in exactly the states where the reserve is dropped. The two rules
+ * below are the same two conditions written twice, differing only by the
+ * sibling combinator. Edit one without the other and the field acquires the
+ * one state that IS a defect: text running under a visible hint.
+ *
+ * The conditions are "the operator is in the field" and "the operator has
+ * typed something", because a shortcut hint is only useful while the field is
+ * empty and untouched. At the 224px floor the difference is 28px of visible
+ * query against 64, which is most of the control.
+ *
+ * `:not(:placeholder-shown)` is what makes the typed case work, and it fails
+ * safe: an engine without the pseudo-class drops the whole selector, so the
+ * reserve stays and the keycap stays, which is exactly what shipped before
+ * this file. The keycap is a LATER sibling of the input in sidebar.rs, which
+ * is what lets the general sibling combinator reach it without `:has()`.
+ *
+ * A box-level reading of this will report the keycap overlapping the input by
+ * ~21px whenever the reserve is 0. Nothing is painted there: that is the
+ * state in which the keycap's opacity is 0, by construction. Verified in the
+ * running binary with a 36-character query at 1.0x. */
+.rg-sidebar__search:focus-within .rg-sidebar__search-kbd,
+.rg-sidebar__search-input:not(:placeholder-shown) ~ .rg-sidebar__search-kbd {
+  opacity: 0;
+}
+
+.rg-sidebar__search:focus-within .rg-sidebar__search-input,
+.rg-sidebar__search-input:not(:placeholder-shown) {
+  padding-right: 0;
+}
+
+/* The toolbar's buttons take the field's material and the field's height, and
+ * that is the whole of what makes them one cluster. Scoped to the toolbar:
+ * the footer pair and the collapsed rail keep the ghost below, which is what
+ * ChromeBands writes its two footer overrides against. */
+.rg-sidebar__toolbar .rg-sidebar__action {
+  width: var(--rg-control-h);
+  height: var(--rg-control-h);
+
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-control-radius);
+  background-color: var(--rg-ctl-rest);
+  color: var(--rg-fg-muted);
+
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-sidebar__toolbar .rg-sidebar__action:hover:enabled {
+  background-color: var(--rg-ctl-hover);
+  border-color: var(--rg-fg-faint);
+  color: var(--rg-fg);
+}
+
+.rg-sidebar__toolbar .rg-sidebar__action:active:enabled {
+  background-color: var(--rg-ctl-press);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* New session is the one control in this panel an operator presses on
+ * purpose. It is not a second fill and not a second accent: the material is
+ * the field's and the glyph is full foreground at a size step. A filled
+ * accent square here would be the loudest thing in a column of twenty quiet
+ * rows, which is the job the rows' own status hues already have. */
+.rg-sidebar__toolbar .rg-sidebar__action--primary {
+  color: var(--rg-fg);
+  font-size: var(--rg-text-17);
+}
+
+/* -------------------------------------------------------------------- */
+/* Icon-only affordances: the ghost                                      */
+/* -------------------------------------------------------------------- */
+
+/* Transparent at rest, white-alpha under the pointer. The alpha fills compose
+ * over whatever band the control landed in, which is why these need no
+ * per-ground ramp. */
+.rg-sidebar__action,
+.rg-titlebar__action,
+.rg-wsw,
+.rg-wsbar__item,
+.rg-wsbar__add,
+.rg-wsbar__manage {
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-sidebar__action {
+  width: var(--rg-control-h);
+  height: var(--rg-control-h);
+  border-radius: var(--rg-control-radius-sm);
+}
+
+.rg-sidebar__action:hover:enabled {
+  background-color: var(--rg-bg-hover);
+  color: var(--rg-fg);
+}
+
+.rg-sidebar__action:active:enabled {
+  background-color: var(--rg-bg-active);
+  transform: scale(var(--rg-press-scale-sm));
+}
+
+/* 32px in a 40px band: 4px of air each side, which is what the ring needs.
+ * These were 28 while the titlebar was 36; ChromeBands settled the band at 40
+ * and the exception went with it. */
+.rg-titlebar__action {
+  width: var(--rg-control-h);
+  height: var(--rg-control-h);
+  border-radius: var(--rg-control-radius-sm);
+}
+
+.rg-titlebar__action:hover:enabled {
+  background-color: var(--rg-bg-hover);
+  color: var(--rg-fg);
+}
+
+.rg-titlebar__action:active:enabled {
+  background-color: var(--rg-bg-active);
+  transform: scale(var(--rg-press-scale-sm));
+}
+
+/* -------------------------------------------------------------------- */
+/* Waiting count: a chip that is a button                                */
+/* -------------------------------------------------------------------- */
+
+/* The only pointer affordance for Ctrl+Shift+Down, and it was a 24px target.
+ * It comes up to the control height and takes a pill radius, so against a
+ * 32px field and a 32px rounded-square `+` it reads as a third kind of thing
+ * rather than as a second primary button.
+ *
+ * It is the one control in the toolbar allowed to shrink, and it shrinks
+ * FIRST. `flex-shrink: 20` against the field's 1 is what enforces that: with
+ * equal shrink factors the deficit is shared in proportion to each item's
+ * base size, so the field, being the wider of the two, would have given up
+ * the most, which is exactly backwards.
+ *
+ * What it degrades to at the 224px floor is a bare orange number, because the
+ * word is clipped away before the number is and the number is the part that
+ * carries the meaning. The tooltip has the sentence.
+ *
+ * Hover is a full-strength hairline in the hue the fill is already tinted
+ * with, not a different hue. The fill is `--rg-pill-approval-bg`, which is
+ * orange, and the hover it had was `--rg-hue-approval-soft`, which is yellow,
+ * so the chip changed colour when you pointed at it. */
+.rg-attn-count {
+  flex: 0 20 auto;
+  /* 36px, and the number comes from the toolbar's arithmetic rather than from
+   * taste: 192 of band, less 32 for the `+`, less 8 of gaps, less the 116 the
+   * field needs to print "Filter" whole. 36 is what is left, exactly.
+   *
+   * `overflow: hidden` is what makes a floor this small safe. A flex item
+   * whose overflow is not `visible` has an automatic minimum of zero, so the
+   * chip is free to reach its floor instead of being propped open by the
+   * width of the word "waiting"; `min-width: 0` on the word alone does NOT do
+   * this, because a min-content contribution is clamped by min-width rather
+   * than replaced by it, and the chip measured 67px with the word still
+   * holding it open. The clip also stops the two characters that would
+   * otherwise fit from spilling past the pill's curve: "3 w" reads as a
+   * rendering fault where a bare "3" reads as a badge.
+   *
+   * The word is all-or-nothing rather than a fragment because `__n` below
+   * reserves a fixed 18px slot: number plus gap is 22 against 18 of content,
+   * so at the floor the word begins outside the clip and renders nothing.
+   * Without that slot a one-digit count left 12px over and the chip drew
+   * "1 w", which is exactly the sliced-word reading this avoids.
+   *
+   * The one thing that does clip here is a three-digit count at the 224px
+   * floor, by about a pixel of the last digit. That is the deliberate side of
+   * the trade: the alternative was a 40px floor, which clipped the "r" off
+   * "Filter" on every single frame at that width instead of on the frames
+   * where a hundred sessions are waiting at a 224px sidebar.
+   *
+   * `max-width: none` drops a 4rem cap that ellipsised "3 waiting" at 4K,
+   * where there are two thousand spare pixels and nothing to protect. */
+  min-width: 2.25rem;
+  max-width: none;
+  overflow: hidden;
+
+  height: var(--rg-control-h);
+  gap: var(--rg-space-1);
+  padding: 0 var(--rg-control-pad-x);
+
+  border: 1px solid transparent;
+  border-radius: var(--rg-radius-full);
+  background-color: var(--rg-pill-approval-bg);
+  color: var(--rg-pill-approval);
+
+  font-variant-numeric: tabular-nums;
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+/* A fixed slot, three digits wide, for the same reason `.rg-wsw__count` has
+ * one: a strip of counts must not jog sideways the moment one of them reaches
+ * ten. Here it does a second job, described above, of making the word beside
+ * it either fully present or fully gone. */
+.rg-attn-count__n {
+  flex: 0 0 auto;
+  min-width: 1.125rem;
+  text-align: center;
+}
+
+.rg-attn-count__word {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rg-attn-count:hover:enabled {
+  background-color: var(--rg-pill-approval-bg);
+  border-color: var(--rg-pill-approval);
+}
+
+.rg-attn-count:active:enabled {
+  border-color: var(--rg-pill-approval);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* -------------------------------------------------------------------- */
+/* Resize handle                                                         */
+/* -------------------------------------------------------------------- */
+
+/* A focusable control that nudges with the arrow keys, so it owes the same
+ * five states as a button, and it is 8px of a 449px panel so it has to earn
+ * all of them from one gradient.
+ *
+ * The gradient paints the right quarter, which is 2px hard against the panel
+ * edge: a divider that thickens under the pointer rather than an 8px slab of
+ * colour appearing beside the list. `--rg-resizer-w` is 8px above, so 75% is
+ * exactly two device pixels at 1x.
+ *
+ * The pressed state is `:active` rather than a data attribute.
+ * `.rg-sidebar__resizer[data-dragging="true"]` is in sidebar.css and
+ * sidebar.rs never emits that attribute, so it has never once matched;
+ * `:active` holds for the whole drag because the drag shield is inserted
+ * after mousedown and the engine keeps `:active` on the element the press
+ * started on. */
+.rg-sidebar__resizer {
+  width: var(--rg-resizer-w);
+  background-color: transparent;
+  background-image: none;
+  transition: none;
+}
+
+.rg-sidebar__resizer:hover {
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    transparent 0,
+    transparent 75%,
+    var(--rg-border-strong) 75%
+  );
+}
+
+.rg-sidebar__resizer:active,
+.rg-sidebar__resizer:focus-visible {
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    transparent 0,
+    transparent 75%,
+    var(--rg-focus-ring) 75%
+  );
+}
+
+/* -------------------------------------------------------------------- */
+/* Workspace switcher and strip                                          */
+/* -------------------------------------------------------------------- */
+
+/* THE CHIP THE CRITIQUE CALLED A FOCUS RING ON LOAD IS NOT ONE. app.css line
+ * 236 gives `.rg-wsw` `background-color: var(--rg-bg-hover)` as its RESTING
+ * fill, so the switcher wears the hover state permanently, in a 36px band
+ * where nothing else has a fill at all. That is why it is the brightest thing
+ * in the window and why it reads as though something has focus before anyone
+ * has touched the keyboard. There is no autofocus anywhere in app/src and no
+ * bare `:focus` outside the two text controls reset above; the chip was just
+ * lit.
+ *
+ * So: a ghost, like every other icon-and-label affordance in the frame. It
+ * names the workspace you are in and must not compete with the session title
+ * beside it. Open stays a PRESSED state, which is the honest reading of a
+ * button whose job while the strip is showing is "press me again to put it
+ * away". 28px to match `.rg-titlebar__action`, so the band has one control
+ * height. The focus ring was inset at -2px and drew a 2px accent frame around
+ * the whole inside of the chip; it now takes the product's ring, from the
+ * keyboard only. */
+.rg-wsw {
+  height: var(--rg-control-h);
+  border-radius: var(--rg-control-radius-sm);
+  background-color: transparent;
+}
+
+.rg-wsw:hover:enabled {
+  background-color: var(--rg-bg-hover);
+  color: var(--rg-fg);
+}
+
+.rg-wsw--open {
+  background-color: var(--rg-bg-active);
+  color: var(--rg-fg);
+}
+
+.rg-wsw:active:enabled {
+  background-color: var(--rg-bg-active);
+  color: var(--rg-fg);
+  transform: scale(var(--rg-press-scale));
+}
+
+.rg-wsbar__item:hover:enabled {
+  background-color: var(--rg-bg-hover);
+  color: var(--rg-fg);
+}
+
+.rg-wsbar__item:active:enabled {
+  background-color: var(--rg-bg-active);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* SELECTED IS NOT THE ACCENT. This chip carried `box-shadow: inset 0 0 0 1px
+ * var(--rg-accent)`, so on load, before anyone had touched anything, a blue
+ * ring sat around the workspace you were already in. That is the same ring
+ * the keyboard uses to say where focus is, spent on a fact the operator
+ * cannot act on, and it is the second half of "the loudest thing on screen
+ * means nothing".
+ *
+ * Selected is a held fill and full foreground, which is exactly how a
+ * selected row in the sidebar says the same thing. The accent is rationed to
+ * three jobs in this product: the primary button, the real focus ring, and
+ * the unread dot. */
+.rg-wsbar__item--active {
+  background-color: var(--rg-bg-active);
+  box-shadow: none;
+  color: var(--rg-fg);
+}
+
+/* Collapsed, the chip was 20px in a 24px strip. Both came up a step in the
+ * token block, and the padding comes with them so a 32px pill is not a 32px
+ * circle around three characters. Every chip carries a hairline here and the
+ * held fill is what separates the one you are in. */
+.rg-wsbar--collapsed .rg-wsbar__item {
+  padding: 0 var(--rg-control-pad-x-lg);
+  box-shadow: inset 0 0 0 1px var(--rg-border);
+}
+
+.rg-wsbar--collapsed .rg-wsbar__item--active {
+  background-color: var(--rg-bg-active);
+  box-shadow: inset 0 0 0 1px var(--rg-border-strong);
+}
+
+.rg-wsbar__add:hover:enabled,
+.rg-wsbar__manage:hover:enabled {
+  background-color: var(--rg-bg-hover);
+  color: var(--rg-fg);
+}
+
+.rg-wsbar__add:active:enabled,
+.rg-wsbar__manage:active:enabled {
+  background-color: var(--rg-bg-active);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* -------------------------------------------------------------------- */
+/* Full-bleed rows: context menu entries and the tab overflow list        */
+/* -------------------------------------------------------------------- */
+
+/* Ghosts, not recessed controls: a row that darkens on hover is a hole
+ * opening under the pointer, and every menu ever shipped highlights upward.
+ *
+ * The session row is here because it is a real button and
+ * it was the last pressable thing in the window with no pressed state at all.
+ * It shares the menu's shape exactly: a full-width row inside a popover that
+ * clips, so it takes the ghost fills and the inset ring rather than a raised
+ * material and an outside one.
+ *
+ * Neither takes the press SCALE. A full-width row shrinking toward its own
+ * centre pulls its text off the left edge its neighbours sit on, and that
+ * edge is the grouping signal; the fill step is the feedback instead.
+ *
+ * The menu row's height stays at `--rg-menu-item-h`. menu.rs holds the same
+ * number in `MENU_ITEM_H` to clamp the popover against the window edge before
+ * layout has happened, and moving one without the other puts the bottom of a
+ * long menu off screen. */
+.rg-menu__item:hover:enabled {
+  background-color: var(--rg-bg-hover);
+  color: var(--rg-fg);
+}.rg-menu__item:active:enabled {
+  background-color: var(--rg-bg-active);
+}
+
+/* -------------------------------------------------------------------- */
+/* Settings sheet: the same product as the sidebar                       */
+/* -------------------------------------------------------------------- */
+
+/* Every control in the sheet is 32px, the filter field's height, with the
+ * filter field's border and radius. What differs is only the direction of the
+ * material, and that comes from `--rg-ctl-*` on `.rg-sheet` rather than from
+ * a second set of rules. */
+
+.rg-field__input {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-control-pad-x);
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-control-radius);
+  background-color: var(--rg-ctl-rest);
+  transition: none;
+}
+
+/* A text field's pressed state is the drag that selects its contents, so it
+ * holds the approach border rather than pushing in. Scaling a control the
+ * operator is trying to select characters inside would move the characters. */
+.rg-field__input:hover:enabled,
+.rg-field__input:active:enabled {
+  border-color: var(--rg-fg-faint);
+}
+
+.rg-field__input::placeholder {
+  color: var(--rg-fg-faint);
+}
+
+.rg-select {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-6) 0 var(--rg-control-pad-x);
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-control-radius);
+  background-color: var(--rg-ctl-rest);
+  /* The arrow is two gradient triangles because `appearance: none` takes the
+   * platform arrow away with the platform widget. Both marks sit on the grid,
+   * 4px wide at 8px and 12px in from the right edge, inside a 24px reserve so
+   * the longest option label can never run under them. */
+  background-position:
+    right var(--rg-space-3) top 50%,
+    right var(--rg-space-2) top 50%;
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-select:hover:enabled {
+  background-color: var(--rg-ctl-hover);
+  border-color: var(--rg-fg-faint);
+}
+
+.rg-select:active:enabled {
+  background-color: var(--rg-ctl-press);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* The dropped-open list is the platform's and inherits nothing from the page,
+ * so both of its colours are still named here. */
+.rg-select option {
+  background-color: var(--rg-surface-overlay);
+  color: var(--rg-fg);
+}
+
+/* Two channels say which way the switch is thrown, position and fill, because
+ * a switch that changes only colour is unreadable to a third of the people
+ * who will use it. The track gains the product's edge as an INSET SHADOW, not
+ * a border: a border would take a pixel off each end of the 48px track and
+ * put the knob 5px from one end and 3px from the other. */
+.rg-switch {
+  border: 0;
+  background-color: var(--rg-ctl-rest);
+  box-shadow: inset 0 0 0 1px var(--rg-control-border);
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-switch:hover:enabled {
+  box-shadow: inset 0 0 0 1px var(--rg-fg-faint);
+}
+
+.rg-switch:active:enabled {
+  transform: scale(var(--rg-press-scale));
+}
+
+.rg-switch--on {
+  background-color: var(--rg-accent);
+  box-shadow: inset 0 0 0 1px var(--rg-accent);
+}
+
+.rg-switch--on:hover:enabled {
+  background-color: var(--rg-accent-strong);
+  box-shadow: inset 0 0 0 1px var(--rg-accent-strong);
+}
+
+.rg-switch__knob {
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+/* -- Buttons ----------------------------------------------------------- */
+
+.rg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-height: var(--rg-control-h);
+  padding: 0 var(--rg-control-pad-x-lg);
+
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-control-radius);
+  background-color: var(--rg-ctl-rest);
+  color: var(--rg-fg);
+
+  white-space: nowrap;
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-btn:hover:enabled {
+  background-color: var(--rg-ctl-hover);
+  border-color: var(--rg-fg-faint);
+}
+
+.rg-btn:active:enabled {
+  background-color: var(--rg-ctl-press);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* settings.css sizes the buttons that share a line with a select. The height
+ * now comes from the shared token, so all that is left here is the padding,
+ * which was a 10px half step. */
+.rg-sheet--settings .rg-field__control .rg-btn {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-control-pad-x);
+}
+
+/* The one filled control in the product. It is the accent and nothing else
+ * is, which is exactly why the toolbar `+` above is not. */
+.rg-btn--primary {
+  border-color: var(--rg-accent);
+  background-color: var(--rg-accent);
+  color: #ffffff;
+}
+
+.rg-btn--primary:hover:enabled {
+  border-color: var(--rg-accent-strong);
+  background-color: var(--rg-accent-strong);
+}
+
+.rg-btn--primary:active:enabled {
+  border-color: var(--rg-accent);
+  background-color: var(--rg-accent);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* Quiet at rest, loud on approach. A row of four buttons where one is a
+ * filled red block trains the operator to read the red block as the row's
+ * primary action, which for Delete is exactly backwards. */
+.rg-btn.rg-btn--danger {
+  color: var(--rg-hue-failed);
+}
+
+.rg-btn.rg-btn--danger:hover:enabled {
+  border-color: var(--rg-hue-failed);
+  background-color: var(--rg-banner-failed-bg);
+  color: var(--rg-hue-failed);
+}
+
+.rg-btn.rg-btn--danger:active:enabled {
+  border-color: var(--rg-hue-failed);
+  background-color: var(--rg-banner-failed-bg);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* settings.css declares this at the same specificity with a 2px offset, which
+ * is the one place in the product the ring sat at a different distance from
+ * its control. Only the hue changes here; the geometry is everyone else's. */
+.rg-btn.rg-btn--danger:focus-visible {
+  outline-color: var(--rg-hue-failed);
+  outline-offset: var(--rg-focus-offset);
+}
+
+/* The same treatment for the inline button, and it is not decoration.
+ *
+ * `.rg-btn-inline--danger` is emitted by exactly one control: the Terminate
+ * confirmation in the flash strip, the second press of the armed prompt, which
+ * kills a child process with no undo. It had NO RULE AT ALL, so the button that
+ * ends a session was drawn identically to the one that dismisses a notice.
+ *
+ * It went unnoticed because the guard that catches unpainted classes did not
+ * scan main.rs, and when main.rs was added the scan silently truncated at the
+ * `#[cfg(test)] mod testkit;` on line 26 and checked almost nothing. Two
+ * separate holes in one guard hid one dangerous control.
+ *
+ * Same reasoning as `.rg-btn--danger` above: quiet at rest, loud on approach.
+ * The strip already carries the sentence naming what will be terminated, so the
+ * button does not need to shout; it needs to not look like Dismiss. */
+.rg-btn-inline.rg-btn-inline--danger {
+  color: var(--rg-hue-failed);
+}
+
+.rg-btn-inline.rg-btn-inline--danger:hover:enabled {
+  border-color: var(--rg-hue-failed);
+  background-color: var(--rg-banner-failed-bg);
+  color: var(--rg-hue-failed);
+}
+
+.rg-btn-inline.rg-btn-inline--danger:active:enabled {
+  border-color: var(--rg-hue-failed);
+  background-color: var(--rg-banner-failed-bg);
+  transform: scale(var(--rg-press-scale));
+}
+
+.rg-btn-inline.rg-btn-inline--danger:focus-visible {
+  outline-color: var(--rg-hue-failed);
+  outline-offset: var(--rg-focus-offset);
+}
+
+/* The inline button in the flash strip, the exit bar, the connection pill and
+ * the shortcuts sheet.
+ *
+ * IT HAD NO RESTING MATERIAL AT ALL: transparent fill, transparent border,
+ * `color: inherit`, no radius that could be seen. ChromeBands measured it in
+ * the offline state and the Retry inside the connection pill was the same
+ * weight and the same colour as the word "Offline" beside it, so the one
+ * control a person reaches for when the socket is down read as the second
+ * half of a sentence.
+ *
+ * It keeps `color: inherit`, which is the right call and the reason its fill
+ * and its edge are white-alpha rather than tokens from the grey ramp: the
+ * same declaration has to sit on a red failure banner, a grey exit bar and a
+ * settings sheet and be a button on all three. It is 28px because the bands
+ * it lives in are content-sized and short. */
+.rg-btn-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-height: var(--rg-control-h-sm);
+  padding: 0 var(--rg-control-pad-x-lg);
+
+  border: 1px solid var(--rg-border-strong);
+  border-radius: var(--rg-control-radius-sm);
+  background-color: var(--rg-bg-hover);
+
+  white-space: nowrap;
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-btn-inline:hover:enabled {
+  background-color: var(--rg-bg-active);
+  border-color: var(--rg-fg-faint);
+}
+
+/* Pressed goes back DOWN to the resting fill, not up past hover, so the three
+ * steps are rest, lift, push, the same direction every other control here
+ * travels in. */
+.rg-btn-inline:active:enabled {
+  background-color: var(--rg-bg-hover);
+  border-color: var(--rg-border-strong);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* -- Chips ------------------------------------------------------------- */
+
+/* The Ctrl/Alt/Shift toggles in the chord editor and the agent picker in the
+ * new-session dialog. Was an 18px target, the smallest control the product
+ * had. */
+.rg-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-height: var(--rg-control-h);
+  padding: 0 var(--rg-control-pad-x-lg);
+
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-radius-full);
+  background-color: var(--rg-ctl-rest);
+  color: var(--rg-fg-muted);
+
+  white-space: nowrap;
+  transition: transform var(--rg-t-press) ease-out;
+}
+
+.rg-chip:hover:enabled {
+  background-color: var(--rg-ctl-hover);
+  border-color: var(--rg-fg-faint);
+  color: var(--rg-fg);
+}
+
+.rg-chip:active:enabled {
+  background-color: var(--rg-ctl-press);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* A held modifier and a primary action are the same "this is on" statement,
+ * so they are the same accent. */
+.rg-chip.rg-chip--on {
+  border-color: var(--rg-accent);
+  background-color: var(--rg-accent);
+  color: #ffffff;
+}
+
+.rg-chip.rg-chip--on:hover:enabled {
+  border-color: var(--rg-accent-strong);
+  background-color: var(--rg-accent-strong);
+  color: #ffffff;
+}
+
+.rg-chip.rg-chip--on:active:enabled {
+  border-color: var(--rg-accent);
+  background-color: var(--rg-accent);
+  transform: scale(var(--rg-press-scale));
+}
+
+/* -------------------------------------------------------------------- */
+/* Disabled, last, so it wins                                            */
+/* -------------------------------------------------------------------- */
+
+/* Source order is load-bearing here. `.rg-chip.rg-chip--on` and
+ * `.rg-sidebar__toolbar .rg-sidebar__action` are both two-selector rules that
+ * tie or beat a bare `:disabled`, so this block only lands because it is the
+ * last thing in the file that mentions those properties. */
+.rg-btn:disabled,
+.rg-btn-inline:disabled,
+.rg-chip:disabled,
+.rg-select:disabled,
+.rg-switch:disabled,
+.rg-field__input:disabled,
+.rg-sidebar__action:disabled,
+.rg-attn-count:disabled,
+.rg-titlebar__action:disabled,
+.rg-wsw:disabled,
+.rg-wsbar__item:disabled,
+.rg-wsbar__add:disabled,
+.rg-wsbar__manage:disabled,
+.rg-menu__item:disabled {
+  border-color: transparent;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--rg-fg-faint);
+  /* Explicitly 1. `.rg-btn:disabled` carried 0.55, which stacked with a faint
+   * foreground and put a disabled Delete under 2:1 against its own sheet.
+   * Losing the box is the signal; halving the text just makes it harder to
+   * read what you cannot press. */
+  opacity: 1;
+  cursor: default;
+  transform: none;
+}
+
+/* A disabled control does not answer the pointer at all. Stated rather than
+ * left to `:enabled` above, because a `:hover` rule in any of the three
+ * shipped stylesheets would otherwise still land on it. */
+.rg-btn:disabled:hover,
+.rg-btn:disabled:active,
+.rg-btn-inline:disabled:hover,
+.rg-btn-inline:disabled:active,
+.rg-chip:disabled:hover,
+.rg-chip:disabled:active,
+.rg-select:disabled:hover,
+.rg-switch:disabled:hover,
+.rg-field__input:disabled:hover,
+.rg-sidebar__action:disabled:hover,
+.rg-sidebar__action:disabled:active,
+.rg-attn-count:disabled:hover,
+.rg-attn-count:disabled:active,
+.rg-titlebar__action:disabled:hover,
+.rg-titlebar__action:disabled:active,
+.rg-wsw:disabled:hover,
+.rg-wsw:disabled:active,
+.rg-wsbar__item:disabled:hover,
+.rg-wsbar__add:disabled:hover,
+.rg-wsbar__manage:disabled:hover,
+.rg-menu__item:disabled:hover,
+.rg-menu__item:disabled:active {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--rg-fg-faint);
+  transform: none;
+}
+
+/* -------------------------------------------------------------------- */
+/* Reduced motion                                                        */
+/* -------------------------------------------------------------------- */
+
+/* One token drives every transition in this file, so zeroing it here is the
+ * whole of it. The press transforms are cancelled as well rather than merely
+ * made instant: a control that snaps 4% smaller with no interpolation is a
+ * flicker, which is precisely what the preference asks for less of. The fill
+ * and border changes stay, because those were never motion. */
+@media (prefers-reduced-motion: reduce) {
+  /* `.rg-app`, not `:root`, because that is where the tokens are declared and
+   * a custom property resolves at its declaration site. */
+  .rg-app {
+    --rg-t-press: 0s;
+    --rg-press-scale: 1;
+    --rg-press-scale-sm: 1;
+  }.rg-sidebar__search-kbd,
+.rg-sidebar__toolbar .rg-sidebar__action,
+.rg-sidebar__action,
+.rg-titlebar__action,
+.rg-attn-count,
+.rg-wsw,
+.rg-wsbar__item,
+.rg-wsbar__add,
+.rg-wsbar__manage,
+.rg-menu__item,
+.rg-select,
+.rg-switch,
+.rg-switch__knob,
+.rg-btn,
+.rg-btn-inline,
+.rg-chip {
+    transition: none;
+  }
+}

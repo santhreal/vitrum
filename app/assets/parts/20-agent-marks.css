@@ -1,0 +1,117 @@
+/* The agent identity mark on a session row.
+ *
+ * The sidebar's whole job is telling you which agent is doing what. Before
+ * this the row said WHAT it was doing (the pill) and WHERE (the branch) but
+ * never WHO, so twenty rows reading `bash` or `claude` were one grey list and
+ * the operator had to open a session to find out what was in it. The marks
+ * themselves are in app/src/agent.rs; seven topologically distinct shapes, so
+ * they separate at 16px without colour doing any of the work.
+ *
+ * A FIXED box, never flexible. The mark is the first thing on the line, so if
+ * its width could vary then every title's left edge would depend on which
+ * agent happened to be running and the list would lose its rail. 16px and
+ * `flex: 0 0 auto`, both stated, on every row in every state.
+ */
+.rg-session__agent {
+  flex: 0 0 auto;
+  width: var(--rg-icon-sm);
+  height: var(--rg-icon-sm);
+  /* Symmetric about y = 8 in the 16-unit box, so centring the box centres the
+   * ink. No per-mark nudge exists and none is needed. */
+  align-self: center;
+}
+
+/* Hue is the status tier, not the vendor.
+ *
+ * The mark answers WHO and the colour answers WHETHER it is still running,
+ * which is how one 16px element earns its place in a 224px row. These are the
+ * same four tiers the pill uses, from the same tokens, so a row can never say
+ * "running" in one element and "exited" in another.
+ *
+ * The default is the row's own muted foreground: a mark whose status has not
+ * resolved reads as present but quiet, never as an error. */
+.rg-session__agent {
+  color: var(--rg-fg-subtle);
+}
+
+.rg-session__agent--starting {
+  color: var(--rg-status-starting);
+}
+
+.rg-session__agent--running {
+  color: var(--rg-status-running);
+}
+
+.rg-session__agent--exited {
+  color: var(--rg-status-exited);
+}
+
+.rg-session__agent--exited-error {
+  color: var(--rg-status-exited-error);
+}
+
+/* Two live sessions are changing the same file.
+ *
+ * The rarest thing a row can say and the most expensive to miss: whichever
+ * agent writes last wins, and the other one's work is gone with nothing
+ * reporting an error. So it is drawn, not merely tooltipped, and it is drawn
+ * in the failure hue rather than the attention hue: this is not "needs you
+ * soon", it is "work is being lost right now".
+ *
+ * On line TWO, at the head of the tail. Line one is full at the 224px width
+ * floor and its budget is spent on the mark, the title and the status; a
+ * conditional element there would move a title's left edge on the few rows
+ * that have it. The branch beside it has slack and gives it up first.
+ *
+ * Absent entirely when nothing is contested, which is almost every row almost
+ * always. Nothing here reserves width for it. */
+.rg-session__contest {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rg-space-1);
+  flex: 0 0 auto;
+
+  padding: 0 var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-fill-rest);
+  color: var(--rg-status-exited-error);
+}
+
+/* A filled square, not a glyph.
+ *
+ * Every text mark in this product was measured spanning 6.2x in ink width
+ * across the five status characters, which is why the rollup chips and the
+ * agent marks are drawn shapes. A square rather than the rollup's circle so
+ * the two are told apart by form and not only by hue, which is what keeps
+ * this legible to an operator who cannot separate red from grey. */
+.rg-session__contest-mark {
+  flex: 0 0 auto;
+  width: var(--rg-dot-size);
+  height: var(--rg-dot-size);
+  background-color: currentColor;
+}
+
+.rg-session__contest-count {
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+/* EVERY DRAWN ICON IN THE PRODUCT, whatever surface it lands on.
+ *
+ * `ui::icons::IconGlyph` emits `class="rg-icon <caller's class>"` on the svg,
+ * so this is the base box and the caller's class is the surface's opinion of
+ * it. Without a rule here an svg with no intrinsic size falls back to the
+ * replaced-element default of 300x150, which is not a subtle failure: one
+ * unstyled glyph is wider than the sidebar.
+ *
+ * 16, the same box as the agent mark above, because they are the same kind of
+ * object drawn in the same 16-unit view box at the same stroke width. A
+ * surface that wants another size overrides it from its own file; those load
+ * after this one, so no specificity games are needed. */
+.rg-icon {
+  flex: 0 0 auto;
+  width: var(--rg-icon-sm);
+  height: var(--rg-icon-sm);
+  align-self: center;
+}

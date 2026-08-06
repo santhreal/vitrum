@@ -1,0 +1,31 @@
+[package]
+name = "vitrum-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "PTY hosting and bounded scrollback for vitrum sessions."
+
+[dependencies]
+vitrum-proto = { workspace = true }
+# Head parsing. `strip_ref_prefix` and `short_commit` are the same rules the
+# sidebar formats with, and a second copy here drifted from them once already.
+vitrum-fmt = { workspace = true }
+# The OSC 7373 hint parser lives here. Scanning the PTY stream for a harness
+# declaration needs exactly the parser the client already trusts, and a second
+# implementation on the daemon side would be a second set of bugs.
+vitrum-model = { workspace = true }
+portable-pty = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# libproc's proc_pidinfo, the only public way to ask what a process's threads
+# are doing. Linux needs no shim: tcgetpgrp comes from portable-pty and the
+# answer comes out of /proc.
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }

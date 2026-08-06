@@ -1,0 +1,405 @@
+/* ======================================================================
+ * 15-rows.css - the session row
+ *
+ * Loaded after sidebar.css, 10-spacing.css, 11-type.css and 12-color.css,
+ * so every rule here is a plain override at the same specificity as the one
+ * it replaces. Nothing in this file is marked important and nothing raises
+ * specificity to win an argument.
+ *
+ * WHAT THIS FILE OWNS
+ *   the row's surface and its five interaction states
+ *   the card's flow direction and the one length that makes it uniform
+ *   the prominence order between a title and its status label
+ *   which of a status label's two parts carries the hue
+ *
+ * WHAT IT DOES NOT TOUCH, ON PURPOSE
+ *   padding, radius, rail width, row-gap, contain-intrinsic-size, and every
+ *   length except the card's height
+ *     10-spacing.css owns the box, and that includes the distance between a
+ *     card's two lines: it is a row-gap on the card there, not a margin on
+ *     each line, so one distance stays in one file. It also owns the row's
+ *     leading gutter, which is --rg-text-rail spent as --rg-rail-w of rail
+ *     plus the remainder as padding. That is why no other rule in the panel
+ *     has to know the rail exists, and it is the last rung of the
+ *     ragged-edge ladder. Numbers are deliberately not restated here; they
+ *     have been retuned twice already and a second copy goes stale silently.
+ *
+ *     The card's HEIGHT is the one exception and it is deliberate. Section 2
+ *     says why, and the token it reads is still 10-spacing.css's, so only
+ *     the property differs between the two files and the arithmetic cannot
+ *     drift.
+ *   font-size, font-weight, line-height, letter-spacing
+ *     11-type.css owns the ramp. The title is 13/600 and everything
+ *     supporting it is 11, which is where its dominance in SIZE comes from.
+ *     This file supplies the missing half of that, which is COLOUR.
+ *   every --rg-* colour value
+ *     12-color.css owns four inks and four fills. This file spends them and
+ *     invents none.
+ *
+ * FOUR MEASURED DEFECTS THIS FILE CLOSES
+ *
+ * 1. ONE OF FOUR BORDERS. The card drew ink at x=12,13,14 and nowhere
+ *    else: a lone left rail, with a radius on the box, so the radius
+ *    curled that single edge into two arc fragments on the right that
+ *    belonged to no boundary. An unclosed container is worse than none,
+ *    because it promises an edge and does not deliver it.
+ *
+ *    Closed by FILL, not by four borders. Twenty outlined boxes is a
+ *    table; twenty filled plates at the quietest documented step is a
+ *    list whose rows you can see the extent of. The rail stays exactly
+ *    where it was, 4px of layout on the left, and becomes an accent
+ *    INSIDE that plate rather than a stray edge beside nothing.
+ *
+ * 2. PITCH ALTERNATED 86 AND 68, then the fix for that ate the title.
+ *    Section 2 has the arithmetic and both sets of measurements.
+ *
+ * 3. THE STATUS LABEL WAS THE BRIGHTEST TEXT ON THE ROW. "Working" in
+ *    saturated cyan outshouted the name of the thing working, twenty
+ *    times down the list, and a saturated hue draws the eye harder than
+ *    luminance does. Split: the MARK carries the hue, the WORD is ink
+ *    unless the state needs a human. Four of the five states are neutral
+ *    and they include the two you see most.
+ *
+ * 4. THE MARK WAS A TEXT CHARACTER, six of them from four different
+ *    typographic classes, and it measured as badly as it looked. The full
+ *    ink table is in sidebar.css beside the rule that replaced them. This
+ *    file's share of that fix is section 4: the mark is drawn, so this file
+ *    only has to say what colour it is.
+ * ====================================================================== */
+
+/* ======================================================================
+ * 1. THE SURFACE
+ * ====================================================================== */
+
+/* Every row is a filled plate. --rg-fill-rest composites to #1d1d1f on the
+ * panel, 1.5:1 against it: enough to see where a row begins and ends,
+ * nowhere near enough to read as a cell in a spreadsheet. Ink reads
+ * 15.8:1 on it and ink-3 5.5:1, both above where they sit on the bare
+ * panel, so closing the container also bought a little contrast.
+ *
+ * The plate is CONSTANT. It does not thin out for a receded row and it
+ * does not fade for one in flight, because an uneven plate is an uneven
+ * rhythm and the rhythm is the grouping signal. Recede spends ink
+ * instead, which is what it was already doing. */
+.rg-session {
+  background-color: var(--rg-fill-rest);
+}
+
+/* Hover and the current item are the next two fills up. Still a discrete
+ * swap with no transition on the background: a fade under a moving cursor
+ * reads as lag, and the same declaration would put a fade on selection,
+ * which is the operator's own click and must be instant. */
+.rg-session:hover {
+  background-color: var(--rg-row-hover);
+}
+
+/* -- The rail ------------------------------------------------------------
+ *
+ * 4px of border-left that every row already reserves, so lighting it can
+ * never shift text sideways, and transparent by default so it shows the
+ * plate through and disappears. Inside a filled box it reads as an inset
+ * accent. The radius that used to curl it into arcs now curls the plate
+ * with it, which is what an accent inside a container is supposed to do.
+ *
+ * It is a BRIGHTNESS RAMP and not a second status vocabulary. The label
+ * already names the state in its own hue on every row; the rail carries
+ * only urgency, so a hinted Input row cannot wear an amber bar beside an
+ * indigo word and leave the operator deciding which to believe. Red is
+ * the one hue on it, because a broken session is a different fact rather
+ * than a louder version of a waiting one.
+ *
+ * Declared in one place per state and read from the semantic layer, so
+ * the whole ramp retunes from 12-color.css. */
+.rg-session--attention-idle {
+  border-left-color: var(--rg-attention-idle);
+}
+
+.rg-session--attention-bell {
+  border-left-color: var(--rg-attention-bell);
+}
+
+.rg-session--attention-waiting {
+  border-left-color: var(--rg-attention-waiting);
+}
+
+.rg-session--attention-failed {
+  border-left-color: var(--rg-attention-failed);
+}
+
+/* -- The current item ----------------------------------------------------
+ *
+ * The row whose PTY is in the main pane. Fill plus an accent rail, and the
+ * rail is the part that survives at a glance across twenty rows.
+ *
+ * Written after the attention block so a row that is BOTH gets the accent
+ * rather than the urgency ramp, which is the correction that matters here:
+ * the session you are looking at does not need to be told it wants you. */
+.rg-session--active {
+  background-color: var(--rg-row-active);
+  border-left-color: var(--rg-accent);
+  opacity: 1;
+}
+
+/* :hover is a class-level selector, so `.rg-session:hover` outranks
+ * `.rg-session--active` and the current row got QUIETER under the pointer.
+ * Pinned to its own fill instead: it is already the current item and has
+ * nothing left to promise. */
+.rg-session--active:hover {
+  background-color: var(--rg-row-active);
+}
+
+/* -- Multi-selection ----------------------------------------------------
+ *
+ * Same fill as the current item, told apart by an accent ring rather than
+ * by luminance, which is 12-color.css's ruling and the right one: two
+ * persistent states two alpha points apart is not a state family, it is a
+ * bug that only appears on one monitor. The ring is inset so it cannot
+ * change the row's size, and it is the only box-shadow in the row.
+ *
+ * A plain click sets the selection to one row AND makes it the current one,
+ * so `--picked` and `--active` arrive together on the common path and the
+ * row wore a ring, a rail and a fill for one state. Three channels for one
+ * fact is what a loud interface is made of, so the ring stands down when
+ * the rail is already speaking. What that buys is the reading a
+ * multi-selection actually needs: every picked row carries the ring, and
+ * the one inside it that you are looking at carries the rail instead. */
+.rg-session--picked {
+  background-color: var(--rg-row-selected);
+  box-shadow: inset 0 0 0 1px var(--rg-accent);
+  opacity: 1;
+}
+
+.rg-session--picked:hover {
+  background-color: var(--rg-row-selected);
+}
+
+.rg-session--picked.rg-session--active {
+  box-shadow: none;
+}
+
+/* -- In flight ----------------------------------------------------------
+ *
+ * A starting or exiting session used to fade the WHOLE ROW to 0.7, plate
+ * included, so one row in a column of plates was visibly a different
+ * surface from its neighbours. That is the rhythm break the recede was
+ * never meant to cause: the point was to spend prominence, and prominence
+ * is ink.
+ *
+ * So the box stays opaque and the title drops one ink step and one weight
+ * instead. Same message, and the column of plates stays a column. */
+.rg-session--inflight {
+  opacity: 1;
+}
+
+.rg-session--inflight .rg-session__title {
+  color: var(--rg-fg-muted);
+}
+
+/* ======================================================================
+ * 2. THE CARD: TWO LINES, AND NOTHING THAT CAN ADD A THIRD
+ * ====================================================================== */
+
+/* A DEFINITE HEIGHT, not a floor, and it is the one length this file owns.
+ *
+ * Two defects were closed in sequence here and the second was caused by the
+ * fix for the first, which is why the history is worth keeping.
+ *
+ * The card began as `min-height` against a CONDITIONAL third line that
+ * rendered only when a disposition or completion badge earned it. Measured
+ * on the running binary: ink runs of 84, 66, 84, 66, 84, 66 CSS px, pitches
+ * of 86, 68, 86. A 26% height swing between neighbours, so there was no
+ * rhythm left to read, and with no closed container the badge read as a chip
+ * floating in the gap between two cards belonging to neither.
+ *
+ * That was closed by placing the badge line beside the title on a two-row
+ * grid. It held the height, and it paid for it out of the title. Measured
+ * at the 224px floor with the same harness: a plain card's title box was
+ * 127px, a card with one badge 69.5px, a card with two badges 12.5px
+ * against 205px of text. 12.5px renders as one character and an ellipsis.
+ * A chip reading "Done" was outranking the name of the session, and the
+ * same grid column pushed the close button to a right inset of 33px, 90.5px
+ * or 147.5px depending on how many badges a row happened to carry: three x
+ * positions for one control in one list.
+ *
+ * Both are closed now by the markup carrying TWO UNCONDITIONAL LINES, title
+ * above and branch-plus-badges below, and by this height being definite. A
+ * min-height below the natural height is not a constraint, it is a comment:
+ * this codebase shipped --rg-card-h at 58px against a 66px natural height,
+ * where it never bound at any value and the next person to tune pitch would
+ * have edited it and seen nothing change. A definite height cannot be inert,
+ * and `overflow: hidden` is already on .rg-session, so nothing a line
+ * contains can grow the box.
+ *
+ * That is T3's mechanism rather than an invention: their card is a hard
+ * `h-[4.875rem]` (SidebarV2.tsx:921) and their lines render whether or not
+ * they have data, emitting `<span className="flex-1" />` in place of a
+ * missing project name (:938) or a missing branch (:1028). What is NOT
+ * copied is the number. Theirs holds three unconditional lines; ours holds
+ * two, and reserving a third would buy an 18px dead band on every row.
+ *
+ * The token is 10-spacing.css's and is read rather than restated, so only
+ * the PROPERTY differs between the two files. 12 + 20 + 4 + 20 + 12 = 68. */
+.rg-session--card {
+  flex-direction: column;
+  height: var(--rg-card-h);
+}
+
+/* ======================================================================
+ * 3. THE TWO VARIANTS ARE ONE FAMILY
+ * ====================================================================== */
+
+/* THE TITLE LEFT EDGE, WHICH IS THE INVARIANT THE ROW IS BUILT AROUND.
+ *
+ * A card's title is the first child of its first line, which starts at the
+ * card's content box. A slim row's title is the first child of the row
+ * itself, which starts at the same content box. Both rows are siblings in
+ * one flex column and both spend the same leading gutter the same way, as
+ * --rg-rail-w of rail plus the rest as padding, so both titles land on
+ * --rg-text-rail from the row's border box, which is the content rail every
+ * other left edge in the panel is derived from. One left edge, verified by
+ * measuring both variants in the same panel: 32px from the panel's border
+ * box, on every card and every slim row, with and without badges.
+ *
+ * That alignment used to be held by a fixed-width monogram tile in front
+ * of the slim title, matching a second one in front of the card's branch.
+ * Both are gone by design, and NOTHING replaces them:
+ * with no leading element in either variant the padding alone is the
+ * alignment, which is one mechanism instead of two that had to agree. */
+
+/* The settled tail reads as the same object one step quieter, not as a
+ * different list. Ink-3 at rest was 5.96:1, legible but a long way from
+ * the card's ink; ink-2 at 8.94:1 keeps the tail scannable at a glance,
+ * which is what the tail is for. Weight stays 11-type.css's. */
+.rg-session--slim .rg-session__title {
+  color: var(--rg-fg-muted);
+}
+
+.rg-session--slim:hover .rg-session__title {
+  color: var(--rg-fg);
+}
+
+/* ======================================================================
+ * 4. STATUS: LEGIBLE AT TWENTY ROWS, LOUD AT NONE
+ * ====================================================================== */
+
+/* The label is a word in a fixed right-hand column, not a dot on its own: a
+ * colour key nobody was given is noise twenty times down a list, and a word
+ * needs no key. What this section decides is where the SATURATION sits.
+ *
+ * The word is 11px and carries ink, so the brightest, first-read text on a
+ * row is the name of the session and not the state of it. The mark is 8px,
+ * drawn rather than set (sidebar.css has the measurements that forced
+ * that), and it carries the hue. Three tiers, and the two states you see
+ * most often have no colour in their word at all:
+ *
+ *   ready      no hue and no mark. Ready is the absence of a status, and
+ *              the word alone is the whole of it
+ *   working    hue on the mark, ink on the word. The most common label in
+ *              the sidebar, and the one that used to be the loudest thing
+ *              in the product. It is also the only state that gets a mark
+ *              while the panel is open, because it is the only transient
+ *              one: the dot is what stops the commonest row in the list
+ *              having no colour on it anywhere
+ *   approval   hue on the word. These are the two states where the agent is
+ *   input      blocked on a human, they are rare, and catching the eye is
+ *              the entire job of the word. Still 11/500 against a 13/600
+ *              title, so they cannot outrank it
+ *   failed     hue on the word. Red, and it is allowed to be found first
+ *
+ * The label keeps its hue through the recede, which is what lets an
+ * operator find the one working session in a quiet list without hovering
+ * anything. */
+.rg-pill {
+  color: var(--rg-fg-muted);
+}
+
+.rg-pill--ready {
+  color: var(--rg-fg-subtle);
+}
+
+/* Neutral word, hue on the mark.
+ *
+ * Opacity 0.875 used to sit on this rule as the static stand-in for T3's
+ * infinite breathing animation, held at the mean of their cycle. It went
+ * with a saturated word; a neutral word does not need dimming on top of
+ * being neutral, and two quieting mechanisms on the commonest label in the
+ * list is how it became hard to read on an in-flight row. Liveness is
+ * .rg-pill__aux, which repaints only when the number moves. */
+.rg-pill--working {
+  color: var(--rg-fg-muted);
+}
+
+/* The one and only place a mark is told its own colour, and it has to name
+ * both marks in the panel because Working is the one state that owns neither
+ * of them by inheritance.
+ *
+ * Every other state puts its hue on its own text, so its mark takes the hue
+ * through currentColor and needs no rule at all. Working deliberately does
+ * not: its word is ink so it stops outshouting the title. That is right on a
+ * session row and it leaves both of Working's marks grey unless they are
+ * told otherwise, which is why the rollup dot is here beside the pill's.
+ * A collapsed project's chips are hue and number and nothing else, so a grey
+ * "3 working" chip beside a red "1 failed" one is the state going missing
+ * from the one row that exists to summarise it. */
+.rg-pill--working::before,
+.rg-pill--working .rg-rollup__dot {
+  background-color: var(--rg-hue-working);
+}
+
+.rg-pill--approval {
+  color: var(--rg-hue-approval);
+}
+
+.rg-pill--input {
+  color: var(--rg-hue-input);
+}
+
+.rg-pill--failed {
+  color: var(--rg-hue-failed);
+}
+
+/* The label a parked row wears, and the one place the word itself takes the
+ * hue rather than handing it to a mark.
+ *
+ * That is T3's own treatment (SidebarV2.tsx:837 sets the wake time
+ * `dark:text-blue-400` with no icon at all) and the reason it does not
+ * contradict the rule above is that this is not a status. The five statuses
+ * compete with each other twenty rows deep in the Active band, which is why
+ * their hue is confined to an 8px mark. A return ticket appears on a handful
+ * of rows in the settled tail, it IS the row's whole story, and there is no
+ * title beside it for it to outshout: on a slim row the title is already one
+ * ink step down. One channel, not a coloured word and a coloured dot saying
+ * the same thing.
+ *
+ * The mark inherits this through currentColor, so the collapsed rail gets a
+ * blue dot from this single declaration with no rule of its own. */
+.rg-pill--snoozed {
+  color: var(--rg-hue-snoozed);
+}
+
+/* ======================================================================
+ * 5. MOTION
+ * ====================================================================== */
+
+/* Two transitions, both on properties the compositor owns, both reading
+ * their duration from a token so the block below can switch them off.
+ * There is no animation in this file and no background transition: fills
+ * swap discretely, for the reason given at the top of section 1. */
+.rg-session__title {
+  transition: color var(--rg-t-fast) linear;
+}
+
+.rg-pill {
+  transition: opacity var(--rg-t-fast) linear;
+}
+
+/* Redeclared rather than inherited from sidebar.css. A file that relied on
+ * another file's override would stop honouring the preference the day that
+ * file was reorganised, and the whole point of keeping durations in tokens
+ * is that one block turns off everything. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --rg-t-fast: 0s;
+    --rg-t-base: 0s;
+  }
+}

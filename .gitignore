@@ -1,0 +1,22 @@
+# Build output. `CARGO_TARGET_DIR` may point elsewhere; this covers the default.
+/target/
+**/target/
+
+# Release archives and their checksum file, written by
+# `packaging/build-release-asset.sh`. They are attached to a GitHub release,
+# never committed: the digest changes on every rebuild of the same source.
+/dist/
+
+# Review notes, one per project, deliberately not shared.
+BACKLOG.md
+
+# Capture artifacts. Scoped, NOT a global *.png: a blanket rule would silently
+# swallow the first icon or asset anybody adds under app/assets.
+/harness/out/
+/*.png
+/*.ppm
+
+# Editor and OS leavings.
+.DS_Store
+*.swp
+*~

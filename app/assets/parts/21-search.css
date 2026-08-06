@@ -1,0 +1,437 @@
+/* ======================================================================
+ * 21-search.css -- the cross-session scrollback search surface
+ * ======================================================================
+ *
+ * Owned by app/src/ui/search.rs and by nothing else. Every selector here is
+ * new: this file adds one transient layer and touches no element that
+ * existed before it. `.rg-layer` and `.rg-layer--dim` are app.css's and are
+ * reused rather than restated, because the bridge queries `.rg-layer` to
+ * decide whether Escape belongs to an open layer, so a private backdrop
+ * class would ship a surface the operator could not dismiss.
+ *
+ * WHAT IS NOT HERE
+ *
+ * There is no toolbar. Three elements were drawn and deleted before this
+ * file settled: a magnifier glyph beside a field whose placeholder already
+ * said what it was, a wrapper box around that pair, and a Search button
+ * beside a field that submits on Enter and says so in its placeholder and in
+ * the line under it. Each repeated a neighbour. What is left is a field,
+ * three switches, one honest summary and the hits.
+ *
+ * The switches are words rather than `.*`, `Aa` and a boxed `w`. Those three
+ * glyphs are the convention and every one of them needs a tooltip to mean
+ * anything, which is not an affordance on a touchpad and does not survive a
+ * screenshot. The words fit on one line at this sheet's width.
+ *
+ * WHY THIS IS NOT THE SIDEBAR FILTER'S STYLING
+ *
+ * The sidebar's field narrows a list of session names inside a 48px band.
+ * This is a reading surface: a matched line, two lines of context either
+ * side, grouped under the session that printed them, and it is the only
+ * place in the product where terminal output is quoted outside a terminal.
+ * So the quoted lines run in the monospace face at 12px on a 20px line box,
+ * which is the terminal's own rhythm, while every label around them stays in
+ * the UI face. Mixing those two was the alternative and it made a hit
+ * unreadable as code.
+ *
+ * WHY THE MATCH IS AMBER
+ *
+ * The product has exactly one amber, `--rg-hue-approval`, and it already
+ * carries a light-theme value. A highlight in the accent blue would be the
+ * same colour as the focus ring on the row holding it, so the focused row
+ * and the matched word would be indistinguishable at a glance. A second
+ * invented yellow would be a colour nobody could name. This reuses the one
+ * that exists.
+ *
+ * WHY THE SUMMARY IS A CONTRAST LADDER AND NOT FIVE HUES
+ *
+ * Five states have to be told apart: sweeping, not searched yet, no matches,
+ * complete, truncated. Hue in this product means STATUS, and a search
+ * summary is not a session state, so painting "truncated" in the approval
+ * amber would invent a status that does not exist. The five step through the
+ * ink scale instead, loudest for the one an operator must not miss:
+ * truncated is full ink, complete and empty are ink-2, and the two states
+ * that carry no result at all are ink-3.
+ *
+ * NO MOTION
+ *
+ * This file declares no transition and no keyframes, so it has nothing to
+ * zero in a reduced-motion block and cannot add a repaint to an idle window.
+ * The results list highlights instantly under hover and the keyboard, which
+ * is what 18-dialog.css argued for on the suggestion list and for the same
+ * reason: a long list must not repaint a 700px panel on every key repeat.
+ *
+ * GRID
+ *
+ *   layer padding                 48 block, 32 inline. 48 clears the 40px
+ *                                 titlebar, which the layer covers.
+ *   sheet width                  704 (44rem), capped at 100% of the layer
+ *   sheet padding                 24, sheet gap 16
+ *   head and field height         32 (--rg-control-h)
+ *   switch height                 28 (--rg-control-h-sm), the pointer floor
+ *   group gap                     16, hit gap 4, quoted line box 20
+ *   hit padding                    8 block, 12 inline
+ *   empty-match caret              4 wide, 16 tall
+ */
+
+/* -- The backdrop ------------------------------------------------------- */
+
+/* Top-anchored rather than centred. A one-hit answer and a four-hundred-hit
+ * answer would otherwise put the field in two different places, so it would
+ * move under the pointer between two searches. 48 of block padding clears
+ * the titlebar, which `.rg-layer`'s `inset: 0` covers. */
+.rg-search-layer {
+  align-items: flex-start;
+  padding: var(--rg-space-12) var(--rg-space-8);
+}
+
+/* -- The sheet ---------------------------------------------------------- */
+
+/* 44rem is the reading measure for a quoted terminal line: about 90
+ * monospace columns at 12px, one past the 88 most agent output wraps at, so
+ * a matched line rarely needs the ellipsis.
+ *
+ * `max-width: 100%` and `min-width: 0` are both load-bearing and neither is
+ * redundant. The cap keeps the sheet inside a narrow window, where the layer
+ * covers the sidebar and an uncapped 704px sheet would overflow and scroll
+ * the results sideways underneath it. The floor lets the sheet shrink at
+ * all: it is a flex item, whose automatic minimum size is its content, and
+ * the content here is an unwrappable monospace line of arbitrary length. */
+.rg-search {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-space-4);
+
+  width: 44rem;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 100%;
+
+  padding: var(--rg-space-6);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-md);
+
+  background-color: var(--rg-surface-overlay);
+  box-shadow: var(--rg-shadow-3);
+  color: var(--rg-fg);
+  font-family: var(--rg-font-ui);
+  font-size: var(--rg-text-13);
+  line-height: var(--rg-lead-body);
+}
+
+.rg-search * {
+  box-sizing: border-box;
+}
+
+/* -- Header ------------------------------------------------------------- */
+
+.rg-search__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rg-space-3);
+  min-height: var(--rg-control-h);
+}
+
+/* The one place that says what this surface searches. The field below it
+ * says how to use it and the line under that says what came back. */
+.rg-search__title {
+  color: var(--rg-fg);
+  font-size: var(--rg-text-15);
+  font-weight: var(--rg-weight-semibold);
+  line-height: var(--rg-lead-title);
+  letter-spacing: var(--rg-track-title);
+}
+
+/* Escape and a click on the backdrop both dismiss, and neither is visible.
+ * This is the one dismissal an operator can see, which is why it survives a
+ * pass that deleted every other repeated control on the sheet. */
+.rg-search__close {
+  flex: 0 0 auto;
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--rg-radius-sm);
+  background-color: transparent;
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-11);
+  cursor: pointer;
+}
+
+.rg-search__close:hover {
+  background-color: var(--rg-row-hover);
+  border-color: var(--rg-border-strong);
+  color: var(--rg-fg);
+}
+
+.rg-search__close:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: var(--rg-focus-offset);
+}
+
+/* -- The field ---------------------------------------------------------- */
+
+/* One element. It was a wrapper, a glyph and an input; the wrapper existed
+ * only to hold the glyph beside the input, and the glyph said "search" next
+ * to a placeholder that said the same thing in words.
+ *
+ * Monospace, because the pattern is matched against monospace output and a
+ * proportional face hides a doubled space or a trailing one. */
+.rg-search__input {
+  display: block;
+  width: 100%;
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-3);
+  border: 1px solid var(--rg-control-border);
+  border-radius: var(--rg-radius-sm);
+  outline: none;
+
+  background-color: var(--rg-ctl-rest);
+  color: var(--rg-fg);
+  font-family: var(--rg-font-mono);
+  font-size: var(--rg-text-12);
+}
+
+/* The halo IS the focus ring here. An outline on top of it would be two
+ * rings around the one control that is focused the moment the layer opens. */
+.rg-search__input:focus {
+  border-color: var(--rg-accent);
+  box-shadow: var(--rg-hairline-top), var(--rg-focus-halo);
+}
+
+.rg-search__input::placeholder {
+  color: var(--rg-fg-faint);
+}
+
+/* -- The three protocol switches ---------------------------------------- */
+
+/* Wraps, because the sheet can be 320px wide and three words cannot. */
+.rg-search__opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rg-space-2);
+}
+
+/* 28 rather than 32: these are secondary to the field above them, and 28 is
+ * the pointer-target floor, the same exception `.rg-session__close` takes. */
+.rg-search__opt {
+  height: var(--rg-control-h-sm);
+  padding: 0 var(--rg-space-3);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-sm);
+  background-color: transparent;
+  color: var(--rg-fg-subtle);
+  font-family: inherit;
+  font-size: var(--rg-text-11);
+  cursor: pointer;
+}
+
+.rg-search__opt:hover {
+  background-color: var(--rg-row-hover);
+  border-color: var(--rg-border-strong);
+  color: var(--rg-fg);
+}
+
+.rg-search__opt:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: var(--rg-focus-offset);
+}
+
+/* Pressed is a fill, an accent edge and full ink: three signals. One would
+ * not survive a screenshot on a colour-managed display, and there is no room
+ * on a chip for a word saying "on". */
+.rg-search__opt--on {
+  border-color: var(--rg-accent);
+  background-color: var(--rg-row-active);
+  color: var(--rg-fg);
+}
+
+/* -- The honest summary -------------------------------------------------- */
+
+/* Always drawn, even before the first sweep, so the results area does not
+ * jump by one line the first time it says something. */
+.rg-search__summary {
+  min-height: var(--rg-space-5);
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+  letter-spacing: var(--rg-track-micro);
+}
+
+/* The two states with no result behind them, at ink-3. */
+.rg-search__summary--idle,
+.rg-search__summary--busy {
+  color: var(--rg-fg-faint);
+}
+
+/* A real answer, at ink-2. */
+.rg-search__summary--none,
+.rg-search__summary--ok {
+  color: var(--rg-fg-muted);
+}
+
+/* Full ink, and the loudest line on the sheet after the title. This is the
+ * one an operator must not skim: it says the list is the FIRST n and that
+ * there are more, and a reader who misses it acts on a partial answer as if
+ * it were the whole one. */
+.rg-search__summary--truncated {
+  color: var(--rg-fg);
+  font-weight: var(--rg-weight-medium);
+}
+
+/* -- The results -------------------------------------------------------- */
+
+/* The only scroller in the sheet. `min-height: 0` because a flex item's
+ * automatic minimum is its content, so without it the list refuses to shrink
+ * and the sheet grows past `max-height` instead of scrolling. */
+.rg-search__results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-space-4);
+}
+
+.rg-search__results::-webkit-scrollbar {
+  width: var(--rg-space-2);
+}
+
+.rg-search__results::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+.rg-search__results::-webkit-scrollbar-thumb {
+  border-radius: var(--rg-radius-full);
+  background-color: var(--rg-scroll-thumb);
+}
+
+.rg-search__results::-webkit-scrollbar-thumb:hover {
+  background-color: var(--rg-scroll-thumb-hover);
+}
+
+/* 16 between groups against 4 between hits: four to one, so a session's
+ * block of hits reads as one object. */
+.rg-search__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-space-1);
+}
+
+.rg-search__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rg-space-2);
+  min-height: var(--rg-space-5);
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-11);
+  font-weight: var(--rg-weight-semibold);
+  line-height: var(--rg-lead-micro);
+  letter-spacing: var(--rg-track-label);
+}
+
+/* A session title is operator data with no length limit, so it truncates and
+ * the count keeps its place on the trailing rail. */
+.rg-search__group-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The per-session count. Not a repeat of the summary's total: the question
+ * this feature exists to answer is WHICH agent printed the thing, and with
+ * up to 500 hits across twenty sessions that distribution is not countable
+ * by eye from a scrolling list. */
+.rg-search__group-count {
+  flex: 0 0 auto;
+  color: var(--rg-fg-faint);
+  font-weight: var(--rg-weight-normal);
+}
+
+/* -- One hit ------------------------------------------------------------ */
+
+/* A button, so the whole row is one tab stop and one pointer target. Its
+ * children are block-level spans rather than divs because a button may only
+ * contain phrasing content, and an invalid nesting is the kind of thing one
+ * engine forgives and another does not. */
+.rg-search__hit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: var(--rg-space-2) var(--rg-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--rg-radius-sm);
+  background-color: transparent;
+  color: var(--rg-fg-muted);
+  font-family: var(--rg-font-mono);
+  font-size: var(--rg-text-12);
+  line-height: var(--rg-lead-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rg-search__hit:hover {
+  background-color: var(--rg-row-hover);
+}
+
+.rg-search__hit:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: var(--rg-focus-offset);
+  background-color: var(--rg-row-active);
+}
+
+/* `white-space: pre` on every quoted line, context included. Indentation is
+ * information in terminal output: collapsing runs of spaces would line a
+ * nested stack frame up with its caller and change what the row says. The
+ * overflow is clipped rather than wrapped, so one pathological 4000-column
+ * line stays one row instead of filling the list. */
+.rg-search__ctx,
+.rg-search__line {
+  display: block;
+  min-height: var(--rg-space-5);
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+
+/* Context at ink-3 against the matched line's full ink. That contrast step
+ * is the only thing saying which of the five lines in a row is the hit. */
+.rg-search__ctx {
+  color: var(--rg-fg-faint);
+}
+
+.rg-search__line {
+  color: var(--rg-fg);
+}
+
+.rg-search__pre,
+.rg-search__post {
+  color: var(--rg-fg-muted);
+}
+
+/* The matched bytes, and only the matched bytes. ui/search.rs slices the raw
+ * line at the daemon's offsets and decodes the three pieces separately, so
+ * what this rule paints is exactly the range the daemon matched even when
+ * the line carries bytes that are not valid UTF-8. */
+.rg-search__mark {
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-hue-approval-soft);
+  color: var(--rg-hue-approval);
+  font-weight: var(--rg-weight-semibold);
+}
+
+/* A zero-width match, which `^`, `\b` and `x*` all produce, and a match that
+ * sanitised away to nothing. A background behind an empty span paints
+ * nothing at all, so the hit would show no reason for being a hit. Given a
+ * box, it becomes a 4px caret standing at the matched offset. */
+.rg-search__mark--empty {
+  display: inline-block;
+  width: var(--rg-space-1);
+  height: var(--rg-space-4);
+  vertical-align: text-bottom;
+  background-color: var(--rg-hue-approval);
+}

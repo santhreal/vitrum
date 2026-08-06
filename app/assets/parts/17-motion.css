@@ -1,0 +1,258 @@
+/* ====================================================================
+ * 17-motion.css -- the motion layer.
+ *
+ * This product's competitive claim is that it idles at 0.050% CPU while
+ * the alternative idles at 3.716%. Motion is the easiest way to throw
+ * that away, so this file is written as a budget rather than as a set of
+ * effects.
+ *
+ * THE RULES, all enforced by tests in app/src/main.rs:
+ *
+ * 1. Nothing loops. Every `animation:` shorthand here pins
+ *    `animation-iteration-count: 1` on the line below it. A looping
+ *    animation repaints the window at the display's refresh rate for as
+ *    long as it is on screen, and its cost scales with how many elements
+ *    wear it, so it is worst exactly when the window is busiest.
+ *
+ * 2. transform and opacity only. Both are composited, so the compositor
+ *    replays them without re-running style, layout or paint. Width,
+ *    height, top, left, margin and padding reflow the document on every
+ *    frame they move, and one SessionUpdated already costs the client
+ *    16-20ms of which 63% is WebKit style/layout/paint. Motion does not
+ *    get to add to that.
+ *
+ * 3. Every duration is a token, never a literal. A literal escapes both
+ *    `prefers-reduced-motion` and the in-app Reduce Motion switch, so it
+ *    is motion that a reader who explicitly asked for none still pays
+ *    for.
+ *
+ * 4. Nothing animates on first paint. Every keyframe below is attached
+ *    to an element that does not exist until the operator opens it: the
+ *    layer signal starts at `Layer::None` and renders nothing, so the
+ *    menu, the overflow panel, the scrim and the sheet are all absent at
+ *    launch. A window that animates itself into existence on every
+ *    launch feels slow every single time it is opened.
+ *
+ * -- SCOPE, because motion is the one concern that is not a band -------
+ *
+ * This file owns the TRANSIENT SURFACES and the shared motion tokens. It
+ * deliberately does NOT own pointer feedback: 16-controls.css already
+ * carries a complete press system, with `--rg-press-scale`, a press
+ * state on every control in the window and its own reduced-motion block.
+ * Restating any of that here would silently win on document order and
+ * drop the properties it does not happen to name, since `transition` is
+ * a shorthand. The one thing this file does to that system is re-home
+ * its duration token, which is explained where it happens.
+ *
+ * Two things this file deliberately does not do:
+ *
+ * No `will-change`. It promotes an element to its own compositor layer
+ * and keeps it there, spending memory and GPU on an idle window to buy a
+ * fraction of a millisecond on a transition that may never run.
+ *
+ * No entrance animation on session rows or on a section's contents. Both
+ * exist at first paint, so a mount animation on them fires at launch,
+ * twenty times over, which rule 4 forbids. The row list is also the one
+ * place where frames are genuinely expensive. Sections announce
+ * themselves through the chevron instead, which is retimed below.
+ * ==================================================================== */
+
+/* ====================================================================
+ * Vocabulary
+ * ==================================================================== */
+
+/* Fallback only. sidebar.css declares both of these at plain `:root`,
+ * specificity (0,1,0), which beats this rule's (0,0,0) whenever the two
+ * are loaded together, so this changes nothing in the shipped document.
+ * It exists so this file still has working motion if it is ever loaded
+ * on its own, which is the same reason and the same construct
+ * settings.css uses. */
+:where(:root) {
+  --rg-t-fast: 100ms;
+  --rg-t-base: 140ms;
+}
+
+/* The system curve. Close to what macOS uses for interface transitions:
+ * leaves quickly, arrives slowly, no overshoot. One curve rather than a
+ * family, because below 150ms the difference between two similar curves
+ * is not perceptible and a second curve would be decoration with a name.
+ * `linear` is still used for a pure opacity fade, where a curve is
+ * invisible by definition.
+ *
+ * On `:root` rather than `.rg-app` because it is not a duration, so it
+ * has nothing to do with either reduced-motion switch. */
+:root {
+  --rg-ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* THE TWO DURATIONS, and both are aliases rather than new values.
+ *
+ * ui/settings.rs `root_style` implements the in-app Reduce Motion switch
+ * by writing `--rg-t-fast:0s;--rg-t-base:0s;` inline on THIS element,
+ * and inline wins over every stylesheet. Any duration that is not one of
+ * those two names, or derived from one at this element, is invisible to
+ * that switch and keeps running after the operator turns it off.
+ *
+ * WHY `.rg-app` AND NOT `:root`, and why this rule re-declares a token
+ * 16-controls.css already declares. A custom property is substituted
+ * where it is DECLARED. `:root { --rg-t-press: var(--rg-t-fast) }` reads
+ * `:root`'s `--rg-t-fast`, which the inline override one element below
+ * never reaches, so it stays at 100ms with Reduce Motion on and every
+ * press transition in the window keeps animating. Declared here it
+ * resolves against this element's own value, which is the one the switch
+ * sets. The value is identical, so nothing changes with the switch off;
+ * with it on, this is the difference between the setting working and the
+ * setting lying. It is re-homed rather than edited in place because
+ * 16-controls.css is another lane's file.
+ *
+ * The alias names are also both longer than the names they point at,
+ * which is load bearing. main.rs's duration guard resolves `var()` by
+ * substituting the longest name first, so an alias shorter than its
+ * target would be substituted after the target had already been
+ * consumed, and would be left unresolved. An unresolved duration is one
+ * the cap silently stops measuring. */
+.rg-app {
+  /* Pointer feedback, and disclosure, which is a direct answer to a
+   * click. Declared by 16-controls.css; re-homed, not redefined. */
+  --rg-t-press: var(--rg-t-fast);
+  /* A transient surface presenting itself. */
+  --rg-t-enter: var(--rg-t-base);
+}
+
+/* ====================================================================
+ * Transient surfaces presenting
+ *
+ * Four one-shot animations on four elements, none of which exists until
+ * the operator opens it. `animation-fill-mode: backwards` holds the
+ * first keyframe during the gap between style resolution and the
+ * animation's first frame, which is what stops a fade-in flashing at
+ * full opacity for one frame before it starts.
+ *
+ * Nothing here uses `forwards`. Without it no transform survives the
+ * animation, so none of these elements is left holding a compositor
+ * layer or acting as a containing block once it has arrived.
+ * ==================================================================== */
+
+@keyframes rg-scrim-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* Both endpoints name the same transform functions in the same order.
+ * Interpolating from `none` to a function list, or between lists that do
+ * not match, makes an engine fall back to a discrete swap, which is the
+ * one thing this animation exists to avoid. */
+@keyframes rg-sheet-in {
+  from {
+    transform: translateY(-0.375rem) scale(0.98);
+  }
+
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes rg-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* The scrim carries the fade for the whole modal, the sheet inside it
+ * included. All four sheets -- new session, rename, settings, keyboard
+ * -- are children of `.rg-layer--dim`, so fading the parent once is
+ * cheaper than fading two elements and avoids multiplying two opacity
+ * ramps into a slower, muddier one. */
+.rg-layer--dim {
+  animation: rg-scrim-in var(--rg-t-enter) linear;
+  animation-iteration-count: 1;
+  animation-fill-mode: backwards;
+}
+
+/* So the sheet only has to move, not fade. Down and out from slightly
+ * small and slightly high, which is how a macOS sheet presents. The
+ * offset is 6px at 1x: enough to read as arriving, small enough that it
+ * crosses nothing, and it is over a scrim in any case. */
+.rg-sheet {
+  animation: rg-sheet-in var(--rg-t-enter) var(--rg-ease-standard);
+  animation-iteration-count: 1;
+  animation-fill-mode: backwards;
+}
+
+/* The context menu grows from the pointer. Its parent `.rg-layer` is
+ * undimmed and does not fade, so this one carries its own opacity.
+ * menu.rs positions it with inline `left`/`top` at the click, so the
+ * corner it grows from is the top left. */
+.rg-menu {
+  transform-origin: top left;
+  animation: rg-pop-in var(--rg-t-enter) var(--rg-ease-standard);
+  animation-iteration-count: 1;
+  animation-fill-mode: backwards;
+}
+
+/* ====================================================================
+ * Disclosure
+ *
+ * A section expanding cannot animate its height: height reflows the
+ * document every frame, and the terminal grid refits behind it for the
+ * whole duration. So the chevron carries the gesture alone, which is a
+ * composited rotation of one small element.
+ *
+ * Retimed from sidebar.css's 140ms `ease` to 100ms on the system curve.
+ * Disclosure is a direct response to a click, and a response that
+ * outlasts the click reads as the application thinking rather than as
+ * the section opening. This is the only transition this file declares,
+ * and `.rg-project__chevron` carries no other, so the shorthand replaces
+ * nothing.
+ * ==================================================================== */
+
+.rg-project__chevron {
+  transition: transform var(--rg-t-press) var(--rg-ease-standard);
+}
+
+/* ====================================================================
+ * Reduced motion
+ *
+ * Zeroing tokens rather than writing `animation: none`. A duration of
+ * `0s` makes every animation in this file resolve instantly and finish
+ * in the same frame, and motion added later inherits the behaviour as
+ * long as it uses a token. Overriding the properties instead would have
+ * to name every rule above and would go stale the first time one was
+ * added.
+ *
+ * All four tokens this file declares are listed, which is what the guard
+ * in main.rs checks: a token declared and not zeroed here is motion that
+ * keeps running for a reader who asked for none, and nothing says so
+ * until someone turns the preference on.
+ *
+ * The easing token is not zeroed because it is not a duration. At `0s`
+ * no curve is sampled at all.
+ *
+ * `.rg-app` matches where the live aliases are declared, so these beat
+ * them on document order. Zeroing the two names at `:root` would in fact
+ * be enough, since the aliases resolve through them, but stating both
+ * makes the guarantee local rather than a consequence of what another
+ * token happens to be doing.
+ * ==================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --rg-t-fast: 0s;
+    --rg-t-base: 0s;
+  }
+
+  .rg-app {
+    --rg-t-press: 0s;
+    --rg-t-enter: 0s;
+  }
+}

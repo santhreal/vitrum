@@ -1,0 +1,585 @@
+//! One sidebar row: the server's session projection plus the client-local state
+//! the server has no business knowing.
+//!
+//! [`SessionInfo`] is authoritative for everything the daemon owns: lifecycle,
+//! activity, unread, [`Attention`](vitrum_proto::Attention), and the agent's
+//! last declared hint. What the daemon does not own is per-operator: whether
+//! *you* have this row snoozed, and when *you* last looked at it. A second
+//! window on the same daemon can legitimately disagree about both.
+//!
+//! Every derived answer here is a pure function of that pair plus a [`Clock`],
+//! so the whole sidebar is reproducible from a snapshot and testable without a
+//! daemon.
+
+use vitrum_proto::{ProjectId, SessionId, SessionInfo};
+use serde::{Deserialize, Serialize};
+
+use crate::disposition::SettleOverride;
+use crate::snooze::Snooze;
+use crate::status::{SidebarStatus, StatusResolution, resolve_status};
+
+/// The current instant and the operator's UTC offset.
+///
+/// Passed explicitly rather than read from the system so every derivation is a
+/// pure function. That is what makes calendar-boundary behaviour testable
+/// instead of something you can only observe by waiting until midnight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Clock {
+    /// Milliseconds since the Unix epoch, UTC.
+    pub now_ms: u64,
+    /// Seconds to add to UTC to reach the operator's wall clock. See
+    /// [`crate::civil`] for what this can and cannot express across a
+    /// daylight-saving transition.
+    pub utc_offset_seconds: i32,
+}
+
+impl Clock {
+    /// A clock at `now_ms` in UTC.
+    pub fn utc(now_ms: u64) -> Self {
+        Clock {
+            now_ms,
+            utc_offset_seconds: 0,
+        }
+    }
+}
+
+/// A session as the sidebar sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionView {
+    /// The daemon's projection. Replaced wholesale on every `SessionUpdated`.
+    pub info: SessionInfo,
+    /// Set while this operator has the row parked.
+    pub snooze: Option<Snooze>,
+    /// The operator's explicit ruling on whether they are done with this row.
+    /// `None` leaves it to the automatic rules in [`crate::disposition`].
+    pub settle_override: Option<SettleOverride>,
+    /// When this operator last had the row focused. `None` means never, which
+    /// is different from "long ago".
+    pub last_visited_ms: Option<u64>,
+}
+
+impl SessionView {
+    /// A view over a freshly received session, never visited and not snoozed.
+    pub fn new(info: SessionInfo) -> Self {
+        SessionView {
+            info,
+            snooze: None,
+            settle_override: None,
+            last_visited_ms: None,
+        }
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.info.id
+    }
+
+    pub fn project_id(&self) -> ProjectId {
+        self.info.project_id
+    }
+
+    /// Status and the signal that produced it. See [`resolve_status`] for the
+    /// precedence rules.
+    pub fn resolve_status(&self) -> StatusResolution {
+        resolve_status(
+            &self.info.status,
+            &self.info.attention,
+            self.info.hint.as_ref().map(|hint| hint.state),
+        )
+    }
+
+    /// Status alone, for callers that do not care where it came from.
+    pub fn status(&self) -> SidebarStatus {
+        self.resolve_status().status
+    }
+
+    /// The short label the agent attached to its declaration, if it sent one.
+    ///
+    /// Returns `None` for a hint on a session that has since exited, matching
+    /// [`resolve_status`]: if the state is not shown, its label must not be
+    /// either, or the row reads "Ready" beside "Approve this write?".
+    pub fn hint_label(&self) -> Option<&str> {
+        if !self.info.status.is_live() {
+            return None;
+        }
+        self.info.hint.as_ref()?.label.as_deref()
+    }
+
+    /// When the session's most recent unit of work finished, if it has.
+    ///
+    /// Two ways to finish, in precedence order:
+    ///
+    /// 1. The child exited. `last_activity_ms` is the exit instant.
+    /// 2. The agent declared `ready`. Its declaration instant is the finish.
+    ///
+    /// A live, unhinted session that has merely gone quiet is deliberately not
+    /// a completion. Silence is evidence the turn ended, but not evidence of
+    /// *when*, and an unseen-completion badge that cannot name its own instant
+    /// would light up and never clear.
+    pub fn completion_at_ms(&self) -> Option<u64> {
+        if !self.info.status.is_live() {
+            return Some(self.info.last_activity_ms);
+        }
+        self.info
+            .hint
+            .as_ref()
+            .filter(|hint| hint.state == vitrum_proto::HintState::Ready)
+            .map(|hint| hint.received_at_ms)
+    }
+
+    /// True when a session finished while the operator was not looking.
+    ///
+    /// This is T3 Code's `hasUnseenCompletion` and it is deliberately distinct
+    /// from unread output: a working session produces unread output constantly
+    /// and wants nothing, while a session that *finished* unseen is the thing
+    /// you came to the sidebar to find.
+    ///
+    /// Two sources of "were you looking", and which applies is not a fallback
+    /// but a statement about what the client knows:
+    ///
+    /// - A client that tracks focus supplies `last_visited_ms`, and the answer
+    ///   is whether the completion happened after that visit.
+    /// - A client that does not defers to the daemon's `unread`, which the
+    ///   server maintains from the same focus notifications.
+    ///
+    /// This diverges from T3 Code, which answers `false` when it has no
+    /// `lastVisitedAt`. A session that finished and has never been opened is
+    /// the clearest possible unseen completion, so a missing visit stamp reads
+    /// as "not seen", not as "seen".
+    pub fn has_unseen_completion(&self) -> bool {
+        let Some(completed_at_ms) = self.completion_at_ms() else {
+            return false;
+        };
+        match self.last_visited_ms {
+            Some(visited_ms) => completed_at_ms > visited_ms,
+            None => self.info.unread,
+        }
+    }
+
+    /// True while the snooze window is still open, ignoring the raised-hand
+    /// rule.
+    ///
+    /// This is the raw wall-clock question. Whether the row is ACTUALLY parked
+    /// is [`SessionView::effective_snoozed`], which also asks whether the
+    /// session has raised its hand.
+    pub fn is_asleep(&self, clock: Clock) -> bool {
+        self.snooze
+            .is_some_and(|snooze| snooze.is_asleep(clock.now_ms))
+    }
+
+    /// The instant a settled row sorts and labels by.
+    ///
+    /// An explicit settle wins: snoozing stamps `snoozed_at_ms`, and mirroring
+    /// T3 Code's `resolveSettledTimestamp` that stamp takes precedence over
+    /// inferred activity. Otherwise the row sorts by when its work ended, with
+    /// creation as the final net for a session that has produced nothing.
+    pub fn settled_at_ms(&self) -> u64 {
+        if let Some(snooze) = self.snooze {
+            return snooze.snoozed_at_ms;
+        }
+        self.info.last_activity_ms.max(self.info.created_at_ms)
+    }
+
+    /// When the current working stretch began, when there is a defensible
+    /// anchor for it.
+    ///
+    /// Only a declared `working` hint provides one. A PTY cannot tell you when
+    /// the current turn started: output is continuous and turn boundaries are a
+    /// harness concept. T3 Code reads the turn's `startedAt` out of its event
+    /// stream, which is exactly the coupling we are not taking on.
+    ///
+    /// So unhinted sessions return `None` and the UI shows no elapsed timer,
+    /// rather than showing session age dressed up as turn duration. Use
+    /// [`SessionView::age_ms`] if session age is what you actually want.
+    pub fn working_since_ms(&self) -> Option<u64> {
+        if self.status() != SidebarStatus::Working {
+            return None;
+        }
+        self.info
+            .hint
+            .as_ref()
+            .filter(|hint| hint.state == vitrum_proto::HintState::Working)
+            .map(|hint| hint.received_at_ms)
+    }
+
+    /// Elapsed milliseconds since the current working stretch began.
+    pub fn working_elapsed_ms(&self, clock: Clock) -> Option<u64> {
+        self.working_since_ms()
+            .map(|since| clock.now_ms.saturating_sub(since))
+    }
+
+    /// Milliseconds since the session was created.
+    pub fn age_ms(&self, clock: Clock) -> u64 {
+        clock.now_ms.saturating_sub(self.info.created_at_ms)
+    }
+}
+
+/// Coarse elapsed label: `"9s"`, `"5m"`, `"2h 07m"`.
+///
+/// Ported from T3 Code's `formatWorkingDurationLabel`, with one change: the
+/// minute part of the hour form is zero-padded. Their `2h 7m` and `2h 17m` have
+/// different widths, and a label that changes width every ten minutes makes the
+/// row it sits in twitch.
+///
+/// Truncating rather than rounding is deliberate: a timer that reads `1m`
+/// before a full minute has passed looks broken.
+pub fn format_duration_label(elapsed_ms: u64) -> String {
+    let seconds = elapsed_ms / 1000;
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    format!("{}h {:02}m", minutes / 60, minutes % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::disposition::{Disposition, DispositionPolicy};
+    use crate::status::StatusSource;
+    use crate::testkit::{ViewBuilder, view};
+    use vitrum_proto::{HintState, IDLE_ATTENTION_MS};
+
+    const NOW: u64 = 1_772_580_600_000;
+
+    fn clock() -> Clock {
+        Clock::utc(NOW)
+    }
+
+    /// A live session with fresh output has not completed, so the completion
+    /// badge must stay dark no matter how much unread output it has produced.
+    /// Conflating unread with completion is the exact bug this model exists to
+    /// avoid: twenty working agents would all claim to be finished.
+    #[test]
+    fn unread_output_from_a_live_session_is_not_a_completion() {
+        let row = ViewBuilder::new(1).running().unread(true).build();
+        assert_eq!(row.completion_at_ms(), None);
+        assert!(!row.has_unseen_completion());
+    }
+
+    /// A quiet live session still has no completion instant: we know it stopped
+    /// talking, not that it finished. Manufacturing an instant here would make
+    /// the badge permanent.
+    #[test]
+    fn silence_alone_is_not_a_completion() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .idle_ms(IDLE_ATTENTION_MS * 10)
+            .unread(true)
+            .build();
+        assert_eq!(row.status(), SidebarStatus::Ready);
+        assert_eq!(row.completion_at_ms(), None);
+        assert!(!row.has_unseen_completion());
+    }
+
+    /// An exit is a completion stamped at the exit instant, and it counts as
+    /// unseen while the daemon still reports unread.
+    #[test]
+    fn an_exit_completes_at_its_own_instant() {
+        let row = ViewBuilder::new(1)
+            .exited(0)
+            .last_activity_ms(NOW - 5_000)
+            .unread(true)
+            .build();
+        assert_eq!(row.completion_at_ms(), Some(NOW - 5_000));
+        assert!(row.has_unseen_completion());
+    }
+
+    /// A declared `ready` completes a live session, which is how an opted-in
+    /// harness gets an end-of-turn badge without exiting. The instant is the
+    /// declaration's, not now, so the badge survives later refreshes.
+    #[test]
+    fn a_ready_hint_completes_a_live_session_at_its_declaration_instant() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .hint(HintState::Ready, None, NOW - 2_000)
+            .unread(true)
+            .build();
+        assert_eq!(row.completion_at_ms(), Some(NOW - 2_000));
+        assert!(row.has_unseen_completion());
+    }
+
+    /// A `working` declaration is not a completion. Only `ready` is, or the
+    /// badge would fire on every turn start.
+    #[test]
+    fn a_working_hint_is_not_a_completion() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .hint(HintState::Working, None, NOW - 2_000)
+            .unread(true)
+            .build();
+        assert_eq!(row.completion_at_ms(), None);
+        assert!(!row.has_unseen_completion());
+    }
+
+    /// A local visit stamp overrides the daemon's unread flag in both
+    /// directions. A second window that has looked at the row must clear its
+    /// own badge without clearing the first window's.
+    #[test]
+    fn a_local_visit_stamp_decides_over_the_daemon_unread_flag() {
+        let completed_at = NOW - 10_000;
+
+        let visited_after = ViewBuilder::new(1)
+            .exited(0)
+            .last_activity_ms(completed_at)
+            .unread(true)
+            .last_visited_ms(Some(completed_at + 1))
+            .build();
+        assert!(!visited_after.has_unseen_completion());
+
+        let visited_before = ViewBuilder::new(1)
+            .exited(0)
+            .last_activity_ms(completed_at)
+            .unread(false)
+            .last_visited_ms(Some(completed_at - 1))
+            .build();
+        assert!(visited_before.has_unseen_completion());
+
+        let visited_exactly = ViewBuilder::new(1)
+            .exited(0)
+            .last_activity_ms(completed_at)
+            .unread(true)
+            .last_visited_ms(Some(completed_at))
+            .build();
+        assert!(
+            !visited_exactly.has_unseen_completion(),
+            "a visit at the completion instant counts as having seen it"
+        );
+    }
+
+    /// Never visited plus finished is the clearest unseen completion there is.
+    /// T3 Code answers false here; we answer true, and the daemon's unread flag
+    /// is what settles it when the client tracks no visits.
+    #[test]
+    fn a_never_visited_finished_session_defers_to_the_daemon_unread_flag() {
+        let seen = ViewBuilder::new(1).exited(0).unread(false).build();
+        assert_eq!(seen.last_visited_ms, None);
+        assert!(!seen.has_unseen_completion());
+
+        let unseen = ViewBuilder::new(1).exited(0).unread(true).build();
+        assert!(unseen.has_unseen_completion());
+    }
+
+    /// A signalled child reports no exit code at all, and must still read as a
+    /// completed failure that the inbox surfaces until it is looked at.
+    /// Treating a kill as "no information" would hide every OOM-killed agent.
+    #[test]
+    fn a_signalled_child_is_an_unseen_failed_completion() {
+        let killed = ViewBuilder::new(1)
+            .signalled()
+            .last_activity_ms(NOW - 500)
+            .unread(true)
+            .build();
+        assert_eq!(killed.info.status, vitrum_proto::SessionStatus::Exited { code: None });
+        assert_eq!(killed.status(), SidebarStatus::Failed);
+        assert_eq!(killed.completion_at_ms(), Some(NOW - 500));
+        assert!(killed.has_unseen_completion());
+        assert_eq!(
+            killed.disposition(clock(), DispositionPolicy::manual()),
+            Disposition::Active
+        );
+
+        let seen = ViewBuilder::new(1)
+            .signalled()
+            .last_activity_ms(NOW - 500)
+            .last_visited_ms(Some(NOW))
+            .build();
+        assert_eq!(
+            seen.disposition(clock(), DispositionPolicy::manual()),
+            Disposition::Settled
+        );
+    }
+
+    /// A live session is never drained by the disposition rules however quiet
+    /// it is, because it can still speak.
+    #[test]
+    fn a_live_session_is_never_settled() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .idle_ms(IDLE_ATTENTION_MS * 100)
+            .build();
+        assert_eq!(
+            row.disposition(clock(), DispositionPolicy::manual()),
+            Disposition::Active
+        );
+    }
+
+    /// A failure you have not looked at stays above the fold. Sinking it on
+    /// exit would bury exactly the row that needs you, which is the failure
+    /// mode of a plain "exited means history" rule.
+    #[test]
+    fn an_unseen_failure_stays_active_until_it_is_opened() {
+        let policy = DispositionPolicy::manual();
+        let unseen = ViewBuilder::new(1).exited(1).unread(true).build();
+        assert_eq!(unseen.status(), SidebarStatus::Failed);
+        assert_eq!(unseen.disposition(clock(), policy), Disposition::Active);
+
+        let opened = ViewBuilder::new(1)
+            .exited(1)
+            .last_activity_ms(NOW - 1_000)
+            .last_visited_ms(Some(NOW))
+            .build();
+        assert_eq!(opened.status(), SidebarStatus::Failed);
+        assert_eq!(opened.disposition(clock(), policy), Disposition::Settled);
+    }
+
+    /// Snooze parks a row regardless of what it is doing, and stops parking it
+    /// the instant it wakes, without ever changing what the agent is doing.
+    #[test]
+    fn snooze_parks_until_the_wake_instant_and_not_past_it() {
+        let policy = DispositionPolicy::manual();
+        let mut row = ViewBuilder::new(1).running().waiting(Some(false)).build();
+        row.snooze = Some(Snooze {
+            snoozed_at_ms: NOW - 1_000,
+            wake_at_ms: NOW + 1_000,
+        });
+        assert!(row.is_asleep(clock()));
+        assert_eq!(row.disposition(clock(), policy), Disposition::Snoozed);
+
+        let awake = Clock::utc(NOW + 1_000);
+        assert!(!row.is_asleep(awake));
+        assert_eq!(row.disposition(awake, policy), Disposition::Woke);
+        assert_eq!(
+            row.status(),
+            SidebarStatus::Working,
+            "snooze must not change what the agent is doing"
+        );
+    }
+
+    /// The settled sort key: an explicit snooze stamp beats inferred activity,
+    /// so a just-snoozed old session sorts to the top of the settled pile
+    /// rather than to the bottom.
+    #[test]
+    fn an_explicit_snooze_stamp_outranks_inferred_activity_for_the_settled_key() {
+        let mut old = ViewBuilder::new(1)
+            .exited(0)
+            .created_at_ms(1_000)
+            .last_activity_ms(2_000)
+            .build();
+        assert_eq!(old.settled_at_ms(), 2_000);
+
+        old.snooze = Some(Snooze {
+            snoozed_at_ms: 9_000,
+            wake_at_ms: 99_000,
+        });
+        assert_eq!(old.settled_at_ms(), 9_000);
+    }
+
+    /// A session that never produced output has `last_activity_ms` at or below
+    /// creation; the key must not collapse to zero and shove it to the bottom.
+    #[test]
+    fn the_settled_key_falls_back_to_creation_for_a_silent_session() {
+        let row = ViewBuilder::new(1)
+            .exited(0)
+            .created_at_ms(5_000)
+            .last_activity_ms(0)
+            .build();
+        assert_eq!(row.settled_at_ms(), 5_000);
+    }
+
+    /// A turn anchor exists only when the harness declared one. Inventing one
+    /// from session creation would label a six-hour-old session as having
+    /// worked for six hours on its current turn.
+    #[test]
+    fn only_a_declared_working_hint_yields_a_turn_anchor() {
+        let unhinted = ViewBuilder::new(1).running().created_at_ms(NOW - 60_000).build();
+        assert_eq!(unhinted.status(), SidebarStatus::Working);
+        assert_eq!(unhinted.working_since_ms(), None);
+        assert_eq!(unhinted.working_elapsed_ms(clock()), None);
+        assert_eq!(unhinted.age_ms(clock()), 60_000);
+
+        let hinted = ViewBuilder::new(1)
+            .running()
+            .created_at_ms(NOW - 60_000)
+            .hint(HintState::Working, None, NOW - 9_000)
+            .build();
+        assert_eq!(hinted.working_since_ms(), Some(NOW - 9_000));
+        assert_eq!(hinted.working_elapsed_ms(clock()), Some(9_000));
+    }
+
+    /// A stale `working` hint that has been retired by silence must stop
+    /// reporting a turn anchor too, or the row shows a timer counting up for a
+    /// turn that ended.
+    #[test]
+    fn a_retired_working_hint_reports_no_turn_anchor() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .idle_ms(IDLE_ATTENTION_MS)
+            .hint(HintState::Working, None, NOW - 60_000)
+            .build();
+        assert_eq!(row.resolve_status().source, StatusSource::Idle);
+        assert_eq!(row.working_since_ms(), None);
+    }
+
+    /// A hint label belongs to a live declaration. Showing "Approve this write?"
+    /// next to a Ready badge on a dead session is a lie about what is happening.
+    #[test]
+    fn a_hint_label_is_dropped_once_the_session_exits() {
+        let live = ViewBuilder::new(1)
+            .running()
+            .hint(HintState::Approval, Some("write src/main.rs"), NOW)
+            .build();
+        assert_eq!(live.hint_label(), Some("write src/main.rs"));
+        assert_eq!(live.status(), SidebarStatus::Approval);
+
+        let dead = ViewBuilder::new(1)
+            .exited(0)
+            .hint(HintState::Approval, Some("write src/main.rs"), NOW)
+            .build();
+        assert_eq!(dead.hint_label(), None);
+        assert_eq!(dead.status(), SidebarStatus::Ready);
+    }
+
+    /// Duration labels are user-visible and sit in a fixed-width slot. The
+    /// zero-padded minute in the hour form is what stops the row twitching as
+    /// the timer crosses ten minutes.
+    #[test]
+    fn duration_labels_render_at_every_unit_boundary() {
+        assert_eq!(format_duration_label(0), "0s");
+        assert_eq!(format_duration_label(999), "0s");
+        assert_eq!(format_duration_label(1_000), "1s");
+        assert_eq!(format_duration_label(59_999), "59s");
+        assert_eq!(format_duration_label(60_000), "1m");
+        assert_eq!(format_duration_label(3_599_999), "59m");
+        assert_eq!(format_duration_label(3_600_000), "1h 00m");
+        assert_eq!(format_duration_label(3_600_000 + 7 * 60_000), "1h 07m");
+        assert_eq!(format_duration_label(3_600_000 + 17 * 60_000), "1h 17m");
+        assert_eq!(format_duration_label(26 * 3_600_000), "26h 00m");
+    }
+
+    /// A clock that has gone backwards (an NTP correction between two refreshes)
+    /// must not underflow the unsigned elapsed maths and print a 584-million-year
+    /// duration.
+    #[test]
+    fn elapsed_maths_saturates_when_the_clock_goes_backwards() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .created_at_ms(NOW + 5_000)
+            .hint(HintState::Working, None, NOW + 5_000)
+            .build();
+        assert_eq!(row.age_ms(clock()), 0);
+        assert_eq!(row.working_elapsed_ms(clock()), Some(0));
+    }
+
+    /// The whole row model is persisted and restored, so it must survive JSON.
+    /// A field rename here silently discards every snooze and visit stamp on
+    /// upgrade.
+    #[test]
+    fn a_session_view_round_trips_through_json() {
+        let mut row = view(7);
+        row.snooze = Some(Snooze {
+            snoozed_at_ms: 1,
+            wake_at_ms: 2,
+        });
+        row.last_visited_ms = Some(3);
+        let json = serde_json::to_string(&row).expect("view serialises");
+        let back: SessionView = serde_json::from_str(&json).expect("view round-trips");
+        assert_eq!(back, row);
+        assert!(json.contains("\"lastVisitedMs\":3"));
+        assert!(json.contains("\"snooze\":{\"snoozedAtMs\":1,\"wakeAtMs\":2}"));
+    }
+}

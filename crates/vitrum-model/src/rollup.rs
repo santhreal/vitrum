@@ -239,16 +239,12 @@ pub fn rollup_all(
 
     for row in rows {
         let project_id = row.project_id();
-        let index = match index_map.get(&project_id) {
-            Some(&idx) => idx,
-            None => {
-                let idx = rollups.len();
-                rollups.push(ProjectRollup::empty(project_id));
-                index_map.insert(project_id, idx);
-                idx
-            }
-        };
-        rollups[index].absorb(row, clock, policy);
+        let next_idx = rollups.len();
+        let &mut idx = index_map.entry(project_id).or_insert_with(|| {
+            rollups.push(ProjectRollup::empty(project_id));
+            next_idx
+        });
+        rollups[idx].absorb(row, clock, policy);
     }
     for rollup in &mut rollups {
         rollup.indicator = rollup.counts.most_urgent();

@@ -17,7 +17,14 @@ use super::{Publish, Tracked, Watched, Watcher};
 /// minute of `inotify_add_watch` and exhaust the per-user watch limit, which
 /// is a system-wide resource this daemon does not own. Hitting the cap is
 /// reported as a degradation rather than silently watching a prefix.
-const DIRS_PER_SESSION: usize = 4096;
+pub(super) const DIRS_PER_SESSION: usize = 4096;
+
+/// Opens awaiting a close, before the stalest is dropped.
+///
+/// One inotify read carries at most a few hundred events, but a burst of opens
+/// with no closes spans many reads and only the age prune between them would
+/// ever shrink this. 4096 paths is far more than any real editor holds open.
+pub(super) const PENDING_OPENS: usize = 4096;
 
 /// Directory names never worth watching.
 ///
@@ -93,11 +100,10 @@ pub(super) fn start(
 
 /// Reconcile the watch set against the sessions that are live now.
 ///
-/// Only the session list is reconciled here; watches for a directory that has
-/// gone away are dropped by the kernel when its inode does, and a watch left
-/// on a directory whose session ended is harmless until the next subscription
-/// cycle. Adding is what has to be prompt, because a session that just
-/// started is exactly the second agent this feature exists to catch.
+/// The session list is reconciled, watches for directories under no live root
+/// are removed, and anything new is watched. Adding is what has to be prompt,
+/// because a session that just started is exactly the second agent this
+/// feature exists to catch.
 pub(super) fn sync(w: &Watcher, live: &[(SessionId, PathBuf, u32)]) {
     {
         let mut t = w.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -112,8 +118,33 @@ pub(super) fn sync(w: &Watcher, live: &[(SessionId, PathBuf, u32)]) {
     // idempotent and costs one map lookup per directory on the common path
     // where nothing new appeared.
     if let Some(adder) = w.adder.as_ref() {
+        prune(adder, &w.wds, live);
         add_all(adder, &w.wds, &w.state, live);
     }
+}
+
+/// Drop watches for directories under no live session root.
+///
+/// An inotify watch is a kernel resource held until it is removed or the
+/// instance is closed, and the instance lives as long as the subscription, so
+/// leaving them behind leaked one watch per directory of every session that
+/// ever ended, against a per-user limit the daemon does not own. They also sat
+/// in `wds` suppressing a re-watch if a later session took the same root.
+fn prune(
+    inotify: &std::fs::File,
+    wds: &Arc<Mutex<HashMap<i32, PathBuf>>>,
+    live: &[(SessionId, PathBuf, u32)],
+) {
+    let mut map = wds.lock().unwrap_or_else(|p| p.into_inner());
+    map.retain(|wd, dir| {
+        if live.iter().any(|(_, root, _)| dir.starts_with(root)) {
+            return true;
+        }
+        // A watch whose directory was deleted is already gone from the kernel,
+        // so a failure here only confirms what was wanted.
+        let _ = rustix::fs::inotify::remove_watch(inotify.as_fd(), *wd);
+        false
+    });
 }
 
 /// Put `live` into `t`, keeping what is already known about surviving
@@ -166,28 +197,40 @@ fn add_all(
         .values()
         .map(|d| (d.clone(), ()))
         .collect();
-    for (_, root, _) in live {
-        let mut n = 0usize;
+    // The cap is on the watch SET, not on one walk. Counting only what this
+    // call added let a tree over the cap take another DIRS_PER_SESSION watches
+    // on every sync, which is unbounded growth over a daemon's lifetime.
+    let mut held = vec![0usize; live.len()];
+    for dir in seen.keys() {
+        if let Some(i) = live.iter().position(|(_, root, _)| dir.starts_with(root)) {
+            held[i] += 1;
+        }
+    }
+    for (i, (_, root, _)) in live.iter().enumerate() {
+        let mut n = held[i];
         let mut stack = vec![root.clone()];
         let mut capped = false;
         while let Some(dir) = stack.pop() {
-            if seen.contains_key(&dir) {
-                continue;
-            }
-            if n >= DIRS_PER_SESSION {
-                capped = true;
-                break;
-            }
-            match rustix::fs::inotify::add_watch(inotify.as_fd(), &dir, flags) {
-                Ok(wd) => {
-                    wds.lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .insert(wd, dir.clone());
-                    seen.insert(dir.clone(), ());
-                    n += 1;
+            if !seen.contains_key(&dir) {
+                if n >= DIRS_PER_SESSION {
+                    capped = true;
+                    break;
                 }
-                Err(_) => continue,
+                match rustix::fs::inotify::add_watch(inotify.as_fd(), &dir, flags) {
+                    Ok(wd) => {
+                        wds.lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(wd, dir.clone());
+                        seen.insert(dir.clone(), ());
+                        n += 1;
+                    }
+                    Err(_) => continue,
+                }
             }
+            // Descend even into a directory already watched. Skipping it
+            // stopped the walk at the root on every re-sync, so a module an
+            // agent created after the client subscribed was never watched and
+            // nothing written under it was ever detected.
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
@@ -205,7 +248,7 @@ fn add_all(
             }
         }
         if capped {
-            state.lock().unwrap_or_else(|p| p.into_inner()).degraded.push(format!(
+            state.lock().unwrap_or_else(|p| p.into_inner()).degrade(format!(
                 "{} has more than {DIRS_PER_SESSION} directories, so part of it is not watched.",
                 root.display()
             ));
@@ -225,8 +268,9 @@ fn read_loop(
     let mut buf = [0u8; 8192];
     let mut last: Vec<vitrum_proto::Collision> = Vec::new();
     // Path to the session seen holding it open, awaiting a close that says a
-    // write happened. Bounded below, because an open with no matching close is
-    // ordinary: a long-lived reader, or a process that died holding the file.
+    // write happened. An open with no matching close is ordinary (a long-lived
+    // reader, or a process that died holding the file), so this is bounded two
+    // ways: by age between read batches, and by [`PENDING_OPENS`] within one.
     let mut pending: HashMap<PathBuf, (SessionId, u64)> = HashMap::new();
     const IN_MOVED_TO: u32 = 0x0000_0080;
     while running.load(Ordering::Relaxed) {
@@ -261,12 +305,10 @@ fn read_loop(
             // rather than absorbed.
             const IN_Q_OVERFLOW: u32 = 0x0000_4000;
             if mask & IN_Q_OVERFLOW != 0 {
-                let mut t = state.lock().unwrap_or_else(|p| p.into_inner());
-                let note = "The kernel dropped change events, so some writes were never seen."
-                    .to_string();
-                if !t.degraded.contains(&note) {
-                    t.degraded.push(note);
-                }
+                state.lock().unwrap_or_else(|p| p.into_inner()).degrade(
+                    "The kernel dropped change events, so some writes were never seen."
+                        .to_string(),
+                );
                 continue;
             }
             if name.is_empty() {
@@ -291,7 +333,7 @@ fn read_loop(
                 // until a close tells us a write actually happened; an open
                 // for reading must never be recorded as a change.
                 if let Some(id) = holder(&state, &path) {
-                    pending.insert(path.clone(), (id, now_ms));
+                    remember_open(&mut pending, path.clone(), id, now_ms);
                 }
                 continue;
             }
@@ -314,30 +356,45 @@ fn read_loop(
             t.collisions(now_ms)
         };
         if next != last {
-            last = next;
-            let msg = {
+            // The contested list is reused rather than rebuilt: the old code
+            // ran the whole scan a second time under a second lock just to
+            // fill the message, doubling the per-batch cost of the one thing
+            // that touches every tracked path.
+            let (sessions, degraded) = {
                 let t = state.lock().unwrap_or_else(|p| p.into_inner());
-                ServerMsgReport {
-                    collisions: t.collisions(now_ms),
-                    sessions: t.per_session(),
-                    degraded: t.degraded.clone(),
-                }
+                (t.per_session(), t.degraded.clone())
             };
             publish(vitrum_proto::ServerMsg::CollisionReport {
                 watching: true,
-                collisions: msg.collisions,
-                sessions: msg.sessions,
-                degraded: msg.degraded,
+                collisions: next.clone(),
+                sessions,
+                degraded,
             });
+            last = next;
         }
     }
 }
 
-/// The three lists a report carries, gathered under one lock.
-struct ServerMsgReport {
-    collisions: Vec<vitrum_proto::Collision>,
-    sessions: Vec<vitrum_proto::CollisionSession>,
-    degraded: Vec<String>,
+/// Note that `id` holds `path` open, evicting the stalest note at the bound.
+///
+/// The age prune only runs between read batches, so one burst of opens with no
+/// closes must not grow the map without limit.
+fn remember_open(
+    pending: &mut HashMap<PathBuf, (SessionId, u64)>,
+    path: PathBuf,
+    id: SessionId,
+    now_ms: u64,
+) {
+    if !pending.contains_key(&path)
+        && pending.len() >= PENDING_OPENS
+        && let Some(stalest) = pending
+            .iter()
+            .min_by_key(|(_, (_, at))| *at)
+            .map(|(p, _)| p.clone())
+    {
+        pending.remove(&stalest);
+    }
+    pending.insert(path, (id, now_ms));
 }
 
 /// Which watched session, if any, currently holds `path` open.
@@ -501,4 +558,18 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 pub(super) fn reconcile_for_test(t: &mut Tracked, live: &[(SessionId, PathBuf, u32)]) {
     reconcile(t, live);
+}
+
+/// `remember_open` for the unit tests, which have no inotify fd.
+///
+/// The eviction rule is the interesting half: what a burst of opens with no
+/// closes costs, and which entry goes when the bound is reached.
+#[cfg(test)]
+pub(super) fn remember_open_for_test(
+    pending: &mut HashMap<PathBuf, (SessionId, u64)>,
+    path: PathBuf,
+    id: SessionId,
+    now_ms: u64,
+) {
+    remember_open(pending, path, id, now_ms);
 }

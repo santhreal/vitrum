@@ -25,6 +25,15 @@ use crate::projects::ProjectRegistry;
 /// than left with a hole.
 const EVENT_QUEUE: usize = 256;
 
+/// One registry event, already serialized.
+///
+/// The bus used to carry `ServerMsg`, which made a broadcast to N windows cost N
+/// deep clones of the message and N serde traversals producing identical bytes.
+/// A session list of twenty entries is twenty `SessionInfo` and their strings
+/// cloned per window. Serializing once at the source turns that into one
+/// traversal plus one atomic increment per window.
+pub type Event = Arc<str>;
+
 /// Sessions, projects, and the event bus, shared by every connection.
 pub struct Hub {
     pub manager: Arc<SessionManager>,
@@ -40,7 +49,7 @@ pub struct Hub {
     /// Holds nothing at all until subscribed: no thread, no watcher, no watch
     /// descriptor. See `overlap.rs`.
     pub overlap: Arc<OverlapService>,
-    events: broadcast::Sender<ServerMsg>,
+    events: broadcast::Sender<Event>,
     /// Sessions that already have a status watcher, so one is spawned per
     /// session rather than per session per connection.
     watched: Mutex<HashSet<SessionId>>,
@@ -99,15 +108,23 @@ impl Hub {
     ///
     /// Only a connection past the handshake should hold one of these: a client
     /// that has not agreed on a protocol version cannot be sent typed state.
-    pub fn subscribe(&self) -> broadcast::Receiver<ServerMsg> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
     }
 
     /// Announce a registry change to every connected client.
     pub fn publish(&self, msg: ServerMsg) {
+        // Once, here, rather than once per window in every event pump.
+        let text = match serde_json::to_string(&msg) {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::error!(error = %e, "could not serialize a registry event");
+                return;
+            }
+        };
         // Err means nobody is connected, which is not a failure: the daemon runs
         // without a GUI by design.
-        let _ = self.events.send(msg);
+        let _ = self.events.send(Event::from(text));
     }
 
     /// Every project that still has a session in it.
@@ -146,6 +163,17 @@ impl Hub {
     /// connection that created it, and any connection that lists a manager which
     /// already had sessions in it.
     pub fn watch(self: &Arc<Self>, session: SessionId) {
+        // An exited session never changes again, and its scrollback is retained,
+        // so every `List` reaches it. Watching one parks a task holding two watch
+        // receivers and an `Arc<Hub>` for the life of the daemon, and the exit it
+        // would report was already published by the watcher that saw it happen.
+        if self
+            .manager
+            .info(session)
+            .is_some_and(|info| !info.status.is_live())
+        {
+            return;
+        }
         {
             let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
             if !watched.insert(session) {
@@ -167,6 +195,20 @@ impl Hub {
         tokio::spawn(async move { hub.watch_loop(session, status, observations).await });
     }
 
+    /// How many sessions have a status watcher right now.
+    ///
+    /// Exists for one test, and that test earns it: a watcher on a session that
+    /// can never change again is a task parked for the life of the daemon, and
+    /// nothing about that is visible to the compiler or to the protocol.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn watcher_count(&self) -> usize {
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
     /// Forward one session's changes onto the bus until it ends.
     ///
     /// Two channels, because two very different things change: the child's
@@ -184,9 +226,35 @@ impl Hub {
     async fn watch_loop(
         self: Arc<Self>,
         session: SessionId,
+        status: tokio::sync::watch::Receiver<SessionStatus>,
+        observations: tokio::sync::watch::Receiver<u64>,
+    ) {
+        self.watch_until_exit(session, status, observations).await;
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session);
+    }
+
+    /// The watch itself, so the registration is released on every exit path.
+    pub(crate) async fn watch_until_exit(
+        &self,
+        session: SessionId,
         mut status: tokio::sync::watch::Receiver<SessionStatus>,
         mut observations: tokio::sync::watch::Receiver<u64>,
     ) {
+        // Read the current status before waiting on a change. `watch` checked
+        // that the session was live, but the child can die between that check
+        // and this subscription, and a value that changed before you subscribed
+        // never fires `changed()`. Waiting first would park this task forever
+        // and no client would ever be told the session ended.
+        if let SessionStatus::Exited { code } = status.borrow_and_update().clone() {
+            if let Some(info) = self.manager.info(session) {
+                self.publish(ServerMsg::SessionUpdated(info));
+            }
+            self.publish(ServerMsg::Exited { session, code });
+            return;
+        }
         let mut observing = true;
         loop {
             let exited = tokio::select! {
@@ -224,9 +292,5 @@ impl Hub {
                 break;
             }
         }
-        self.watched
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&session);
     }
 }

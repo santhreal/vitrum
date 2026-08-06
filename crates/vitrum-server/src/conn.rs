@@ -216,11 +216,16 @@ impl Conn {
                         // delta only to the creating connection would leave every
                         // other window's sidebar silently missing this session,
                         // which defeats the point of a session server.
-                        let info = self
-                            .hub
-                            .manager
-                            .info(id)
-                            .context("a session that just spawned must be registered")?;
+                        // `info` can be `None`: another window may have closed
+                        // this session between the spawn and here. That is a
+                        // race, not a protocol violation, and failing the
+                        // connection would take a window's twenty other live
+                        // sessions down with it.
+                        let Some(info) = self.hub.manager.info(id) else {
+                            self.error(Some(id), "the session was closed as it was created".to_string())
+                                .await?;
+                            return Ok(Flow::Continue);
+                        };
                         self.hub.watch(id);
                         self.hub.publish(ServerMsg::SessionCreated(info));
                         // Announces the project too, if this created one.
@@ -491,13 +496,14 @@ impl Drop for Conn {
 /// window, a bare terminal, or a relaunched GUI show sessions it did not start.
 pub async fn pump_events(
     hub: Arc<Hub>,
-    mut rx: broadcast::Receiver<ServerMsg>,
+    mut rx: broadcast::Receiver<crate::hub::Event>,
     out: mpsc::Sender<Message>,
 ) {
     loop {
         match rx.recv().await {
             Ok(event) => {
-                if send_json(&out, &event).await.is_err() {
+                // Already JSON: the hub serialized it once for every window.
+                if out.send(Message::Text(event.to_string())).await.is_err() {
                     return;
                 }
             }

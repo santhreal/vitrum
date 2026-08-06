@@ -287,3 +287,86 @@ async fn concurrent_sessions_report_independently() {
     codes.sort();
     assert_eq!(codes, vec![Some(2), Some(3)]);
 }
+
+/// WHY: `List` reaches every retained session, including ones that already
+/// exited, and `Hub::watch` used to start a status watcher for each. An exited
+/// session's status never changes again, so that task parks forever holding two
+/// `watch::Receiver`s and an `Arc<Hub>`: one leaked task per dead session, for
+/// the life of a daemon that runs for days.
+#[tokio::test]
+async fn an_exited_session_gets_no_status_watcher() {
+    let manager = std::sync::Arc::new(vitrum_core::SessionManager::new(4096));
+    let hub = crate::Hub::new(std::sync::Arc::clone(&manager));
+    let id = manager
+        .spawn(spec("exit 0"))
+        .expect("spawning a shell that exits at once");
+    wait_until_dead(&manager, id).await;
+
+    hub.watch(id);
+    assert_eq!(
+        hub.watcher_count(),
+        0,
+        "a session that can never change again was given a watcher"
+    );
+}
+
+/// WHY: `Hub::watch` checks the session is live and only then subscribes, and a
+/// child can die in that window. A `watch` value that changed before you
+/// subscribed never fires `changed()`, so waiting first parked the task forever
+/// and no client was ever told the session ended.
+#[tokio::test]
+async fn a_status_that_is_already_terminal_is_still_reported() {
+    let manager = std::sync::Arc::new(vitrum_core::SessionManager::new(4096));
+    let hub = crate::Hub::new(manager);
+    let mut events = hub.subscribe();
+
+    // Exactly the state the race produces: subscribed to a channel whose value
+    // is already terminal, so nothing will ever change again.
+    let (_status_tx, status) = tokio::sync::watch::channel(SessionStatus::Exited { code: Some(7) });
+    let (_obs_tx, observations) = tokio::sync::watch::channel(0u64);
+
+    tokio::time::timeout(
+        DEADLINE,
+        hub.watch_until_exit(SessionId(1), status, observations),
+    )
+    .await
+    .expect("the watcher must not park on a status that is already terminal");
+
+    let event = tokio::time::timeout(DEADLINE, events.recv())
+        .await
+        .expect("an exit must be published")
+        .expect("the bus is open");
+    assert_eq!(
+        serde_json::from_str::<ServerMsg>(&event).expect("the bus carries JSON"),
+        ServerMsg::Exited {
+            session: SessionId(1),
+            code: Some(7)
+        }
+    );
+}
+
+fn spec(command: &str) -> vitrum_core::SessionSpec {
+    vitrum_core::SessionSpec {
+        project_id: vitrum_proto::ProjectId(1),
+        cwd: std::path::PathBuf::from("/tmp"),
+        command: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), command.to_string()],
+        env: Vec::new(),
+        cols: 80,
+        rows: 24,
+        title: None,
+    }
+}
+
+async fn wait_until_dead(manager: &vitrum_core::SessionManager, id: SessionId) {
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    while manager
+        .info(id)
+        .expect("the session is still listed")
+        .status
+        .is_live()
+    {
+        assert!(tokio::time::Instant::now() < deadline, "the child never exited");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}

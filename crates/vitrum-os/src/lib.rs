@@ -43,6 +43,7 @@ pub mod deeplink;
 pub mod icon;
 pub mod notify;
 pub mod paths;
+pub mod proc;
 pub mod single_instance;
 pub mod theme;
 pub mod time;
@@ -52,6 +53,7 @@ pub mod window_state;
 pub use badge::WindowHandle;
 pub use capability::{CapabilityReport, Feature, Support, Unavailable, UnavailableKind};
 pub use paths::{AppPaths, PathEnv, PathError, Platform};
+pub use proc::{ProcInfo, ProcStatusCache, ProcessState};
 
 #[cfg(test)]
 mod tests;

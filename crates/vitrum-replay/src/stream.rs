@@ -334,7 +334,7 @@ fn compress_block(data: &[u8], algorithm: CompressionAlgorithm) -> Vec<u8> {
                 while i + (run as usize) < data.len() && data[i + run as usize] == byte && run < 255 {
                     run += 1;
                 }
-                if run > 2 {
+                if run > 2 || byte == 0xFF {
                     out.push(0xFF);
                     out.push(run);
                     out.push(byte);

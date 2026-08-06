@@ -79,10 +79,8 @@ impl WryQueue {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<()> {
         let mut self_mut = self.inner.borrow_mut();
-        let poll = self_mut
-            .server_location_changed_future
-            .as_mut()
-            .poll_unpin(cx);
+        let poll = unsafe { Pin::new_unchecked(&mut self_mut.server_location_changed_future) }
+            .poll(cx);
         if poll.is_ready() {
             // If the future is ready, we need to reset it to wait for the next change
             self_mut.server_location_changed_future =
@@ -118,7 +116,7 @@ pub(crate) struct WryQueueInner {
     edits_in_progress: Option<oneshot::Receiver<()>>,
     // The socket may be killed by the OS while running. If it does, this channel will receive the new server location
     server_location_changed: Arc<Notify>,
-    server_location_changed_future: Pin<Box<dyn Future<Output = ()>>>,
+    server_location_changed_future: OwnedNotifyFuture,
     mutation_state: MutationState,
 }
 
@@ -485,17 +483,42 @@ fn test_key_encoding_length() {
     }
 }
 
-// Take an Arc<Notify> and create a future that waits for the notify to be triggered.
-fn owned_notify_future(notify: Arc<Notify>) -> Pin<Box<dyn Future<Output = ()>>> {
-    let mut notify_owned = Box::pin(async move {
-        let notified = notify.notified();
+pub(crate) struct OwnedNotifyFuture {
+    _notify: Arc<Notify>,
+    notified: tokio::sync::futures::Notified<'static>,
+    yielded: bool,
+}
 
-        // The future should be after this statement once it is polled bellow
-        tokio::task::yield_now().await;
-        notified.await;
-    });
+impl OwnedNotifyFuture {
+    pub(crate) fn new(notify: Arc<Notify>) -> Self {
+        let notified = unsafe {
+            std::mem::transmute::<
+                tokio::sync::futures::Notified<'_>,
+                tokio::sync::futures::Notified<'static>,
+            >(notify.notified())
+        };
+        Self {
+            _notify: notify,
+            notified,
+            yielded: false,
+        }
+    }
+}
 
-    // Start tracking notify before the output future is polled
-    _ = (&mut notify_owned).now_or_never();
-    notify_owned
+impl Future for OwnedNotifyFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+        if !this.yielded {
+            this.yielded = true;
+            cx.waker().wake_by_ref();
+            return std::task::Poll::Pending;
+        }
+        unsafe { Pin::new_unchecked(&mut this.notified) }.poll(cx)
+    }
+}
+
+fn owned_notify_future(notify: Arc<Notify>) -> OwnedNotifyFuture {
+    OwnedNotifyFuture::new(notify)
 }

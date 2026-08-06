@@ -24,8 +24,12 @@ async fn child_output_arrives_verbatim_on_the_broadcast_channel() {
     let id = mgr.spawn(shell_spec("echo vitrum-ok")).expect("spawn");
     let mut c = collect(&mgr, id);
     let want: &[u8] = b"vitrum-ok\r\n";
-    c.until(|b| b.len() >= want.len()).await;
-    assert_eq!(c.bytes, want);
+    c.until(|b| b.ends_with(want)).await;
+    // Ends with, not equals: ConPTY prepends its own mode sets and an OSC 0 for
+    // the shell before the child writes anything, and those are bytes a terminal
+    // is supposed to receive. The contract is that the child's bytes arrive
+    // whole, in order, and unaltered.
+    assert!(c.bytes.ends_with(want), "received {:?}", c.bytes);
     assert_eq!(c.first_seq, Some(0), "the first byte of a session is seq 0");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 }
@@ -47,7 +51,7 @@ async fn broadcast_and_scrollback_agree_byte_for_byte() {
     assert_eq!(from, 0);
     assert!(!more, "nothing older than the first byte can exist");
     assert_eq!(bytes, c.bytes);
-    assert_eq!(bytes, b"agreement\r\n");
+    assert!(bytes.ends_with(b"agreement\r\n"), "recorded {bytes:?}");
 }
 
 /// Output must be coalesced before it is broadcast.

@@ -257,3 +257,36 @@ impl Drop for TempDir {
 pub(crate) fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
 }
+
+/// The whole byte stream one run of `script` produces, from a ring big enough to
+/// keep all of it.
+///
+/// A test cannot compute this from the command. A Unix pty hands over the
+/// child's bytes and nothing else, but ConPTY opens every session with its own
+/// preamble: mode sets, an SGR reset, an OSC 0 naming the shell, and a cursor
+/// show. Those are terminal bytes and the frontend needs them, so they belong in
+/// the stream and they count towards the ring like any other byte.
+///
+/// So the reference is measured rather than assumed: the same command in a
+/// manager that evicts nothing. What the capacity tests then assert is that a
+/// small ring holds exactly the tail of what a large one holds, which is the
+/// real contract and is the same sentence on every platform.
+pub(crate) async fn whole_stream(script: &str) -> Vec<u8> {
+    let mgr = SessionManager::new(1 << 20);
+    let id = mgr.spawn(shell_spec(script)).expect("spawn");
+    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 1 << 20).expect("session exists");
+    assert_eq!(from, 0, "a ring this size evicted something");
+    assert!(!more, "the reference read did not reach the start");
+    bytes
+}
+
+/// A script that blocks waiting for the operator to type something.
+///
+/// `read -r answer` is a POSIX shell builtin, and `cmd` answers it with "not
+/// recognized" and exits. A test that wants a session sitting on the keyboard
+/// therefore has to ask for it in the local dialect, or it measures a session
+/// that already died.
+pub(crate) fn blocking_read() -> &'static str {
+    if cfg!(windows) { "pause" } else { "read -r answer" }
+}

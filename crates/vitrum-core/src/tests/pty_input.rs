@@ -33,12 +33,17 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 /// The same round trip on Windows, where ConPTY interleaves its own escape
 /// sequences with the echoed input, so the assertion is on the child's reply
 /// appearing exactly once rather than on the whole stream.
+///
+/// The reply is printed by a nested `cmd /V:ON` because `cmd` expands `%L%` when
+/// it parses the whole `&&` line, which is before `set /p` has assigned it. The
+/// child inherits `L` through the environment and delayed expansion reads it at
+/// the moment it runs.
 #[cfg(windows)]
 #[tokio::test]
 async fn input_reaches_the_child_and_its_reply_returns() {
     let mgr = SessionManager::new(64 * 1024);
     let id = mgr
-        .spawn(shell_spec("set /p L= && echo got=%L%"))
+        .spawn(shell_spec("set /p L= && cmd /V:ON /C echo got=!L!"))
         .expect("spawn");
     let mut c = collect(&mgr, id);
     mgr.write(id, b"hello\r\n").expect("write");

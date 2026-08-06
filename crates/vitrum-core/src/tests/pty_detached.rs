@@ -20,7 +20,14 @@ async fn scrollback_is_recorded_with_no_subscriber() {
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert_eq!(from, 0);
     assert!(!more);
-    assert_eq!(bytes, b"nobody-watching\r\n");
+    // Ends with, not equals: ConPTY opens the stream with its own mode sets and
+    // an OSC 0 naming the shell, which are terminal bytes the frontend needs and
+    // therefore belong in the ring. What must hold on every platform is that the
+    // child's line was recorded, whole and last, with nobody listening.
+    assert!(
+        bytes.ends_with(b"nobody-watching\r\n"),
+        "recorded {bytes:?}"
+    );
 }
 
 /// A session must survive a detach and keep producing, and the ring must contain
@@ -67,7 +74,10 @@ async fn re_attaching_delivers_no_backlog() {
     late.expect_quiet().await;
     assert_eq!(late.bytes, b"", "attach must not replay");
     let (_, bytes, _) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
-    assert_eq!(bytes, b"history\r\n", "but history is still available");
+    assert!(
+        bytes.ends_with(b"history\r\n"),
+        "history is still available: {bytes:?}"
+    );
 }
 
 /// Paging backwards must walk to the oldest retained byte and then stop.

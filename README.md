@@ -2,10 +2,84 @@
 
 A terminal for running many coding agents at once.
 
-It is a real terminal. You point it at whatever you already use, whether that is
-Claude Code, Codex, Gemini CLI, opencode, veyyon or a plain shell, and it gives
-you a sidebar to move between them, one window that can be many windows, and a
-warning when two of your agents start writing the same file.
+![Three sessions in one window: a finished git log, a cargo run and a shell, with the sidebar showing what each one is doing.](assets/screenshots/hero.png)
+
+## Install
+
+One paste, per platform. It downloads the latest release, puts both binaries on
+your `PATH`, and starts the app.
+
+### Linux
+
+```sh
+mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-unknown-linux-gnu.tar.gz" | tar xz -C ~/.local/bin && vitrum
+```
+
+### macOS
+
+```sh
+mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz" | tar xz -C ~/.local/bin && vitrum
+```
+
+### Windows (PowerShell)
+
+```powershell
+$b="$env:LOCALAPPDATA\Programs\vitrum"; mkdir -Force $b >$null; $v=(irm https://api.github.com/repos/santhreal/vitrum/releases/latest).tag_name.TrimStart('v'); iwr "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-pc-windows-msvc.tar.gz" -OutFile "$b\v.tgz"; tar xzf "$b\v.tgz" -C $b; del "$b\v.tgz"; [Environment]::SetEnvironmentVariable('Path',"$([Environment]::GetEnvironmentVariable('Path','User'));$b",'User'); & "$b\vitrum.exe"
+```
+
+If `vitrum` is not found afterwards, `~/.local/bin` is not on your `PATH` (or on
+Windows, open a new terminal).
+
+Requires a WebKit runtime, which is the only system dependency. Debian and
+Ubuntu: `sudo apt install libwebkit2gtk-4.1`. Fedora: `sudo dnf install
+webkit2gtk4.1`. Arch: `sudo pacman -S webkit2gtk-4.1`. macOS and Windows ship
+one.
+
+Update in place with `vitrum update`.
+
+### From crates.io
+
+```sh
+cargo install vitrum vitrum-server
+```
+
+Builds from source, so it needs the development packages listed under
+[Requirements](#requirements). Both names in one command: `vitrum` looks for the
+daemon beside itself, so a client without `vitrum-server` has nothing to talk
+to.
+
+Prefer to build it yourself? See [Build from source](#build-from-source).
+
+---
+
+## Watch it work
+
+Starting a real `cargo test`, watching it stream, then sweeping every session's
+scrollback for a line in it.
+
+![A command typed into the launcher, its output streaming into the pane, then a scrollback search finding a line across two sessions.](assets/screenshots/demo.gif)
+
+The same recording as video, if the GIF is too coarse to read:
+[demo.mp4](assets/screenshots/demo.mp4).
+
+**The launcher.** Type a command, or pick one you have run before. Agents already
+on your `PATH` are offered without being configured.
+
+![The launcher, with recent commands and the agents found on PATH.](assets/screenshots/launcher.png)
+
+**Search across sessions.** One sweep over every session's scrollback, live or
+finished, grouped by the session each line came from.
+
+![Scrollback search showing three matches across two sessions, each hit highlighted in its surrounding lines.](assets/screenshots/search.png)
+
+---
+
+## It is a real terminal
+
+You point it at whatever you already use, whether that is Claude Code, Codex,
+Gemini CLI, opencode, veyyon or a plain shell, and it gives you a sidebar to move
+between them, one window that can be many windows, and a warning when two of your
+agents start writing the same file.
 
 It is not a wrapper. It spawns your agent in a PTY and stays out of the way.
 There is no per-agent integration to write, because there is no integration at
@@ -81,7 +155,7 @@ to it. The key works from anywhere in the app, not just inside a dialog.
 
 ---
 
-## Build
+## Build from source
 
 Build a **release**, not `main`. `main` carries whatever is in flight; a tag is
 a state that was tested as a whole.
@@ -134,49 +208,6 @@ Run it in place to check the build before installing anything:
 ```
 
 ---
-
-## Install
-
-One paste. Pick your platform.
-
-### Linux
-
-```sh
-mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-unknown-linux-gnu.tar.gz" | tar xz -C ~/.local/bin && vitrum
-```
-
-### macOS
-
-```sh
-mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz" | tar xz -C ~/.local/bin && vitrum
-```
-
-### Windows (PowerShell)
-
-```powershell
-$b="$env:LOCALAPPDATA\Programs\vitrum"; mkdir -Force $b >$null; $v=(irm https://api.github.com/repos/santhreal/vitrum/releases/latest).tag_name.TrimStart('v'); iwr "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-pc-windows-msvc.tar.gz" -OutFile "$b\v.tgz"; tar xzf "$b\v.tgz" -C $b; del "$b\v.tgz"; [Environment]::SetEnvironmentVariable('Path',"$([Environment]::GetEnvironmentVariable('Path','User'));$b",'User'); & "$b\vitrum.exe"
-```
-
-If `vitrum` is not found afterwards, `~/.local/bin` is not on your `PATH` (or on
-Windows, open a new terminal).
-
-Requires a WebKit runtime, which is the only system dependency. Debian and
-Ubuntu: `sudo apt install libwebkit2gtk-4.1`. Fedora: `sudo dnf install
-webkit2gtk4.1`. Arch: `sudo pacman -S webkit2gtk-4.1`. macOS and Windows ship
-one.
-
-Update in place with `vitrum update`.
-
-### From crates.io
-
-```sh
-cargo install vitrum vitrum-server
-```
-
-Builds from source, so it needs the development packages listed under
-[Requirements](#requirements). Both names in one command: `vitrum` looks for the
-daemon beside itself, so a client without `vitrum-server` has nothing to talk
-to.
 
 ### Desktop entry and icon
 

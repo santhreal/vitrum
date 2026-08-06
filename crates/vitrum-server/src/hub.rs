@@ -32,7 +32,7 @@ const EVENT_QUEUE: usize = 256;
 /// A session list of twenty entries is twenty `SessionInfo` and their strings
 /// cloned per window. Serializing once at the source turns that into one
 /// traversal plus one atomic increment per window.
-pub type Event = Arc<str>;
+pub type Event = Arc<String>;
 
 /// Sessions, projects, and the event bus, shared by every connection.
 pub struct Hub {
@@ -124,7 +124,7 @@ impl Hub {
         };
         // Err means nobody is connected, which is not a failure: the daemon runs
         // without a GUI by design.
-        let _ = self.events.send(Event::from(text));
+        let _ = self.events.send(Arc::new(text));
     }
 
     /// Every project that still has a session in it.

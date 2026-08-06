@@ -27,6 +27,7 @@ pub mod text;
 pub use text::{display_safe, error_text, is_display_safe, MAX_ERROR_CHARS};
 
 use serde::{Deserialize, Serialize};
+use std::io::IoSlice;
 
 /// Control-plane schema version. Bump only when old clients and servers must
 /// refuse each other; additive fields do not warrant a bump because both sides
@@ -613,16 +614,54 @@ pub fn encode_output(session: SessionId, seq: u64, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Fast fixed-size SIMD/bitwise header serialization into a stack buffer.
+#[inline]
+pub fn encode_output_header(session: SessionId, seq: u64) -> [u8; OUTPUT_HEADER_LEN] {
+    let mut header = [0u8; OUTPUT_HEADER_LEN];
+    header[0] = FRAME_KIND_OUTPUT;
+    header[1..9].copy_from_slice(&session.0.to_le_bytes());
+    header[9..17].copy_from_slice(&seq.to_le_bytes());
+    header
+}
+
+/// Fast SIMD/Bitwise header serialization using 64-bit unaligned lane writes.
+#[inline]
+pub fn encode_output_header_simd(session: SessionId, seq: u64) -> [u8; OUTPUT_HEADER_LEN] {
+    let mut header = [0u8; OUTPUT_HEADER_LEN];
+    header[0] = FRAME_KIND_OUTPUT;
+    unsafe {
+        let ptr = header.as_mut_ptr().add(1) as *mut u64;
+        ptr.write_unaligned(session.0.to_le());
+        let ptr2 = header.as_mut_ptr().add(9) as *mut u64;
+        ptr2.write_unaligned(seq.to_le());
+    }
+    header
+}
+
+/// Zero-copy framing payload encoder for socket `write_vectored`.
+///
+/// Returns 2 [`IoSlice`]s (stack header + payload slice) without copying `payload`
+/// or allocating a combined vector buffer.
+#[inline]
+pub fn encode_output_iovec<'a>(
+    session: SessionId,
+    seq: u64,
+    payload: &'a [u8],
+    header_scratch: &'a mut [u8; OUTPUT_HEADER_LEN],
+) -> [IoSlice<'a>; 2] {
+    *header_scratch = encode_output_header_simd(session, seq);
+    [IoSlice::new(header_scratch), IoSlice::new(payload)]
+}
+
 /// Append a frame to `out` instead of allocating a fresh one.
 ///
 /// The output pump encodes one frame per PTY read, so a per-frame `Vec` is an
 /// allocation on the hottest path in the daemon. A pump that keeps one buffer
 /// and clears it per frame pays none.
 pub fn encode_output_into(out: &mut Vec<u8>, session: SessionId, seq: u64, payload: &[u8]) {
+    let header = encode_output_header_simd(session, seq);
     out.reserve(OUTPUT_HEADER_LEN + payload.len());
-    out.push(FRAME_KIND_OUTPUT);
-    out.extend_from_slice(&session.0.to_le_bytes());
-    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&header);
     out.extend_from_slice(payload);
 }
 
@@ -1409,5 +1448,30 @@ mod tests {
             serde_json::from_str::<ServerMsg>(&json).expect("round trips"),
             chunk
         );
+    }
+    #[test]
+    fn binary_framing_header_and_iovec_encoder_matches_standard() {
+        let session = SessionId(0x1234_5678_9abc_def0);
+        let seq = 0x0f1e_2d3c_4b5a_6978;
+        let payload = b"hello binary frame";
+
+        let header_std = encode_output_header(session, seq);
+        let header_simd = encode_output_header_simd(session, seq);
+        assert_eq!(header_std, header_simd);
+
+        let mut scratch = [0u8; OUTPUT_HEADER_LEN];
+        let iovecs = encode_output_iovec(session, seq, payload, &mut scratch);
+        assert_eq!(iovecs[0].as_ref(), &header_std[..]);
+        assert_eq!(iovecs[1].as_ref(), payload);
+
+        let full_frame = encode_output(session, seq, payload);
+        assert_eq!(&full_frame[..OUTPUT_HEADER_LEN], &header_std[..]);
+        assert_eq!(&full_frame[OUTPUT_HEADER_LEN..], payload);
+
+        let (decoded_session, decoded_seq, decoded_payload) =
+            decode_output(&full_frame).expect("decoded correctly");
+        assert_eq!(decoded_session, session);
+        assert_eq!(decoded_seq, seq);
+        assert_eq!(decoded_payload, payload);
     }
 }

@@ -384,6 +384,23 @@ wait_windows() {
   return 1
 }
 
+# Wait for `$1` to have exactly `$2` real windows.
+#
+# `wait_windows` is satisfied by "at least", which is right when you are
+# waiting for a window to appear and wrong when you are waiting for one to go
+# away: a close that did nothing would pass it immediately. Same return codes.
+wait_windows_exactly() {
+  local pid="$1" want="$2" secs="${3:-30}" i=0 n
+  while [ "$i" -lt $((secs * 10)) ]; do
+    n="$(app_windows "$pid" | wc -l)"
+    [ "$n" -eq "$want" ] && return 0
+    kill -0 "$pid" 2>/dev/null || return 2
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Create $1 sessions and print their ids, one per line.
 create_sessions() {
   VITRUM_PORT="$PORT" python3 "$STAGE/sessions.py" "$1" "$RUN/cwd" "$SESSION_CMD" $SESSION_ARGS
@@ -862,6 +879,106 @@ cmd_memory() {
 }
 
 # ---------------------------------------------------------------------------
+# windows: open, close, and open again
+# ---------------------------------------------------------------------------
+
+# Every other command opens N windows and never closes one, which is how a
+# process-wide resource torn down with the first window would go unnoticed.
+# The crash this was written after was the mirror image: `vitrum-backdrop` was
+# registered per window against a process-wide WebContext, and window two took
+# the process with it. Both failures live in the same place, the boundary
+# between what belongs to a window and what belongs to the process, and only a
+# run that closes a window can see the other half.
+#
+# The check is deliberately blunt. It is not measuring anything: it asserts the
+# process is still alive and the window count is what it should be after each
+# step, because the failure mode is a panic, not a slow number.
+cmd_windows() {
+  local windows="${1:-3}" ids=() id alive have rc
+  case "$windows" in
+    *[!0-9]*) die "windows needs a whole number" ;;
+  esac
+  [ "$windows" -ge 2 ] || die "windows needs at least two windows to close one"
+
+  start_x
+  start_dbus
+  start_daemon
+  open_windows "$windows"
+
+  echo
+  echo "lifecycle, starting from $windows window(s)"
+
+  # Let the windows finish painting first. Closing one 200 ms after it mapped
+  # is not something an operator does, and it makes any failure ambiguous
+  # between the close and a half-built window.
+  sleep 10
+
+  # Close one the way the close button does, by asking the client to close
+  # itself. `xdotool windowclose` sends WM_DELETE_WINDOW when the window
+  # advertises it in WM_PROTOCOLS and calls XDestroyWindow when it does not,
+  # and those are completely different tests: the second one destroys the
+  # window out from under GTK and the resulting BadDrawable is the harness's
+  # fault, not the product's. So the protocol list is printed, and a window
+  # that does not advertise the polite close is a failure of this run rather
+  # than a result.
+  local victim all
+  all="$(app_windows "$APP_PID")"
+  victim="${all##*$'\n'}"
+  [ -n "$victim" ] || die "no window to close"
+  local protocols
+  protocols="$(xprop -id "$victim" WM_PROTOCOLS 2>/dev/null || true)"
+  echo "close path: $protocols"
+  case "$protocols" in
+    *WM_DELETE_WINDOW*) ;;
+    *) die "window $victim does not advertise WM_DELETE_WINDOW; xdotool would \
+destroy it and the crash would be this harness's doing" ;;
+  esac
+  xdotool windowclose "$victim" || die "xdotool could not close window $victim"
+
+  wait_windows_exactly "$APP_PID" $((windows - 1)) 30 || {
+    rc=$?
+    tail -20 "$LOG/app.log" >&2
+    [ "$rc" -eq 2 ] && die "vitrum exited when one window was closed"
+    die "closing one window left $(app_windows "$APP_PID" | wc -l) of $((windows - 1))"
+  }
+  kill -0 "$APP_PID" 2>/dev/null || die "vitrum exited when a window was closed"
+  echo "closed one: $((windows - 1)) window(s), pid $APP_PID alive"
+
+  # Open another. This is the step that fails if closing a window tore down
+  # something the next one needs: the shared WebContext, the custom scheme, or
+  # the related view every webview after the first is built against.
+  mapfile -t ids < <(create_sessions 1)
+  [ "${#ids[@]}" -eq 1 ] || die "the daemon created no session for the reopen"
+  "$BIN/vitrum" --no-autostart "vitrum://session/${ids[0]}" >>"$LOG/handoff.log" 2>&1 || true
+
+  wait_windows "$APP_PID" "$windows" 60 || {
+    rc=$?
+    tail -40 "$LOG/handoff.log" >&2
+    [ "$rc" -eq 2 ] && die "vitrum exited while reopening a window after a close"
+    die "the reopened window never mapped within 60s"
+  }
+  kill -0 "$APP_PID" 2>/dev/null || die "vitrum exited after reopening a window"
+  have="$(app_windows "$APP_PID" | wc -l)"
+  echo "reopened: $have window(s), pid $APP_PID alive"
+
+  # Close every window. The daemon owns the PTYs, so the sessions must outlive
+  # the client that was showing them: that is the promise the README makes.
+  for id in $(app_windows "$APP_PID"); do
+    xdotool windowclose "$id" || true
+  done
+  sleep 5
+  alive=0
+  kill -0 "$DAEMON_PID" 2>/dev/null && alive=1
+  [ "$alive" -eq 1 ] || die "the daemon died with the last window; sessions do not survive"
+  echo "every window closed, daemon pid $DAEMON_PID alive"
+
+  echo
+  echo -n "sessions still on the daemon after the last window closed: "
+  VITRUM_PORT="$PORT" python3 "$STAGE/sessions.py" count \
+    || die "the daemon stopped answering after every window closed"
+}
+
+# ---------------------------------------------------------------------------
 # idle-cpu
 # ---------------------------------------------------------------------------
 
@@ -1250,6 +1367,7 @@ case "$COMMAND" in
   probe) cmd_probe ;;
   screenshot) cmd_screenshot "$@" ;;
   memory) cmd_memory "$@" ;;
+  windows) cmd_windows "$@" ;;
   idle-cpu) cmd_idle_cpu "$@" ;;
   bench) cmd_bench "$@" ;;
   stress) cmd_stress "$@" ;;

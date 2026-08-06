@@ -6,6 +6,7 @@
 #   probe                              what the measurement host is, and what it is missing
 #   screenshot <name> [WxH] [scale]    one window, captured, written to harness/out/
 #   memory <windows>                   N windows each showing a session, PSS across the tree
+#   windows [count]                    open N windows, close one, reopen, then close them all
 #   idle-cpu <seconds> [windows]       CPU burned by an idle client, as a share of one core
 #   bench <sessions>                   vitrum against T3 Code, same mocked model, same sessions
 #   stress                             load, concurrency and fuzz workloads, daemon profiled
@@ -75,7 +76,7 @@ die() {
 }
 
 usage() {
-  sed -n '4,11s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2
+  sed -n '4,12s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
 
@@ -169,7 +170,7 @@ COMMAND="$1"
 shift
 
 case "$COMMAND" in
-  probe | screenshot | memory | idle-cpu | bench | stress) ;;
+  probe | screenshot | memory | windows | idle-cpu | bench | stress) ;;
   *) usage ;;
 esac
 
@@ -187,6 +188,13 @@ case "$COMMAND" in
     [ $# -eq 1 ] || die "memory takes one argument, the window count"
     case "$1" in '' | *[!0-9]*) die "window count must be a whole number, got $1" ;; esac
     [ "$1" -ge 1 ] || die "window count must be at least 1"
+    ;;
+  windows)
+    [ $# -le 1 ] || die "windows takes at most one argument, the window count"
+    if [ $# -eq 1 ]; then
+      case "$1" in '' | *[!0-9]*) die "window count must be a whole number, got $1" ;; esac
+      [ "$1" -ge 2 ] || die "windows needs at least 2: the point is closing one"
+    fi
     ;;
   idle-cpu)
     [ $# -ge 1 ] && [ $# -le 2 ] || die "idle-cpu takes seconds, and optionally a window count"

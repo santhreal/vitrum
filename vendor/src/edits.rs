@@ -84,7 +84,7 @@ impl WryQueue {
         if poll.is_ready() {
             // If the future is ready, we need to reset it to wait for the next change
             self_mut.server_location_changed_future =
-                owned_notify_future(self_mut.server_location_changed.clone());
+                OwnedNotifyFuture::new(self_mut.server_location_changed.clone());
         }
         poll
     }
@@ -382,7 +382,7 @@ impl EditWebsocket {
         WryQueue {
             inner: Rc::new(RefCell::new(WryQueueInner {
                 server_location_changed: server_location.clone(),
-                server_location_changed_future: owned_notify_future(server_location),
+                server_location_changed_future: OwnedNotifyFuture::new(server_location),
                 location: WebviewWebsocketLocation { webview_id, server },
                 websocket: self.clone(),
                 edits_in_progress: None,
@@ -519,6 +519,3 @@ impl Future for OwnedNotifyFuture {
     }
 }
 
-fn owned_notify_future(notify: Arc<Notify>) -> OwnedNotifyFuture {
-    OwnedNotifyFuture::new(notify)
-}

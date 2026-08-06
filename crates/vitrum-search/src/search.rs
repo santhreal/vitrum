@@ -328,8 +328,16 @@ fn scan_one(
         results.lines_scanned += 1;
         scanned_to = (span.offset + span.len as u64 + 1).min(total);
         // Chunk prefilter: skip line materialization, stripping, and matching for non-matching chunks.
-        let (chunk_start, _) = view.locate(span.offset).unwrap_or((0, 0));
-        let (chunk_end, _) = view.locate(span.offset + span.len as u64).unwrap_or((chunk_start, 0));
+		// The span's end byte position. `locate` returns `None` exactly at
+		// end-of-data, which is where an unterminated final line reaches; that
+		// line still lives in the last chunk, so fall the range back to the last
+		// chunk there. `unwrap_or((chunk_start,0))` would collapse it to the
+		// start chunk and silently drop a straddling match whose first chunk has
+		// no possible first byte.
+		let (chunk_start, _) = view.locate(span.offset).unwrap_or((0, 0));
+		let (chunk_end, _) = view
+			.locate(span.offset + span.len as u64)
+			.unwrap_or((haystack.chunks.len().saturating_sub(1), 0));
         let is_possible = (chunk_start..=chunk_end).any(|idx| chunk_possible.get(idx).copied().unwrap_or(true));
         if state.pending.is_empty() && !is_possible {
             if context_before > 0 {
@@ -868,5 +876,49 @@ mod tests {
         let results = sweep.finish();
         assert_eq!(results.len(), 1);
         assert_eq!(results.hits[0].visible_lossy(), "line 2: target hit");
+    }
+    #[test]
+    fn chunk_prefilter_does_not_lose_straddling_final_line() {
+        // The final line `XYZZZZ` straddles the two chunks: it starts in
+        // `chunk1` and ends in `chunk2`, and has no trailing newline. The
+        // needle's first byte (`Z`) appears only in `chunk2`, and the first
+        // chunk's tail (`XY`) contains no `Z`, so a prefilter that collapsed
+        // the span's chunk range to its start chunk would reject the line and
+        // silently drop the hit. `locate` returns None exactly at end-of-data,
+        // which is where this unterminated line ends — the range must fall
+        // back to the last chunk, not the start chunk.
+        let chunk1 = b"abc\nXY";
+        let chunk2 = b"ZZZZ";
+        let query = Query::literal("ZZ").context(0);
+
+        let mut sweep = Sweep::new(&query).expect("compile");
+        assert!(sweep.push(&Haystack {
+            session: 1,
+            base_seq: 0,
+            chunks: &[chunk1, chunk2],
+        }));
+        let results = sweep.finish();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.hits[0].visible_lossy(), "XYZZZZ");
+        assert_eq!(results.hits[0].original_range, 2..4);
+    }
+
+    #[test]
+    fn chunk_prefilter_keeps_zero_length_final_line_safe() {
+        // A trailing empty line ends exactly at end-of-data; `locate` is None
+        // for it too, and the range must not underflow or panic.
+        let chunk1 = b"target\n";
+        let chunk2 = b"";
+        let query = Query::literal("target").context(0);
+
+        let mut sweep = Sweep::new(&query).expect("compile");
+        assert!(sweep.push(&Haystack {
+            session: 1,
+            base_seq: 0,
+            chunks: &[chunk1, chunk2],
+        }));
+        let results = sweep.finish();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.hits[0].visible_lossy(), "target");
     }
 }

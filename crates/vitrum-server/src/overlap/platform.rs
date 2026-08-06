@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use vitrum_proto::{Credit, SessionId};
 
-use super::{Publish, Tracked, Watched, Watcher};
+use super::{Publish, Tracked, Watcher};
 
 /// Directories watched per session before the walk gives up.
 ///
@@ -87,7 +87,7 @@ pub(super) fn start(
     add_all(&reader, &wds, &state, live);
     {
         let mut t = state.lock().unwrap_or_else(|p| p.into_inner());
-        reconcile(&mut t, live);
+        super::reconcile(&mut t, live);
     }
 
     std::thread::Builder::new()
@@ -107,7 +107,7 @@ pub(super) fn start(
 pub(super) fn sync(w: &Watcher, live: &[(SessionId, PathBuf, u32)]) {
     {
         let mut t = w.state.lock().unwrap_or_else(|p| p.into_inner());
-        reconcile(&mut t, live);
+        super::reconcile(&mut t, live);
     }
     // Watch anything not already watched. A client subscribes on connect,
     // which is BEFORE it has started a session, so the roots that matter all
@@ -145,25 +145,6 @@ fn prune(
         let _ = rustix::fs::inotify::remove_watch(inotify.as_fd(), *wd);
         false
     });
-}
-
-/// Put `live` into `t`, keeping what is already known about surviving
-/// sessions and dropping what is known about ended ones.
-fn reconcile(t: &mut Tracked, live: &[(SessionId, PathBuf, u32)]) {
-    t.sessions.retain(|s| live.iter().any(|(id, _, _)| *id == s.id));
-    for (id, root, pid) in live {
-        match t.sessions.iter_mut().find(|s| s.id == *id) {
-            // The pid can change if the session respawned its child.
-            Some(s) => s.pid = *pid,
-            None => t.sessions.push(Watched {
-                id: *id,
-                root: root.clone(),
-                pid: *pid,
-                writes: HashMap::new(),
-                unattributed: 0,
-            }),
-        }
-    }
 }
 
 /// Watch every directory under every session root.
@@ -548,16 +529,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// `reconcile` for the unit tests, which have no inotify fd.
-///
-/// The reconcile rule is the interesting half: what survives a session
-/// starting or ending, and what must not. Exposing it keeps that testable
-/// without a kernel.
-#[cfg(test)]
-pub(super) fn reconcile_for_test(t: &mut Tracked, live: &[(SessionId, PathBuf, u32)]) {
-    reconcile(t, live);
 }
 
 /// `remember_open` for the unit tests, which have no inotify fd.

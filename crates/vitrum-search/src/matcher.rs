@@ -118,32 +118,6 @@ impl Matcher {
             Matcher::Regex(regex) => regex.is_match(haystack),
         }
     }
-    /// Collect match ranges in `haystack` into `out` without extra allocations.
-    #[inline]
-    pub fn collect_matches(
-        &self,
-        haystack: &[u8],
-        out: &mut Vec<std::ops::Range<usize>>,
-        all_matches: bool,
-    ) {
-        out.clear();
-        let mut from = 0usize;
-        while let Some(range) = self.find_at(haystack, from) {
-            let is_empty = range.start == range.end;
-            out.push(range.clone());
-            if !all_matches {
-                break;
-            }
-            from = if !is_empty {
-                range.end
-            } else {
-                range.end + 1
-            };
-            if from > haystack.len() {
-                break;
-            }
-        }
-    }
 
     /// Is this the SIMD fast path?
     pub fn is_fast_literal(&self) -> bool {

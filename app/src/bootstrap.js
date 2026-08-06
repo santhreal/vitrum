@@ -830,6 +830,28 @@ function rowOfLineFromEnd(term, back) {
   return 0;
 }
 
+// History arrives base64 rather than as a JSON array of numbers. The array
+// form measured 3.6 bytes of JSON per payload byte, and `JSON.parse` had to
+// build one JS number per history byte before this could copy them out; at the
+// 2 MiB backfill ceiling that is two million transient numbers in a process
+// twenty windows share.
+//
+// `atob` gives a binary string, so the copy out is still a loop, but it is a
+// loop over a string of known length writing into a right-sized buffer, with
+// no per-byte allocation.
+function fromBase64(text) {
+  let binary;
+  try {
+    binary = atob(text);
+  } catch (err) {
+    report(`history payload is not valid base64: ${err}`);
+    return new Uint8Array(0);
+  }
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
 function applyBackfill(session, fromSeqText, resumeSeqText, bytes, jumpSeqText, keepView, more) {
   if (session !== state.focus || !state.term) return;
   if (state.dropBackfill) {
@@ -846,11 +868,7 @@ function applyBackfill(session, fromSeqText, resumeSeqText, bytes, jumpSeqText, 
   const parts = [];
   let total = 0;
   if (bytes.length) {
-    // `new Uint8Array(bytes)`, not `Uint8Array.from(bytes)`: the history
-    // arrives from Rust as a JSON array of numbers, and `from` walks it through
-    // the iterator protocol, allocating a step result per byte. At 64 KB of
-    // history that is 65,536 of them.
-    const hist = new Uint8Array(bytes);
+    const hist = fromBase64(bytes);
     parts.push(hist);
     total += hist.length;
   }

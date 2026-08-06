@@ -14,7 +14,15 @@
 //! sequence that is not valid UTF-8. A terminal must forward bytes verbatim:
 //! partial UTF-8 sequences legitimately straddle read boundaries, and mouse and
 //! DEC responses are not text at all.
+//!
+//! One control-plane message carries arbitrary bytes anyway:
+//! [`ServerMsg::ScrollbackChunk`], which answers a deliberate gesture rather
+//! than the firehose. It is base64 by [`b64`], not serde's default integer
+//! array, because that default measures 3.6 bytes of JSON per payload byte.
+//! Avoiding a 33% tax on the hot path while paying 260% on the cold one was
+//! backwards.
 
+pub mod b64;
 pub mod text;
 pub use text::{display_safe, error_text, is_display_safe, MAX_ERROR_CHARS};
 
@@ -23,7 +31,7 @@ use serde::{Deserialize, Serialize};
 /// Control-plane schema version. Bump only when old clients and servers must
 /// refuse each other; additive fields do not warrant a bump because both sides
 /// tolerate unknown fields.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Byte length of a data-plane frame header: kind + session + seq.
 pub const OUTPUT_HEADER_LEN: usize = 1 + 8 + 8;
@@ -489,9 +497,15 @@ pub enum ServerMsg {
     SessionRemoved { session: SessionId },
     /// A replay chunk answering [`ClientMsg::Scrollback`]. `more` is false once
     /// the client has reached the oldest retained byte.
+    ///
+    /// `data` is base64, not serde's default integer array: this is the one
+    /// control-plane field carrying raw PTY bytes, and at the 2 MiB backfill
+    /// ceiling the array form is a 7.5 MB JSON string that `JSON.parse` turns
+    /// into two million transient JavaScript numbers.
     ScrollbackChunk {
         session: SessionId,
         from_seq: u64,
+        #[serde(with = "crate::b64::bytes")]
         data: Vec<u8>,
         more: bool,
     },

@@ -167,28 +167,6 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
     out
 }
 
-/// Strip escape sequences and control characters so a single-line label stays a
-/// single line of text.
-///
-/// Titles reach us from OSC 0/2 sequences written by whatever program the user
-/// ran, so they are untrusted. A `\n` would break the sidebar row into two, a
-/// `\r` would return the cursor so the second half overwrites the first, and a
-/// raw `\x1b` would be re-interpreted as a control sequence by any terminal the
-/// label is echoed into.
-///
-/// An escape is consumed together with the sequence it introduces, not on its
-/// own. Dropping only the `\x1b` from `\x1b[31m` leaves the literal text
-/// `[31m` in the label, which is the worst of both outcomes: the colour is lost
-/// and four columns of noise are kept. CSI sequences run to their final byte,
-/// and OSC, DCS, SOS, PM, and APC strings run to `BEL` or `ST`. An unterminated
-/// string consumes the rest of the input, which is what a terminal does with it
-/// too.
-///
-/// A control character that is whitespace (`\t`, `\n`, `\r`, vertical tab, form
-/// feed, `U+0085`) becomes one space, because it was separating two words and
-/// dropping it would run them together. Every other C0 and C1 control is
-/// dropped outright. Runs of spaces are left alone here; [`title`] collapses
-/// them.
 #[inline(always)]
 fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
     let w = u64::from_ne_bytes(*chunk);

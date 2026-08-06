@@ -68,6 +68,30 @@ jobs:
       - run: cargo clippy --release --workspace --locked
         continue-on-error: true
 
+      # The installers are the first thing a new user runs, and nothing else in
+      # the build reads them. Each is checked on the platform that owns it: a
+      # syntax error in either ships silently otherwise, and the Windows one
+      # cannot be parsed anywhere else in this pipeline.
+      - name: install.sh parses
+        if: runner.os == 'Linux'
+        run: sh -n install.sh
+
+      - name: install.ps1 parses
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            foreach ($e in $errors) {
+              Write-Output "line $($e.Extent.StartLineNumber): $($e.Message)"
+            }
+            exit 1
+          }
+          Write-Output "install.ps1 parses, $($tokens.Count) tokens"
+
   # The archive the updater downloads is built by a script, and the script and
   # `update::archive_name` must agree. Building it on every push is how a
   # rename is caught before a release rather than by a user whose update fails.

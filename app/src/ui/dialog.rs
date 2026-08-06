@@ -959,7 +959,7 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
 
     // Resolved once when the launcher opens. One small profile read and two
     // environment reads; no directory walk and no `PATH` walk.
-    let mut store = use_signal(launch::load_launch_store);
+    let store = use_signal(launch::load_launch_store);
     let home = use_signal(launch::user_home);
     let shell = use_signal(launch::default_shell);
     let opened_ms = use_signal(launch::now_ms);
@@ -1074,7 +1074,7 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                 .collect::<Vec<_>>();
         }
         let rows = all.read();
-        let mut out: Vec<Pick> = ranked(&rows, &text)
+        let mut out: Vec<Pick> = listed(&rows, &text)
             .into_iter()
             .map(|i| Pick::Go(rows[i].clone()))
             .collect();
@@ -1385,32 +1385,7 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                                 e.prevent_default();
                                 let line = query.read().trim().to_string();
                                 let cwd = launch::tidy_dir(&here.read());
-                                // The signal already holds the profile, read
-                                // once when this surface opened. Re-reading it
-                                // here would be a second file read on a
-                                // keypress, which is what
-                                // `the_open_path_never_walks_path_or_the_filesystem`
-                                // exists to stop.
-                                let existing = store.read().presets.clone();
-                                said.set(Some(
-                                    match launch::preset_from_typed(&line, &cwd, &existing) {
-                                        Ok(preset) => {
-                                            let label = preset.label.clone();
-                                            let mut next = existing;
-                                            next.push(preset);
-                                            match launch::save_presets(&next) {
-                                                Ok(()) => {
-                                                    store.write().presets = next;
-                                                    format!(
-                                                        "Saved \u{201c}{label}\u{201d}. Bind a key to it in Settings."
-                                                    )
-                                                }
-                                                Err(why) => why,
-                                            }
-                                        }
-                                        Err(why) => why,
-                                    },
-                                ));
+                                save_typed(store, said, &line, &cwd);
                                 return;
                             }
                             if m.ctrl() && !m.alt()
@@ -1429,23 +1404,37 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                                 e.prevent_default();
                                 hi.set((cur + count - 1) % count);
                             }
-                            // Descend into the highlighted directory, exactly
-                            // as a shell does, instead of committing it.
+                            // Complete the highlighted row into the field
+                            // rather than committing it: a directory gains a
+                            // separator so the next Tab offers what is inside,
+                            // exactly as a shell does, and a command is filled
+                            // in whole with the caret left at the end so a flag
+                            // can be added to it without retyping the line.
+                            //
+                            // Tab used to do nothing at all on a command row.
+                            // A dead key in a form reads as the form being
+                            // broken, which is the same reason the `in` field's
+                            // Tab falls through to this field instead of
+                            // sitting there doing nothing.
                             Key::Tab if !m.shift() => {
                                 // Always swallowed. There is nothing else
                                 // focusable on this surface, so a Tab that got
                                 // through would move focus off the query and
                                 // out of the launcher entirely.
                                 e.prevent_default();
-                                if let Some(Pick::Cd(path)) = picks.read().get(cur) {
-
-                                    let mut next = path.clone();
-                                    if !next.ends_with(['/', '\\']) {
-                                        next.push(MAIN_SEPARATOR);
-                                    }
+                                // Both cloned out before the field is
+                                // written. The picks memo reads `query`, so
+                                // holding either guard across the write
+                                // borrows the same generational slot twice.
+                                let chosen = picks.read().get(cur).cloned();
+                                let typed = query.read().clone();
+                                if let Some(pick) = chosen
+                                    && let Some(next) = completion(&pick, &typed)
+                                {
                                     push_query(&next);
                                     query.set(next);
                                     hi.set(0);
+                                    said.set(None);
                                 }
                             }
                             Key::Enter => {
@@ -1460,6 +1449,49 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                         }
                     },
                 }
+                    // Saving lives where the command was typed. Before this it
+                    // was Ctrl+S and nothing else, and before that it was only
+                    // in Settings, so the moment an operator decided a line was
+                    // worth keeping they had to leave the surface they were on
+                    // and retype it. The chord still works and is named in the
+                    // tooltip, so this control teaches it instead of replacing
+                    // it.
+                    button {
+                        class: "rg-launch__save",
+                        r#type: "button",
+                        disabled: query.read().trim().is_empty(),
+                        title: "Save this command as a preset (Ctrl+S)",
+                        "aria-label": "Save this command as a preset",
+                        // Off mousedown, so the field does not blur and take
+                        // the launcher down before the click lands.
+                        onmousedown: move |e| e.prevent_default(),
+                        onclick: move |_| {
+                            let line = query.read().trim().to_string();
+                            let cwd = launch::tidy_dir(&here.read());
+                            save_typed(store, said, &line, &cwd);
+                        },
+                        "Save"
+                    }
+                }
+
+                // The operator's own saved choices, above everything ranked,
+                // because a preset is a decision already made rather than a
+                // guess. Only with an empty query, for the same reason the
+                // recents below carry: once you are typing, the ranked list is
+                // the answer and the presets rank into it.
+                if query.read().is_empty() {
+                    crate::ui::presets::Presets {
+                        presets: store.read().presets.clone(),
+                        here: here_now.clone(),
+                        on_launch: move |l: launch::Launch| {
+                            let pid = launch::resolve_project(
+                                &state.peek().daemon.projects,
+                                &l.cwd,
+                            )
+                            .0;
+                            on_launch.call((pid, l));
+                        },
+                    }
                 }
 
                 // Where you were, not just what you ran. The suggestion list
@@ -1629,8 +1661,95 @@ fn push_input(id: &str, value: &str) {
     ));
 }
 
-/// The tooltip on a preset row: the command, or why it will not run.
-fn preset_tip(preset: &SavedPreset) -> String {
+/// Keep the typed line as a preset, and report what happened.
+///
+/// One function behind two controls. Ctrl+S and the Save button beside the
+/// field must not be able to drift into saving different things, or into
+/// explaining the same refusal two different ways.
+///
+/// The profile is taken from the signal the launcher already loaded when it
+/// opened, never re-read here: a second file read on a keypress is exactly
+/// what `the_open_path_never_walks_path_or_the_filesystem` exists to stop.
+///
+/// The label is the command line itself, because asking for a name is a second
+/// question at the exact moment the operator wanted to start working. Settings
+/// renames it and binds a chord to it.
+fn save_typed(
+    mut store: Signal<LaunchStore>,
+    mut said: Signal<Option<String>>,
+    line: &str,
+    cwd: &str,
+) {
+    let existing = store.read().presets.clone();
+    said.set(Some(
+        match launch::preset_from_typed(line, cwd, &existing) {
+            Ok(preset) => {
+                let label = preset.label.clone();
+                let mut next = existing;
+                next.push(preset);
+                match launch::save_presets(&next) {
+                    Ok(()) => {
+                        store.write().presets = next;
+                        format!("Saved \u{201c}{label}\u{201d}. Bind a key to it in Settings.")
+                    }
+                    Err(why) => why,
+                }
+            }
+            Err(why) => why,
+        },
+    ));
+}
+
+/// The rows the list is allowed to draw for `text`, best first, as indices
+/// into `rows`.
+///
+/// PURE, and separate from [`ranked`] on purpose. `ranked` answers "what
+/// matches, in what order"; this answers "what may be shown", and those are
+/// two different questions the moment a row can also be drawn somewhere else
+/// on the surface.
+///
+/// With nothing typed, the saved presets are drawn as their own band of chips
+/// above this list, so ranking them in here as well would put every preset on
+/// screen twice under two different affordances. The moment the operator
+/// types, the band is gone and this list is the only answer, so presets rank
+/// back into it and stay searchable by the label they were given.
+pub fn listed(rows: &[Intent], text: &str) -> Vec<usize> {
+    let banded = text.is_empty();
+    ranked(rows, text)
+        .into_iter()
+        .filter(|&i| !(banded && rows[i].band == Band::Preset))
+        .collect()
+}
+
+/// What Tab writes into the `run` field for `pick`, or `None` when the field
+/// already says it.
+///
+/// PURE, so the completion rule is provable without a DOM: the handler does
+/// nothing except write what this returns.
+///
+/// A directory gains a separator, because the separator is what makes the next
+/// Tab offer what is INSIDE it rather than re-offer the folder itself. A
+/// command is filled in whole, caret left at the end, so a flag can be added
+/// to a remembered line without retyping it.
+///
+/// `None` rather than the same string back: rewriting the field with what it
+/// already holds moves the caret and resets the highlight for nothing.
+pub fn completion(pick: &Pick, typed: &str) -> Option<String> {
+    let next = match pick {
+        Pick::Cd(path) => {
+            let mut next = path.clone();
+            if !next.ends_with(['/', '\\']) {
+                next.push(MAIN_SEPARATOR);
+            }
+            next
+        }
+        Pick::Go(intent) => intent.command.clone(),
+    };
+    (next != typed).then_some(next)
+}
+
+/// The tooltip on a preset row or chip: the command, or why it will not run.
+pub fn preset_tip(preset: &SavedPreset) -> String {
     match launch::preset_fault(preset) {
         Some(fault) => fault.sentence(),
         None => match preset

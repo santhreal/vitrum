@@ -648,3 +648,125 @@
 .rg-iconpick__glyph {
   color: inherit;
 }
+
+/* ----------------------------------------------------------------------
+ * Saving, and the saved
+ * ----------------------------------------------------------------------
+ *
+ * Two additions that answer one complaint: a preset was a thing you could
+ * only create with an undocumented chord and could only reach again by
+ * out-ranking eight other suggestions.
+ *
+ * .rg-launch__save  the control beside the `run` field
+ * .rg-presets__*    the band of chips above the ranked list
+ */
+
+/* Sits inside .rg-launch__field, which is already a flex line with the label
+ * and the input, so the button needs no positioning of its own: it is the
+ * third item and the input's `flex: 1` pushes it to the right edge.
+ *
+ * Quiet by default. This is not the surface's primary action -- Enter is --
+ * and a filled button here would compete with the row the operator is about
+ * to take. It earns colour on hover and nothing else. */
+.rg-launch__save {
+  flex: 0 0 auto;
+  height: var(--rg-control-h-sm);
+  padding: 0 var(--rg-space-2);
+  border: none;
+  border-radius: var(--rg-control-radius-sm);
+  background-color: transparent;
+
+  color: var(--rg-fg-muted);
+  font-family: inherit;
+  font-size: var(--rg-text-11);
+  cursor: pointer;
+}
+
+.rg-launch__save:hover:not(:disabled) {
+  background-color: var(--rg-ctl-hover);
+  color: var(--rg-fg);
+}
+
+/* Disabled rather than hidden. A control that appears the moment you type
+ * moves the field's right edge under the operator's eye mid-sentence; one
+ * that is always there and dims says the same thing without the motion. */
+.rg-launch__save:disabled {
+  color: var(--rg-fg-faint);
+  cursor: default;
+}
+
+/* The band. Above the ranked list and below the two fields, so the reading
+ * order is: where, what, the choices you already made, then the guesses. */
+.rg-presets {
+  flex: 0 0 auto;
+  padding: 0 var(--rg-space-3);
+}
+
+.rg-presets__head {
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+}
+
+/* Wraps rather than scrolls. A preset the operator saved must not be able to
+ * end up off-screen in a horizontal overflow they have to discover; a second
+ * line of chips costs one row of height and hides nothing. */
+.rg-presets__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rg-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A chip, not a row: this is a small fixed set of named buttons, and buttons
+ * are recognised by shape. The fill is the same one the place chip uses on a
+ * launcher row, so the two kinds of chip on this surface read as one family. */
+.rg-presets__chip {
+  display: flex;
+  align-items: center;
+  gap: var(--rg-space-1);
+  max-width: 100%;
+  height: var(--rg-control-h-sm);
+  padding: 0 var(--rg-space-2);
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-fill-rest);
+
+  color: var(--rg-fg);
+  font-size: var(--rg-text-11);
+  cursor: pointer;
+}
+
+.rg-presets__chip:hover {
+  background-color: var(--rg-ctl-hover);
+}
+
+.rg-presets__icon {
+  flex: 0 0 auto;
+  width: var(--rg-icon-sm);
+  height: var(--rg-icon-sm);
+  color: var(--rg-fg-muted);
+}
+
+/* The label gives way, never the chord: a chip whose keys were truncated
+ * would teach a binding that does not exist. */
+.rg-presets__text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rg-presets__chord {
+  flex: 0 0 auto;
+  color: var(--rg-fg-subtle);
+  font-family: var(--rg-font-ui);
+  font-size: var(--rg-text-11);
+}
+
+.rg-presets__note {
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+}

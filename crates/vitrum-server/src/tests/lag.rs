@@ -41,7 +41,7 @@ fn as_ctl(msg: &Message) -> ServerMsg {
 fn chunk(seq: u64, data: &[u8]) -> OutputChunk {
     OutputChunk {
         seq,
-        data: Arc::from(data),
+        data: bytes::Bytes::copy_from_slice(data),
     }
 }
 

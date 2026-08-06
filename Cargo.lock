@@ -5712,6 +5712,7 @@ name = "vitrum-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "libc",
  "portable-pty",
  "tokio",
@@ -5864,6 +5865,7 @@ name = "vitrum-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures-util",
  "rustix",
  "serde",

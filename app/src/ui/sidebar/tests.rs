@@ -1548,3 +1548,30 @@ fn alias_px(css: &str, name: &str) -> f64 {
         .unwrap_or_else(|| panic!("{name} is {value}, which is not an alias"));
     token_px(css, target)
 }
+#[test]
+fn virtual_slice_computation_and_overscan() {
+    // Zero items -> full slice (empty)
+    let empty_slice = VirtualSlice::compute(0, 0.0, 500.0, 50.0, 5);
+    assert_eq!(empty_slice.start_index, 0);
+    assert_eq!(empty_slice.end_index, 0);
+    assert_eq!(empty_slice.top_spacer_px, 0.0);
+    assert_eq!(empty_slice.bottom_spacer_px, 0.0);
+
+    // 100 items, each 50px high. Viewport height 500px (fits 10 visible items).
+    // Scroll top at 500px (first visible index = 10). Overscan = 5.
+    let slice = VirtualSlice::compute(100, 500.0, 500.0, 50.0, 5);
+    assert_eq!(slice.start_index, 5); // 10 - 5
+    assert_eq!(slice.end_index, 25); // 10 + 10 + 5
+    assert_eq!(slice.top_spacer_px, 250.0); // 5 * 50
+    assert_eq!(slice.bottom_spacer_px, 3750.0); // (100 - 25) * 50
+
+    // Top boundary overscan clamp
+    let top_slice = VirtualSlice::compute(100, 50.0, 500.0, 50.0, 5);
+    assert_eq!(top_slice.start_index, 0); // max(0, 1 - 5)
+    assert_eq!(top_slice.top_spacer_px, 0.0);
+
+    // Bottom boundary overscan clamp
+    let bottom_slice = VirtualSlice::compute(100, 4300.0, 500.0, 50.0, 5);
+    assert_eq!(bottom_slice.end_index, 100);
+    assert_eq!(bottom_slice.bottom_spacer_px, 0.0);
+}

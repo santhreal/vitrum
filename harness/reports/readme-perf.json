@@ -1,0 +1,120 @@
+{
+  "commit": "18df8cb",
+  "generated": "2026-08-06T19:35:01Z",
+  "host": {
+    "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+    "glibc": "2.39",
+    "kernel": "Linux 6.8.0-136-generic x86_64",
+    "run": "probe-20260806T035911Z",
+    "threads": 32,
+    "webkitgtk": "2.52.3-0ubuntu0.24.04.1"
+  },
+  "idle": {
+    "client": {
+      "cpu_percent_of_core": 0.1,
+      "drift_mb": 0.0,
+      "pss_after_mb": 447.4,
+      "pss_before_mb": 447.4,
+      "ticks": 6
+    },
+    "daemon": {
+      "cpu_percent_of_core": 0.0,
+      "drift_mb": 0.0,
+      "pss_after_mb": 40.7,
+      "pss_before_mb": 40.7,
+      "ticks": 0
+    },
+    "run": "idle-cpu-20260806T192751Z",
+    "seconds": 60,
+    "sessions": 20,
+    "windows": 20
+  },
+  "memory": [
+    {
+      "client": {
+        "processes": 3,
+        "pss_mb": 247.8,
+        "rows": [
+          {
+            "count": 1,
+            "mb": 125.7,
+            "name": "WebKitWebProces"
+          },
+          {
+            "count": 1,
+            "mb": 101.7,
+            "name": "vitrum"
+          },
+          {
+            "count": 1,
+            "mb": 20.4,
+            "name": "WebKitNetworkPr"
+          }
+        ]
+      },
+      "daemon": {
+        "processes": 2,
+        "pss_mb": 5.5,
+        "rows": [
+          {
+            "count": 1,
+            "mb": 3.2,
+            "name": "vitrum-server"
+          },
+          {
+            "count": 1,
+            "mb": 2.3,
+            "name": "bash"
+          }
+        ]
+      },
+      "run": "memory-20260806T192242Z",
+      "sessions": 1,
+      "windows": 1
+    },
+    {
+      "client": {
+        "processes": 3,
+        "pss_mb": 460.1,
+        "rows": [
+          {
+            "count": 1,
+            "mb": 298.0,
+            "name": "WebKitWebProces"
+          },
+          {
+            "count": 1,
+            "mb": 140.8,
+            "name": "vitrum"
+          },
+          {
+            "count": 1,
+            "mb": 21.3,
+            "name": "WebKitNetworkPr"
+          }
+        ]
+      },
+      "daemon": {
+        "processes": 21,
+        "pss_mb": 40.6,
+        "rows": [
+          {
+            "count": 20,
+            "mb": 35.0,
+            "name": "bash"
+          },
+          {
+            "count": 1,
+            "mb": 5.6,
+            "name": "vitrum-server"
+          }
+        ]
+      },
+      "run": "memory-20260806T192658Z",
+      "sessions": 20,
+      "windows": 20
+    }
+  ],
+  "schema": "vitrum-footprint-v1",
+  "vitrum_version": "0.1.0"
+}

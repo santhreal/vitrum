@@ -250,3 +250,70 @@ fn every_screenshot_the_readme_shows_exists() {
         "the README shows {shown} local assets; the screenshots and the demo are 4"
     );
 }
+
+/// The banner is in the repository too.
+///
+/// The test above reads Markdown image syntax. The banner, the badge row and
+/// anything else that needs centring are HTML, because Markdown cannot centre
+/// an image, and `<img src>` is invisible to a scan for `](`. The first image
+/// on the page is exactly the one worth checking.
+#[test]
+fn every_html_image_the_readme_shows_exists() {
+    let readme = include_str!("../../../README.md");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the workspace root");
+
+    let mut shown = 0;
+    for rest in readme.split("src=\"").skip(1) {
+        let target = rest.split('"').next().unwrap_or_default();
+        // Badges are served by shields.io. Only our own files are ours to keep.
+        if !target.starts_with("assets/") {
+            continue;
+        }
+        shown += 1;
+        assert!(
+            root.join(target).is_file(),
+            "the README's HTML points at {target}, which is not in the repository"
+        );
+    }
+
+    assert!(shown >= 1, "the README shows no banner");
+}
+
+/// The generated performance regions are present, closed, and filled.
+///
+/// Every number under "What it costs to run" is written by
+/// `harness/readme_perf.py` from `harness/reports/readme-perf.json`, and CI
+/// re-renders them to catch a stale table. That check cannot fire if the markers
+/// themselves are gone: a rewrite that deletes a region, or closes it with the
+/// wrong name, leaves nothing to compare and passes. So the markers are asserted
+/// here, where an ordinary `cargo test` sees them.
+#[test]
+fn the_generated_performance_regions_are_intact() {
+    let readme = include_str!("../../../README.md");
+    let snapshot = include_str!("../../../harness/reports/readme-perf.json");
+
+    assert!(
+        snapshot.contains("\"schema\": \"vitrum-footprint-v1\""),
+        "the snapshot the tables are rendered from is not the schema \
+         readme_perf.py writes"
+    );
+
+    for region in ["footprint", "idle"] {
+        let open = format!("<!-- BENCH:{region}:start -->");
+        let close = format!("<!-- BENCH:{region}:end -->");
+        let at = readme
+            .find(&open)
+            .unwrap_or_else(|| panic!("the README has no {open}"));
+        let end = readme[at..]
+            .find(&close)
+            .unwrap_or_else(|| panic!("the README opens BENCH:{region} and never closes it"));
+        let body = &readme[at + open.len()..at + end];
+        assert!(
+            body.contains('|') && body.contains("Reproduce:"),
+            "BENCH:{region} holds no table and no reproduction command; run \
+             `make readme-perf`"
+        );
+    }
+}

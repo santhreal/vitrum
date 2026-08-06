@@ -94,3 +94,31 @@ jobs:
           tar xzf dist/*.tar.gz -C /tmp/asset
           /tmp/asset/vitrum --version
           /tmp/asset/vitrum-server --version
+
+  # The README's performance tables are generated from a checked-in snapshot of
+  # real harness runs. This job re-renders them and fails if what is committed
+  # differs, which catches all three ways those numbers go wrong: a table edited
+  # by hand, a snapshot regenerated without re-rendering, and a figure invented
+  # in prose. It cannot measure anything, and must not: measurement needs the
+  # rig, and a shared runner would publish a number nobody can reproduce.
+  docs:
+    name: generated docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: the README tables match their snapshot
+        run: make readme-perf-check
+
+  # Licenses and advisories. vitrum is dual licensed MIT OR Apache-2.0, and a
+  # dependency that is neither is a licensing problem for everyone downstream,
+  # so it is worth a job rather than a periodic audit nobody runs.
+  deny:
+    name: licenses and advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources bans advisories

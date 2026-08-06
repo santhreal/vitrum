@@ -130,7 +130,7 @@ impl<'a> ParallelSearch<'a> {
             .min(ordered_indices.len())
             .max(1);
 
-        let chunk_size = (ordered_indices.len() + num_threads - 1) / num_threads;
+        let chunk_size = ordered_indices.len().div_ceil(num_threads);
         let matcher_ref = self.matcher.get();
         let query_ref = self.query;
 

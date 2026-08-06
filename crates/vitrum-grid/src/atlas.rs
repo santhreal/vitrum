@@ -133,7 +133,7 @@ impl core::fmt::Debug for GlyphAtlas {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GlyphAtlas")
             .field("dim", &self.dim)
-            .field("resident", &self.entries.len())
+            .field("resident", &self.resident())
             .field("generation", &self.generation)
             .finish()
     }
@@ -192,7 +192,13 @@ impl GlyphAtlas {
     /// How many glyphs are currently placed.
     #[must_use]
     pub fn resident(&self) -> usize {
-        self.entries.len()
+        let ascii = self
+            .ascii_entries
+            .iter()
+            .flat_map(|styles| styles.iter())
+            .filter(|entry| entry.is_some())
+            .count();
+        ascii + self.entries.len()
     }
 
     /// Bumped every time the atlas is reset. The renderer compares this against
@@ -262,8 +268,9 @@ impl GlyphAtlas {
             let val = key.ch as u32;
             if val < 128 {
                 self.ascii_entries[val as usize][key.style as usize] = Some(AtlasEntry::BLANK);
+            } else {
+                self.entries.insert(key, AtlasEntry::BLANK);
             }
-            self.entries.insert(key, AtlasEntry::BLANK);
             return Ok(AtlasEntry::BLANK);
         }
 
@@ -283,7 +290,7 @@ impl GlyphAtlas {
                 if self.resets_this_frame >= 1 {
                     return Err(AtlasError::Exhausted {
                         dim: self.dim,
-                        resident: self.entries.len(),
+                        resident: self.resident(),
                     });
                 }
                 self.reset();
@@ -327,8 +334,9 @@ impl GlyphAtlas {
         let val = key.ch as u32;
         if val < 128 {
             self.ascii_entries[val as usize][key.style as usize] = Some(entry);
+        } else {
+            self.entries.insert(key, entry);
         }
-        self.entries.insert(key, entry);
         Ok(entry)
     }
 

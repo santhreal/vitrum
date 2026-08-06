@@ -1113,13 +1113,20 @@ fn every_ranked_row_reaches_the_markup() {
          narrows it here renders fewer rows than the launcher ranked, and \
          every other test in this file still passes"
     );
-    // `views` is a one-for-one map over the ranked rows.
+    // `views` is a one-for-one map over the ranked rows: every pick the
+    // ranking produced becomes exactly one `RowView`, with nothing dropped
+    // between the two.
     assert!(
-        markup.contains(
-            "let views: Vec<RowView> = rows.iter().map(|p| view(p, &home_now)).collect();"
-        ),
+        markup.contains("(rows.len(), rows.iter().map(|p| view(p, &home_now)).collect())"),
         "`views` is no longer a one-for-one map over the ranked rows"
     );
+    for narrowing in ["rows.iter().take(", "rows.iter().filter(", "views.truncate("] {
+        assert!(
+            !markup.contains(narrowing),
+            "`{narrowing}` narrows the rows between the ranking and the markup, \
+             so the launcher would draw fewer rows than it ranked"
+        );
+    }
 }
 
 /// Nothing on the open path may block, and nothing may run per keystroke

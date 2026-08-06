@@ -541,13 +541,6 @@
   letter-spacing: var(--rg-track-micro);
 }
 
-/* The icon was 12px, the same size as the word it decorates. An ornament
- * does not get to be as large as its label. Height is SpacingSystem's. */
-.rg-pill__icon {
-  font-size: var(--rg-text-glyph);
-  line-height: var(--rg-lead-chip);
-}
-
 /* --------------------------------------------------------------------- */
 /* 8. BADGES, ROLLUP CHIPS, ATTENTION COUNT                              */
 /* --------------------------------------------------------------------- */

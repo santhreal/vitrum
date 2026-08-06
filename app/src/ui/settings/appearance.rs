@@ -302,3 +302,121 @@ fn the_blur_labels_read_as_english() {
     assert_eq!(blur_label(0), "None");
     assert_eq!(blur_label(16), "16px");
 }
+
+/// The stylesheet a default profile actually gets.
+fn backdrop_css() -> &'static str {
+    include_str!("../../../assets/parts/23-backdrop.css")
+}
+
+/// WHY: a default profile generated two full-viewport composited layers, one
+/// of them carrying a `filter`, for a wallpaper it did not have.
+///
+/// `a_default_profile_is_not_translucent` above asserted that this function
+/// emits no tokens, and that assertion was true and did not mean what the file
+/// claimed it meant. `.rg-app::before` and `::after` were `content: ""`
+/// unconditionally, so both pseudo-elements were generated on every install
+/// whatever the tokens said. `filter: blur(0px)` is not a no-op to the
+/// compositor: any `filter` other than `none` makes the element a containing
+/// block, a stacking context and its own composited layer.
+///
+/// The gate is `content`, because `content: none` is the one value that stops
+/// a pseudo-element from being generated at all rather than merely painting
+/// nothing. So the token has to be absent by default AND the stylesheet has to
+/// default it to `none`; either half alone leaves the layer.
+#[test]
+fn a_default_profile_generates_neither_backdrop_layer() {
+    let tokens = appearance_tokens(&AppearancePrefs::default());
+    assert!(!tokens.contains("--rg-backdrop-layer"), "{tokens}");
+    assert!(!tokens.contains("--rg-scrim-layer"), "{tokens}");
+
+    let css = backdrop_css();
+    assert!(css.contains("--rg-backdrop-layer: none;"), "{css}");
+    assert!(css.contains("--rg-scrim-layer: none;"), "{css}");
+    assert!(
+        css.contains("content: var(--rg-backdrop-layer);"),
+        "the image layer is generated unconditionally again"
+    );
+    assert!(
+        css.contains("content: var(--rg-scrim-layer);"),
+        "the scrim layer is generated unconditionally again"
+    );
+    assert!(
+        !css.contains("content: \"\";"),
+        "a pseudo-element is back to an unconditional `content`"
+    );
+}
+
+/// A backdrop switches its layer on, and the scrim waits for a dim.
+///
+/// WHY: the two layers are independent. A wallpaper with no scrim must not pay
+/// for a second viewport-sized box, and a dim with no wallpaper has nothing to
+/// darken, so neither token may be emitted on its own.
+#[test]
+fn each_backdrop_layer_appears_only_when_it_would_paint() {
+    let image = AppearancePrefs {
+        backdrop: "/tmp/wall.png".to_string(),
+        ..Default::default()
+    };
+    let tokens = appearance_tokens(&image);
+    assert!(tokens.contains("--rg-backdrop-layer:\"\";"), "{tokens}");
+    assert!(!tokens.contains("--rg-scrim-layer"), "{tokens}");
+
+    let dimmed = AppearancePrefs {
+        backdrop_dim_pct: 40,
+        ..image.clone()
+    };
+    let tokens = appearance_tokens(&dimmed);
+    assert!(tokens.contains("--rg-scrim-layer:\"\";"), "{tokens}");
+    assert!(tokens.contains("--rg-backdrop-dim:0.4;"), "{tokens}");
+
+    // A dim with no image is not a scrim, it is a grey window.
+    let orphan = AppearancePrefs {
+        backdrop_dim_pct: 40,
+        ..Default::default()
+    };
+    let tokens = appearance_tokens(&orphan);
+    assert!(!tokens.contains("--rg-scrim-layer"), "{tokens}");
+    assert!(!tokens.contains("--rg-backdrop-dim"), "{tokens}");
+}
+
+/// WHY: every menu and every tooltip in an opaque window ran a
+/// `backdrop-filter`.
+///
+/// The rule's own comment said "only at the point where the desktop actually
+/// shows through", and nothing gated it: the `@supports` block applied it to
+/// `.rg-sheet`, `.rg-menu` and `.rg-tooltip` on every install. That forces the
+/// engine to read back everything behind the element and Gaussian-blur it,
+/// which behind a fully opaque surface produces a pixel-identical result at
+/// the cost of a composited readback per popup.
+#[test]
+fn surfaces_blur_their_backdrop_only_below_full_opacity() {
+    assert!(
+        !appearance_tokens(&AppearancePrefs::default()).contains("--rg-surface-blur"),
+        "an opaque profile still asks for a backdrop blur"
+    );
+    let translucent = AppearancePrefs {
+        opacity_pct: 80,
+        ..Default::default()
+    };
+    assert!(
+        appearance_tokens(&translucent).contains("--rg-surface-blur:blur("),
+        "a see-through window lost the blur that keeps its text legible"
+    );
+    // The terminal's own opacity is not the window's: the desktop does not
+    // show through a solid shell because the grid inside it is see-through.
+    let grid_only = AppearancePrefs {
+        terminal_opacity_pct: 60,
+        ..Default::default()
+    };
+    assert!(
+        !appearance_tokens(&grid_only).contains("--rg-surface-blur"),
+        "a translucent grid switched on blurring for every menu in the shell"
+    );
+
+    let css = backdrop_css();
+    assert!(css.contains("--rg-surface-blur: none;"), "{css}");
+    assert!(
+        css.contains("backdrop-filter: var(--rg-surface-blur);"),
+        "the surface blur is unconditional again"
+    );
+}

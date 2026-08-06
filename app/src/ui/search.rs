@@ -547,7 +547,15 @@ pub fn Search(props: SearchProps) -> Element {
                                 for (index , hit) in group.hits.iter().enumerate() {
                                     Hit {
                                         key: "{hit.line_seq}:{index}",
-                                        hit: (*hit).clone(),
+                                        session: hit.session,
+                                        line_seq: hit.line_seq,
+                                        before: hit.before.iter().map(|l| line_text(l)).collect(),
+                                        split: split_hit(
+                                            &hit.visible,
+                                            hit.match_start,
+                                            hit.match_end,
+                                        ),
+                                        after: hit.after.iter().map(|l| line_text(l)).collect(),
                                         on_activate: props.on_activate,
                                     }
                                 }
@@ -562,7 +570,19 @@ pub fn Search(props: SearchProps) -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct HitProps {
-    hit: SearchHit,
+    session: SessionId,
+    line_seq: u64,
+    /// The context lines, already decoded.
+    ///
+    /// Decoded by the caller rather than here, and that is the difference
+    /// between this row costing its text and costing its text plus a copy of
+    /// the raw bytes. The props used to be the whole [`SearchHit`], so every
+    /// render of the layer deep-copied `visible` plus every context line of
+    /// every hit, up to [`MAX_HITS`] of them, and then decoded them anyway.
+    /// Nothing in the markup ever wanted the bytes.
+    before: Vec<String>,
+    split: Split,
+    after: Vec<String>,
     on_activate: EventHandler<(SessionId, u64)>,
 }
 
@@ -573,10 +593,9 @@ struct HitProps {
 /// a hand-written key handler.
 #[component]
 fn Hit(props: HitProps) -> Element {
-    let hit = &props.hit;
-    let split = split_hit(&hit.visible, hit.match_start, hit.match_end);
-    let session = hit.session;
-    let line_seq = hit.line_seq;
+    let split = &props.split;
+    let session = props.session;
+    let line_seq = props.line_seq;
     let on_activate = props.on_activate;
 
     rsx! {
@@ -586,16 +605,16 @@ fn Hit(props: HitProps) -> Element {
             title: "Jump to this line (byte {count::grouped(line_seq)} of this session's output)",
             onclick: move |_| on_activate.call((session, line_seq)),
 
-            for (index , line) in hit.before.iter().enumerate() {
-                span { class: "rg-search__ctx", key: "b{index}", "{line_text(line)}" }
+            for (index , line) in props.before.iter().enumerate() {
+                span { class: "rg-search__ctx", key: "b{index}", "{line}" }
             }
             span { class: "rg-search__line",
                 span { class: "rg-search__pre", "{split.before}" }
                 span { class: "{mark_class(split.empty_mark)}", "{split.matched}" }
                 span { class: "rg-search__post", "{split.after}" }
             }
-            for (index , line) in hit.after.iter().enumerate() {
-                span { class: "rg-search__ctx", key: "a{index}", "{line_text(line)}" }
+            for (index , line) in props.after.iter().enumerate() {
+                span { class: "rg-search__ctx", key: "a{index}", "{line}" }
             }
         }
     }

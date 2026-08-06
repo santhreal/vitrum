@@ -1086,15 +1086,20 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
         }
     };
 
-    let rows = picks.read().clone();
-    let count = rows.len();
+    let home_now = home.read().clone();
+    // The rows are read through the guard and drawn straight out of it. This
+    // used to clone the whole `Vec<Pick>` first, which on a full list is nine
+    // `Intent`s and their five owned strings each, deep-copied on every
+    // keystroke to build a `Vec<RowView>` that is itself owned.
+    let (count, views): (usize, Vec<RowView>) = {
+        let rows = picks.read();
+        (rows.len(), rows.iter().map(|p| view(p, &home_now)).collect())
+    };
     let cur = if count == 0 {
         0
     } else {
         (*hi.read()).min(count - 1)
     };
-    let home_now = home.read().clone();
-    let views: Vec<RowView> = rows.iter().map(|p| view(p, &home_now)).collect();
     let presets = store.read().presets.clone();
     let line = note(said.read().as_deref(), count, &query.read());
     // The one place every row shares, or `None` when they differ.
@@ -1409,7 +1414,13 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                 if query.read().is_empty() {
                     crate::ui::recents::Recents {
                         entries: launch::recents(&store.read()).to_vec(),
-                        projects: state.read().daemon.projects.clone(),
+                        // `peek`, not `read`, for the reason the two memos
+                        // above give: `read` here subscribed the whole
+                        // launcher to `UiState`, so a daemon streaming output
+                        // twenty times a second rebuilt this surface and
+                        // re-cloned the project list twenty times a second
+                        // while somebody was typing into it.
+                        projects: state.peek().daemon.projects.clone(),
                         home: home.read().clone(),
                         on_launch: move |l: launch::Launch| {
                             let pid = launch::resolve_project(

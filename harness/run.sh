@@ -7,6 +7,7 @@
 #   screenshot <name> [WxH] [scale]    one window, captured, written to harness/out/
 #   memory <windows>                   N windows each showing a session, PSS across the tree
 #   idle-cpu <seconds> [windows]       CPU burned by an idle client, as a share of one core
+#   bench <sessions>                   vitrum against T3 Code, same mocked model, same sessions
 #
 # Nothing graphical ever runs on the machine you type this on. This script
 # compiles nothing, starts no X server, and launches neither the application
@@ -21,13 +22,18 @@
 # environment:
 #   HARNESS_ENDPOINT     one ssh destination, skipping the fallback search
 #   HARNESS_ENDPOINTS    the ordered list to search, space separated
-#   HARNESS_BIN_DIR      directory holding vitrum-app and vitrum-server
+#   HARNESS_BIN_DIR      directory holding vitrum and vitrum-server
 #   HARNESS_SCREEN       virtual screen size, default 1920x1080
 #   HARNESS_SETTLE       seconds to let the app settle before measuring, default 45
 #   HARNESS_STARTUP      seconds between the window mapping and a screenshot, default 8
 #   HARNESS_SESSION_CMD  what each session runs, default /bin/bash
 #   HARNESS_SESSION_ARGS arguments for it, default -i
 #   HARNESS_KEEP_REMOTE  set to 1 to leave the run directory on the remote
+#   HARNESS_BENCH_TURNS  agent turns per session in `bench`, default 40
+#   HARNESS_BENCH_TOKENS tokens per mocked response, default 200
+#   HARNESS_BENCH_TPS    tokens per second the mock streams, default 30
+#   HARNESS_BENCH_SEED   the mock's seed, default 1
+#   HARNESS_T3           path to the T3 Code binary, if it is not on PATH
 set -euo pipefail
 
 HARNESS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,7 +64,7 @@ die() {
 }
 
 usage() {
-  sed -n '4,9s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2
+  sed -n '4,10s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
 
@@ -111,7 +117,7 @@ find_bin_dir() {
   [ -n "${CARGO_TARGET_DIR:-}" ] && candidates+=("$CARGO_TARGET_DIR/release")
   candidates+=("$REPO/target/release" "/tmp/vitrum-target/release")
   for dir in "${candidates[@]}"; do
-    if [ -x "$dir/vitrum-app" ] && [ -x "$dir/vitrum-server" ]; then
+    if [ -x "$dir/vitrum" ] && [ -x "$dir/vitrum-server" ]; then
       printf '%s\n' "$dir"
       return 0
     fi
@@ -152,7 +158,7 @@ COMMAND="$1"
 shift
 
 case "$COMMAND" in
-  probe | screenshot | memory | idle-cpu) ;;
+  probe | screenshot | memory | idle-cpu | bench) ;;
   *) usage ;;
 esac
 
@@ -178,6 +184,11 @@ case "$COMMAND" in
     if [ $# -eq 2 ]; then
       case "$2" in '' | *[!0-9]*) die "window count must be a whole number, got $2" ;; esac
     fi
+    ;;
+  bench)
+    [ $# -eq 1 ] || die "bench takes one argument, the session count"
+    case "$1" in '' | *[!0-9]*) die "session count must be a whole number, got $1" ;; esac
+    [ "$1" -ge 1 ] || die "session count must be at least 1"
     ;;
 esac
 
@@ -205,10 +216,10 @@ if [ "$COMMAND" != "probe" ]; then
   # two files this line sends, and a partial send that also wiped the previous
   # pair would leave the host with nothing to run.
   rsync -a --checksum -e "ssh ${SSH_OPTS[*]}" \
-    "$BIN_DIR/vitrum-app" "$BIN_DIR/vitrum-server" \
+    "$BIN_DIR/vitrum" "$BIN_DIR/vitrum-server" \
     "$ENDPOINT:$STAGE/bin/"
-  rsh "chmod +x $STAGE/bin/vitrum-app $STAGE/bin/vitrum-server"
-  echo "staged $(cd "$BIN_DIR" && ls -l vitrum-app vitrum-server | awk '{print $9 " " $5 " bytes"}' | tr '\n' ' ')"
+  rsh "chmod +x $STAGE/bin/vitrum $STAGE/bin/vitrum-server"
+  echo "staged $(cd "$BIN_DIR" && ls -l vitrum vitrum-server | awk '{print $9 " " $5 " bytes"}' | tr '\n' ' ')"
 fi
 
 # Environment does not survive an ssh command line by itself, so the settings
@@ -221,6 +232,11 @@ REMOTE_ENV=(
   "HARNESS_STARTUP=${HARNESS_STARTUP:-8}"
   "HARNESS_SESSION_CMD=${HARNESS_SESSION_CMD:-/bin/bash}"
   "HARNESS_SESSION_ARGS=${HARNESS_SESSION_ARGS:--i}"
+  "HARNESS_BENCH_TURNS=${HARNESS_BENCH_TURNS:-40}"
+  "HARNESS_BENCH_TOKENS=${HARNESS_BENCH_TOKENS:-200}"
+  "HARNESS_BENCH_TPS=${HARNESS_BENCH_TPS:-30}"
+  "HARNESS_BENCH_SEED=${HARNESS_BENCH_SEED:-1}"
+  "HARNESS_T3=${HARNESS_T3:-}"
 )
 
 REMOTE_CMD="env $(printf '%q ' "${REMOTE_ENV[@]}")bash .cache/vitrum-harness/rig.sh $(printf '%q ' "$RUN_ID" "$COMMAND" "$@")"

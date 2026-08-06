@@ -7,6 +7,7 @@
 #   screenshot <name> [WxH] [ui-scale|auto]
 #   memory <windows>
 #   idle-cpu <seconds> [windows]
+#   bench <sessions>
 #
 # harness/run.sh is the only intended caller: it stages the binaries, invokes
 # this over ssh, and copies the results back. Running it by hand on the
@@ -24,7 +25,7 @@ set -euo pipefail
 RUN_ID="${1:-}"
 COMMAND="${2:-}"
 [ -n "$RUN_ID" ] && [ -n "$COMMAND" ] || {
-  sed -n '4,9s/^# \{0,1\}//p' "$0" >&2
+  sed -n '4,10s/^# \{0,1\}//p' "$0" >&2
   exit 2
 }
 shift 2
@@ -49,11 +50,24 @@ PORT=7737
 # The size of the decoy X window every vitrum process maps alongside the real
 # one. Compared exactly, never as a substring; see `app_windows`.
 DECOY_GEOMETRY="10x10"
+# The bench workload. Both products have to run the SAME one, so these are the
+# only knobs and they are echoed into the report: a ratio taken with one side
+# streaming more tokens than the other is not a comparison.
+BENCH_TURNS="${HARNESS_BENCH_TURNS:-40}"
+BENCH_TOKENS="${HARNESS_BENCH_TOKENS:-200}"
+BENCH_TPS="${HARNESS_BENCH_TPS:-30}"
+BENCH_SEED="${HARNESS_BENCH_SEED:-1}"
+# How much smaller vitrum has to be for the run to say the goal is met.
+BENCH_TARGET_RATIO=10
 
 APP_PID=""
 DAEMON_PID=""
 XVFB_PID=""
 DBUS_PID=""
+MOCK_PID=""
+MOCK_PORT=""
+MOCK_URL=""
+T3_PID=""
 
 die() {
   echo "rig: $*" >&2
@@ -64,13 +78,42 @@ cleanup() {
   local rc=$?
   set +e
   if [ -n "$APP_PID" ]; then kill -TERM -"$APP_PID" 2>/dev/null; fi
+  if [ -n "$T3_PID" ]; then kill -TERM -"$T3_PID" 2>/dev/null; fi
   if [ -n "$DAEMON_PID" ]; then kill -TERM -"$DAEMON_PID" 2>/dev/null; fi
+  # Before the mock, because a session command whose endpoint has just gone
+  # away can spin on a failing connection while the rest of the teardown runs.
+  kill_agentsims
+  if [ -n "$MOCK_PID" ]; then kill -TERM -"$MOCK_PID" 2>/dev/null; fi
   sleep 1
   if [ -n "$APP_PID" ]; then kill -KILL -"$APP_PID" 2>/dev/null; fi
+  if [ -n "$T3_PID" ]; then kill -KILL -"$T3_PID" 2>/dev/null; fi
   if [ -n "$DAEMON_PID" ]; then kill -KILL -"$DAEMON_PID" 2>/dev/null; fi
+  if [ -n "$MOCK_PID" ]; then kill -KILL -"$MOCK_PID" 2>/dev/null; fi
   if [ -n "$DBUS_PID" ]; then kill -TERM "$DBUS_PID" 2>/dev/null; fi
   if [ -n "$XVFB_PID" ]; then kill -TERM "$XVFB_PID" 2>/dev/null; fi
   return $rc
+}
+
+# Every agentsim this run started, killed by the one string only this run can
+# produce: the URL of its own mock, on a port it picked and holds.
+#
+# This is not name matching, which this file bans for good reason. The daemon
+# spawns each session's command with its own controlling terminal, so a session
+# child can end up outside the daemon's process group and survive a group kill.
+# A leaked agentsim keeps a PTY and a connection open, and a leaked mock keeps
+# the port, which makes the next run fail looking like a product bug.
+kill_agentsims() {
+  local p cmdline
+  [ -n "$MOCK_URL" ] || return 0
+  for p in /proc/[0-9]*; do
+    # The redirect is INSIDE the subshell so its own failure is caught too. A
+    # process that exits between the glob and this read is the normal case
+    # during teardown, not something to print two dozen times.
+    cmdline="$( (tr '\0' ' ' <"$p/cmdline") 2>/dev/null || true)"
+    case "$cmdline" in
+      *agentsim.py*"$MOCK_URL"*) kill -TERM "${p#/proc/}" 2>/dev/null || true ;;
+    esac
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -153,6 +196,101 @@ wait_port() {
   local i=0
   while [ "$i" -lt 300 ]; do
     if (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then return 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# The lowest port in a private range nobody is listening on, for the mock LLM.
+# Not a fixed number: two runs are serialised by the harness lock, but a leaked
+# mock from an earlier crash, or anything else on this shared host, would
+# otherwise make the mock bind fail and read as a broken benchmark.
+pick_port() {
+  local n
+  for n in $(seq 7801 7899); do
+    if port_is_free "$n"; then
+      printf '%s\n' "$n"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The mock model server both products talk to.
+#
+# It is what makes this benchmark free, deterministic and identical on both
+# sides. A real endpoint would cost money, vary run to run, and make the two
+# halves of the comparison different workloads.
+start_mock() {
+  MOCK_PORT="$(pick_port)" || die "no free port between 7801 and 7899 for the mock model server"
+  MOCK_URL="http://127.0.0.1:$MOCK_PORT"
+  MOCK_PID="$(spawn_group "$RUN/mockllm.pid" "$LOG/mockllm.log" \
+    python3 "$STAGE/mockllm.py" --port "$MOCK_PORT" \
+    --tokens-per-second "$BENCH_TPS" --response-tokens "$BENCH_TOKENS" --seed "$BENCH_SEED")" \
+    || die "mockllm.py did not start"
+  wait_port "$MOCK_PORT" || {
+    cat "$LOG/mockllm.log" >&2
+    die "mockllm.py never bound 127.0.0.1:$MOCK_PORT"
+  }
+  # Bound is not the same as serving, and a benchmark against a mock that
+  # answers nothing would report a memory figure for an idle client.
+  local health
+  health="$(mock_get healthz)" || die "the mock bound $MOCK_PORT but /healthz did not answer"
+  [ "$health" = "ok" ] || die "the mock's /healthz said '$health', not 'ok'"
+  echo "mock pid $MOCK_PID on $MOCK_URL, ${BENCH_TOKENS} tokens at ${BENCH_TPS}/s, seed $BENCH_SEED"
+}
+
+# GET one path off the mock with the standard library, since the host has no
+# curl guarantee and python3 is already a hard requirement here.
+mock_get() {
+  python3 - "$MOCK_URL/$1" <<'PY'
+import sys, urllib.request
+with urllib.request.urlopen(sys.argv[1], timeout=10) as r:
+    sys.stdout.write(r.read().decode("utf-8", "replace").strip())
+PY
+}
+
+# The mock's own count of what it served, so the report can prove the workload
+# happened rather than assume it. A memory figure taken while nothing streamed
+# is a figure for an idle window.
+mock_stats() {
+  mock_get stats 2>/dev/null || echo '{"requests":"unreadable","tokens":"unreadable"}'
+}
+
+# Every process in the session led by $1. Everything this rig starts is a
+# session leader, so this covers a subtree even where a descendant has been
+# reparented out of it, which is exactly what an Electron or WebKit helper does.
+session_pids() {
+  ps -o pid= -s "$1" 2>/dev/null | tr -d ' ' || true
+}
+
+# Every mapped X window owned by the session led by $1, whatever it is called.
+#
+# `app_windows` knows vitrum's decoy and matches its window name, so it cannot
+# answer for a foreign product. This one asks only "does a window on our
+# private display belong to our process session", which is the question the
+# bench needs for both sides.
+any_windows() {
+  local leader="$1" pids w p
+  pids=" $(session_pids "$leader" | tr '\n' ' ') "
+  for w in $(xdotool search --onlyvisible --name '.' 2>/dev/null || true); do
+    p="$(xdotool getwindowpid "$w" 2>/dev/null || echo 0)"
+    case "$pids" in
+      *" $p "*) printf '%s\n' "$w" ;;
+    esac
+  done
+  return 0
+}
+
+# Wait for the session led by $1 to map at least $2 windows. Same two failure
+# modes as `wait_windows`: 1 on timeout, 2 when the leader is already gone.
+wait_any_windows() {
+  local leader="$1" want="$2" secs="${3:-90}" i=0 n
+  while [ "$i" -lt $((secs * 10)) ]; do
+    n="$(any_windows "$leader" | wc -l)"
+    [ "$n" -ge "$want" ] && return 0
+    kill -0 "$leader" 2>/dev/null || return 2
     sleep 0.1
     i=$((i + 1))
   done
@@ -253,24 +391,24 @@ open_windows() {
   echo "sessions ${ids[0]}..${ids[-1]} running: $SESSION_CMD $SESSION_ARGS"
 
   APP_PID="$(spawn_group "$RUN/app.pid" "$LOG/app.log" \
-    "$BIN/vitrum-app" --no-autostart "vitrum://session/${ids[0]}")" \
-    || die "vitrum-app did not start"
+    "$BIN/vitrum" --no-autostart "vitrum://session/${ids[0]}")" \
+    || die "vitrum did not start"
   wait_windows "$APP_PID" 1 90 || {
     rc=$?
     tail -40 "$LOG/app.log" >&2
-    [ "$rc" -eq 2 ] && die "vitrum-app exited before mapping its first window"
+    [ "$rc" -eq 2 ] && die "vitrum exited before mapping its first window"
     die "the first window never mapped within 90s"
   }
   echo "app pid $APP_PID, window 1 of $want mapped"
 
   opened=1
   for id in "${ids[@]:1}"; do
-    "$BIN/vitrum-app" --no-autostart "vitrum://session/$id" >>"$LOG/handoff.log" 2>&1 || true
+    "$BIN/vitrum" --no-autostart "vitrum://session/$id" >>"$LOG/handoff.log" 2>&1 || true
     opened=$((opened + 1))
     wait_windows "$APP_PID" "$opened" 60 || {
       rc=$?
       tail -40 "$LOG/handoff.log" >&2
-      [ "$rc" -eq 2 ] && die "vitrum-app exited while opening window $opened"
+      [ "$rc" -eq 2 ] && die "vitrum exited while opening window $opened"
       die "window $opened never mapped within 60s"
     }
   done
@@ -305,7 +443,7 @@ report_tree() {
 }
 
 # The package a shared object comes from on Ubuntu 24.04, for the sixteen
-# `readelf -d vitrum-app` names. Only the ones that can plausibly be absent on
+# `readelf -d vitrum` names. Only the ones that can plausibly be absent on
 # a server install are listed; glibc's own are never missing.
 package_for_so() {
   case "$1" in
@@ -345,7 +483,7 @@ preflight() {
     else
       unknown="$unknown $so"
     fi
-  done < <(ldd "$BIN/vitrum-app" 2>/dev/null | awk '/not found/ {print $1}')
+  done < <(ldd "$BIN/vitrum" 2>/dev/null | awk '/not found/ {print $1}')
 
   for tool in $(tool_names); do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -363,7 +501,7 @@ preflight() {
   echo "This host cannot run the measurement yet." >&2
   if [ -n "$missing" ]; then
     echo >&2
-    echo "vitrum-app is missing shared libraries. Install them with, and nothing else:" >&2
+    echo "vitrum is missing shared libraries. Install them with, and nothing else:" >&2
     echo "  sudo apt-get update && sudo apt-get install -y$missing" >&2
   fi
   if [ -n "$unknown" ]; then
@@ -618,13 +756,13 @@ cmd_screenshot() {
   # second launch would hand off to any vitrum already holding the lock for
   # this profile and this run would capture that instance instead.
   APP_PID="$(spawn_group "$RUN/app.pid" "$LOG/app.log" \
-    "$BIN/vitrum-app" --standalone --no-autostart "${scale_args[@]}" "vitrum://session/$id")" \
-    || die "vitrum-app did not start"
+    "$BIN/vitrum" --standalone --no-autostart "${scale_args[@]}" "vitrum://session/$id")" \
+    || die "vitrum did not start"
 
   wait_windows "$APP_PID" 1 90 || {
     rc=$?
     tail -40 "$LOG/app.log" >&2
-    [ "$rc" -eq 2 ] && die "vitrum-app exited before mapping a window"
+    [ "$rc" -eq 2 ] && die "vitrum exited before mapping a window"
     die "no window for pid $APP_PID within 90s"
   }
   local win
@@ -742,6 +880,248 @@ cmd_idle_cpu() {
 }
 
 # ---------------------------------------------------------------------------
+# bench
+# ---------------------------------------------------------------------------
+
+# `field=value` out of a `footprint` line in measure.py's output.
+footprint_field() {
+  printf '%s\n' "$1" | awk -v key="$2" '
+    $1 == "footprint" {
+      for (i = 2; i <= NF; i++) {
+        split($i, kv, "=")
+        if (kv[1] == key) { print kv[2]; exit }
+      }
+    }'
+}
+
+# Stop the vitrum side and forget its pids, so the T3 half of the run measures
+# a box with only its own product on it. Leaving twenty WebKit processes and a
+# daemon resident would charge T3 with their scheduling and their page cache
+# pressure, and the whole run exists to compare two numbers fairly.
+#
+# The pid variables are cleared so the EXIT trap does not signal a group id
+# that may by then belong to something else.
+stop_vitrum() {
+  [ -n "$APP_PID" ] && kill -TERM -"$APP_PID" 2>/dev/null || true
+  [ -n "$DAEMON_PID" ] && kill -TERM -"$DAEMON_PID" 2>/dev/null || true
+  kill_agentsims
+  sleep 2
+  [ -n "$APP_PID" ] && kill -KILL -"$APP_PID" 2>/dev/null || true
+  [ -n "$DAEMON_PID" ] && kill -KILL -"$DAEMON_PID" 2>/dev/null || true
+  APP_PID=""
+  DAEMON_PID=""
+  local i=0
+  while [ "$i" -lt 100 ]; do
+    port_is_free "$PORT" && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# Where T3 Code is on this host, or nothing.
+#
+# Found, never installed and never vendored: SPEC row 15.9 forbids any T3
+# source in this tree, and a benchmark that installs the thing it measures is
+# also measuring the installer's choices. PATH first, then the paths a desktop
+# app package lands in on Ubuntu.
+find_t3() {
+  local name candidate
+  if [ -n "${HARNESS_T3:-}" ]; then
+    [ -x "$HARNESS_T3" ] || die "HARNESS_T3=$HARNESS_T3 is not an executable on $(hostname)"
+    printf '%s\n' "$HARNESS_T3"
+    return 0
+  fi
+  for name in t3 t3-code t3code; do
+    candidate="$(command -v "$name" 2>/dev/null || true)"
+    if [ -n "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  for candidate in \
+    /usr/lib/t3-code/t3-code \
+    /usr/share/t3-code/t3-code \
+    /opt/t3-code/t3-code \
+    "/opt/T3 Code/t3-code" \
+    /snap/bin/t3-code \
+    "$HOME/.local/bin/t3-code" \
+    "$HOME/Applications/t3-code.AppImage"; do
+    [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+# Measure T3 Code under the same mock, the same display and the same session
+# count. Prints its footprint output and returns 1 without dying if it cannot
+# be driven to the asked-for window count, because an unusable comparison must
+# degrade to "vitrum alone" rather than lose the vitrum number too.
+measure_t3() {
+  local bin="$1" want="$2" i rc n
+  local work="$RUN/t3-work"
+  mkdir -p "$work"
+
+  # The mock, offered under both vendors' variable names, because which API a
+  # given build talks is not something this harness gets to assume. The keys are
+  # placeholders: the mock authenticates nothing, and a real key must never be
+  # anywhere near a measurement run.
+  T3_PID="$(OPENAI_BASE_URL="$MOCK_URL/v1" OPENAI_API_BASE="$MOCK_URL/v1" \
+    OPENAI_API_KEY=harness-mock ANTHROPIC_BASE_URL="$MOCK_URL" \
+    ANTHROPIC_API_KEY=harness-mock \
+    spawn_group "$RUN/t3.pid" "$LOG/t3.log" "$bin" "$work")" || {
+    echo "  T3 Code at $bin did not start; see log/t3.log" >&2
+    return 1
+  }
+  wait_any_windows "$T3_PID" 1 90 || {
+    rc=$?
+    tail -40 "$LOG/t3.log" >&2
+    [ "$rc" -eq 2 ] && echo "  T3 Code exited before mapping a window" >&2
+    [ "$rc" -eq 1 ] && echo "  T3 Code mapped no window within 90s" >&2
+    return 1
+  }
+
+  # One more launch per remaining session. A single-instance desktop app hands
+  # the request to the process already holding its lock and exits, which is the
+  # same shape as vitrum's handoff, so both sides are asked for N windows the
+  # way the product itself intends.
+  i=1
+  while [ "$i" -lt "$want" ]; do
+    OPENAI_BASE_URL="$MOCK_URL/v1" OPENAI_API_BASE="$MOCK_URL/v1" \
+      OPENAI_API_KEY=harness-mock ANTHROPIC_BASE_URL="$MOCK_URL" \
+      ANTHROPIC_API_KEY=harness-mock \
+      "$bin" "$work" >>"$LOG/t3-handoff.log" 2>&1 || true
+    i=$((i + 1))
+    wait_any_windows "$T3_PID" "$i" 60 || {
+      n="$(any_windows "$T3_PID" | wc -l)"
+      echo "  T3 Code stopped at $n window(s) of $want, so there is no equal-session comparison to make" >&2
+      return 1
+    }
+  done
+
+  echo "settling T3 Code for ${SETTLE}s"
+  sleep "$SETTLE"
+  python3 "$STAGE/measure.py" footprint "$T3_PID" t3-code
+}
+
+cmd_bench() {
+  local sessions="${1:-}"
+  case "$sessions" in
+    '' | *[!0-9]*) die "bench needs a session count" ;;
+  esac
+  [ "$sessions" -ge 1 ] || die "bench needs at least one session"
+  # Named before anything starts, because the alternative is an X server, a
+  # daemon and a mock brought up for a workload whose script is not there.
+  [ -f "$STAGE/mockllm.py" ] || die "no mockllm.py at $STAGE; run.sh stages it"
+  [ -f "$STAGE/agentsim.py" ] || die "no agentsim.py at $STAGE; run.sh stages it"
+
+  start_x
+  start_dbus
+  start_mock
+
+  # The workload, set here rather than taken from HARNESS_SESSION_CMD, because
+  # the comparison is only worth anything if both sides face the same one and
+  # this command owns what that is.
+  SESSION_CMD="python3"
+  SESSION_ARGS="$STAGE/agentsim.py --endpoint $MOCK_URL --turns $BENCH_TURNS --seed $BENCH_SEED"
+
+  start_daemon
+  open_windows "$sessions"
+
+  echo "settling for ${SETTLE}s"
+  sleep "$SETTLE"
+
+  echo
+  echo "vitrum client tree, whole tree, $sessions session(s)"
+  local vitrum_client vitrum_daemon
+  vitrum_client="$(python3 "$STAGE/measure.py" footprint "$APP_PID" vitrum-client)" \
+    || die "could not measure the vitrum client tree"
+  printf '%s\n' "$vitrum_client"
+  echo
+  echo "vitrum daemon tree, including every agentsim it spawned"
+  vitrum_daemon="$(python3 "$STAGE/measure.py" footprint "$DAEMON_PID" vitrum-daemon)" \
+    || die "could not measure the vitrum daemon tree"
+  printf '%s\n' "$vitrum_daemon"
+  report_tree "$APP_PID"
+  echo
+  echo "mock after the vitrum half: $(mock_stats)"
+
+  local v_metric v_kb v_procs
+  v_metric="$(footprint_field "$vitrum_client" metric)"
+  v_kb=$(( $(footprint_field "$vitrum_client" total_kb) + $(footprint_field "$vitrum_daemon" total_kb) ))
+  v_procs=$(( $(footprint_field "$vitrum_client" processes) + $(footprint_field "$vitrum_daemon" processes) ))
+  # A mixture of metrics across the two halves is not a total, and the daemon
+  # tree is the one that can contain a process the kernel will not roll up.
+  [ "$v_metric" = "$(footprint_field "$vitrum_daemon" metric)" ] \
+    || die "the client tree measured $v_metric and the daemon tree did not; the two cannot be added"
+
+  local t3_bin t3_out="" t3_metric="" t3_kb="" t3_procs=""
+  t3_bin="$(find_t3 || true)"
+  if [ -z "$t3_bin" ]; then
+    echo
+    echo "T3 Code is not installed on $(hostname): nothing on PATH as t3, t3-code"
+    echo "or t3code, and none of the usual desktop-app install paths hold it. Set"
+    echo "HARNESS_T3 to its binary if it is somewhere else. This run reports the"
+    echo "vitrum number alone; there is no ratio."
+  else
+    echo
+    echo "T3 Code at $t3_bin, same mock, same $sessions session(s)"
+    stop_vitrum
+    if t3_out="$(measure_t3 "$t3_bin" "$sessions")"; then
+      printf '%s\n' "$t3_out"
+      t3_metric="$(footprint_field "$t3_out" metric)"
+      t3_kb="$(footprint_field "$t3_out" total_kb)"
+      t3_procs="$(footprint_field "$t3_out" processes)"
+      echo
+      echo "mock after the T3 half: $(mock_stats)"
+    else
+      echo "T3 Code is installed here but could not be driven to $sessions window(s);"
+      echo "this run reports the vitrum number alone."
+      t3_out=""
+    fi
+  fi
+
+  bench_report "$sessions" "$v_metric" "$v_kb" "$v_procs" "$t3_metric" "$t3_kb" "$t3_procs"
+}
+
+# The comparison, with every condition it depends on beside it. A bare ratio is
+# not a measurement: the host, the session count, the workload and which of PSS
+# or RSS the numbers are all change the answer.
+bench_report() {
+  local sessions="$1" v_metric="$2" v_kb="$3" v_procs="$4"
+  local t_metric="$5" t_kb="$6" t_procs="$7"
+
+  echo
+  echo "comparison"
+  echo "  host        $(hostname), $(nproc) threads, load $(cut -d' ' -f1-3 /proc/loadavg)"
+  echo "  sessions    $sessions, each running agentsim.py against the mock"
+  echo "  workload    $BENCH_TURNS turns, $BENCH_TOKENS tokens per response at ${BENCH_TPS}/s, seed $BENCH_SEED"
+  echo "  metric      $(echo "$v_metric" | tr '[:lower:]' '[:upper:]'), summed across the whole process tree"
+  printf '  vitrum      %s MB across %s process(es), client and daemon together\n' \
+    "$(awk -v kb="$v_kb" 'BEGIN { printf "%.1f", kb / 1024 }')" "$v_procs"
+
+  if [ -z "$t_kb" ]; then
+    echo "  t3 code     not measured, see above"
+    echo "  ratio       none; a ratio needs both sides"
+    return 0
+  fi
+  printf '  t3 code     %s MB across %s process(es)\n' \
+    "$(awk -v kb="$t_kb" 'BEGIN { printf "%.1f", kb / 1024 }')" "$t_procs"
+  if [ "$t_metric" != "$v_metric" ]; then
+    echo "  ratio       none: vitrum measured $v_metric and T3 Code measured $t_metric,"
+    echo "              and dividing one by the other would not be a quantity"
+    return 0
+  fi
+  local ratio verdict
+  ratio="$(awk -v v="$v_kb" -v t="$t_kb" 'BEGIN { if (v <= 0) print "0.00"; else printf "%.2f", t / v }')"
+  verdict="$(awk -v r="$ratio" -v target="$BENCH_TARGET_RATIO" \
+    'BEGIN { print (r >= target) ? "MET" : "NOT MET" }')"
+  echo "  ratio       vitrum is ${ratio}x smaller than T3 Code"
+  echo "  target      ${BENCH_TARGET_RATIO}x: $verdict"
+  echo
+  echo "This ratio holds for this host, this session count and this workload, and"
+  echo "for no others. It is not comparable to a figure taken on another machine."
+}
+
+# ---------------------------------------------------------------------------
 
 mkdir -p "$OUT" "$LOG" "$RUN/cwd"
 
@@ -762,7 +1142,7 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 if [ "$COMMAND" != "probe" ]; then
-  [ -x "$BIN/vitrum-app" ] || die "no vitrum-app at $BIN; run.sh stages it"
+  [ -x "$BIN/vitrum" ] || die "no vitrum at $BIN; run.sh stages it"
   [ -x "$BIN/vitrum-server" ] || die "no vitrum-server at $BIN; run.sh stages it"
   preflight
   # One measurement at a time. The client only reaches a daemon on the default
@@ -780,5 +1160,6 @@ case "$COMMAND" in
   screenshot) cmd_screenshot "$@" ;;
   memory) cmd_memory "$@" ;;
   idle-cpu) cmd_idle_cpu "$@" ;;
+  bench) cmd_bench "$@" ;;
   *) die "unknown command $COMMAND" ;;
 esac

@@ -345,12 +345,18 @@ async fn a_status_that_is_already_terminal_is_still_reported() {
     );
 }
 
+/// A spec running `command` through the platform shell from a real directory.
+///
+/// Both the interpreter and the working directory come from the host: a
+/// hardcoded /bin/sh and /tmp make the fixture, not the daemon, the thing that
+/// fails off unix.
 fn spec(command: &str) -> vitrum_core::SessionSpec {
+    let (shell, args) = crate::tests::client::shell(command);
     vitrum_core::SessionSpec {
         project_id: vitrum_proto::ProjectId(1),
-        cwd: std::path::PathBuf::from("/tmp"),
-        command: "/bin/sh".to_string(),
-        args: vec!["-c".to_string(), command.to_string()],
+        cwd: std::env::temp_dir(),
+        command: shell,
+        args,
         env: Vec::new(),
         cols: 80,
         rows: 24,

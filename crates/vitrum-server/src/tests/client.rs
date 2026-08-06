@@ -85,6 +85,18 @@ impl Seen {
         self.first_seq.get(&session).copied()
     }
 
+    /// Whether this session's stream carries `needle` anywhere.
+    ///
+    /// A pseudoconsole surrounds a child's bytes with its own, mode sets and a
+    /// screen clear before and an OSC 0 naming the shell after, so where the
+    /// child's line sits in the stream is the host's business. What crosses the
+    /// socket must be the child's bytes, whole and unaltered.
+    pub(crate) fn carries(&self, session: SessionId, needle: &[u8]) -> bool {
+        self.bytes(session)
+            .windows(needle.len())
+            .any(|w| w == needle)
+    }
+
     /// The first control message matching `pred`, if any has arrived.
     pub(crate) fn find(&self, pred: impl Fn(&ServerMsg) -> bool) -> Option<&ServerMsg> {
         self.ctl.iter().find(|m| pred(m))

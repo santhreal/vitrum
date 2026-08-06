@@ -64,6 +64,9 @@ pub fn search_with(
     query: &Query,
     haystacks: &[Haystack<'_>],
 ) -> Result<SearchResults> {
+    if haystacks.len() >= 4 {
+        return search_with_parallel(matcher, query, haystacks);
+    }
     // Scan in result order so the global cap yields a prefix, not a sample.
     let mut order: Vec<usize> = (0..haystacks.len()).collect();
     order.sort_by_key(|&index| (haystacks[index].session, haystacks[index].base_seq));
@@ -75,6 +78,128 @@ pub fn search_with(
         }
     }
     Ok(sweep.finish())
+}
+
+/// Search haystacks in parallel across chunked worker threads.
+pub fn search_parallel(query: &Query, haystacks: &[Haystack<'_>]) -> Result<SearchResults> {
+    Ok(ParallelSearch::new(query)?.search(haystacks))
+}
+
+/// Search haystacks in parallel with an existing matcher across chunked worker threads.
+pub fn search_with_parallel(
+    matcher: &Matcher,
+    query: &Query,
+    haystacks: &[Haystack<'_>],
+) -> Result<SearchResults> {
+    Ok(ParallelSearch::with_matcher(matcher, query).search(haystacks))
+}
+
+/// Chunked parallel scrollback search iterator across multiple haystacks.
+pub struct ParallelSearch<'a> {
+    query: &'a Query,
+    matcher: Compiled<'a>,
+}
+
+impl<'a> ParallelSearch<'a> {
+    pub fn new(query: &'a Query) -> Result<Self> {
+        let matcher = Matcher::compile(query)?;
+        Ok(Self {
+            query,
+            matcher: Compiled::Owned(matcher),
+        })
+    }
+
+    pub fn with_matcher(matcher: &'a Matcher, query: &'a Query) -> Self {
+        Self {
+            query,
+            matcher: Compiled::Borrowed(matcher),
+        }
+    }
+
+    /// Run chunked parallel search across `haystacks`.
+    pub fn search(&self, haystacks: &[Haystack<'_>]) -> SearchResults {
+        if haystacks.is_empty() {
+            return SearchResults::default();
+        }
+        if haystacks.len() == 1 {
+            let mut sweep = Sweep::with_matcher(self.matcher.get(), self.query);
+            sweep.push(&haystacks[0]);
+            return sweep.finish();
+        }
+
+        let mut ordered_indices: Vec<usize> = (0..haystacks.len()).collect();
+        ordered_indices.sort_by_key(|&index| (haystacks[index].session, haystacks[index].base_seq));
+
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(ordered_indices.len());
+
+        if num_threads <= 1 {
+            let mut sweep = Sweep::with_matcher(self.matcher.get(), self.query);
+            for index in ordered_indices {
+                if !sweep.push(&haystacks[index]) {
+                    break;
+                }
+            }
+            return sweep.finish();
+        }
+
+        let chunk_size = (ordered_indices.len() + num_threads - 1) / num_threads;
+        let matcher_ref = self.matcher.get();
+        let query_ref = self.query;
+
+        let thread_results: Vec<SearchResults> = std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for chunk in ordered_indices.chunks(chunk_size) {
+                handles.push(s.spawn(move || {
+                    let mut sweep = Sweep::with_matcher(matcher_ref, query_ref);
+                    for &index in chunk {
+                        if !sweep.push(&haystacks[index]) {
+                            break;
+                        }
+                    }
+                    sweep.finish()
+                }));
+            }
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let mut final_hits = Vec::new();
+        let mut total_lines = 0u64;
+        let mut total_bytes = 0u64;
+        let mut truncated = false;
+
+        for res in thread_results {
+            total_lines += res.lines_scanned;
+            total_bytes += res.bytes_scanned;
+            truncated |= res.truncated;
+            for hit in res.hits {
+                if final_hits.len() < query_ref.max_hits {
+                    final_hits.push(hit);
+                } else {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+
+        final_hits.sort_by_key(Hit::order_key);
+
+        let sessions_hit = final_hits
+            .windows(2)
+            .filter(|pair| pair[0].session != pair[1].session)
+            .count()
+            + usize::from(!final_hits.is_empty());
+
+        SearchResults {
+            hits: final_hits,
+            lines_scanned: total_lines,
+            bytes_scanned: total_bytes,
+            sessions_hit,
+            truncated,
+        }
+    }
 }
 
 /// A sweep that takes its sessions one at a time.
@@ -803,5 +928,34 @@ mod tests {
         assert_eq!(results.sessions_hit, 1);
         // The second haystack is never read: its bytes cannot contribute.
         assert_eq!(results.lines_scanned, 2);
+    }
+    #[test]
+    fn parallel_search_yields_correct_ordered_results() {
+        let s1 = b"session 1: error A\nsession 1: quiet\n";
+        let s2 = b"session 2: quiet\nsession 2: error B\n";
+        let s3 = b"session 3: error C\n";
+        let s4 = b"session 4: error D\n";
+
+        let c1 = [s1.as_slice()];
+        let c2 = [s2.as_slice()];
+        let c3 = [s3.as_slice()];
+        let c4 = [s4.as_slice()];
+
+        let haystacks = [
+            Haystack { session: 3, base_seq: 0, chunks: &c3 },
+            Haystack { session: 1, base_seq: 0, chunks: &c1 },
+            Haystack { session: 4, base_seq: 0, chunks: &c4 },
+            Haystack { session: 2, base_seq: 0, chunks: &c2 },
+        ];
+
+        let query = Query::literal("error").context(0);
+        let results = search_parallel(&query, &haystacks).expect("search parallel");
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(
+            results.hits.iter().map(|h| h.session).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4],
+            "parallel search must return hits ordered by session"
+        );
     }
 }

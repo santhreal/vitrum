@@ -26,10 +26,19 @@ on:
       - ".github/workflows/upstream.yml"
   workflow_dispatch:
 
+# Same rule as ci: a superseded run holds a runner the next push is queued
+# behind. The weekly run groups by run id so two schedules never collide.
+concurrency:
+  group: upstream-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   divergence:
     name: fork divergence and upstream version
     runs-on: ubuntu-latest
+    # It downloads a crate and diffs text; a minute is generous and a hang here
+    # is the network, not the check.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

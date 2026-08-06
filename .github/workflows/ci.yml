@@ -7,6 +7,18 @@ on:
     branches: [main]
   pull_request:
 
+# A pull request that is pushed to twice must not hold two full matrices. The
+# older run is cancelled, because nobody reads a verdict on a commit that has
+# been replaced, and the runners it holds are what the next push waits for. A
+# queued job that waits too long is cancelled by GitHub with no steps and no
+# reason, which reads as a broken pipeline rather than a busy one.
+#
+# Pushes to main group by run id, so they never cancel each other: those
+# verdicts are the release history and each commit keeps its own.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # A warning is a failure. The crate ships with none and the only way it stays
@@ -17,6 +29,10 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # Long enough for a cold Windows build, short enough that a hung job frees
+    # its runner the same morning instead of holding it for the six-hour
+    # default.
+    timeout-minutes: 45
     strategy:
       # One platform failing must not cancel the others: which platforms broke
       # is the useful part of the answer.
@@ -30,18 +46,19 @@ jobs:
         with:
           components: clippy
 
+      # `shared-key`, not `key`: the release archive job compiles the same
+      # workspace for the same target, and restoring what the Linux test job
+      # already built is the difference between one cold build per push and
+      # two.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}
+          shared-key: ${{ matrix.os }}
 
       # The client links the system webview. On Ubuntu that is WebKitGTK, and
       # nothing in the runner image provides it.
       - name: system webview
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+        run: ./.github/system-webview.sh
 
       - run: cargo build --release --workspace --locked
 
@@ -57,15 +74,17 @@ jobs:
   package:
     name: release archive
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest
+          # The test job on this platform is the one that populates the cache.
+          save-if: false
       - name: system webview
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+        run: ./.github/system-webview.sh
       - run: ./packaging/build-release-asset.sh
       - name: the checksum must verify
         run: cd dist && sha256sum -c SHA256SUMS

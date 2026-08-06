@@ -33,16 +33,17 @@ env:
 jobs:
   crates:
     runs-on: ubuntu-latest
+    # Thirteen crates, each waiting on the index to catch up. Generous, and
+    # still short of a runner held all day by a registry that stopped
+    # answering.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: system webview
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+        run: ./.github/system-webview.sh
 
       # A tag whose version does not match the workspace would publish the old
       # version under a new tag and there is no way to take it back.

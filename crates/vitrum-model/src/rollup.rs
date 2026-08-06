@@ -22,6 +22,35 @@ use crate::disposition::{Disposition, DispositionPolicy};
 use crate::status::{ALL_STATUSES, SidebarStatus};
 use crate::view::{Clock, SessionView};
 
+/// Fast 64-bit non-cryptographic hasher (FxHash) for `ProjectId`.
+#[derive(Default)]
+pub struct FxHasher {
+    hash: u64,
+}
+
+const FX_HASH_K: u64 = 0x517cc1b727220a95;
+
+impl core::hash::Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.hash = self.hash.rotate_left(5) ^ (byte as u64) ^ FX_HASH_K;
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.hash = self.hash.rotate_left(5) ^ i ^ FX_HASH_K;
+    }
+}
+
+pub type FxBuildHasher = core::hash::BuildHasherDefault<FxHasher>;
+pub type FxHashMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
 /// How many sessions are in each state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -206,16 +235,17 @@ pub fn rollup_all(
     policy: DispositionPolicy,
 ) -> Vec<ProjectRollup> {
     let mut rollups: Vec<ProjectRollup> = Vec::new();
+    let mut index_map: FxHashMap<ProjectId, usize> = FxHashMap::default();
+
     for row in rows {
         let project_id = row.project_id();
-        let index = match rollups
-            .iter()
-            .position(|rollup| rollup.project_id == project_id)
-        {
-            Some(index) => index,
+        let index = match index_map.get(&project_id) {
+            Some(&idx) => idx,
             None => {
+                let idx = rollups.len();
                 rollups.push(ProjectRollup::empty(project_id));
-                rollups.len() - 1
+                index_map.insert(project_id, idx);
+                idx
             }
         };
         rollups[index].absorb(row, clock, policy);
@@ -224,6 +254,25 @@ pub fn rollup_all(
         rollup.indicator = rollup.counts.most_urgent();
     }
     rollups
+}
+
+/// Roll up every project present in `rows`, returning an O(1) hash map indexed by `ProjectId`.
+pub fn rollup_all_mapped(
+    rows: &[SessionView],
+    clock: Clock,
+    policy: DispositionPolicy,
+) -> FxHashMap<ProjectId, ProjectRollup> {
+    let mut map: FxHashMap<ProjectId, ProjectRollup> = FxHashMap::default();
+    for row in rows {
+        let project_id = row.project_id();
+        map.entry(project_id)
+            .or_insert_with(|| ProjectRollup::empty(project_id))
+            .absorb(row, clock, policy);
+    }
+    for rollup in map.values_mut() {
+        rollup.indicator = rollup.counts.most_urgent();
+    }
+    map
 }
 
 #[cfg(test)]
@@ -604,5 +653,20 @@ mod tests {
             rollup_project(vitrum_proto::ProjectId(1), &rows, clock(), policy()),
             rollup_rows(vitrum_proto::ProjectId(1), &mine, clock(), policy())
         );
+    }
+    #[test]
+    fn rollup_all_mapped_matches_rollup_all() {
+        let rows = vec![
+            ViewBuilder::new(1).project(10).running().waiting(Some(true)).build(),
+            ViewBuilder::new(2).project(20).running().waiting(Some(false)).build(),
+            ViewBuilder::new(3).project(10).exited(0).build(),
+        ];
+        let rollups_vec = rollup_all(&rows, clock(), policy());
+        let rollups_map = rollup_all_mapped(&rows, clock(), policy());
+
+        assert_eq!(rollups_vec.len(), 2);
+        assert_eq!(rollups_map.len(), 2);
+        assert_eq!(rollups_map.get(&vitrum_proto::ProjectId(10)), Some(&rollups_vec[0]));
+        assert_eq!(rollups_map.get(&vitrum_proto::ProjectId(20)), Some(&rollups_vec[1]));
     }
 }

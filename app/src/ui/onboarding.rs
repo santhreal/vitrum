@@ -51,7 +51,11 @@ const LOOKS_FOR: &str = "claude, codex, gemini, opencode, veyyon";
 pub struct Machine {
     /// Agent binaries actually resolvable here, from
     /// [`crate::launch::detected_agents`].
-    pub agents: Vec<Detected>,
+    ///
+    /// `None` means the PATH walk is still running. The first-launch path
+    /// starts that walk beside the daemon connect, so the sheet must not say
+    /// "nothing matched" until the walk has actually finished.
+    pub agents: Option<Vec<Detected>>,
     /// Is a daemon socket open right now?
     pub connected: bool,
     /// Does this operator already have at least one session?
@@ -172,15 +176,23 @@ pub fn steps(machine: &Machine) -> Vec<Step> {
         });
     }
 
-    out.push(Step {
-        kind: StepKind::Agents,
-        state: if machine.agents.is_empty() {
-            StepState::Todo
-        } else {
-            StepState::Done
+    out.push(match &machine.agents {
+        None => Step {
+            kind: StepKind::Agents,
+            state: StepState::Info,
+            title: "What you can run".to_string(),
+            body: "Looking for agent binaries on your PATH…".to_string(),
         },
-        title: "What you can run".to_string(),
-        body: agents_line(&machine.agents),
+        Some(agents) => Step {
+            kind: StepKind::Agents,
+            state: if agents.is_empty() {
+                StepState::Todo
+            } else {
+                StepState::Done
+            },
+            title: "What you can run".to_string(),
+            body: agents_line(agents),
+        },
     });
 
     if !machine.any_session {
@@ -329,7 +341,7 @@ mod tests {
         Detected { label, command }
     }
 
-    fn machine(agents: Vec<Detected>, connected: bool, any_session: bool) -> Machine {
+    fn machine(agents: Option<Vec<Detected>>, connected: bool, any_session: bool) -> Machine {
         Machine {
             agents,
             connected,
@@ -359,7 +371,7 @@ mod tests {
             .rendered();
         assert_eq!(chord_for(KeyAction::NewSession).as_deref(), Some(&*truth));
 
-        let step = find(&machine(vec![], false, false), StepKind::Start)
+        let step = find(&machine(Some(vec![]), false, false), StepKind::Start)
             .expect("a machine with no session gets the start step");
         assert!(
             step.body.starts_with(&format!("Press {truth},")),
@@ -375,7 +387,7 @@ mod tests {
     /// as a broken surface rather than as "install one, or use your shell".
     #[test]
     fn no_agents_says_what_to_do_instead_of_nothing() {
-        let step = find(&machine(vec![], true, false), StepKind::Agents)
+        let step = find(&machine(Some(vec![]), true, false), StepKind::Agents)
             .expect("the agents step always applies");
         assert_eq!(step.state, StepState::Todo);
         assert_eq!(
@@ -392,6 +404,29 @@ mod tests {
     /// The defect: reciting the five names vitrum knows about regardless of
     /// what is installed, which is the exact behaviour the launcher's picker
     /// was changed away from.
+
+    /// A PATH walk still in flight must not claim nothing matched.
+    ///
+    /// The defect: opening the sheet before `detected_agents` returns, then
+    /// rendering the zero-agents sentence, flashes "install an agent" on a
+    /// machine that has one until the walk finishes. Looking is its own state.
+    #[test]
+    fn a_pending_path_walk_does_not_claim_nothing_matched() {
+        let step = find(&machine(None, false, false), StepKind::Agents)
+            .expect("the agents step always applies");
+        assert_eq!(step.state, StepState::Info);
+        assert!(
+            step.body.contains("Looking for agent binaries"),
+            "{}",
+            step.body
+        );
+        assert!(
+            !step.body.contains("Nothing on your PATH"),
+            "{}",
+            step.body
+        );
+    }
+
     #[test]
     fn the_agents_line_names_only_detected_binaries() {
         let cases: &[(&[Detected], &str)] = &[
@@ -454,7 +489,7 @@ mod tests {
             (true, true, &[StepKind::Agents, StepKind::Settings]),
         ];
         for (connected, any_session, expected) in cases {
-            let m = machine(vec![agent("Codex", "codex")], *connected, *any_session);
+            let m = machine(Some(vec![agent("Codex", "codex")]), *connected, *any_session);
             assert_eq!(
                 kinds(&m),
                 *expected,
@@ -471,11 +506,11 @@ mod tests {
     /// have.
     #[test]
     fn the_intro_and_the_button_match_the_rows_below_them() {
-        let fresh = machine(vec![], false, false);
+        let fresh = machine(Some(vec![]), false, false);
         assert!(intro(&fresh).contains("Three things"), "{}", intro(&fresh));
         assert_eq!(finish_label(&fresh), "Got it");
 
-        let running = machine(vec![agent("Codex", "codex")], true, true);
+        let running = machine(Some(vec![agent("Codex", "codex")]), true, true);
         assert_eq!(
             intro(&running),
             "You are already running. Two things worth knowing anyway."
@@ -495,7 +530,7 @@ mod tests {
             (vec![], StepState::Todo),
             (vec![agent("Codex", "codex")], StepState::Done),
         ] {
-            let step = find(&machine(agents, true, false), StepKind::Agents).expect("present");
+            let step = find(&machine(Some(agents), true, false), StepKind::Agents).expect("present");
             assert_eq!(step.state, expected);
         }
     }
@@ -511,7 +546,7 @@ mod tests {
             CHORDS.iter().all(|c| c.describes() != "Settings"),
             "a settings chord now exists; this copy must name it"
         );
-        let step = find(&machine(vec![], true, true), StepKind::Settings).expect("present");
+        let step = find(&machine(Some(vec![]), true, true), StepKind::Settings).expect("present");
         assert_eq!(step.state, StepState::Info);
         assert!(
             step.body

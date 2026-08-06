@@ -18,6 +18,11 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Changed
 
+- **First launch opens the walkthrough while the daemon is still starting.**
+  Agent detection used to finish its PATH walk before the sheet appeared and
+  before the connect began, so the two costs added. The sheet opens
+  immediately, the walk runs beside the connect, and a still-running walk
+  says it is looking rather than claiming nothing matched.
 - **Dual licensed MIT OR Apache-2.0**, from MIT alone. The Apache half carries
   an explicit patent grant. The vendored forks under `vendor/` and
   `vendor-pty/` keep the MIT license and copyright they arrived with.

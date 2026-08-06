@@ -53,7 +53,10 @@ fn the_list_draws_newest_first_exactly_as_stored() {
     let html = render(launch::recents(&store).to_vec());
     let order: Vec<usize> = ["git status", "bash", "claude"]
         .iter()
-        .map(|line| html.find(line).unwrap_or_else(|| panic!("{line} is not drawn: {html}")))
+        .map(|line| {
+            html.find(line)
+                .unwrap_or_else(|| panic!("{line} is not drawn: {html}"))
+        })
         .collect();
     assert!(
         order[0] < order[1] && order[1] < order[2],
@@ -110,7 +113,10 @@ fn a_chosen_icon_overrides_the_command_default() {
     let html = render(vec![entry]);
     let flask = crate::ui::icons::from_slug("flask").expect("flask is in the set");
     let branch = crate::ui::icons::from_slug("branch").expect("branch is in the set");
-    assert!(html.contains(flask.stroke), "the chosen icon is missing: {html}");
+    assert!(
+        html.contains(flask.stroke),
+        "the chosen icon is missing: {html}"
+    );
     assert!(
         !html.contains(branch.stroke),
         "the default icon was drawn over the chosen one: {html}"

@@ -674,7 +674,11 @@ fn token_px(css: &str, name: &str) -> f64 {
     let number = value
         .strip_suffix("rem")
         .unwrap_or_else(|| panic!("{name} is {value}, which is not a rem length"));
-    number.trim().parse::<f64>().expect("a rem length is a number") * 16.0
+    number
+        .trim()
+        .parse::<f64>()
+        .expect("a rem length is a number")
+        * 16.0
 }
 
 /// The footer's three controls fit at the 224px sidebar floor, on the grid.
@@ -1308,7 +1312,9 @@ fn a_static_header_keeps_the_chevrons_box_and_drops_its_glyph() {
         "rg-project__header rg-project__header--static",
         "rg-project__section-head rg-project__section-head--static",
     ] {
-        let at = src.find(anchor).unwrap_or_else(|| panic!("{anchor} is gone"));
+        let at = src
+            .find(anchor)
+            .unwrap_or_else(|| panic!("{anchor} is gone"));
         let block = &src[at..src.len().min(at + 700)];
         assert!(
             block.contains("class: \"rg-project__chevron\" }"),
@@ -1323,10 +1329,7 @@ fn a_static_header_keeps_the_chevrons_box_and_drops_its_glyph() {
             !block.contains("aria-expanded"),
             "{anchor} still announces itself as expandable"
         );
-        assert!(
-            !block.contains("onclick"),
-            "{anchor} is clickable again"
-        );
+        assert!(!block.contains("onclick"), "{anchor} is clickable again");
     }
 
     // The collapsible header, by contrast, still carries the glyph. If it

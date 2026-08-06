@@ -20,14 +20,14 @@
 use dioxus::prelude::*;
 
 use crate::keymap::{
-    AttentionKind, BindingError, CustomBinding, KeyAction, LayerKind, MAX_BINDING_DEPTH,
-    Predicate, StatusKind, Step,
+    AttentionKind, BindingError, CustomBinding, KeyAction, LayerKind, MAX_BINDING_DEPTH, Predicate,
+    StatusKind, Step,
 };
 use crate::launch;
 use crate::state::UiState;
 use crate::ui::settings::{
-    BINDABLE_KEYS, Binding, action_label, chord_conflict, clear_override, commit,
-    effective_chords, pretty_key, rebindable, set_override,
+    BINDABLE_KEYS, Binding, action_label, chord_conflict, clear_override, commit, effective_chords,
+    pretty_key, rebindable, set_override,
 };
 
 /// Which branch of a conditional a step sits in.
@@ -180,11 +180,7 @@ pub fn fault_sentence(why: &BindingError) -> String {
 /// Same guarantee for the same reason: every control on this page goes through
 /// one function, so "takes effect immediately and survives a restart" is true by
 /// construction rather than by each handler remembering both halves.
-fn edit_binding(
-    mut state: Signal<UiState>,
-    at: usize,
-    change: impl FnOnce(&mut CustomBinding),
-) {
+fn edit_binding(mut state: Signal<UiState>, at: usize, change: impl FnOnce(&mut CustomBinding)) {
     {
         let mut write = state.write();
         let Some(binding) = write.daemon.settings.keyboard.custom.get_mut(at) else {
@@ -196,7 +192,12 @@ fn edit_binding(
 }
 
 /// Mutate the step list one path addresses.
-fn edit_steps(state: Signal<UiState>, at: usize, path: &[Hop], change: impl FnOnce(&mut Vec<Step>)) {
+fn edit_steps(
+    state: Signal<UiState>,
+    at: usize,
+    path: &[Hop],
+    change: impl FnOnce(&mut Vec<Step>),
+) {
     edit_binding(state, at, |binding| {
         if let Some(list) = list_at(&mut binding.steps, path) {
             change(list);

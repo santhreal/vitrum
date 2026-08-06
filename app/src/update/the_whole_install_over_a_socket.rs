@@ -50,7 +50,8 @@ fn serve(routes: Vec<(String, Vec<u8>)>) -> (String, std::thread::JoinHandle<()>
                     r.extend_from_slice(&b);
                     r
                 }
-                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_vec(),
             };
             let _ = sock.write_all(&response);
             let _ = sock.flush();
@@ -131,7 +132,10 @@ fn a_verified_release_replaces_both_binaries() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.starts_with('.'))
         .collect();
-    assert!(leftovers.is_empty(), "staging files survived: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "staging files survived: {leftovers:?}"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -175,7 +179,8 @@ fn a_release_without_sums_is_refused() {
     a.sums_url = None;
     let e = install(&a, &dir, &mut |_| {}).unwrap_err();
     assert!(
-        e.to_string().contains("refusing to install an unverified binary"),
+        e.to_string()
+            .contains("refusing to install an unverified binary"),
         "{e}"
     );
     assert_eq!(fs::read(dir.join("vitrum")).unwrap(), b"old client");

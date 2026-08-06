@@ -655,8 +655,8 @@ fn the_webgl_addon_ships_only_for_the_webgl_renderer() {
     let dom = Options::parse(Vec::<String>::new()).expect("no args parses");
     assert_eq!(dom.renderer, Renderer::Dom, "the default must stay dom");
 
-    let webgl = Options::parse(vec!["--renderer".into(), "webgl".into()])
-        .expect("--renderer webgl parses");
+    let webgl =
+        Options::parse(vec!["--renderer".into(), "webgl".into()]).expect("--renderer webgl parses");
 
     // `document_head` memoises into a process-wide OnceLock, so it cannot
     // be called twice with different options in one test binary. Assert
@@ -746,8 +746,7 @@ fn the_server_url_is_overridable_and_defaults_to_loopback() {
 /// daemon instead of at their own command line.
 #[test]
 fn a_non_websocket_server_url_is_rejected() {
-    let err =
-        Options::parse(vec!["--server".into(), "http://127.0.0.1:7737".into()]).unwrap_err();
+    let err = Options::parse(vec!["--server".into(), "http://127.0.0.1:7737".into()]).unwrap_err();
     assert!(
         err.starts_with("--server http://127.0.0.1:7737 is not a WebSocket URL"),
         "{err}"
@@ -824,10 +823,16 @@ fn the_reconnect_schedule_backs_off_and_terminates() {
     for n in 1..RECONNECT_ATTEMPTS {
         let d = reconnect_delay_ms(n).expect("still within the schedule");
         assert!(d >= prev, "attempt {n} waits less than attempt {}", n - 1);
-        assert!(d <= RECONNECT_MAX_MS, "attempt {n} waits {d}ms, past the ceiling");
+        assert!(
+            d <= RECONNECT_MAX_MS,
+            "attempt {n} waits {d}ms, past the ceiling"
+        );
         prev = d;
     }
-    assert_eq!(prev, RECONNECT_MAX_MS, "the schedule never reaches its ceiling");
+    assert_eq!(
+        prev, RECONNECT_MAX_MS,
+        "the schedule never reaches its ceiling"
+    );
 
     // And it STOPS. A window that reconnects forever is a window that never
     // tells the operator their daemon is gone.
@@ -849,7 +854,10 @@ fn the_reconnect_schedule_backs_off_and_terminates() {
 fn a_long_outage_never_wraps_into_a_tight_loop() {
     for n in 0..RECONNECT_ATTEMPTS {
         let d = reconnect_delay_ms(n).expect("within the schedule");
-        assert!(d >= RECONNECT_BASE_MS, "attempt {n} waits {d}ms, less than the base");
+        assert!(
+            d >= RECONNECT_BASE_MS,
+            "attempt {n} waits {d}ms, less than the base"
+        );
     }
 }
 
@@ -888,8 +896,14 @@ fn version_reports_the_crate_version_and_does_not_start_a_window() {
 #[test]
 fn the_help_text_lists_the_version_flag() {
     let help = usage();
-    assert!(help.contains("--version"), "--help does not mention --version");
-    assert!(help.contains("-V"), "--help does not mention the short form");
+    assert!(
+        help.contains("--version"),
+        "--help does not mention --version"
+    );
+    assert!(
+        help.contains("-V"),
+        "--help does not mention the short form"
+    );
 }
 
 /// Help must be an error path, so `main` prints and exits instead of
@@ -1083,8 +1097,7 @@ fn the_webgl_renderer_needs_no_command_line_flag() {
          DOM-renderer window 100 KB of parse work it never uses"
     );
     assert!(
-        BOOTSTRAP_JS.contains("function loadWebgl()")
-            && BOOTSTRAP_JS.contains("if (!loadWebgl())"),
+        BOOTSTRAP_JS.contains("function loadWebgl()") && BOOTSTRAP_JS.contains("if (!loadWebgl())"),
         "nothing compiles the addon on demand, so selecting WebGL at \
          runtime still throws"
     );
@@ -1210,7 +1223,6 @@ fn terminal_cursor_does_not_blink() {
     );
 }
 
-
 /// Every stylesheet in [`stylesheets`] actually reaches the document, and
 /// nothing reaches it that the guards do not cover.
 ///
@@ -1264,7 +1276,9 @@ fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
 fn no_css_string_hides_a_comment_delimiter() {
     for (name, css) in stylesheets() {
         for (n, line) in css.lines().enumerate() {
-            let Some(quote) = line.find('"') else { continue };
+            let Some(quote) = line.find('"') else {
+                continue;
+            };
             let rest = &line[quote + 1..];
             let Some(end) = rest.find('"') else { continue };
             let inside = &rest[..end];
@@ -1296,7 +1310,10 @@ fn stripping_keeps_the_declarations_and_drops_the_prose() {
 
     // Unterminated: keep what is known good, drop the rest, never ship a
     // file whose structure cannot be established.
-    assert_eq!(strip_css(".a { color: red; } /* oops"), ".a { color: red; } ");
+    assert_eq!(
+        strip_css(".a { color: red; } /* oops"),
+        ".a { color: red; } "
+    );
 }
 
 /// Every stylesheet concatenated, for resolving a token declared in one
@@ -1573,9 +1590,7 @@ fn the_chord_column_cannot_push_the_description_column() {
     let column = bodies
         .iter()
         .find(|b| b.contains("flex: 0 0 11.5rem"))
-        .unwrap_or_else(|| {
-            panic!("no .rg-keys__chord block declares the fixed basis: {bodies:?}")
-        });
+        .unwrap_or_else(|| panic!("no .rg-keys__chord block declares the fixed basis: {bodies:?}"));
     assert!(
         column.contains("min-width: 0"),
         "the chord column declares a fixed basis but no min-width floor, so a \
@@ -1770,9 +1785,8 @@ fn transition_parser_reads_durations_and_ignores_delays() {
 
     // Both stylesheets hold their durations in custom properties, so the
     // parser has to resolve them or it measures nothing at all.
-    let via_var = transition_durations(
-        ":root { --t: 120ms; }\n.a { transition: color var(--t) linear; }",
-    );
+    let via_var =
+        transition_durations(":root { --t: 120ms; }\n.a { transition: color var(--t) linear; }");
     assert_eq!(
         via_var.iter().map(|(_, ms)| *ms).collect::<Vec<_>>(),
         vec![120.0]

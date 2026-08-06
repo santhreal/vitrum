@@ -83,7 +83,11 @@ fn the_scrollback_caption_matches_what_the_client_actually_fetches() {
         .expect("the Scrollback row was renamed");
     let caption = &settings[at..(at + 900).min(settings.len())];
 
-    for stale in ["on demand", "before a request", "Nothing fetches more later"] {
+    for stale in [
+        "on demand",
+        "before a request",
+        "Nothing fetches more later",
+    ] {
         assert!(
             !caption.contains(stale),
             "the Scrollback caption still says {stale:?}, which no longer \
@@ -314,12 +318,16 @@ fn each_guard_fails_on_the_regression_it_names() {
 
     /// The install guard's own logic, so a mutant can be run through it.
     fn installs_in_the_initialiser(src: &str) -> bool {
-        let Some(at) = src.find("static NOTIFIER") else { return false };
+        let Some(at) = src.find("static NOTIFIER") else {
+            return false;
+        };
         let Some(open) = src[at..].find("LazyLock::new(|| {") else {
             return false;
         };
         let body = &src[at + open..];
-        let Some(end) = body.find("\n});") else { return false };
+        let Some(end) = body.find("\n});") else {
+            return false;
+        };
         body[..end].contains("set_activation_handler(Arc::new(crate::activate_session))")
     }
 
@@ -341,11 +349,16 @@ fn each_guard_fails_on_the_regression_it_names() {
     }
 
     let real_note = note_of(&settings).expect("the shipped note");
-    assert!(installs_in_the_initialiser(&settings), "the real file must pass");
+    assert!(
+        installs_in_the_initialiser(&settings),
+        "the real file must pass"
+    );
 
     // The install is deleted.
-    let broken =
-        settings.replace("set_activation_handler(Arc::new(crate::activate_session))", "");
+    let broken = settings.replace(
+        "set_activation_handler(Arc::new(crate::activate_session))",
+        "",
+    );
     assert!(
         !installs_in_the_initialiser(&broken),
         "the install guard would pass with the install deleted"

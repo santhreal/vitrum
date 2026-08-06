@@ -231,8 +231,7 @@ pub(crate) fn launch_preset(
         // A pinned directory that has been deleted, or a command that is not on
         // PATH. Named, because "nothing happened" is the worst answer.
         Err(why) => {
-            st.write().window.flash =
-                Some(Flash::notice(format!("{}: {why}", preset.label)));
+            st.write().window.flash = Some(Flash::notice(format!("{}: {why}", preset.label)));
         }
     }
 }

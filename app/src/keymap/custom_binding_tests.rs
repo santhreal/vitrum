@@ -123,10 +123,7 @@ fn a_false_conditional_with_no_else_performs_nothing() {
         }),
         ..bare()
     };
-    assert_eq!(
-        bind.plan(&working).unwrap(),
-        vec![Effect::Text(vec![0x03])]
-    );
+    assert_eq!(bind.plan(&working).unwrap(), vec![Effect::Text(vec![0x03])]);
 }
 
 /// A predicate this build cannot answer runs NEITHER branch. Falling through to
@@ -255,7 +252,10 @@ fn the_json_form_round_trips_every_kind_of_step() {
     // An array, not an object with a key: the shape the settings file stores is
     // part of the contract, because a later build reading it has no chance to
     // guess a different one.
-    assert!(json.starts_with('['), "the wire form is not an array: {json}");
+    assert!(
+        json.starts_with('['),
+        "the wire form is not an array: {json}"
+    );
 
     // And the plan is the same on both sides, so the round trip preserved
     // behaviour and not merely bytes.
@@ -291,7 +291,11 @@ fn a_structurally_broken_entry_is_dropped_without_taking_the_others() {
     ]"#;
     let bindings: CustomBindings = serde_json::from_str(raw).expect("the array still loads");
     assert_eq!(
-        bindings.all().iter().map(|b| b.label.as_str()).collect::<Vec<_>>(),
+        bindings
+            .all()
+            .iter()
+            .map(|b| b.label.as_str())
+            .collect::<Vec<_>>(),
         vec!["First", "Last"],
         "the broken entry took a working one with it, or was kept"
     );
@@ -341,15 +345,19 @@ fn the_list_keeps_the_order_the_operator_gave_it() {
     }
     assert_eq!(bindings.len(), 3);
 
-    bindings
-        .get_mut(1)
-        .expect("the second row exists")
-        .label = "second".to_string();
+    bindings.get_mut(1).expect("the second row exists").label = "second".to_string();
     assert!(bindings.remove(0));
-    assert!(!bindings.remove(9), "removing a row that is not there reports it");
+    assert!(
+        !bindings.remove(9),
+        "removing a row that is not there reports it"
+    );
 
     assert_eq!(
-        bindings.all().iter().map(|b| b.label.as_str()).collect::<Vec<_>>(),
+        bindings
+            .all()
+            .iter()
+            .map(|b| b.label.as_str())
+            .collect::<Vec<_>>(),
         vec!["second", "three"]
     );
 }

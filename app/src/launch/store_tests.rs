@@ -416,7 +416,11 @@ fn completion_matches_a_real_tree_of_sixty_directories() {
     std::fs::write(scratch.path().join("notes.txt"), b"x").expect("write");
 
     let all = list_dirs(&scratch.text());
-    assert_eq!(all.len(), 62, "60 projects, Zebra and .hidden; not the file");
+    assert_eq!(
+        all.len(),
+        62,
+        "60 projects, Zebra and .hidden; not the file"
+    );
 
     let (dir, fragment) = split_dir_input(&format!("{}/proj1", scratch.text()), "");
     assert_eq!(dir, scratch.text());
@@ -475,7 +479,10 @@ fn a_trailing_separator_lists_the_directory_itself() {
 /// will never see.
 #[test]
 fn a_relative_path_offers_no_completions() {
-    assert_eq!(split_dir_input("src", ""), (String::new(), "src".to_string()));
+    assert_eq!(
+        split_dir_input("src", ""),
+        (String::new(), "src".to_string())
+    );
     assert!(list_dirs("").is_empty());
 }
 
@@ -753,7 +760,10 @@ fn a_chord_the_shell_already_owns_is_reported_with_its_owner() {
         Some("Ctrl+Shift+N is already New session.".to_string())
     );
     // Ctrl+Shift+1 is free: Alt+1 selects a tab, Ctrl+Shift+1 does not.
-    assert_eq!(chord_conflict(&parse_chord("Ctrl+Shift+1").expect("valid")), None);
+    assert_eq!(
+        chord_conflict(&parse_chord("Ctrl+Shift+1").expect("valid")),
+        None
+    );
 }
 
 /// A shell chord that cannot fire inside a text field must not be

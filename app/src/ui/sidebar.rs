@@ -48,8 +48,8 @@ use crate::agent::{AgentKind, AgentMark};
 use crate::clock::age;
 use crate::inbox::{self, Pill};
 use crate::state::{
-    Click, ConnState, GroupKey, UiState, attention_label, attention_modifier,
-    status_label, waiting_note,
+    Click, ConnState, GroupKey, UiState, attention_label, attention_modifier, status_label,
+    waiting_note,
 };
 use crate::ui::dialog;
 
@@ -77,7 +77,6 @@ const TOOLTIP_PATH_COLUMNS: usize = 64;
 /// already a bare name. An unshortened absolute path in a 14rem column is all
 /// prefix and no name, which is the one thing a header must not be.
 const GROUP_LABEL_COLUMNS: usize = 28;
-
 
 /// DOM id of one session row, so the keyboard can scroll it into view.
 ///

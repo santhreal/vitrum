@@ -218,8 +218,7 @@ fn a_woken_row_gets_a_pulsing_woke_badge_and_a_snoozed_one_gets_a_countdown() {
         .waiting(Some(false))
         .snooze(NOW - HOUR, NOW + 2 * HOUR)
         .build();
-    let badge =
-        disposition_badge(&parked, clock(), policy()).expect("parked row needs a badge");
+    let badge = disposition_badge(&parked, clock(), policy()).expect("parked row needs a badge");
     assert_eq!(badge.text, "2h");
     assert_eq!(badge.class, "rg-badge rg-badge--snoozed");
 }
@@ -763,11 +762,7 @@ fn the_preview_cut_loses_nothing_and_reorders_nothing() {
 
     // The two halves concatenate back into the band's own sorted order,
     // which is the invariant the cursor rests on.
-    let whole: Vec<u64> = build(None, true)
-        .active
-        .iter()
-        .map(|r| r.id().0)
-        .collect();
+    let whole: Vec<u64> = build(None, true).active.iter().map(|r| r.id().0).collect();
     assert_eq!(banded, whole, "the cut reordered the band");
     assert!(build(None, true).hidden.is_empty());
 

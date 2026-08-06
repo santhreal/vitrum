@@ -72,7 +72,11 @@ fn predicate_cases() -> Vec<(Predicate, Facts, Facts)> {
         ..focused_claude()
     };
     vec![
-        (Predicate::SessionFocused, focused_claude(), no_focus.clone()),
+        (
+            Predicate::SessionFocused,
+            focused_claude(),
+            no_focus.clone(),
+        ),
         (
             Predicate::FocusedStatus {
                 status: StatusKind::Working,

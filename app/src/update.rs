@@ -212,8 +212,7 @@ pub fn install(available: &Available, into: &Path, report: &mut dyn FnMut(&str))
 
     report("replacing binaries");
     for (temp, target) in &staged {
-        swap_in(temp, target)
-            .with_context(|| format!("replacing {}", target.display()))?;
+        swap_in(temp, target).with_context(|| format!("replacing {}", target.display()))?;
     }
 
     report(&format!("updated to {}", available.version));
@@ -281,15 +280,17 @@ fn unpack(archive: &[u8], into: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
         // Only the two binaries are taken, by name. An archive is untrusted
         // input, and honouring its paths is how an archive writes outside the
         // directory it was unpacked into.
-        if name != "vitrum" && name != "vitrum-server" && name != "vitrum.exe"
+        if name != "vitrum"
+            && name != "vitrum-server"
+            && name != "vitrum.exe"
             && name != "vitrum-server.exe"
         {
             continue;
         }
         let target = into.join(name);
         let temp = into.join(format!(".{name}.incoming"));
-        let mut out = fs::File::create(&temp)
-            .with_context(|| format!("staging {}", temp.display()))?;
+        let mut out =
+            fs::File::create(&temp).with_context(|| format!("staging {}", temp.display()))?;
         std::io::copy(&mut entry, &mut out)
             .with_context(|| format!("writing {}", temp.display()))?;
         drop(out);
@@ -319,9 +320,8 @@ fn swap_in(temp: &Path, target: &Path) -> Result<()> {
         if target.exists() {
             let displaced = target.with_extension("old");
             let _ = fs::remove_file(&displaced);
-            fs::rename(target, &displaced).with_context(|| {
-                format!("moving the running {} aside", target.display())
-            })?;
+            fs::rename(target, &displaced)
+                .with_context(|| format!("moving the running {} aside", target.display()))?;
             fs::rename(temp, target).inspect_err(|_| {
                 // Put it back rather than leave the operator with no binary
                 // under the name their shortcut and PATH point at.

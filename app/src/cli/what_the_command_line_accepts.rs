@@ -107,8 +107,17 @@ fn the_top_level_help_names_the_hint_command() {
 #[test]
 fn the_hint_help_explains_the_sequence_and_the_exit_codes() {
     let text = hint_usage();
-    assert!(text.contains("7373"), "the OSC number is the wire contract: {text}");
+    assert!(
+        text.contains("7373"),
+        "the OSC number is the wire contract: {text}"
+    );
     assert!(text.contains("--clear"), "{text}");
-    assert!(text.contains("2  "), "the failing exit code is not documented: {text}");
-    assert!(!text.contains("%%"), "help ships an unrendered escape: {text}");
+    assert!(
+        text.contains("2  "),
+        "the failing exit code is not documented: {text}"
+    );
+    assert!(
+        !text.contains("%%"),
+        "help ships an unrendered escape: {text}"
+    );
 }

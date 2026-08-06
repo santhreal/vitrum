@@ -224,12 +224,7 @@ fn every_hit_in_every_session_reaches_the_dom() {
     // across the pre, mark and post spans, so the contiguous text never
     // appears in the DOM. Asserting on the unique remainder checks the
     // right thing and would have caught a swapped span too.
-    for tail in [
-        "in alpha one",
-        "in alpha two",
-        "in beta one",
-        "in beta two",
-    ] {
+    for tail in ["in alpha one", "in alpha two", "in beta one", "in beta two"] {
         assert!(html.contains(tail), "{tail} missing from {html}");
     }
     assert_eq!(
@@ -293,9 +288,15 @@ fn a_control_byte_in_a_context_line_is_sanitised_in_the_dom() {
         }),
         ..idle()
     });
-    assert!(html.contains("above wrapped"), "the CR reached the DOM: {html}");
+    assert!(
+        html.contains("above wrapped"),
+        "the CR reached the DOM: {html}"
+    );
     assert!(!html.contains("above\rwrapped"), "{html}");
-    assert!(html.contains("belowcoloured"), "the SGR reached the DOM: {html}");
+    assert!(
+        html.contains("belowcoloured"),
+        "the SGR reached the DOM: {html}"
+    );
     assert!(!html.contains("[31m"), "{html}");
 }
 
@@ -332,5 +333,8 @@ fn a_pressed_switch_renders_its_modifier_and_aria_state() {
         ..idle()
     });
     assert!(html.contains("rg-search__opt--on"), "{html}");
-    assert!(html.contains("aria-pressed:true") || html.contains("aria-pressed=\"true\""), "{html}");
+    assert!(
+        html.contains("aria-pressed:true") || html.contains("aria-pressed=\"true\""),
+        "{html}"
+    );
 }

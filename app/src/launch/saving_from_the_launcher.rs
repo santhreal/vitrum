@@ -32,8 +32,7 @@ fn an_empty_command_is_refused_with_an_instruction() {
 /// second question at the exact moment the operator wanted to start work.
 #[test]
 fn the_label_is_the_line_and_the_command_is_stored_split() {
-    let p = preset_from_typed("claude --resume \"my project\"", "/src/vitrum", &[])
-        .expect("saves");
+    let p = preset_from_typed("claude --resume \"my project\"", "/src/vitrum", &[]).expect("saves");
     assert_eq!(p.label, "claude --resume \"my project\"");
     assert_eq!(p.command, "claude");
     assert_eq!(p.args, vec!["--resume", "my project"]);

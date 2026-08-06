@@ -58,9 +58,19 @@ fn a_trailing_separator_keys_the_same_directory() {
     // The same has to hold with no filesystem to ask, which is the branch
     // a cwd that has been deleted underneath a session lands in.
     let gone = "/vitrum-does-not-exist/deep";
-    assert_eq!(project_key(gone), project_key("/vitrum-does-not-exist/deep/"));
-    assert_eq!(project_key(gone), project_key(" /vitrum-does-not-exist/deep// "));
-    assert_eq!(project_key("/"), "/", "the root is a separator, not padding");
+    assert_eq!(
+        project_key(gone),
+        project_key("/vitrum-does-not-exist/deep/")
+    );
+    assert_eq!(
+        project_key(gone),
+        project_key(" /vitrum-does-not-exist/deep// ")
+    );
+    assert_eq!(
+        project_key("/"),
+        "/",
+        "the root is a separator, not padding"
+    );
 }
 
 /// Case is identity on Linux and is not on macOS or Windows, and the key

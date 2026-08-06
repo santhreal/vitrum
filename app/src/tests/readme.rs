@@ -197,7 +197,12 @@ fn the_readme_admits_that_losing_the_daemon_loses_the_sessions() {
 #[test]
 fn nothing_promises_an_installer_that_does_not_exist() {
     let readme = include_str!("../../../README.md");
-    for absent in ["curl -sSf", "brew install", "apt install vitrum", "releases/download"] {
+    for absent in [
+        "curl -sSf",
+        "brew install",
+        "apt install vitrum",
+        "releases/download",
+    ] {
         assert!(
             !readme.contains(absent),
             "the README advertises `{absent}`, which this release does not ship"

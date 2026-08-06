@@ -10,8 +10,7 @@
 
 use super::*;
 use crate::launch::{
-    LaunchStore, PresetFault, SavedPreset, encode_launch_store, parse_launch_store,
-    preset_fault,
+    LaunchStore, PresetFault, SavedPreset, encode_launch_store, parse_launch_store, preset_fault,
 };
 
 /// A command name no machine has, used where the point is that the lookup

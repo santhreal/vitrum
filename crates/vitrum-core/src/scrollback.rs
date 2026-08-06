@@ -79,6 +79,13 @@ impl Scrollback {
         }
     }
 
+    /// Append multiple slice chunks in batch without intermediate allocation.
+    pub fn push_chunks(&mut self, chunks: &[&[u8]]) {
+        for chunk in chunks {
+            self.push(chunk);
+        }
+    }
+
     /// Seq of the oldest byte still retained.
     pub fn oldest_seq(&self) -> u64 {
         self.head_seq - self.len as u64
@@ -145,6 +152,27 @@ impl Scrollback {
         Some(out)
     }
 
+    /// Zero-copy retrieval of retained bytes in `[from_seq, from_seq + max)` as at most two contiguous slice chunks.
+    ///
+    /// Returns `None` when `from_seq` is outside the retained range.
+    pub fn chunks_in_range(&self, from_seq: u64, max: usize) -> Option<(&[u8], &[u8])> {
+        if from_seq < self.oldest_seq() || from_seq > self.head_seq {
+            return None;
+        }
+        let off = (from_seq - self.oldest_seq()) as usize;
+        let take = (self.len - off).min(max);
+        if take == 0 {
+            return Some((&[], &[]));
+        }
+        let begin = (self.start + off) % self.buf.len();
+        let first_len = (self.buf.len() - begin).min(take);
+        let second_len = take - first_len;
+        Some((
+            &self.buf[begin..begin + first_len],
+            &self.buf[..second_len],
+        ))
+    }
+
     /// Grow storage toward `cap` without ever allocating past it.
     ///
     /// `Vec::reserve` would overshoot: reserving 10 MB from an 8 MB allocation
@@ -197,4 +225,26 @@ impl fmt::Debug for Scrollback {
             .field("head_seq", &self.head_seq)
             .finish()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_push_chunks_and_chunks_in_range() {
+        let mut sb = Scrollback::with_capacity(10);
+        sb.push_chunks(&[b"hello", b" ", b"world"]);
+        assert_eq!(sb.head_seq(), 11);
+        assert_eq!(sb.oldest_seq(), 1);
+
+        let (c1, c2) = sb.chunks_in_range(1, 10).unwrap();
+        let mut combined = Vec::new();
+        combined.extend_from_slice(c1);
+        combined.extend_from_slice(c2);
+        assert_eq!(combined, b"ello world");
+
+        let range_vec = sb.range(1, 10).unwrap();
+        assert_eq!(combined, range_vec);
+}
 }

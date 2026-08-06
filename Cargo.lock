@@ -5285,6 +5285,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -5704,6 +5705,19 @@ dependencies = [
  "vitrum-fmt",
  "vitrum-model",
  "vitrum-os",
+ "vitrum-proto",
+]
+
+[[package]]
+name = "vitrum-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
  "vitrum-proto",
 ]
 

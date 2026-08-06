@@ -59,6 +59,22 @@ BENCH_TPS="${HARNESS_BENCH_TPS:-30}"
 BENCH_SEED="${HARNESS_BENCH_SEED:-1}"
 # How much smaller vitrum has to be for the run to say the goal is met.
 BENCH_TARGET_RATIO=10
+# The stress workloads. Defaults are sized to hurt on a server and still finish
+# in under a minute; every one of them is echoed into its own report, so a
+# number always arrives next to the conditions that produced it.
+STRESS_SESSIONS="${HARNESS_STRESS_SESSIONS:-60}"
+STRESS_LINES="${HARNESS_STRESS_LINES:-60000}"
+STRESS_DRAIN="${HARNESS_STRESS_DRAIN:-180}"
+STRESS_CONNECTIONS="${HARNESS_STRESS_CONNECTIONS:-12}"
+STRESS_RACE_SESSIONS="${HARNESS_STRESS_RACE_SESSIONS:-6}"
+STRESS_RENAMES="${HARNESS_STRESS_RENAMES:-8}"
+# The concurrency workload's convergence budget. A rename storm across a dozen
+# connections leaves tens of thousands of broadcasts to read back, and the
+# default two seconds is a budget for a handful of them, not for this.
+STRESS_SETTLE="${HARNESS_STRESS_SETTLE:-90}"
+STRESS_CASES="${HARNESS_STRESS_CASES:-4000}"
+STRESS_SEED="${HARNESS_STRESS_SEED:-1}"
+STRESS_INTERVAL="${HARNESS_STRESS_INTERVAL:-0.25}"
 
 APP_PID=""
 DAEMON_PID=""
@@ -1151,9 +1167,14 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 if [ "$COMMAND" != "probe" ]; then
-  [ -x "$BIN/vitrum" ] || die "no vitrum at $BIN; run.sh stages it"
   [ -x "$BIN/vitrum-server" ] || die "no vitrum-server at $BIN; run.sh stages it"
-  preflight
+  # `stress` never opens a window, so it must not be gated on WebKit or on the X
+  # tools: requiring them would refuse to run protocol workloads on a host that
+  # is perfectly able to run them.
+  if [ "$COMMAND" != "stress" ]; then
+    [ -x "$BIN/vitrum" ] || die "no vitrum at $BIN; run.sh stages it"
+    preflight
+  fi
   # One measurement at a time. The client only reaches a daemon on the default
   # port, because a non-default --server forces --standalone and breaks the
   # window handoff, so two concurrent runs would fight over 127.0.0.1:7737 and
@@ -1164,11 +1185,73 @@ if [ "$COMMAND" != "probe" ]; then
   echo "run $RUN_ID in $RUN"
 fi
 
+# Load, concurrency and fuzz workloads against a daemon this run started, with
+# the daemon profiled while each one runs.
+#
+# No X server and no application: every workload here is a protocol client, so
+# a display would only add a variable. The graphical measurements are what the
+# other commands are for.
+cmd_stress() {
+  local reports="$OUT/stress"
+  mkdir -p "$reports"
+  [ -x "$BIN/vitrum-bench" ] || die "vitrum-bench was not staged; build it and rerun"
+
+  start_daemon
+  local url="ws://127.0.0.1:$PORT/ws"
+  local failed=""
+
+  # Sequential, not parallel. Three workloads sharing one daemon would each
+  # measure the other two, and the profile could not be attributed to any of
+  # them.
+  echo
+  echo "load: $STRESS_SESSIONS sessions x $STRESS_LINES lines"
+  "$BIN/vitrum-bench" load --server "$url" --out "$reports" \
+    --sessions "$STRESS_SESSIONS" --lines "$STRESS_LINES" --drain "$STRESS_DRAIN" \
+    --profile-pid "$DAEMON_PID" --interval "$STRESS_INTERVAL" \
+    || failed="$failed load"
+
+  echo
+  echo "race: $STRESS_CONNECTIONS connections"
+  "$BIN/vitrum-bench" race --server "$url" --out "$reports" \
+    --connections "$STRESS_CONNECTIONS" --sessions "$STRESS_RACE_SESSIONS" \
+    --renames "$STRESS_RENAMES" --settle "$STRESS_SETTLE" \
+    --profile-pid "$DAEMON_PID" --interval "$STRESS_INTERVAL" \
+    || failed="$failed race"
+
+  echo
+  echo "fuzz: $STRESS_CASES cases, seed $STRESS_SEED"
+  "$BIN/vitrum-bench" fuzz --server "$url" --out "$reports" \
+    --cases "$STRESS_CASES" --seed "$STRESS_SEED" \
+    --profile-pid "$DAEMON_PID" --interval "$STRESS_INTERVAL" \
+    || failed="$failed fuzz"
+
+  # The daemon is deliberately still running here: a fuzz run that killed it
+  # would be the finding, and the check below is what turns "still answering"
+  # into a recorded fact rather than an assumption.
+  if kill -0 "$DAEMON_PID" 2>/dev/null; then
+    echo
+    echo "the daemon survived every workload"
+  else
+    echo
+    echo "the daemon died during the run; see log/daemon.log"
+    failed="$failed daemon-died"
+  fi
+
+  stop_vitrum
+  cp -f "$LOG/daemon.log" "$reports/daemon.log" 2>/dev/null || true
+
+  if [ -n "$failed" ]; then
+    die "workloads reported failures:$failed (reports under out/stress)"
+  fi
+  echo "reports under out/stress"
+}
+
 case "$COMMAND" in
   probe) cmd_probe ;;
   screenshot) cmd_screenshot "$@" ;;
   memory) cmd_memory "$@" ;;
   idle-cpu) cmd_idle_cpu "$@" ;;
   bench) cmd_bench "$@" ;;
+  stress) cmd_stress "$@" ;;
   *) die "unknown command $COMMAND" ;;
 esac

@@ -8,6 +8,7 @@
 #   memory <windows>                   N windows each showing a session, PSS across the tree
 #   idle-cpu <seconds> [windows]       CPU burned by an idle client, as a share of one core
 #   bench <sessions>                   vitrum against T3 Code, same mocked model, same sessions
+#   stress                             load, concurrency and fuzz workloads, daemon profiled
 #
 # Nothing graphical ever runs on the machine you type this on. This script
 # compiles nothing, starts no X server, and launches neither the application
@@ -34,6 +35,16 @@
 #   HARNESS_BENCH_TPS    tokens per second the mock streams, default 30
 #   HARNESS_BENCH_SEED   the mock's seed, default 1
 #   HARNESS_T3           path to the T3 Code binary, if it is not on PATH
+#   HARNESS_STRESS_SESSIONS    sessions in the `stress` load workload, default 60
+#   HARNESS_STRESS_LINES       lines each of them writes, default 60000
+#   HARNESS_STRESS_DRAIN       seconds to wait for the last exit, default 180
+#   HARNESS_STRESS_CONNECTIONS connections in the concurrency workload, default 12
+#   HARNESS_STRESS_RACE_SESSIONS sessions each of them creates, default 6
+#   HARNESS_STRESS_RENAMES     rename rounds per connection, default 8
+#   HARNESS_STRESS_SETTLE      convergence budget for the concurrency workload, default 90
+#   HARNESS_STRESS_CASES       fuzz cases, default 4000
+#   HARNESS_STRESS_SEED        the fuzzer's seed, default 1
+#   HARNESS_STRESS_INTERVAL    profiler sampling interval in seconds, default 0.25
 set -euo pipefail
 
 HARNESS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,7 +75,7 @@ die() {
 }
 
 usage() {
-  sed -n '4,10s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2
+  sed -n '4,11s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
 
@@ -158,7 +169,7 @@ COMMAND="$1"
 shift
 
 case "$COMMAND" in
-  probe | screenshot | memory | idle-cpu | bench) ;;
+  probe | screenshot | memory | idle-cpu | bench | stress) ;;
   *) usage ;;
 esac
 
@@ -213,13 +224,15 @@ if [ "$COMMAND" != "probe" ]; then
   echo "binaries $BIN_DIR"
   check_glibc
   # --delete is deliberately absent here: the bin directory holds exactly the
-  # two files this line sends, and a partial send that also wiped the previous
-  # pair would leave the host with nothing to run.
-  rsync -a --checksum -e "ssh ${SSH_OPTS[*]}" \
-    "$BIN_DIR/vitrum" "$BIN_DIR/vitrum-server" \
-    "$ENDPOINT:$STAGE/bin/"
-  rsh "chmod +x $STAGE/bin/vitrum $STAGE/bin/vitrum-server"
-  echo "staged $(cd "$BIN_DIR" && ls -l vitrum vitrum-server | awk '{print $9 " " $5 " bytes"}' | tr '\n' ' ')"
+  # files this line sends, and a partial send that also wiped the previous set
+  # would leave the host with nothing to run.
+  STAGE_BINS=("$BIN_DIR/vitrum" "$BIN_DIR/vitrum-server")
+  # vitrum-bench is only built when the stress workloads are wanted, so it is
+  # sent when it exists rather than being a hard requirement of every run.
+  [ -x "$BIN_DIR/vitrum-bench" ] && STAGE_BINS+=("$BIN_DIR/vitrum-bench")
+  rsync -a --checksum -e "ssh ${SSH_OPTS[*]}" "${STAGE_BINS[@]}" "$ENDPOINT:$STAGE/bin/"
+  rsh "chmod +x $STAGE/bin/*"
+  echo "staged ${#STAGE_BINS[@]} binaries: $(cd "$BIN_DIR" && ls -l $(printf '%s ' "${STAGE_BINS[@]##*/}") | awk '{printf "%s %s bytes; ", $9, $5}')"
 fi
 
 # Environment does not survive an ssh command line by itself, so the settings
@@ -237,6 +250,16 @@ REMOTE_ENV=(
   "HARNESS_BENCH_TPS=${HARNESS_BENCH_TPS:-30}"
   "HARNESS_BENCH_SEED=${HARNESS_BENCH_SEED:-1}"
   "HARNESS_T3=${HARNESS_T3:-}"
+  "HARNESS_STRESS_SESSIONS=${HARNESS_STRESS_SESSIONS:-60}"
+  "HARNESS_STRESS_LINES=${HARNESS_STRESS_LINES:-60000}"
+  "HARNESS_STRESS_DRAIN=${HARNESS_STRESS_DRAIN:-180}"
+  "HARNESS_STRESS_CONNECTIONS=${HARNESS_STRESS_CONNECTIONS:-12}"
+  "HARNESS_STRESS_RACE_SESSIONS=${HARNESS_STRESS_RACE_SESSIONS:-6}"
+  "HARNESS_STRESS_RENAMES=${HARNESS_STRESS_RENAMES:-8}"
+  "HARNESS_STRESS_SETTLE=${HARNESS_STRESS_SETTLE:-90}"
+  "HARNESS_STRESS_CASES=${HARNESS_STRESS_CASES:-4000}"
+  "HARNESS_STRESS_SEED=${HARNESS_STRESS_SEED:-1}"
+  "HARNESS_STRESS_INTERVAL=${HARNESS_STRESS_INTERVAL:-0.25}"
 )
 
 REMOTE_CMD="env $(printf '%q ' "${REMOTE_ENV[@]}")bash .cache/vitrum-harness/rig.sh $(printf '%q ' "$RUN_ID" "$COMMAND" "$@")"

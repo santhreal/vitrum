@@ -233,7 +233,7 @@ pub fn split_hit(visible: &[u8], match_start: u32, match_end: u32) -> Split {
 /// `\t` or `\x07` is not one. A `\r` left in returns the cursor in any
 /// terminal this text is pasted into and renders as a hole in the row.
 pub fn line_text(raw: &[u8]) -> String {
-    text::sanitize_line(&String::from_utf8_lossy(raw))
+    text::sanitize_line(&String::from_utf8_lossy(raw)).into_owned()
 }
 
 /// Hits from one session, in the order the daemon returned them.

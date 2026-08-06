@@ -40,6 +40,8 @@ pub enum Error {
     ZeroStride,
     /// An asciicast recording could not be read.
     Cast(CastError),
+    /// A binary VBR recording format error.
+    BinaryFormat(String),
 }
 
 impl fmt::Display for Error {
@@ -61,6 +63,7 @@ impl fmt::Display for Error {
                  the whole screen once per byte"
             ),
             Self::Cast(inner) => write!(f, "asciicast: {inner}"),
+            Self::BinaryFormat(msg) => write!(f, "binary VBR format error: {msg}"),
         }
     }
 }

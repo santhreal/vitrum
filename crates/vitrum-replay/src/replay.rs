@@ -25,6 +25,7 @@ use crate::emulator::Emulator;
 use crate::error::{Error, Result};
 use crate::hints;
 use crate::keyframe::KeyframeIndex;
+use crate::binary::VbrWriter;
 use crate::screen::Screen;
 use crate::stream::Stream;
 use crate::timeline::Timeline;
@@ -210,5 +211,22 @@ impl<'a> Replay<'a> {
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
         self.index.heap_bytes() + self.timeline.heap_bytes() + self.screen().heap_bytes()
+    }
+
+    /// Export the session stream and keyframe index to zero-copy binary `.vbr` format.
+    #[must_use]
+    pub fn export_vbr(&self) -> Vec<u8> {
+        let mut writer = VbrWriter::new(self.config.cols, self.config.rows);        let mut current_seq = self.stream.base_seq();
+        for chunk in self.stream.chunks() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let end_seq = current_seq + chunk.len() as u64;
+            let micros = self.timeline.micros_at(end_seq).unwrap_or(0);
+            writer.add_chunk(current_seq, micros, chunk);
+            current_seq = end_seq;
+        }
+        writer.import_keyframe_index(&self.index);
+        writer.serialize()
     }
 }

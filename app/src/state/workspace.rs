@@ -428,6 +428,11 @@ impl WorkspaceSet {
     }
 
     /// File a session into a workspace.
+    ///
+    /// Only tests reach for this. Production holds a `SessionKey` already and
+    /// calls [`WorkspaceSet::assign_key`], because building a `SessionInfo` to
+    /// pass here would mean cloning one per moved row.
+    #[cfg(test)]
     pub fn assign(&mut self, info: &SessionInfo, to: WorkspaceId) -> Result<(), WorkspaceError> {
         self.assign_key(SessionKey::of(info), to)
     }
@@ -594,6 +599,9 @@ impl WorkspaceSet {
 
     /// File a session into a folder of the workspace it already lives in, or
     /// out of every folder when `folder` is `None`.
+    ///
+    /// Test-only for the same reason as [`WorkspaceSet::assign`].
+    #[cfg(test)]
     pub fn assign_folder(
         &mut self,
         info: &SessionInfo,

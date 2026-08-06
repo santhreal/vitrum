@@ -1215,11 +1215,13 @@ pub fn chord_conflict(
     candidate: &Binding,
     for_action: KeyAction,
 ) -> Option<KeyAction> {
+    let cand_target = crate::keymap::PackedKeyChord::from_key(&candidate.key, candidate.ctrl, candidate.alt, candidate.shift, false, 0);
     chords
         .iter()
         .find(|chord| {
+            let chord_target = crate::keymap::PackedKeyChord::from_key(&chord.key, chord.ctrl, chord.alt, false, false, 0);
             chord.action != for_action
-                && chord.key == candidate.key
+                && chord_target.key_hash() == cand_target.key_hash()
                 && chord.ctrl == candidate.ctrl
                 && chord.alt == candidate.alt
                 && shift_overlaps(chord.shift, candidate.shift)

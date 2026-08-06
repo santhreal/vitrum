@@ -1098,6 +1098,12 @@ pub struct Chord {
     pub shift: bool,
 }
 
+impl Chord {
+    pub fn packed(&self) -> crate::keymap::PackedKeyChord {
+        crate::keymap::PackedKeyChord::from_key(&self.key, self.ctrl, self.alt, self.shift, false, 0)
+    }
+}
+
 /// Parse `"Ctrl+Shift+K"`.
 ///
 /// Requires exactly one non-modifier part and either Ctrl or Alt. Shift alone

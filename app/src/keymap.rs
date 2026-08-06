@@ -289,6 +289,15 @@ impl PackedKeyChord {
         Self::pack(ctrl, alt, shift, meta, 0, key_hash)
     }
 
+    pub fn from_key(key: &str, ctrl: bool, alt: bool, shift: bool, meta: bool, scope_id: u8) -> Self {
+        let key_hash = key.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+        Self::pack(ctrl, alt, shift, meta, scope_id, key_hash)
+    }
+
+    pub const fn key_hash(&self) -> u32 {
+        self.0 >> 8
+    }
+
     pub const fn matches(&self, other: &Self) -> bool {
         self.0 == other.0
     }
@@ -366,10 +375,11 @@ impl Chord {
 /// moment focus is in an `input`, and reporting them would refuse bindings
 /// that would have worked perfectly.
 pub fn claims(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Chord> {
+    let target = PackedKeyChord::from_key(key, ctrl, alt, shift, false, 0);
     CHORDS
         .iter()
         .find(|c| {
-            c.key == key
+            c.packed().key_hash() == target.key_hash()
                 && c.ctrl == ctrl
                 && c.alt == alt
                 && match c.shift {
@@ -1487,9 +1497,15 @@ impl CustomBindings {
     /// cannot capture keys meant for another.
     #[must_use]
     pub fn lookup(&self, chord: &crate::launch::Chord) -> Option<&CustomBinding> {
+        let target = chord.packed();
         self.list
             .iter()
-            .find(|binding| binding.parsed_chord().as_ref() == Some(chord))
+            .find(|binding| {
+                binding
+                    .parsed_chord()
+                    .map(|c| c.packed().matches(&target))
+                    .unwrap_or(false)
+            })
     }
 
     /// The binding that takes over this built-in chord, if any.
@@ -1509,9 +1525,10 @@ impl CustomBindings {
         alt: bool,
         shift: Shift,
     ) -> Option<&CustomBinding> {
+        let target = PackedKeyChord::from_key(key, ctrl, alt, false, false, 0);
         self.list.iter().find(|binding| {
             binding.parsed_chord().is_some_and(|chord| {
-                chord.key == key
+                chord.packed().key_hash() == target.key_hash()
                     && chord.ctrl == ctrl
                     && chord.alt == alt
                     && match shift {

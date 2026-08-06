@@ -24,12 +24,12 @@ async fn child_output_arrives_verbatim_on_the_broadcast_channel() {
     let id = mgr.spawn(shell_spec("echo vitrum-ok")).expect("spawn");
     let mut c = collect(&mgr, id);
     let want: &[u8] = b"vitrum-ok\r\n";
-    c.until(|b| b.ends_with(want)).await;
-    // Ends with, not equals: ConPTY prepends its own mode sets and an OSC 0 for
-    // the shell before the child writes anything, and those are bytes a terminal
-    // is supposed to receive. The contract is that the child's bytes arrive
-    // whole, in order, and unaltered.
-    assert!(c.bytes.ends_with(want), "received {:?}", c.bytes);
+    c.until(|b| contains(b, want)).await;
+    // Contains, not equals: a pseudoconsole surrounds the child's bytes with its
+    // own, mode sets and a screen clear before and an OSC 0 naming the shell
+    // after, and those are bytes a terminal is supposed to receive. The contract
+    // is that the child's bytes arrive whole, in order, and unaltered.
+    assert!(contains(&c.bytes, want), "received {:?}", c.bytes);
     assert_eq!(c.first_seq, Some(0), "the first byte of a session is seq 0");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 }
@@ -44,7 +44,7 @@ async fn broadcast_and_scrollback_agree_byte_for_byte() {
     let mgr = SessionManager::new(64 * 1024);
     let id = mgr.spawn(shell_spec("echo agreement")).expect("spawn");
     let mut c = collect(&mgr, id);
-    c.until(|b| b.ends_with(b"agreement\r\n")).await;
+    c.until(|b| contains(b, b"agreement\r\n")).await;
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
     // Both sides have to be finished before they can be compared. The ring stops
@@ -54,7 +54,7 @@ async fn broadcast_and_scrollback_agree_byte_for_byte() {
     c.until(|b| b.len() >= bytes.len()).await;
     assert_eq!(from, 0);
     assert_eq!(bytes, c.bytes);
-    assert!(bytes.ends_with(b"agreement\r\n"), "recorded {bytes:?}");
+    assert!(contains(&bytes, b"agreement\r\n"), "recorded {bytes:?}");
 }
 
 /// Output must be coalesced before it is broadcast.
@@ -122,7 +122,7 @@ async fn first_output_moves_the_session_from_starting_to_running() {
 
     let mut c = collect(&mgr, id);
     mgr.write(id, b"go\n").expect("write");
-    c.until(|b| b.ends_with(b"started\r\n")).await;
+    c.until(|b| contains(b, b"started\r\n")).await;
     assert_eq!(mgr.info(id).expect("info").status, SessionStatus::Running);
 
     mgr.write(id, b"\n").expect("write");
@@ -159,7 +159,7 @@ async fn output_to_an_attached_client_is_not_unread() {
     let mgr = SessionManager::new(4096);
     let id = mgr.spawn(shell_spec("echo watched")).expect("spawn");
     let mut c = collect(&mgr, id);
-    c.until(|b| b.ends_with(b"watched\r\n")).await;
+    c.until(|b| contains(b, b"watched\r\n")).await;
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
     assert!(!mgr.info(id).expect("info").unread);
 }
@@ -172,7 +172,7 @@ async fn output_updates_last_activity() {
     let id = mgr.spawn(shell_spec("echo tick")).expect("spawn");
     let created = mgr.info(id).expect("info").created_at_ms;
     let mut c = collect(&mgr, id);
-    c.until(|b| b.ends_with(b"tick\r\n")).await;
+    c.until(|b| contains(b, b"tick\r\n")).await;
     let info = mgr.info(id).expect("info");
     assert!(
         info.last_activity_ms >= created,

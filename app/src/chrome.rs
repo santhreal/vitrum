@@ -1,7 +1,30 @@
 //! The web document a window is built around: stylesheets, head, and the
 //! window configuration that hosts them.
 
+use std::sync::LazyLock;
+
 use super::*;
+
+/// Whether windows in this process are created see-through.
+///
+/// Read once, at the first window, and frozen for the life of the process.
+/// Both halves of it are construction-time: `with_transparent` is passed to
+/// the platform when the window is created, and the webview's background
+/// colour is handed to WebKit before the first paint. Neither can be revised
+/// on a live window, so a value that could change under us would only produce
+/// windows that disagree with each other.
+///
+/// The Appearance tab says as much rather than implying a slider does more
+/// than it can: opacity moves live within a window that was created
+/// see-through, and the first move from a fully opaque profile needs a new
+/// window.
+static TRANSLUCENT: LazyLock<bool> = LazyLock::new(|| {
+    state::load_prefs()
+        .0
+        .settings
+        .appearance
+        .needs_transparent_window()
+});
 
 /// The OS window for one slot.
 pub(crate) fn window_builder(state: &WindowGeometry, scale: f64, os_scale: f64) -> WindowBuilder {
@@ -13,7 +36,12 @@ pub(crate) fn window_builder(state: &WindowGeometry, scale: f64, os_scale: f64) 
             (MIN_WINDOW_CSS.0 * scale * os_scale) as u32,
             (MIN_WINDOW_CSS.1 * scale * os_scale) as u32,
         ))
-        .with_maximized(state.maximized);
+        .with_maximized(state.maximized)
+        // Only when asked. A transparent window needs a compositor, and on a
+        // bare window manager without one the alpha channel is not blended
+        // with anything: the operator gets whatever was in the framebuffer.
+        // An opaque profile must never be exposed to that.
+        .with_transparent(*TRANSLUCENT);
     decorate(window)
 }
 
@@ -30,7 +58,7 @@ pub(crate) fn window_builder(state: &WindowGeometry, scale: f64, os_scale: f64) 
 ///
 /// `xterm.css` is not here: it is vendored, and our motion rules are not its
 /// to obey.
-pub(crate) fn stylesheets() -> [(&'static str, &'static str); 16] {
+pub(crate) fn stylesheets() -> [(&'static str, &'static str); 17] {
     [
         ("sidebar.css", SIDEBAR_CSS),
         ("settings.css", SETTINGS_CSS),
@@ -48,6 +76,9 @@ pub(crate) fn stylesheets() -> [(&'static str, &'static str); 16] {
         ("parts/20-agent-marks.css", PART_AGENT_MARKS_CSS),
         ("parts/21-search.css", PART_SEARCH_CSS),
         ("parts/22-launcher.css", PART_LAUNCHER_CSS),
+        // Last on purpose: it softens surfaces the parts above painted
+        // opaque, so it has to win on source order at equal specificity.
+        ("parts/23-backdrop.css", PART_BACKDROP_CSS),
     ]
 }
 
@@ -158,15 +189,21 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
             // COMPILED unless the operator actually selects WebGL, which is
             // where the 5.0 MB per window above was spent. Text is cheap;
             // parsing is not.
-            webgl =
-                format!("<script type=\"text/plain\" id=\"rg-vendor-webgl\">{ADDON_WEBGL_JS}</script>")
+            webgl = format!(
+                "<script type=\"text/plain\" id=\"rg-vendor-webgl\">{ADDON_WEBGL_JS}</script>"
+            )
         )
     })
     .as_str()
 }
 
 /// One window's worth of webview configuration.
-pub(crate) fn window_config(opts: Options, state: &WindowGeometry, scale: f64, os_scale: f64) -> Config {
+pub(crate) fn window_config(
+    opts: Options,
+    state: &WindowGeometry,
+    scale: f64,
+    os_scale: f64,
+) -> Config {
     Config::new()
         .with_window(window_builder(state, scale, os_scale))
         .with_custom_head(document_head(opts).to_string())
@@ -174,7 +211,137 @@ pub(crate) fn window_config(opts: Options, state: &WindowGeometry, scale: f64, o
         // the default bar steals vertical space from the grid.
         .with_menu(None)
         .with_close_behaviour(WindowCloseBehaviour::WindowCloses)
-        .with_background_color((6, 6, 8, 255))
+        // The webview's own base layer. Opaque by default, and fully clear
+        // when the profile asked for translucency: WebKit paints this behind
+        // the document, so leaving it at 255 would make every `rgba` surface
+        // in the stylesheet blend against a solid colour and change nothing.
+        .with_background_color(if *TRANSLUCENT {
+            (0, 0, 0, 0)
+        } else {
+            (6, 6, 8, 255)
+        })
+        .with_custom_protocol("vitrum-backdrop".to_string(), backdrop_protocol)
+}
+
+/// Serve the operator's backdrop image to the document.
+///
+/// The page is served from a custom scheme, and a custom scheme cannot fetch
+/// `file://`: WebKit treats it as cross-origin and refuses. So the image comes
+/// back through a scheme of ours, with the path percent-encoded into the URL
+/// by [`ui::settings::backdrop_url`].
+///
+/// This reads whatever path the profile names, which is the operator's own
+/// file on their own machine, chosen through their own file picker. It is
+/// deliberately not restricted to a directory: a wallpaper lives wherever the
+/// operator keeps wallpapers. What it does refuse is anything that is not an
+/// image, because a stylesheet that can name a path is a stylesheet that can
+/// ask for `/etc/shadow`, and answering that with bytes would turn a cosmetic
+/// setting into a file-read primitive for anyone who can write `ui.json`.
+fn backdrop_protocol(
+    _id: vitrum_dioxus_desktop::wry::WebViewId,
+    request: vitrum_dioxus_desktop::wry::http::Request<Vec<u8>>,
+) -> vitrum_dioxus_desktop::wry::http::Response<std::borrow::Cow<'static, [u8]>> {
+    use vitrum_dioxus_desktop::wry::http::Response;
+
+    let deny = |code: u16| {
+        Response::builder()
+            .status(code)
+            .body(std::borrow::Cow::Borrowed(&[][..]))
+            .expect("a status-only response is always well formed")
+    };
+
+    let Some(path) = backdrop_path(request.uri().path()) else {
+        return deny(400);
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return deny(404);
+    };
+    let Some(mime) = image_mime(&bytes) else {
+        return deny(415);
+    };
+    Response::builder()
+        .header("Content-Type", mime)
+        .body(std::borrow::Cow::Owned(bytes))
+        .expect("a response with one header is always well formed")
+}
+
+/// The filesystem path out of a `vitrum-backdrop://` URL path.
+///
+/// Returns `None` for anything that is not an absolute path, which is what a
+/// traversal attempt and a malformed URL both look like from here.
+pub(crate) fn backdrop_path(uri_path: &str) -> Option<std::path::PathBuf> {
+    let decoded = percent_decode(uri_path)?;
+
+    // Every URL path carries a leading slash. On Unix that slash is the root
+    // and has to stay. On Windows the path under it is `C:\...`, and the slash
+    // makes it rooted-but-driveless, which `is_absolute` rejects: leaving it on
+    // would refuse every backdrop on Windows and look like the feature simply
+    // does not work there.
+    #[cfg(windows)]
+    let decoded = decoded.strip_prefix('/').unwrap_or(&decoded).to_string();
+
+    let path = std::path::PathBuf::from(&decoded);
+    if !path.is_absolute() {
+        return None;
+    }
+
+    // Components rather than a split on '/': on Windows a traversal is spelled
+    // `..\`, which a slash-split never sees. `..` cannot widen what this serves,
+    // because the answer is gated on the bytes being an image either way, but a
+    // path that needs normalising is a path nobody chose from a picker.
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return None;
+    }
+    Some(path)
+}
+
+/// Percent-decode a URL path into a string, or `None` if it is malformed.
+fn percent_decode(s: &str) -> Option<String> {
+    let raw = s.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            let hex = raw.get(i + 1..i + 3)?;
+            let text = std::str::from_utf8(hex).ok()?;
+            out.push(u8::from_str_radix(text, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(raw[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The MIME type for `bytes`, by signature, or `None` if it is not an image.
+///
+/// By content and never by file extension. The extension is attacker-supplied
+/// in exactly the case this guards, and the point is to answer only with
+/// things that really are images.
+pub(crate) fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const GIF87: &[u8] = b"GIF87a";
+    const GIF89: &[u8] = b"GIF89a";
+    if bytes.starts_with(PNG) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(GIF87) || bytes.starts_with(GIF89) {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    // SVG is text and has no signature. Refused rather than sniffed: it is a
+    // document with scripting and external references, and this one is
+    // rendered inside the privileged application page.
+    None
 }
 
 /// Open another window in this process.
@@ -222,3 +389,6 @@ pub(crate) fn open_window(from: &DesktopContext, opts: Options, link: Option<Dee
     // on the shared context and the event loop will build it.
     drop(from.new_window(dom, window_config(opts, &state, scale, os_scale)));
 }
+
+#[cfg(test)]
+mod tests;

@@ -21,29 +21,29 @@
 //! in [`reconnect_delay_ms`]. A CONNECTED window has neither outstanding, which
 //! is what keeps the claim above true where it matters.
 
+mod actions;
 mod agent;
 mod badge;
-mod clock;
-mod fixture;
-mod hint;
-mod inbox;
-mod keymap;
-mod launch;
-mod state;
-mod termpalette;
-mod tray;
-mod update;
-#[cfg(test)]
-mod testkit;
-mod ui;
-mod wire;
-mod actions;
 mod chrome;
 mod cli;
+mod clock;
+mod fixture;
 mod geometry;
+mod hint;
+mod inbox;
 mod instance;
+mod keymap;
 mod keys;
+mod launch;
+mod state;
 mod sync;
+mod termpalette;
+#[cfg(test)]
+mod testkit;
+mod tray;
+mod ui;
+mod update;
+mod wire;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -75,13 +75,13 @@ use chrome::*;
 use cli::*;
 use geometry::*;
 use instance::*;
-use keys::*;
-use sync::*;
 use keymap::KeyAction;
+use keys::*;
 use state::{
-    ConnState, Flash, GroupKey, Layer, MenuAction, MenuState, NewSessionSeed, Reaction,
-    RenameSeed, SIDEBAR_MAX_PX, SIDEBAR_MIN_PX, UiState,
+    ConnState, Flash, GroupKey, Layer, MenuAction, MenuState, NewSessionSeed, Reaction, RenameSeed,
+    SIDEBAR_MAX_PX, SIDEBAR_MIN_PX, UiState,
 };
+use sync::*;
 use wire::{BEFORE_SEQ_HEAD, BridgeCmd, BridgeEvent, ConnEvent, backfill_max_bytes};
 
 /// How long a transient notice stays on screen, in milliseconds.
@@ -139,6 +139,7 @@ const PART_SETTINGS_CSS: &str = include_str!("../assets/parts/19-settings.css");
 const PART_AGENT_MARKS_CSS: &str = include_str!("../assets/parts/20-agent-marks.css");
 const PART_SEARCH_CSS: &str = include_str!("../assets/parts/21-search.css");
 const PART_LAUNCHER_CSS: &str = include_str!("../assets/parts/22-launcher.css");
+const PART_BACKDROP_CSS: &str = include_str!("../assets/parts/23-backdrop.css");
 
 fn main() {
     tracing_subscriber::fmt()
@@ -570,9 +571,10 @@ fn App() -> Element {
         if let Ok(handle) = window.window_handle()
             && let RawWindowHandle::Win32(win32) = handle.as_raw()
         {
-            vitrum_os::badge::register_main_window(vitrum_os::badge::WindowHandle(
-                isize::from(win32.hwnd) as u64,
-            ));
+            vitrum_os::badge::register_main_window(vitrum_os::badge::WindowHandle(isize::from(
+                win32.hwnd,
+            )
+                as u64));
         }
     });
 

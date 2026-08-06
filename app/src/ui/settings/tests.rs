@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::OPACITY_MAX_PCT;
 use crate::state::{NotifyPrefs, TEXT_SCALE_MAX_PCT, TEXT_SCALE_MIN_PCT};
 use vitrum_proto::{Attention, ProjectId, SessionInfo};
 
@@ -252,7 +253,7 @@ fn the_renderer_wire_strings_match_the_bridge() {
 /// means a restart mounts at the default and visibly reflows.
 #[test]
 fn the_terminal_script_survives_either_load_order() {
-    let script = term_options_script(&TerminalPrefs::default());
+    let script = term_options_script(&TerminalPrefs::default(), OPACITY_MAX_PCT);
     assert!(
         script.contains("window.__vitrum_termOptions="),
         "no stash for a pre-mount push: {script}"
@@ -272,7 +273,7 @@ fn a_quoted_font_stack_is_escaped_into_the_script() {
         font_family: "\"JetBrains Mono\", ui-monospace, monospace".to_string(),
         ..TerminalPrefs::default()
     };
-    let script = term_options_script(&prefs);
+    let script = term_options_script(&prefs, OPACITY_MAX_PCT);
     assert!(
         script.contains(r#"fontFamily:"\"JetBrains Mono\", ui-monospace, monospace""#),
         "font stack not escaped: {script}"
@@ -288,7 +289,7 @@ fn an_unset_font_reaches_the_bridge_as_null() {
         font_family: String::new(),
         ..TerminalPrefs::default()
     };
-    assert!(term_options_script(&prefs).contains("fontFamily:null"));
+    assert!(term_options_script(&prefs, OPACITY_MAX_PCT).contains("fontFamily:null"));
 }
 
 /// Every offered stack must end in the generic `monospace`, so a font the
@@ -316,16 +317,20 @@ fn a_degenerate_saved_font_size_is_clamped_before_it_reaches_the_bridge() {
         ..TerminalPrefs::default()
     };
     assert!(
-        term_options_script(&tiny).contains(&format!("fontSize:{TERM_FONT_MIN_PX}")),
+        term_options_script(&tiny, OPACITY_MAX_PCT)
+            .contains(&format!("fontSize:{TERM_FONT_MIN_PX}")),
         "{}",
-        term_options_script(&tiny)
+        term_options_script(&tiny, OPACITY_MAX_PCT)
     );
 
     let huge = TerminalPrefs {
         font_size_px: 900,
         ..TerminalPrefs::default()
     };
-    assert!(term_options_script(&huge).contains(&format!("fontSize:{TERM_FONT_MAX_PX}")));
+    assert!(
+        term_options_script(&huge, OPACITY_MAX_PCT)
+            .contains(&format!("fontSize:{TERM_FONT_MAX_PX}"))
+    );
 }
 
 /// Every offered size must be within the range the script clamps to, or
@@ -525,8 +530,7 @@ fn no_overrides_reproduces_the_builtin_table_exactly() {
     assert_eq!(effective.len(), CHORDS.len());
     assert!(effective.iter().all(|chord| !chord.rebound));
 
-    let v: serde_json::Value =
-        serde_json::from_str(&keymap_json(&effective)).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&keymap_json(&effective)).unwrap();
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), CHORDS.len());
     for (entry, chord) in arr.iter().zip(CHORDS) {

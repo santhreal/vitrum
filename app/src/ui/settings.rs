@@ -72,8 +72,8 @@ use vitrum_proto::{SessionId, SessionStatus};
 
 use crate::keymap::{CHORDS, Help, KeyAction, Scope, Shift};
 use crate::state::{
-    Density, FolderId, Grouping, KeyboardPrefs, Settings, SettingsTab, TermRenderer, TerminalPrefs,
-    ThemePref, UiState, WorkspaceId,
+    BackdropFit, Density, FolderId, Grouping, KeyboardPrefs, Settings, SettingsTab, TermRenderer,
+    TerminalPrefs, ThemePref, UiState, WorkspaceId,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -170,7 +170,139 @@ pub fn root_style(settings: &Settings) -> String {
     // equal specificity. Nothing above declares a terminal token today; this
     // is so the invariant survives the next block added here.
     style.push_str(&crate::termpalette::css_tokens(settings.terminal.palette));
+    style.push_str(&appearance_tokens(&settings.appearance));
     style
+}
+
+/// The custom-protocol URL a backdrop image is served from.
+///
+/// A WebView document served from a custom scheme cannot load a `file://`
+/// URL: it is a cross-scheme request and WebKit refuses it. The image has to
+/// come back through a scheme the page is allowed to fetch, so the path is
+/// carried in the URL and read by the handler in `chrome.rs`.
+///
+/// Percent-encoded because a wallpaper lives in a directory with spaces more
+/// often than not, and an unencoded space makes the URL unparseable rather
+/// than merely wrong.
+#[must_use]
+pub fn backdrop_url(path: &str) -> String {
+    // Exactly one slash between the authority and the path. A POSIX path
+    // supplies its own and a Windows one (`C:\...`) does not, so the URL grows
+    // it here rather than in the handler; two of them reach the handler as
+    // `//home/...`, which is a distinct path on POSIX and simply wrong.
+    let mut out = String::from("vitrum-backdrop://local");
+    if !path.starts_with('/') {
+        out.push('/');
+    }
+    for byte in path.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Opacity steps offered, in percent.
+///
+/// [`crate::state::OPACITY_MAX_PCT`] must be first: it is the default, and a
+/// `<select>` whose stored value matches no option silently shows the first
+/// one instead, which would make a fully opaque install read as translucent.
+/// The floor is [`crate::state::OPACITY_MIN_PCT`] for the reason given there.
+/// Coarse below 80 because nobody distinguishes 62% from 65%, and every step
+/// is a row in a list the operator has to read.
+pub const OPACITY_STEPS: [u8; 10] = [100, 95, 90, 85, 80, 70, 60, 50, 35, 20];
+
+/// Backdrop blur radii offered, in CSS pixels.
+pub const BLUR_STEPS: [u8; 7] = [0, 4, 8, 16, 24, 40, 64];
+
+/// Backdrop scrim strengths offered, in percent.
+pub const DIM_STEPS: [u8; 8] = [0, 10, 20, 30, 40, 50, 65, 80];
+
+/// The label for one blur step.
+#[must_use]
+pub fn blur_label(px: u8) -> String {
+    if px == 0 {
+        "None".to_string()
+    } else {
+        format!("{px}px")
+    }
+}
+
+/// What the window-opacity control can and cannot do right now.
+///
+/// Two separate truths, and the control is dishonest if it states only one.
+///
+/// A window is created see-through or it is not: both the platform flag and
+/// the webview's base colour are settled before the first paint. So the first
+/// move away from a fully opaque profile needs a new window, and every move
+/// after that is live.
+///
+/// And what shows through is the desktop *unblurred*. No application can blur
+/// what is behind its own window; the compositor owns that, and on Wayland
+/// there is deliberately no protocol to ask. So the frosted look is real and
+/// good, but the operator's compositor supplies it, and the honest thing is to
+/// name the rule rather than ship a slider that implies we did it.
+#[must_use]
+pub fn opacity_note(a: &crate::state::AppearancePrefs) -> &'static str {
+    if a.needs_transparent_window() {
+        "How much of the desktop shows through, unblurred. Blur belongs to your \
+         compositor: Hyprland, KWin and picom can all frost this window, and \
+         README has the one-line rule for each. Without a compositor running, a \
+         see-through window has nothing to blend with."
+    } else {
+        "How much of the desktop shows through, unblurred. The window is created \
+         opaque, so the first change here applies to the next window you open; \
+         after that it moves live. Blur belongs to your compositor; README has \
+         the rule for Hyprland, KWin and picom."
+    }
+}
+
+/// Custom properties for translucency and the backdrop image.
+///
+/// Emitted as tokens rather than as a stylesheet block because the values are
+/// per-profile and the stylesheet is a compile-time constant. Every rule that
+/// consumes them lives in `parts/23-backdrop.css`, so the shape of the effect
+/// is still in CSS and only the numbers come from here.
+///
+/// Nothing is emitted for a default profile. An operator who has never opened
+/// the Appearance tab gets the same document they got before this existed,
+/// which keeps the opaque path free of `rgba` compositing it does not need.
+#[must_use]
+pub fn appearance_tokens(a: &crate::state::AppearancePrefs) -> String {
+    let mut out = String::new();
+    if a.opacity_pct < crate::state::OPACITY_MAX_PCT {
+        out.push_str(&format!(
+            "--rg-opacity:{};",
+            f64::from(a.opacity_pct) / 100.0
+        ));
+    }
+    if a.terminal_opacity_pct < crate::state::OPACITY_MAX_PCT {
+        out.push_str(&format!(
+            "--rg-terminal-opacity:{};",
+            f64::from(a.terminal_opacity_pct) / 100.0
+        ));
+    }
+    let backdrop = a.backdrop.trim();
+    if !backdrop.is_empty() {
+        let (size, repeat) = a.backdrop_fit.css();
+        out.push_str(&format!(
+            "--rg-backdrop:url(\"{}\");--rg-backdrop-size:{size};--rg-backdrop-repeat:{repeat};",
+            backdrop_url(backdrop)
+        ));
+        if a.backdrop_blur_px > 0 {
+            out.push_str(&format!("--rg-backdrop-blur:{}px;", a.backdrop_blur_px));
+        }
+        if a.backdrop_dim_pct > 0 {
+            out.push_str(&format!(
+                "--rg-backdrop-dim:{};",
+                f64::from(a.backdrop_dim_pct) / 100.0
+            ));
+        }
+    }
+    out
 }
 
 /// The `data-theme` value for the application root.
@@ -400,16 +532,28 @@ pub const TERM_FONT_STEPS: &[u16] = &[9, 10, 11, 12, 13, 14, 16, 18, 20, 24];
 /// it in place. Without the stash, a restart mounts at the default font and
 /// visibly reflows to the saved one a moment later.
 #[must_use]
-pub fn term_options_script(prefs: &TerminalPrefs) -> String {
+pub fn term_options_script(prefs: &TerminalPrefs, opacity_pct: u8) -> String {
     let size = prefs.font_size_px.clamp(TERM_FONT_MIN_PX, TERM_FONT_MAX_PX);
     let family = if prefs.font_family.trim().is_empty() {
         "null".to_string()
     } else {
         json_string(&prefs.font_family)
     };
+    // xterm refuses to composite a non-opaque cell background unless it is
+    // told to up front, and the flag costs real work: it forces the renderer
+    // to blend every cell instead of filling the run. So it is set only when
+    // the operator asked for a see-through grid, and an opaque profile keeps
+    // exactly the renderer it had.
+    //
+    // The cell background is cleared in `bootstrap.js` and not here, because
+    // the `Inherit` palette sends no theme at all: the colours are read from
+    // CSS on the other side, and that is the only place both cases meet. The
+    // tint the operator actually sees comes from `.rg-terminal` in
+    // `parts/23-backdrop.css`, so exactly one layer applies the alpha.
+    let translucent = opacity_pct < crate::state::OPACITY_MAX_PCT;
     format!(
         "window.__vitrum_termOptions={{renderer:{renderer},scrollback:{scrollback},\
-         fontSize:{size},fontFamily:{family},theme:{theme}}};\
+         fontSize:{size},fontFamily:{family},theme:{theme},allowTransparency:{translucent}}};\
          if(window.__vitrum_applyTerm)window.__vitrum_applyTerm(window.__vitrum_termOptions);",
         renderer = json_string(renderer_wire(prefs.renderer)),
         scrollback = prefs.scrollback_lines,
@@ -982,7 +1126,10 @@ pub fn effective_chords(prefs: &KeyboardPrefs) -> Vec<EffectiveChord> {
 /// nothing. It stays launchable from the dialog, which is what a preset is
 /// for; only its accelerator is absent.
 #[must_use]
-pub fn live_chords(prefs: &KeyboardPrefs, presets: &[crate::launch::SavedPreset]) -> Vec<EffectiveChord> {
+pub fn live_chords(
+    prefs: &KeyboardPrefs,
+    presets: &[crate::launch::SavedPreset],
+) -> Vec<EffectiveChord> {
     let mut out = effective_chords(prefs);
     out.extend(presets.iter().filter_map(|preset| {
         let text = preset.shortcut.as_deref()?;
@@ -1114,7 +1261,10 @@ pub fn keymap_script(prefs: &KeyboardPrefs) -> String {
     // a chord no built-in owns never reaches Rust at all, because the webview
     // has no reason to intercept it.
     let table = crate::keymap::with_custom_first(
-        &keymap_json(&live_chords(prefs, &crate::launch::load_launch_store().presets)),
+        &keymap_json(&live_chords(
+            prefs,
+            &crate::launch::load_launch_store().presets,
+        )),
         &prefs.custom,
     );
     format!(
@@ -1502,7 +1652,10 @@ pub fn move_by(list: &mut [crate::launch::SavedPreset], id: u64, delta: isize) -
 #[must_use]
 pub fn live_script(settings: &Settings) -> String {
     let mut script = ui_scale_script(settings.text_scale_pct);
-    script.push_str(&term_options_script(&settings.terminal));
+    script.push_str(&term_options_script(
+        &settings.terminal,
+        settings.appearance.terminal_opacity_pct,
+    ));
     script.push_str(&keymap_script(&settings.keyboard));
     script
 }
@@ -1819,6 +1972,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
     let state = props.state;
     let settings = state.read().daemon.settings.clone();
     let mut detected = use_signal(system_theme);
+    let mut backdrop = use_signal(|| settings.appearance.backdrop.clone());
 
     let system_note = match detected() {
         Some(vitrum_os::theme::Theme::Dark) => "The desktop currently reports dark.".to_string(),
@@ -1915,6 +2069,141 @@ fn AppearancePanel(props: PanelProps) -> Element {
                 .to_string(),
             on: settings.reduce_motion,
             onchange: move |on| edit(state, |s| s.reduce_motion = on),
+        }
+
+        SelectRow {
+            label: "Window opacity",
+            desc: opacity_note(&settings.appearance).to_string(),
+            value: settings.appearance.opacity_pct.to_string(),
+            options: OPACITY_STEPS.iter().map(|p| (p.to_string(), format!("{p}%"))).collect(),
+            onpick: move |v: String| {
+                if let Ok(pct) = v.parse::<u8>() {
+                    edit(state, |s| { s.appearance.opacity_pct = pct; s.appearance.clamp(); });
+                }
+            },
+        }
+
+        SelectRow {
+            label: "Terminal opacity",
+            desc: "The grid alone, so the shell can stay solid while the wallpaper reads \
+                   behind the text. Below 100% the terminal composites every cell instead \
+                   of filling runs of them, which costs a little more per repaint."
+                .to_string(),
+            value: settings.appearance.terminal_opacity_pct.to_string(),
+            options: OPACITY_STEPS.iter().map(|p| (p.to_string(), format!("{p}%"))).collect(),
+            onpick: move |v: String| {
+                if let Ok(pct) = v.parse::<u8>() {
+                    edit(state, |s| {
+                        s.appearance.terminal_opacity_pct = pct;
+                        s.appearance.clamp();
+                    });
+                }
+            },
+        }
+
+        div { class: "rg-field",
+            span { class: "rg-field__label", "Backdrop" }
+            span { class: "rg-field__control",
+                input {
+                    class: "rg-field__input rg-field__input--prose",
+                    r#type: "text",
+                    spellcheck: false,
+                    autocomplete: "off",
+                    placeholder: "/home/you/wallpaper.png",
+                    value: "{backdrop}",
+                    aria_label: "Backdrop image path",
+                    onchange: move |e| backdrop.set(e.value()),
+                }
+                button {
+                    class: "rg-btn rg-btn--primary",
+                    r#type: "button",
+                    onclick: move |_| {
+                        let next = backdrop.peek().trim().to_string();
+                        edit(state, |s| s.appearance.backdrop.clone_from(&next));
+                    },
+                    "Apply"
+                }
+                if !settings.appearance.backdrop.is_empty() {
+                    button {
+                        class: "rg-btn",
+                        r#type: "button",
+                        onclick: move |_| {
+                            backdrop.set(String::new());
+                            edit(state, |s| s.appearance.backdrop.clear());
+                        },
+                        "Clear"
+                    }
+                }
+            }
+            span { class: "rg-field__desc",
+                "An absolute path to a PNG, JPEG, GIF or WEBP. Read by signature and not by \
+                 extension, so a file that is not an image is refused rather than drawn. SVG \
+                 is refused too: it is a scripted document, and this one would render inside \
+                 the application page."
+            }
+        }
+
+        if !settings.appearance.backdrop.is_empty() {
+            SelectRow {
+                label: "Backdrop fit",
+                desc: "How the image is sized to the window.".to_string(),
+                value: match settings.appearance.backdrop_fit {
+                    BackdropFit::Cover => "cover",
+                    BackdropFit::Contain => "contain",
+                    BackdropFit::Tile => "tile",
+                    BackdropFit::Center => "center",
+                }.to_string(),
+                options: vec![
+                    ("cover".to_string(), "Fill the window".to_string()),
+                    ("contain".to_string(), "Fit the whole image".to_string()),
+                    ("tile".to_string(), "Tile".to_string()),
+                    ("center".to_string(), "Centre at native size".to_string()),
+                ],
+                onpick: move |v: String| {
+                    edit(state, |s| {
+                        s.appearance.backdrop_fit = match v.as_str() {
+                            "contain" => BackdropFit::Contain,
+                            "tile" => BackdropFit::Tile,
+                            "center" => BackdropFit::Center,
+                            _ => BackdropFit::Cover,
+                        };
+                    });
+                },
+            }
+
+            SelectRow {
+                label: "Backdrop blur",
+                desc: "Blurred once, when the image loads, not per frame. A wide radius on a \
+                       large photograph is the one setting here that costs memory."
+                    .to_string(),
+                value: settings.appearance.backdrop_blur_px.to_string(),
+                options: BLUR_STEPS.iter().map(|p| (p.to_string(), blur_label(*p))).collect(),
+                onpick: move |v: String| {
+                    if let Ok(px) = v.parse::<u8>() {
+                        edit(state, |s| {
+                            s.appearance.backdrop_blur_px = px;
+                            s.appearance.clamp();
+                        });
+                    }
+                },
+            }
+
+            SelectRow {
+                label: "Backdrop dim",
+                desc: "A scrim between the image and the interface. This is the control that \
+                       keeps text readable over a bright photograph."
+                    .to_string(),
+                value: settings.appearance.backdrop_dim_pct.to_string(),
+                options: DIM_STEPS.iter().map(|p| (p.to_string(), format!("{p}%"))).collect(),
+                onpick: move |v: String| {
+                    if let Ok(pct) = v.parse::<u8>() {
+                        edit(state, |s| {
+                            s.appearance.backdrop_dim_pct = pct;
+                            s.appearance.clamp();
+                        });
+                    }
+                },
+            }
         }
     }
 }
@@ -3165,3 +3454,8 @@ mod sheet_copy_is_true;
 /// it.
 #[cfg(test)]
 mod preset_shortcuts;
+
+/// Translucency and the backdrop image: what a default profile costs, what the
+/// controls offer, and what survives a hand-edited `ui.json`.
+#[cfg(test)]
+mod appearance;

@@ -112,8 +112,21 @@ function cssTheme(el) {
 // A missing `theme` key is the same as `null`, because a push from an older
 // call site must not blank the palette.
 function termTheme(el, opts) {
-  const want = (opts || window.__vitrum_termOptions || {}).theme;
-  return want && typeof want === "object" ? want : cssTheme(el);
+  const o = opts || window.__vitrum_termOptions || {};
+  const want = o.theme;
+  const theme = want && typeof want === "object" ? want : cssTheme(el);
+  if (!o.allowTransparency) return theme;
+  // The one place a named palette and the inherit case meet, so the one place
+  // the cell background can be cleared without writing the rule twice.
+  //
+  // Cleared rather than tinted: `.rg-terminal` already paints the pane at the
+  // chosen alpha, and a cell that also carried it would blend the tint over
+  // itself and come out close to opaque at the midpoint of the slider.
+  //
+  // A copy, because `theme` may be the caller's object and `themeChanged`
+  // compares against the live one: mutating it in place would make the two
+  // equal and the change would never be applied.
+  return { ...theme, background: "rgba(0,0,0,0)" };
 }
 
 // Whether two xterm theme objects differ.
@@ -184,6 +197,10 @@ function mount(el) {
     lineHeight: 1.2,
     letterSpacing: 0,
     drawBoldTextInBrightColors: false,
+    // Off unless the profile asked for a see-through grid. It makes the
+    // renderer blend every cell rather than fill a run of them, which is a
+    // cost the opaque default has no reason to carry.
+    allowTransparency: !!pref.allowTransparency,
     theme: termTheme(el, pref),
   });
 
@@ -362,6 +379,13 @@ function mount(el) {
     }
     if (typeof o.scrollback === "number" && o.scrollback !== term.options.scrollback) {
       term.options.scrollback = o.scrollback;
+    }
+    // Before the theme below, because the theme is what carries the cleared
+    // cell background: setting a transparent colour on a terminal that is
+    // still refusing to composite one renders it as solid black.
+    const wantsAlpha = !!o.allowTransparency;
+    if (wantsAlpha !== term.options.allowTransparency) {
+      term.options.allowTransparency = wantsAlpha;
     }
     if (typeof o.renderer === "string") setRenderer(o.renderer);
     // Theme is not one of `o`'s fields: it lives in CSS, and a settings push

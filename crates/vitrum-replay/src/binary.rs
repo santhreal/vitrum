@@ -329,33 +329,43 @@ pub struct VbrWriter {
     rows: u16,
     base_seq: u64,
     head_seq: u64,
-    chunks: Vec<(u64, u64, Vec<u8>)>, // (seq, micros, data)
+    chunk_count: u32,
+    payload: Vec<u8>,
     keyframes: Vec<VbrIndexEntry>,
 }
 
 impl VbrWriter {
     /// Create a new VBR writer with dimensions.
+    #[inline]
     pub fn new(cols: u16, rows: u16) -> Self {
         Self {
             cols,
             rows,
             base_seq: 0,
             head_seq: 0,
-            chunks: Vec::new(),
+            chunk_count: 0,
+            payload: Vec::new(),
             keyframes: Vec::new(),
         }
     }
 
-    /// Add a chunk payload to the VBR file.
+    /// Add a chunk payload to the VBR file without allocating per chunk.
+    #[inline]
     pub fn add_chunk(&mut self, seq: u64, micros: u64, data: &[u8]) {
-        if self.chunks.is_empty() {
+        if self.chunk_count == 0 {
             self.base_seq = seq;
         }
         self.head_seq = seq + data.len() as u64;
-        self.chunks.push((seq, micros, data.to_vec()));
+        self.payload.reserve(20 + data.len());
+        self.payload.extend_from_slice(&seq.to_le_bytes());
+        self.payload.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        self.payload.extend_from_slice(&micros.to_le_bytes());
+        self.payload.extend_from_slice(data);
+        self.chunk_count += 1;
     }
 
     /// Add a keyframe index entry.
+    #[inline]
     pub fn add_keyframe(&mut self, seq: u64, stream_offset: u64, micros: u64) {
         self.keyframes.push(VbrIndexEntry {
             seq,
@@ -366,15 +376,7 @@ impl VbrWriter {
 
     /// Serialize into binary `.vbr` format.
     pub fn serialize(&self) -> Vec<u8> {
-        let mut payload_bytes = Vec::new();
-        for (seq, micros, data) in &self.chunks {
-            payload_bytes.extend_from_slice(&seq.to_le_bytes());
-            payload_bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            payload_bytes.extend_from_slice(&micros.to_le_bytes());
-            payload_bytes.extend_from_slice(data);
-        }
-
-        let index_offset = (HEADER_SIZE + payload_bytes.len()) as u64;
+        let index_offset = (HEADER_SIZE + self.payload.len()) as u64;
 
         let header = VbrHeader {
             version: VBR_VERSION,
@@ -383,14 +385,14 @@ impl VbrWriter {
             rows: self.rows,
             base_seq: self.base_seq,
             head_seq: self.head_seq,
-            chunk_count: self.chunks.len() as u32,
+            chunk_count: self.chunk_count,
             keyframe_count: self.keyframes.len() as u32,
             index_offset,
         };
 
         let mut output = Vec::with_capacity(index_offset as usize + self.keyframes.len() * VbrIndexEntry::SIZE);
         output.extend_from_slice(&header.encode());
-        output.extend_from_slice(&payload_bytes);
+        output.extend_from_slice(&self.payload);
 
         for keyframe in &self.keyframes {
             output.extend_from_slice(&keyframe.encode());

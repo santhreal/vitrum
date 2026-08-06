@@ -149,7 +149,7 @@ impl Seen {
 
     /// The most recent session projection.
     pub(crate) fn last_update(&self) -> &vitrum_proto::SessionInfo {
-        *self
+        self
             .updates()
             .last()
             .expect("a session update must have arrived")

@@ -1,16 +1,16 @@
-//// A flash's LIFETIME, which is the difference between a confirmation and a
-//// banner.
-////
-//// `Flash` shipped with no expiry of any kind. A notice was cleared only by an
-//// explicit Dismiss click or by another flash overwriting it, so on a real
-//// window "Started bash in tmp. Ctrl+Shift+X stops it." was still occupying a
-//// full-width band above the terminal twenty-nine minutes after the session
-//// started. Nothing in the type or in any test said a notice was supposed to
-//// be temporary, which is why it never was.
-////
-//// The retirement itself is a one-shot in `main.rs`, because the model has no
-//// clock. What is provable here is the part that decides WHICH flashes retire,
-//// and that the two kinds are distinguishable at all.
+//! A flash's LIFETIME, which is the difference between a confirmation and a
+//! banner.
+//!
+//! `Flash` shipped with no expiry of any kind. A notice was cleared only by an
+//! explicit Dismiss click or by another flash overwriting it, so on a real
+//! window "Started bash in tmp. Ctrl+Shift+X stops it." was still occupying a
+//! full-width band above the terminal twenty-nine minutes after the session
+//! started. Nothing in the type or in any test said a notice was supposed to
+//! be temporary, which is why it never was.
+//!
+//! The retirement itself is a one-shot in `main.rs`, because the model has no
+//! clock. What is provable here is the part that decides WHICH flashes retire,
+//! and that the two kinds are distinguishable at all.
 
 use super::*;
 
@@ -71,8 +71,10 @@ fn a_fresh_window_raises_no_flash() {
 /// check identity: the first notice's timer must not clear the second.
 #[test]
 fn a_later_flash_replaces_the_one_before_it() {
-    let mut w = WindowState::default();
-    w.flash = Some(Flash::notice("first"));
+    let mut w = WindowState {
+        flash: Some(Flash::notice("first")),
+        ..WindowState::default()
+    };
     w.flash = Some(Flash::error("second"));
     assert_eq!(w.flash, Some(Flash::error("second")));
 }

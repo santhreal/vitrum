@@ -80,9 +80,7 @@ pub async fn run(spec: &RaceSpec) -> anyhow::Result<Report> {
                 let (id, d) = c
                     .create_session(
                         &format!("race-{i}-{k}"),
-                        "/tmp",
-                        "/bin/sh",
-                        &["-c".to_string(), format!("printf 'conn{i}-{k}\\n'")],
+                        &format!("printf 'conn{i}-{k}\\n'"),
                         80,
                         24,
                         OP_TIMEOUT,

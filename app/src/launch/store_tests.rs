@@ -141,10 +141,12 @@ fn different_arguments_are_different_history_entries() {
 /// the command the operator runs every single day.
 #[test]
 fn the_history_cap_drops_the_worst_entry_not_the_last_one() {
-    let mut store = LaunchStore::default();
-    store.history = (0..HISTORY_MAX)
-        .map(|i| entry(&format!("cmd{i:02}"), 1, (400 + i as u64) * DAY))
-        .collect();
+    let mut store = LaunchStore {
+        history: (0..HISTORY_MAX)
+            .map(|i| entry(&format!("cmd{i:02}"), 1, (400 + i as u64) * DAY))
+            .collect(),
+        ..LaunchStore::default()
+    };
     store.history[0] = entry("daily", 500, 0);
     remember(&mut store, "brand-new", &[], "/tmp", NOW);
     assert_eq!(store.history.len(), HISTORY_MAX);

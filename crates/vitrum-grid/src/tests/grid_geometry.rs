@@ -459,8 +459,8 @@ fn row_text_skips_wide_tails() {
 fn styles_round_trip_through_grid_storage() {
     let mut grid = CellGrid::new(4, 1, Style::DEFAULT).unwrap();
     let s = Style {
-        fg: Rgba::rgba(0x11, 0x22, 0x33, 0x44),
-        bg: Rgba::rgba(0x55, 0x66, 0x77, 0x88),
+        fg: Rgba::new(0x11, 0x22, 0x33, 0x44),
+        bg: Rgba::new(0x55, 0x66, 0x77, 0x88),
         attrs: Attrs::BOLD | Attrs::ITALIC | Attrs::UNDERLINE | Attrs::REVERSE,
     };
     grid.write_char(1, 0, 'Q', s).unwrap();

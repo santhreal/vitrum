@@ -28,7 +28,7 @@ pub struct Rgba {
 
 impl Rgba {
     /// Fully transparent black.
-    pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
+    pub const TRANSPARENT: Self = Self::new(0, 0, 0, 0);
     /// Opaque black.
     pub const BLACK: Self = Self::rgb(0, 0, 0);
     /// Opaque white.
@@ -42,7 +42,7 @@ impl Rgba {
 
     /// Colour from four channels.
     #[must_use]
-    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
 

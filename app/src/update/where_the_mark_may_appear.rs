@@ -1,8 +1,8 @@
-//// The mark belongs on the launcher, not in the window.
-////
-//// Documented in `assets/logo/README.md`; enforced here, because a rule that
-//// lives only in a document is a rule that survives exactly until somebody
-//// wants a splash of brand in the titlebar.
+//! The mark belongs on the launcher, not in the window.
+//!
+//! Documented in `assets/logo/README.md`; enforced here, because a rule that
+//! lives only in a document is a rule that survives exactly until somebody
+//! wants a splash of brand in the titlebar.
 
 /// Every user interface source, and the stylesheet they share.
 const UI_SOURCES: &[(&str, &str)] = &[

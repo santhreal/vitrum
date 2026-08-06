@@ -17,6 +17,17 @@ use vitrum_proto::{ClientMsg, PROTOCOL_VERSION, ServerMsg, SessionId, decode_out
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// The interpreter every measured session runs under.
+///
+/// The harness measures a daemon under a Linux rig, so this is a fixed part of
+/// the workload rather than a choice: a workload that varied its shell would
+/// vary what it is measuring.
+const WORKLOAD_SHELL: &str = "/bin/sh";
+
+/// Where those sessions start. Any directory that certainly exists will do; the
+/// scripts never touch it.
+const WORKLOAD_CWD: &str = "/tmp";
+
 /// One connection to the daemon, with its own output accounting.
 pub struct Client {
     socket: Socket,
@@ -302,7 +313,7 @@ impl Client {
         &mut self,
         msg: &ClientMsg,
         timeout: Duration,
-        mut want: impl FnMut(ServerMsg) -> Result<T, ServerMsg>,
+        mut want: impl FnMut(ServerMsg) -> Option<T>,
     ) -> anyhow::Result<(T, Duration)> {
         let start = Instant::now();
         self.send(msg).await?;
@@ -317,9 +328,10 @@ impl Client {
             if let ServerMsg::Error { message, .. } = &got {
                 bail!("the daemon refused {msg:?}: {message}");
             }
-            match want(got) {
-                Ok(v) => return Ok((v, start.elapsed())),
-                Err(_) => continue,
+            // A message that is not the answer is another connection's traffic,
+            // so there is nothing to carry out of the predicate but the answer.
+            if let Some(v) = want(got) {
+                return Ok((v, start.elapsed()));
             }
         }
     }
@@ -331,29 +343,31 @@ impl Client {
     /// one it sees will happily adopt another connection's session id when two
     /// connections create at once. Matching on the title this call chose is what
     /// makes the answer belong to the request.
+    ///
+    /// `script` runs under the workload shell: every measured session is a
+    /// generator, so the interpreter and directory are the harness's business
+    /// rather than each caller's.
     pub async fn create_session(
         &mut self,
         tag: &str,
-        cwd: &str,
-        command: &str,
-        args: &[String],
+        script: &str,
         cols: u16,
         rows: u16,
         timeout: Duration,
     ) -> anyhow::Result<(SessionId, Duration)> {
         let msg = ClientMsg::CreateSession {
             project_id: vitrum_proto::ProjectId(1),
-            cwd: cwd.to_string(),
-            command: command.to_string(),
-            args: args.to_vec(),
+            cwd: WORKLOAD_CWD.to_string(),
+            command: WORKLOAD_SHELL.to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
             cols,
             rows,
             title: Some(tag.to_string()),
         };
         let tag = tag.to_string();
         self.round_trip(&msg, timeout, move |m| match m {
-            ServerMsg::SessionCreated(info) if info.title == tag => Ok(info.id),
-            other => Err(other),
+            ServerMsg::SessionCreated(info) if info.title == tag => Some(info.id),
+            _ => None,
         })
         .await
     }
@@ -366,8 +380,8 @@ impl Client {
         let msg = ClientMsg::Close { session };
         let (_, d) = self
             .round_trip(&msg, timeout, |m| match m {
-                ServerMsg::SessionRemoved { session: s } if s == session => Ok(()),
-                other => Err(other),
+                ServerMsg::SessionRemoved { session: s } if s == session => Some(()),
+                _ => None,
             })
             .await?;
         Ok(d)

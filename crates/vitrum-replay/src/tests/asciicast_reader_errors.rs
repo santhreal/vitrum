@@ -105,7 +105,7 @@ fn a_malformed_event_line_is_rejected_with_its_line_number() {
 #[test]
 fn a_bad_time_is_rejected() {
     for time in ["-1.0", "abc", "NaN", "Infinity", "", ".5", "+1.0", "1.2.3"] {
-        let events = vec![format!("[{time}, \"o\", \"a\"]")];
+        let events = [format!("[{time}, \"o\", \"a\"]")];
         let refs: Vec<&str> = events.iter().map(String::as_str).collect();
         assert_eq!(
             read(&with_events(&refs)),
@@ -146,7 +146,7 @@ fn equal_times_are_accepted() {
 #[test]
 fn a_bad_type_code_is_rejected() {
     for code in ["", "oo", "\\u0000\\u0000"] {
-        let events = vec![format!("[0.0, \"{code}\", \"a\"]")];
+        let events = [format!("[0.0, \"{code}\", \"a\"]")];
         let refs: Vec<&str> = events.iter().map(String::as_str).collect();
         assert_eq!(
             read(&with_events(&refs)),

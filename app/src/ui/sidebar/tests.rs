@@ -1024,7 +1024,7 @@ fn every_title_starts_at_the_same_x_whatever_the_status_says() {
     //    cannot resolve a CSS length, so the padding half is proven by
     //    sampling pixel columns from a screenshot instead.
     assert!(
-        !tokens.iter().any(|t| *t == "rg-session__glyph"),
+        !tokens.contains(&"rg-session__glyph"),
         "a fixed-width leading tile is back in the row: {tokens:?}"
     );
 }
@@ -1184,9 +1184,7 @@ fn the_card_is_exactly_two_lines_and_neither_is_conditional() {
         &tokens[tail + 1..branch]
     );
     assert!(
-        tokens[branch + 1..]
-            .iter()
-            .any(|t| *t == "rg-session__slot"),
+        tokens[branch + 1..].contains(&"rg-session__slot"),
         "the slot must come after the spacer or it is not pushed right"
     );
 
@@ -1322,7 +1320,7 @@ fn a_static_header_keeps_the_chevrons_box_and_drops_its_glyph() {
              left of every sibling header: {block}"
         );
         assert!(
-            !block.contains(&format!("rg-project__chevron\", \"{{CHEVRON}}")),
+            !block.contains(&"rg-project__chevron\", \"{CHEVRON}".to_string()),
             "{anchor} draws a disclosure triangle it cannot act on"
         );
         assert!(

@@ -1,8 +1,8 @@
-//// What the launcher SHOWS, as opposed to what it ranks.
-////
-//// This surface was rebuilt after being judged poorly designed,
-//// and the two defects behind that were both about repetition and about paths
-//// written in a way nobody writes them.
+//! What the launcher SHOWS, as opposed to what it ranks.
+//!
+//! This surface was rebuilt after being judged poorly designed,
+//! and the two defects behind that were both about repetition and about paths
+//! written in a way nobody writes them.
 
 use super::*;
 

@@ -75,7 +75,9 @@ impl fmt::Display for Grouped {
         }
         let digits = &digits[at..];
         for (index, digit) in digits.iter().enumerate() {
-            if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            // Modulo rather than `is_multiple_of`, which this crate's declared
+            // rust-version predates.
+            if index > 0 && (digits.len() - index) % 3 == 0 {
                 f.write_char(',')?;
             }
             f.write_char(char::from(*digit))?;

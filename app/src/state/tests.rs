@@ -3220,8 +3220,10 @@ fn reading_the_notes_is_not_onboarding() {
 /// to swallow a release note permanently.
 #[test]
 fn an_unreadable_seen_version_shows_the_notes_again() {
-    let mut s = Settings::default();
-    s.seen_version = "not-a-version".to_string();
+    let s = Settings {
+        seen_version: "not-a-version".to_string(),
+        ..Settings::default()
+    };
     assert_eq!(s.last_seen_version(), None);
 }
 
@@ -3756,14 +3758,16 @@ const REPOS: usize = 8;
 /// are the 60-character case the objective measures at, and branches are
 /// the long `wip/` case.
 fn bench_daemon(roots: &[String]) -> DaemonState {
-    let mut st = DaemonState::default();
-    st.projects = (0..LOAD as u64)
-        .map(|i| ProjectInfo {
-            id: ProjectId(1000 + i),
-            name: format!("repo-{}", i as usize % REPOS),
-            root: roots[i as usize % REPOS].clone(),
-        })
-        .collect();
+    let mut st = DaemonState {
+        projects: (0..LOAD as u64)
+            .map(|i| ProjectInfo {
+                id: ProjectId(1000 + i),
+                name: format!("repo-{}", i as usize % REPOS),
+                root: roots[i as usize % REPOS].clone(),
+            })
+            .collect(),
+        ..DaemonState::default()
+    };
 
     st.sessions = (0..LOAD as u64)
         .map(|i| {
@@ -3889,12 +3893,12 @@ fn bench_update(daemon: &DaemonState, i: usize, now_ms: u64) -> SessionInfo {
     let mut info = daemon.sessions[i % daemon.sessions.len()].info.clone();
     info.last_activity_ms = now_ms;
     info.attention = Attention {
-        bell: i % 5 == 0,
+        bell: i.is_multiple_of(5),
         failed: info.attention.failed,
-        waiting: Some(i % 3 == 0),
+        waiting: Some(i.is_multiple_of(3)),
         idle_ms: (i as u64 % 7) * 1_000,
     };
-    info.unread = i % 2 == 0;
+    info.unread = i.is_multiple_of(2);
     info
 }
 
@@ -4407,15 +4411,17 @@ fn a_directory_bucket_is_keyed_by_its_canonical_path_alone() {
     // Two sessions in one directory spelled two ways, and no project
     // record for it, so both take the bucket-per-cwd path.
     let plain = std::env::temp_dir().to_string_lossy().into_owned();
-    let mut daemon = DaemonState::default();
-    daemon.sessions = vec![
-        row(10).project(99).cwd(&plain).waiting(Some(false)).build(),
-        row(11)
-            .project(99)
-            .cwd(&format!("{plain}/"))
-            .waiting(Some(false))
-            .build(),
-    ];
+    let mut daemon = DaemonState {
+        sessions: vec![
+            row(10).project(99).cwd(&plain).waiting(Some(false)).build(),
+            row(11)
+                .project(99)
+                .cwd(&format!("{plain}/"))
+                .waiting(Some(false))
+                .build(),
+        ],
+        ..DaemonState::default()
+    };
     let infos: Vec<SessionInfo> = daemon.sessions.iter().map(|r| r.info.clone()).collect();
     daemon.workspaces.adopt(infos.iter());
 
@@ -4457,8 +4463,10 @@ fn an_update_never_moves_a_row_that_stayed_in_the_inbox() {
     // Active whatever else moves. That is the point: this test is about
     // ORDER inside a band, and a row that legitimately changes band would
     // otherwise fail it for the wrong reason.
-    let mut daemon = DaemonState::default();
-    daemon.projects = vec![project(1, "one")];
+    let mut daemon = DaemonState {
+        projects: vec![project(1, "one")],
+        ..DaemonState::default()
+    };
     daemon.sessions = (0..6u64)
         .map(|i| {
             let built = row(10 + i)

@@ -339,8 +339,7 @@ fn a_parked_row_stays_off_the_attention_queue() {
 #[test]
 fn rollup_chips_are_urgency_ordered_and_omit_empty_states() {
     let project = a_project(7, "fleet");
-    let rows = vec![
-        row(1).project(7).running().waiting(Some(false)).build(),
+    let rows = [row(1).project(7).running().waiting(Some(false)).build(),
         row(2).project(7).running().waiting(Some(false)).build(),
         row(3)
             .project(7)
@@ -353,8 +352,7 @@ fn rollup_chips_are_urgency_ordered_and_omit_empty_states() {
             .exited(Some(1))
             .last_activity_ms(NOW - 60_000)
             .unread(true)
-            .build(),
-    ];
+            .build()];
     let borrowed: Vec<&SessionView> = rows.iter().collect();
     let group = build_group(
         ProjectId(7),
@@ -441,8 +439,7 @@ fn the_preview_cut_never_hides_the_focused_row() {
 #[test]
 fn groups_split_into_three_bands_each_with_its_own_order() {
     let project = a_project(1, "vitrum");
-    let rows = vec![
-        row(1)
+    let rows = [row(1)
             .project(1)
             .running()
             .waiting(Some(false))
@@ -479,8 +476,7 @@ fn groups_split_into_three_bands_each_with_its_own_order() {
             .created_at_ms(NOW - 20 * HOUR)
             .last_activity_ms(NOW - HOUR)
             .visited(NOW)
-            .build(),
-    ];
+            .build()];
     let borrowed: Vec<&SessionView> = rows.iter().collect();
     let group = build_group(
         ProjectId(1),

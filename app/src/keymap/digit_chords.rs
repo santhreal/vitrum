@@ -1,16 +1,16 @@
-//// The chord a keydown means, for chords bound to a DIGIT.
-////
-//// `KeyboardEvent.key` for Ctrl+Shift+1 on a US layout is `!`, not `1`. A
-//// binding stored as `1` therefore never matches the keystroke it is named
-//// after: a shortcut the settings panel displays, the overlay explains, and the
-//// product never fires. Digits are the most natural thing to bind a saved
-//// command to, so this took out precisely the bindings an operator makes first.
-////
-//// The rule lives in two places because two matchers exist: `bootstrap.js`
-//// matches the shared table on every keydown in the window, and
-//// `ui/dialog.rs::chord_of` matches the launcher's own. For a while only the
-//// launcher had it, which is why a preset chord worked inside the dialog and
-//// did nothing anywhere else. These tests pin the rule so the two cannot drift.
+//! The chord a keydown means, for chords bound to a DIGIT.
+//!
+//! `KeyboardEvent.key` for Ctrl+Shift+1 on a US layout is `!`, not `1`. A
+//! binding stored as `1` therefore never matches the keystroke it is named
+//! after: a shortcut the settings panel displays, the overlay explains, and the
+//! product never fires. Digits are the most natural thing to bind a saved
+//! command to, so this took out precisely the bindings an operator makes first.
+//!
+//! The rule lives in two places because two matchers exist: `bootstrap.js`
+//! matches the shared table on every keydown in the window, and
+//! `ui/dialog.rs::chord_of` matches the launcher's own. For a while only the
+//! launcher had it, which is why a preset chord worked inside the dialog and
+//! did nothing anywhere else. These tests pin the rule so the two cannot drift.
 
 /// The bridge takes a top-row digit from `code`, never from `key`.
 ///

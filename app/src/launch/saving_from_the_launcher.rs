@@ -1,13 +1,13 @@
-//// Saving a command from the launcher, where the operator just typed it.
-////
-//// Presets used to be creatable only in `Settings > Presets`, so the moment a
-//// command proved worth keeping was the moment you had to leave the surface
-//// you were on and retype it, directory included. Almost nobody does that,
-//// which is why the launcher's preset band was empty on every machine.
-////
-//// Every test here targets [`preset_from_typed`], which takes the existing
-//// list as an argument and touches no file. The writing half is one `load`,
-//// this call, and one `save`.
+//! Saving a command from the launcher, where the operator just typed it.
+//!
+//! Presets used to be creatable only in `Settings > Presets`, so the moment a
+//! command proved worth keeping was the moment you had to leave the surface
+//! you were on and retype it, directory included. Almost nobody does that,
+//! which is why the launcher's preset band was empty on every machine.
+//!
+//! Every test here targets [`preset_from_typed`], which takes the existing
+//! list as an argument and touches no file. The writing half is one `load`,
+//! this call, and one `save`.
 
 use super::*;
 
@@ -47,7 +47,7 @@ fn the_label_is_the_line_and_the_command_is_stored_split() {
 #[test]
 fn saving_the_same_thing_twice_is_refused() {
     let first = preset_from_typed("claude", "/src/vitrum", &[]).expect("saves");
-    let err = preset_from_typed("claude", "/src/vitrum", &[first.clone()]).unwrap_err();
+    let err = preset_from_typed("claude", "/src/vitrum", std::slice::from_ref(&first)).unwrap_err();
     assert!(err.contains("already saved"), "{err}");
 }
 
@@ -59,7 +59,7 @@ fn saving_the_same_thing_twice_is_refused() {
 #[test]
 fn the_same_command_elsewhere_is_a_separate_preset() {
     let first = preset_from_typed("claude", "/src/vitrum", &[]).expect("saves");
-    let second = preset_from_typed("claude", "/src/other", &[first.clone()])
+    let second = preset_from_typed("claude", "/src/other", std::slice::from_ref(&first))
         .expect("a different directory is a different preset");
     assert_ne!(first.cwd, second.cwd);
 }

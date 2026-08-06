@@ -50,6 +50,10 @@ use crate::state::{ConnState, UiState, status_label};
 /// close button; too large and the bar looks padded on one side only.
 pub const MACOS_TRAFFIC_LIGHT_INSET: f64 = 78.0;
 
+// A zero inset would put the title under the traffic lights, and the value is
+// fixed at compile time, so this is a build failure rather than a test.
+const _: () = assert!(MACOS_TRAFFIC_LIGHT_INSET > 0.0);
+
 /// Does this build draw its own minimise, maximise and close buttons?
 pub const DRAWS_WINDOW_CONTROLS: bool = !cfg!(target_os = "macos");
 
@@ -557,14 +561,5 @@ mod tests {
         let link = conn(&ConnState::Fixture, "u");
         assert_eq!(link.word, "Fixture data");
         assert_eq!(link.class, "rg-conn--fixture");
-    }
-
-    /// The window-control decision must follow the platform, and the macOS
-    /// inset must be reserved exactly when the native buttons are present.
-    /// Drawing both sets gives a macOS window six window controls.
-    #[test]
-    fn window_controls_and_the_macos_inset_are_mutually_exclusive() {
-        assert_eq!(DRAWS_WINDOW_CONTROLS, !cfg!(target_os = "macos"));
-        assert!(MACOS_TRAFFIC_LIGHT_INSET > 0.0);
     }
 }

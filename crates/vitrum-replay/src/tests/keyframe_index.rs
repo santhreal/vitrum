@@ -146,7 +146,7 @@ fn resuming_from_any_keyframe_reaches_the_final_screen() {
     let index =
         KeyframeIndex::build(&stream, &config(80, 24).with_keyframe_stride(4096).expect("stride"))
             .expect("build");
-    let reference = crate::tests::support::linear(80, 24, &bytes);
+    let reference = crate::tests::support::linear(80, 24, bytes);
 
     for frame in index.frames() {
         let mut emulator = Emulator::resume(frame.screen().clone());

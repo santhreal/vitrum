@@ -80,9 +80,7 @@ pub async fn run(spec: &LoadSpec) -> anyhow::Result<Report> {
         let (id, d) = client
             .create_session(
                 &format!("load-{n}"),
-                "/tmp",
-                "/bin/sh",
-                &["-c".to_string(), generator(spec.lines)],
+                &generator(spec.lines),
                 spec.cols,
                 spec.rows,
                 OP_TIMEOUT,
@@ -103,8 +101,8 @@ pub async fn run(spec: &LoadSpec) -> anyhow::Result<Report> {
                 |m| match m {
                     // The daemon acknowledges an attach by updating the session
                     // it now has a viewer on.
-                    ServerMsg::SessionUpdated(info) if info.id == id => Ok(()),
-                    other => Err(other),
+                    ServerMsg::SessionUpdated(info) if info.id == id => Some(()),
+                    _ => None,
                 },
             )
             .await?;
@@ -132,8 +130,8 @@ pub async fn run(spec: &LoadSpec) -> anyhow::Result<Report> {
     // this is the number that says whether one slow session blocks the rest.
     let (_, list_after) = client
         .round_trip(&ClientMsg::List, OP_TIMEOUT, |m| match m {
-            ServerMsg::Sessions { .. } => Ok(()),
-            other => Err(other),
+            ServerMsg::Sessions { .. } => Some(()),
+            _ => None,
         })
         .await?;
     let mut list = Latencies::new();

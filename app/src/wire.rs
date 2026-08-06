@@ -58,6 +58,16 @@ pub const BACKFILL_BYTES_PER_LINE: u32 = 64;
 /// daemon already has.
 pub const BACKFILL_MIN_BYTES: u32 = 16 * 1024;
 
+// What the floor is FOR, in the currency it is denominated in: it has to
+// repaint the visible grid whatever the setting says, and no window shows 256
+// rows. A bounds check on the byte count alone would pass at 64 bytes, which is
+// one line and no floor at all. Compile-time, because both operands are.
+const _: () = assert!(
+    BACKFILL_MIN_BYTES / BACKFILL_BYTES_PER_LINE >= 256,
+    "the backfill floor must cover at least 256 lines, or a session whose \
+     buffer setting is zero attaches to a grid the backfill cannot fill"
+);
+
 /// Hard ceiling on one backfill, in bytes.
 ///
 /// This budget crosses the Rust -> JavaScript bridge as base64 inside a JSON
@@ -755,18 +765,9 @@ mod tests {
         // line, satisfies them and every other assertion in this file, which
         // is a hand-edited `scrollbackLines: 0` attaching to a blank grid
         // exactly as if there were no floor at all. Measured: every value from
-        // 64 to 16383 escaped before this line existed.
-        //
-        // So assert what the floor is FOR, in the currency it is denominated
-        // in. It has to repaint the visible grid whatever the setting says, and
-        // no window shows 256 rows.
-        assert!(
-            BACKFILL_MIN_BYTES / BACKFILL_BYTES_PER_LINE >= 256,
-            "the floor covers {} lines, fewer rows than a tall window shows, so \
-             a session whose buffer setting is zero attaches to a grid the \
-             backfill cannot fill",
-            BACKFILL_MIN_BYTES / BACKFILL_BYTES_PER_LINE
-        );
+        // 64 to 16383 escaped before this line existed. What the floor is FOR
+        // is now asserted where the constants are declared, so shrinking it is
+        // a build failure and not a test run away.
         // 256 lines x 64 bytes is the floor exactly; 257 is the first step off it.
         assert_eq!(backfill_max_bytes(256), 16_384);
         assert_eq!(backfill_max_bytes(257), 16_448);

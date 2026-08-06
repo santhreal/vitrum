@@ -32,7 +32,7 @@ fn cell_stays_sixteen_bytes_with_four_byte_alignment() {
 /// blue) with no compile error anywhere.
 #[test]
 fn rgba_byte_order_is_r_g_b_a_for_direct_gpu_upload() {
-    let c = Rgba::rgba(0x12, 0x34, 0x56, 0x78);
+    let c = Rgba::new(0x12, 0x34, 0x56, 0x78);
     assert_eq!(c.to_bytes(), [0x12, 0x34, 0x56, 0x78]);
     assert_eq!(Rgba::from_bytes([0x12, 0x34, 0x56, 0x78]), c);
 

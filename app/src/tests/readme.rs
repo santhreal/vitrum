@@ -1,10 +1,10 @@
-//// The README must describe THIS build.
-////
-//// Every documentation defect this project has shipped had the same shape: a
-//// sentence that was true when it was written and silently false afterwards.
-//// A README is the first thing a new operator trusts and the last thing anyone
-//// re-reads, so the few claims in it that a machine can check are checked
-//// here, against the code rather than against a copy of the prose.
+//! The README must describe THIS build.
+//!
+//! Every documentation defect this project has shipped had the same shape: a
+//! sentence that was true when it was written and silently false afterwards.
+//! A README is the first thing a new operator trusts and the last thing anyone
+//! re-reads, so the few claims in it that a machine can check are checked
+//! here, against the code rather than against a copy of the prose.
 
 /// Each platform's paste fetches the archive that the release workflow builds.
 ///

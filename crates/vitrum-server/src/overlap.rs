@@ -210,7 +210,7 @@ impl Tracked {
 
     /// Record a way detection is incomplete, once.
     fn degrade(&mut self, note: String) {
-        if self.degraded.len() >= MAX_DEGRADED || self.degraded.iter().any(|d| *d == note) {
+        if self.degraded.len() >= MAX_DEGRADED || self.degraded.contains(&note) {
             return;
         }
         self.degraded.push(note);

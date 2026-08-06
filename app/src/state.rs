@@ -591,6 +591,43 @@ impl Collisions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeMemoKey {
+    pub revision_sum: u64,
+    pub workspace_id: WorkspaceId,
+    pub ws_info: Option<(Grouping, usize, SectionVisibility)>,
+    pub session_fp: u64,
+    pub projects_fp: u64,
+    pub tabs: Vec<SessionId>,
+    pub tab_mru: Vec<SessionId>,
+    pub filter: String,
+    pub focused: Option<SessionId>,
+    pub collapsed_len: usize,
+    pub sections_expanded_len: usize,
+    pub previews_expanded_len: usize,
+    pub settled_expanded_len: usize,
+    pub clock_sec: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeMemo {
+    pub key: TreeMemoKey,
+    pub cached_groups_indices: Vec<CachedSidebarGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CachedSidebarGroup {
+    pub key: GroupKey,
+    pub label: String,
+    pub root: Option<String>,
+    pub project_index: Option<usize>,
+    pub current: bool,
+    pub active_indices: Vec<usize>,
+    pub hidden_indices: Vec<usize>,
+    pub snoozed_indices: Vec<usize>,
+    pub settled_indices: Vec<usize>,
+    pub rollup: Option<vitrum_model::ProjectRollup>,
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct DaemonState {
     pub conn: ConnState,
@@ -617,6 +654,8 @@ pub struct DaemonState {
     /// [`DaemonState::sessions`] cwds resolved to canonical directory keys.
     /// Derived, not a fact: see [`DirKeys`] for what rebuilds it and when.
     dirs: Cache<DirKeys>,
+    pub revision: u64,
+    pub sessions_revision: u64,
 }
 
 impl Default for DaemonState {
@@ -630,6 +669,8 @@ impl Default for DaemonState {
             collisions: Collisions::default(),
             dirs: Cache::default(),
             folded: Cache::default(),
+            revision: 0,
+            sessions_revision: 0,
         }
     }
 }
@@ -1330,6 +1371,9 @@ pub struct WindowState {
     /// issued from `reconcile` and from the two explicit gestures below, and a
     /// second request supersedes the first rather than queueing behind it.
     pub history_intent: HistoryIntent,
+    pub revision: u64,
+    pub filter_revision: u64,
+    pub tree_memo: std::cell::RefCell<Option<TreeMemo>>,
 }
 
 impl Default for WindowState {
@@ -1357,11 +1401,20 @@ impl Default for WindowState {
             layer: Layer::None,
             history: HistoryWindow::default(),
             history_intent: HistoryIntent::default(),
+            revision: 0,
+            filter_revision: 0,
+            tree_memo: std::cell::RefCell::new(None),
         }
     }
 }
 
 impl WindowState {
+    pub fn invalidate_tree_memo(&self) {
+        if let Ok(mut borrow) = self.tree_memo.try_borrow_mut() {
+            *borrow = None;
+        }
+    }
+
     /// Turn one [`Broadcast`] into this window's reaction.
     pub fn receive(
         &mut self,
@@ -1369,6 +1422,7 @@ impl WindowState {
         broadcast: &Broadcast,
         now_ms: u64,
     ) -> Reaction {
+        self.invalidate_tree_memo();
         match broadcast {
             Broadcast::None => Reaction::None,
             Broadcast::SessionsChanged => {
@@ -1531,14 +1585,11 @@ impl WindowState {
     /// the cursor because its status changed; the parked band sorts by soonest
     /// wake, which is the only useful question about a parked row; the drained
     /// band sorts by when the work ended.
-    pub fn tree<'a>(&self, daemon: &'a DaemonState, clock: Clock) -> Vec<SidebarGroup<'a>> {
+    fn tree_uncached<'a>(&self, daemon: &'a DaemonState, clock: Clock) -> Vec<SidebarGroup<'a>> {
         let Some(ws) = daemon.workspaces.get(self.workspace) else {
             return Vec::new();
         };
         let query = self.filter.trim().to_lowercase();
-        // Sized by the whole session list, which is an over-estimate whenever
-        // another workspace holds some of them, and still one allocation
-        // instead of the seven a pair of growing collects cost.
         let mut rows: Vec<&SessionView> = Vec::with_capacity(daemon.sessions.len());
         rows.extend(
             self.admitted(daemon, clock)
@@ -1549,14 +1600,117 @@ impl WindowState {
             Grouping::Directory => self.bucket_by_directory(daemon, rows, clock),
             Grouping::Named => self.bucket_by_folder(daemon, ws, rows, clock),
         };
-        // A filter that matched nothing in a bucket should hide the bucket
-        // too, otherwise the result of a search is a wall of empty headers.
         if !query.is_empty() {
             out.retain(|g| !g.is_empty());
         }
         if ws.grouping == Grouping::Directory {
             self.pin_current_bucket(&mut out);
         }
+        out
+    }
+
+    pub fn tree<'a>(&self, daemon: &'a DaemonState, clock: Clock) -> Vec<SidebarGroup<'a>> {
+        let ws_info = daemon.workspaces.get(self.workspace).map(|w| (w.grouping, w.folders().len(), w.sections));
+        let projects_fp: u64 = daemon.projects.iter().fold(0u64, |acc, p| {
+            acc.wrapping_mul(31)
+                .wrapping_add(p.id.0)
+                .wrapping_add(p.name.len() as u64)
+        });
+        let session_fp: u64 = daemon.sessions.iter().fold(0u64, |acc, s| {
+            let cwd_hash = s.info.cwd.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+            let settle_val = match s.settle_override {
+                None => 0u64,
+                Some(SettleOverride::Settled) => 1u64,
+                Some(SettleOverride::Active) => 2u64,
+            };
+            acc.wrapping_mul(31)
+                .wrapping_add(s.id().0)
+                .wrapping_add(daemon.workspaces.workspace_of(&s.info).0 as u64)
+                .wrapping_add(s.info.last_activity_ms)
+                .wrapping_add(s.info.unread as u64)
+                .wrapping_add(s.snooze.map_or(0, |sn| sn.wake_at_ms))
+                .wrapping_add(s.settled_at_ms())
+                .wrapping_add(s.last_visited_ms.unwrap_or(0))
+                .wrapping_add(cwd_hash)
+                .wrapping_add(settle_val)
+        });
+
+        let memo_key = TreeMemoKey {
+            revision_sum: daemon.revision.wrapping_add(daemon.sessions_revision).wrapping_add(self.revision).wrapping_add(self.filter_revision),
+            workspace_id: self.workspace,
+            ws_info,
+            session_fp,
+            projects_fp,
+            tabs: self.tabs.clone(),
+            tab_mru: self.tab_mru.clone(),
+            filter: self.filter.clone(),
+            focused: self.focused,
+            collapsed_len: self.collapsed.len(),
+            sections_expanded_len: self.sections_expanded.len(),
+            previews_expanded_len: self.previews_expanded.len(),
+            settled_expanded_len: self.settled_expanded.len(),
+            clock_sec: clock.now_ms / 1000,
+        };
+        if let Ok(borrow) = self.tree_memo.try_borrow() {
+            if let Some(ref memo) = *borrow {
+                if memo.key == memo_key {
+                    let mut groups = Vec::with_capacity(memo.cached_groups_indices.len());
+                    for cg in &memo.cached_groups_indices {
+                        let project = cg.project_index.and_then(|idx| daemon.projects.get(idx));
+                        let active = cg.active_indices.iter().filter_map(|&i| daemon.sessions.get(i)).collect();
+                        let hidden = cg.hidden_indices.iter().filter_map(|&i| daemon.sessions.get(i)).collect();
+                        let snoozed = cg.snoozed_indices.iter().filter_map(|&i| daemon.sessions.get(i)).collect();
+                        let settled = cg.settled_indices.iter().filter_map(|&i| daemon.sessions.get(i)).collect();
+                        groups.push(SidebarGroup {
+                            key: cg.key,
+                            label: cg.label.clone(),
+                            root: cg.root.clone(),
+                            project,
+                            current: cg.current,
+                            bands: crate::inbox::Group {
+                                project,
+                                active,
+                                hidden,
+                                snoozed,
+                                settled,
+                                rollup: cg.rollup.clone(),
+                            },
+                        });
+                    }
+                    return groups;
+                }
+            }
+        }
+
+        let out = self.tree_uncached(daemon, clock);
+
+        if let Ok(mut borrow) = self.tree_memo.try_borrow_mut() {
+            let mut cached_groups = Vec::with_capacity(out.len());
+            for g in &out {
+                let project_index = g.project.and_then(|p| daemon.projects.iter().position(|proj| proj.id == p.id));
+                let active_indices = g.bands.active.iter().filter_map(|s| daemon.sessions.iter().position(|sess| sess.id() == s.id())).collect();
+                let hidden_indices = g.bands.hidden.iter().filter_map(|s| daemon.sessions.iter().position(|sess| sess.id() == s.id())).collect();
+                let snoozed_indices = g.bands.snoozed.iter().filter_map(|s| daemon.sessions.iter().position(|sess| sess.id() == s.id())).collect();
+                let settled_indices = g.bands.settled.iter().filter_map(|s| daemon.sessions.iter().position(|sess| sess.id() == s.id())).collect();
+                cached_groups.push(CachedSidebarGroup {
+                    key: g.key,
+                    label: g.label.clone(),
+                    root: g.root.clone(),
+                    project_index,
+                    current: g.current,
+                    active_indices,
+                    hidden_indices,
+                    snoozed_indices,
+                    settled_indices,
+                    rollup: g.bands.rollup.clone(),
+                });
+            }
+            *borrow = Some(TreeMemo {
+                key: memo_key,
+                cached_groups_indices: cached_groups,
+            });
+        }
+
         out
     }
 
@@ -2558,6 +2712,8 @@ impl UiState {
     /// here so the fold stays a pure function and a test can put the clock
     /// exactly where a boundary is.
     pub fn apply(&mut self, msg: ServerMsg, now_ms: u64) -> Reaction {
+        self.daemon.sessions_revision = self.daemon.sessions_revision.wrapping_add(1);
+        self.window.invalidate_tree_memo();
         let broadcast = self.daemon.apply(msg);
         self.window.receive(&mut self.daemon, &broadcast, now_ms)
     }
@@ -2572,6 +2728,45 @@ impl UiState {
 
     pub fn server_ready(&self) -> bool {
         self.daemon.server_ready()
+    }
+    pub fn state_revision(&self) -> u64 {
+        self.daemon
+            .revision
+            .wrapping_add(self.daemon.sessions_revision)
+            .wrapping_add(self.window.revision)
+            .wrapping_add(self.window.filter_revision)
+    }
+
+    pub fn select_sessions(&self) -> &[SessionView] {
+        &self.daemon.sessions
+    }
+
+    pub fn select_session(&self, id: SessionId) -> Option<&SessionView> {
+        self.row(id)
+    }
+
+    pub fn select_workspace_id(&self) -> WorkspaceId {
+        self.window.workspace
+    }
+
+    pub fn select_filter_query(&self) -> &str {
+        &self.window.filter
+    }
+
+    pub fn select_sessions_revision(&self) -> u64 {
+        self.daemon.sessions_revision
+    }
+
+    pub fn select_window_revision(&self) -> u64 {
+        self.window.revision
+    }
+
+    pub fn select_state_revision(&self) -> u64 {
+        self.state_revision()
+    }
+
+    pub fn has_changed_since(&self, last_revision: u64) -> bool {
+        self.state_revision() != last_revision
     }
 
     pub fn snooze_presets(&self, clock: Clock) -> Vec<SnoozePreset> {

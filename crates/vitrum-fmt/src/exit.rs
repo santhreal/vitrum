@@ -75,7 +75,22 @@ impl Termination {
 
 impl fmt::Display for Termination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&describe(*self))
+        match *self {
+            Termination::Exited(code) => write!(f, "{}", ExitCode(code)),
+            Termination::Signaled {
+                signal,
+                core_dumped,
+            } => match (signal_name(signal), core_dumped) {
+                (Some(name), false) => write!(f, "killed ({name})"),
+                (Some(name), true) => write!(f, "killed ({name}, core dumped)"),
+                (None, false) => write!(f, "killed (signal {signal})"),
+                (None, true) => write!(f, "killed (signal {signal}, core dumped)"),
+            },
+            Termination::Stopped { signal } => match signal_name(signal) {
+                Some(name) => write!(f, "stopped ({name})"),
+                None => write!(f, "stopped (signal {signal})"),
+            },
+        }
     }
 }
 
@@ -84,23 +99,32 @@ impl fmt::Display for Termination {
 /// `exited 0`, `exited 101`, `exited 0xc0000005 (access violation)`,
 /// `killed (SIGKILL)`, `killed (SIGSEGV, core dumped)`, `killed (signal 77)`,
 /// `stopped (SIGTSTP)`.
+///
+/// A caller splicing this into a larger message should write the [`Display`]
+/// impl instead; this is the shorthand for one that genuinely wants a `String`.
 #[must_use]
 pub fn describe(termination: Termination) -> String {
-    match termination {
-        Termination::Exited(code) => describe_code(code),
-        Termination::Signaled {
-            signal,
-            core_dumped,
-        } => match (signal_name(signal), core_dumped) {
-            (Some(name), false) => format!("killed ({name})"),
-            (Some(name), true) => format!("killed ({name}, core dumped)"),
-            (None, false) => format!("killed (signal {signal})"),
-            (None, true) => format!("killed (signal {signal}, core dumped)"),
-        },
-        Termination::Stopped { signal } => match signal_name(signal) {
-            Some(name) => format!("stopped ({name})"),
-            None => format!("stopped (signal {signal})"),
-        },
+    termination.to_string()
+}
+
+/// An exit code with no signal information, as a [`Display`].
+///
+/// Rendering through a formatter rather than returning a `String` is what lets
+/// [`Termination`] splice a code into a status line without allocating one
+/// buffer to build it and a second to hold the line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExitCode(pub i32);
+
+impl fmt::Display for ExitCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let raw = self.0 as u32;
+        if raw < 0x8000_0000 {
+            return write!(f, "exited {}", self.0);
+        }
+        match ntstatus_name(raw) {
+            Some(name) => write!(f, "exited 0x{raw:08x} ({name})"),
+            None => write!(f, "exited 0x{raw:08x}"),
+        }
     }
 }
 
@@ -111,14 +135,7 @@ pub fn describe(termination: Termination) -> String {
 /// code, such as a wire protocol that cannot express a signal.
 #[must_use]
 pub fn describe_code(code: i32) -> String {
-    let raw = code as u32;
-    if raw < 0x8000_0000 {
-        return format!("exited {code}");
-    }
-    match ntstatus_name(raw) {
-        Some(name) => format!("exited 0x{raw:08x} ({name})"),
-        None => format!("exited 0x{raw:08x}"),
-    }
+    ExitCode(code).to_string()
 }
 
 /// The `SIG*` name for a host signal number, or `None` if it is unknown here.

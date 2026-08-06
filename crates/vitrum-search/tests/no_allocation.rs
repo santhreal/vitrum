@@ -34,29 +34,35 @@ use vitrum_search::matcher::Matcher;
 use vitrum_search::{Haystack, Query, Sweep, search_with};
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
 static COUNTING: AtomicBool = AtomicBool::new(false);
 
 struct Counting;
 
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+impl Counting {
+    fn record(bytes: usize) {
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(bytes, Ordering::Relaxed);
         }
+    }
+}
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        Self::record(layout.size());
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        Self::record(layout.size());
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        // Only the growth is new memory; counting `new_size` would charge a
+        // doubling `Vec` for bytes it already had.
+        Self::record(new_size.saturating_sub(layout.size()));
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 
@@ -68,13 +74,24 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
-/// Run `body` with allocation counting on, and report the count.
-fn measure(body: impl FnOnce()) -> usize {
+/// What one measured window cost.
+#[derive(Clone, Copy)]
+struct Cost {
+    allocations: usize,
+    bytes: usize,
+}
+
+/// Run `body` with allocation counting on, and report what it cost.
+fn measure(body: impl FnOnce()) -> Cost {
     ALLOCATIONS.store(0, Ordering::SeqCst);
+    BYTES.store(0, Ordering::SeqCst);
     COUNTING.store(true, Ordering::SeqCst);
     body();
     COUNTING.store(false, Ordering::SeqCst);
-    ALLOCATIONS.load(Ordering::SeqCst)
+    Cost {
+        allocations: ALLOCATIONS.load(Ordering::SeqCst),
+        bytes: BYTES.load(Ordering::SeqCst),
+    }
 }
 
 /// Scrollback with the awkward shapes mixed in: plain lines, SGR-coloured
@@ -161,9 +178,9 @@ fn scanning_does_not_allocate_per_line() {
     };
 
     let mut small_lines = 0;
-    let small_allocations = measure(|| small_lines = scan(&small_slice));
+    let small_allocations = measure(|| small_lines = scan(&small_slice)).allocations;
     let mut large_lines = 0;
-    let large_allocations = measure(|| large_lines = scan(&large_slice));
+    let large_allocations = measure(|| large_lines = scan(&large_slice)).allocations;
 
     assert_eq!(small_lines, SMALL as u64);
     assert_eq!(large_lines, LARGE as u64);
@@ -203,7 +220,8 @@ fn scanning_does_not_allocate_per_line() {
             });
         }
         sweep_lines = sweep.finish().lines_scanned;
-    });
+    })
+    .allocations;
 
     assert_eq!(sweep_lines, (SMALL * 8) as u64);
     // Compiling the matcher and building the state allocate a fixed handful;
@@ -214,9 +232,75 @@ fn scanning_does_not_allocate_per_line() {
          allocations; the sweep must reuse its scratch across sessions"
     );
 
+    // WHY: result assembly is the only part of a scan allowed to allocate, so
+    // it is the only part where an accidental quadratic can hide. `finish` once
+    // built a `Vec<u64>` of every hit's session to count distinct sessions, and
+    // anything of that shape scales with the answer rather than with the query.
+    // Measuring the no-hit path above cannot see it at all.
+    let hits_query = Query::literal("Finished")
+        .context(0)
+        .max_hits(usize::MAX)
+        .max_hits_per_session(usize::MAX);
+    let hits_matcher = Matcher::compile(&hits_query).expect("valid pattern");
+    let scan_hits = |bytes: &&[u8]| {
+        search_with(
+            &hits_matcher,
+            &hits_query,
+            &[Haystack {
+                session: 0,
+                base_seq: 0,
+                chunks: std::slice::from_ref(bytes),
+            }],
+        )
+        .expect("search")
+        .len()
+    };
+    // Warm the matcher's caches outside the measured window.
+    assert_eq!(scan_hits(&small_slice), SMALL / 8);
+
+    let mut small_hits = 0;
+    let small_cost = measure(|| small_hits = scan_hits(&small_slice));
+    let mut large_hits = 0;
+    let large_cost = measure(|| large_hits = scan_hits(&large_slice));
+
+    assert_eq!(small_hits, SMALL / 8);
+    assert_eq!(large_hits, LARGE / 8);
+
+    // Slope, in both allocations and bytes. Twice the hits must cost at most
+    // twice as much, plus a fixed slack for the result vector's own doublings.
+    // Bytes are the assertion that bites: an implementation that copies the
+    // answer so far once per hit keeps a linear allocation COUNT while moving
+    // a quadratic amount of memory.
+    assert!(
+        large_cost.allocations <= 2 * small_cost.allocations + 64,
+        "doubling the hit count from {small_hits} to {large_hits} took \
+         allocations from {} to {}; result assembly must be linear in hits",
+        small_cost.allocations,
+        large_cost.allocations
+    );
+    assert!(
+        large_cost.bytes <= 2 * small_cost.bytes + 64 * 1024,
+        "doubling the hit count from {small_hits} to {large_hits} took \
+         allocated bytes from {} to {}; result assembly must be linear in hits",
+        small_cost.bytes,
+        large_cost.bytes
+    );
+    // Intercept: a bounded constant per hit, not a growing one.
+    assert!(
+        small_cost.allocations <= small_hits * 4,
+        "{small_hits} hits cost {} allocations, more than four per hit",
+        small_cost.allocations
+    );
+
     println!(
         "scan allocations: {small_lines} lines -> {small_allocations}, \
          {large_lines} lines -> {large_allocations}; \
-         sweep of 8 sessions ({sweep_lines} lines) -> {sweep_allocations}"
+         sweep of 8 sessions ({sweep_lines} lines) -> {sweep_allocations}; \
+         hits {small_hits} -> {} allocs / {} bytes, \
+         {large_hits} -> {} allocs / {} bytes",
+        small_cost.allocations,
+        small_cost.bytes,
+        large_cost.allocations,
+        large_cost.bytes
     );
 }

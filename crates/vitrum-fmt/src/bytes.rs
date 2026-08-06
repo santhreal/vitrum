@@ -20,13 +20,25 @@
 //! rounding pushes a value to `1024.0` of its unit, it is promoted to the next
 //! unit instead: 1 048 570 bytes renders `1.0 MiB`, never `1024.0 KiB`.
 
+use std::fmt::Write as _;
+
+const INFALLIBLE: &str = "writing to a String cannot fail";
+
 const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
 
 /// Human-readable binary size: `0 B`, `1023 B`, `1.0 KiB`, `1.2 KiB`, `9.5 MiB`.
 #[must_use]
 pub fn binary(bytes: u64) -> String {
+    let mut out = String::with_capacity(12);
+    write_binary(&mut out, bytes);
+    out
+}
+
+/// Append the rounded size to `out`.
+fn write_binary(out: &mut String, bytes: u64) {
     if bytes < 1024 {
-        return format!("{bytes} B");
+        write!(out, "{bytes} B").expect(INFALLIBLE);
+        return;
     }
 
     let mut unit = 0usize;
@@ -43,7 +55,7 @@ pub fn binary(bytes: u64) -> String {
         tenths = round_tenths(u128::from(bytes), divisor);
     }
 
-    format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
+    write!(out, "{}.{} {}", tenths / 10, tenths % 10, UNITS[unit]).expect(INFALLIBLE);
 }
 
 /// `bytes / divisor` in tenths, rounded half-up.
@@ -60,5 +72,10 @@ pub fn binary_exact(bytes: u64) -> String {
     if bytes < 1024 {
         return binary(bytes);
     }
-    format!("{} ({bytes} bytes)", binary(bytes))
+    // One buffer for both halves: building the rounded form on its own and
+    // then formatting it into a second string allocated twice per tooltip.
+    let mut out = String::with_capacity(36);
+    write_binary(&mut out, bytes);
+    write!(out, " ({bytes} bytes)").expect(INFALLIBLE);
+    out
 }

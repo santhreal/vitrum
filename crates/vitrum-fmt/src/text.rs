@@ -47,9 +47,19 @@ pub fn display_width(text: &str) -> usize {
 }
 
 /// Whether `text` fits in `budget` columns.
+///
+/// Stops as soon as the budget is blown, so testing a 4 MiB pasted title
+/// against a 24 column cell segments 25 clusters rather than the whole thing.
 #[must_use]
 pub fn fits(text: &str, budget: usize) -> bool {
-    display_width(text) <= budget
+    let mut used = 0usize;
+    for cluster in text.graphemes(true) {
+        used += cluster_width(cluster);
+        if used > budget {
+            return false;
+        }
+    }
+    true
 }
 
 /// Truncate to `budget` columns, cutting the tail and marking it with [`ELLIPSIS`].

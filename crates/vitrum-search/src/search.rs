@@ -231,9 +231,15 @@ impl<'a> Sweep<'a> {
         // haystacks for one session with interleaved base_seq values.
         self.results.hits.sort_by_key(Hit::order_key);
 
-        let mut sessions: Vec<u64> = self.results.hits.iter().map(|hit| hit.session).collect();
-        sessions.dedup();
-        self.results.sessions_hit = sessions.len();
+        // Hits are grouped by session after the sort, so counting boundaries is
+        // the whole answer and there is no need to materialise the session list.
+        self.results.sessions_hit = self
+            .results
+            .hits
+            .windows(2)
+            .filter(|pair| pair[0].session != pair[1].session)
+            .count()
+            + usize::from(!self.results.hits.is_empty());
         self.results
     }
 }
@@ -248,6 +254,11 @@ struct ScanState {
     before: VecDeque<LineSpan>,
     /// Indices into `results.hits` of hits still collecting after-context.
     pending: Vec<usize>,
+    /// Session the previous haystack belonged to, so the per-session cap counts
+    /// a session rather than a haystack.
+    session: Option<u64>,
+    /// Hits taken from `session` so far, across every haystack it was split into.
+    session_hits: usize,
 }
 
 impl ScanState {
@@ -257,6 +268,8 @@ impl ScanState {
             stripper: Stripper::new(),
             before: VecDeque::with_capacity(query.effective_context_before()),
             pending: Vec::new(),
+            session: None,
+            session_hits: 0,
         }
     }
 }
@@ -277,7 +290,18 @@ fn scan_one(
     state.before.clear();
     state.pending.clear();
 
-    let mut session_hits = 0usize;
+    // A session's ring may arrive as several haystacks; the cap is documented
+    // per session, so the count only resets when the session does.
+    if state.session != Some(haystack.session) {
+        state.session = Some(haystack.session);
+        state.session_hits = 0;
+    }
+    if state.session_hits >= query.max_hits_per_session {
+        // The session filled its allowance in an earlier haystack. Reading this
+        // one could only produce hits that are thrown away.
+        results.truncated = true;
+        return false;
+    }
     let mut scanned_to = 0u64;
     // Set when a cap fires: keep walking only to finish outstanding
     // after-context, then leave.
@@ -350,7 +374,7 @@ fn scan_one(
                 before,
                 after: Vec::new(),
             });
-            session_hits += 1;
+            state.session_hits += 1;
             if context_after > 0 {
                 state.pending.push(results.hits.len() - 1);
             }
@@ -361,7 +385,7 @@ fn scan_one(
                 draining = true;
                 break;
             }
-            if session_hits >= query.max_hits_per_session {
+            if state.session_hits >= query.max_hits_per_session {
                 results.truncated = true;
                 draining = true;
                 break;
@@ -741,5 +765,43 @@ mod tests {
             vec![0, 2, 3]
         );
         assert_eq!(results.sessions_hit, 3);
+    }
+
+    /// WHY: the per-session cap was counted per haystack, not per session, so a
+    /// session handed over in two pieces returned twice its documented
+    /// allowance. The daemon splits a wrapped ring exactly that way, so a cap
+    /// of 200 quietly became 400 for every session that had wrapped, and the
+    /// global budget was consumed by the chattiest sessions after all.
+    #[test]
+    fn the_per_session_cap_spans_every_haystack_of_one_session() {
+        let first = b"OOM one\nOOM two\nOOM three\n";
+        let second = b"OOM four\nOOM five\n";
+        let query = Query::literal("OOM").context(0).max_hits_per_session(2);
+
+        let mut sweep = Sweep::new(&query).expect("compile");
+        for (base_seq, body) in [(0u64, &first[..]), (first.len() as u64, &second[..])] {
+            let chunks = [body];
+            assert!(sweep.push(&Haystack {
+                session: 4,
+                base_seq,
+                chunks: &chunks,
+            }));
+        }
+        let results = sweep.finish();
+
+        assert_eq!(results.len(), 2, "the cap is two hits for session 4");
+        assert_eq!(
+            results
+                .hits
+                .iter()
+                .map(|hit| hit.visible_lossy())
+                .collect::<Vec<_>>(),
+            vec!["OOM one", "OOM two"],
+            "the kept hits must be the first two, not an arbitrary pair"
+        );
+        assert!(results.truncated);
+        assert_eq!(results.sessions_hit, 1);
+        // The second haystack is never read: its bytes cannot contribute.
+        assert_eq!(results.lines_scanned, 2);
     }
 }

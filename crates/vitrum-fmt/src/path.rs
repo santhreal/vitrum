@@ -158,10 +158,19 @@ pub fn shorten_home_relative(path: &str, home: &str, budget: usize) -> String {
 /// `""` is worse than `/`.
 #[must_use]
 pub fn base_name(path: &str) -> &str {
-    match components(path).last() {
-        Some(&(start, end)) => &path[start..end],
-        None => path,
-    }
+    // Scanned from the right rather than through `components`, which would
+    // allocate a vector of every component to read one of them.
+    let bytes = path.as_bytes();
+    let end = match bytes.iter().rposition(|&b| b != b'/' && b != b'\\') {
+        Some(last) => last + 1,
+        // Nothing but separators.
+        None => return path,
+    };
+    let start = bytes[..end]
+        .iter()
+        .rposition(|&b| b == b'/' || b == b'\\')
+        .map_or(0, |sep| sep + 1);
+    &path[start..end]
 }
 
 /// Byte ranges of the non-separator runs in `path`.

@@ -113,3 +113,15 @@ fn fits_is_inclusive_at_the_budget() {
     assert!(!fits("漢", 1), "a wide character does not fit one column");
     assert!(fits("漢", 2));
 }
+#[test]
+fn ascii_fastpath_width_and_fits() {
+    let s = "hello world";
+    assert_eq!(display_width(s), 11);
+    assert!(fits(s, 11));
+    assert!(!fits(s, 10));
+
+    let with_ctrl = "hello\x07world";
+    assert_eq!(display_width(with_ctrl), 10);
+    assert!(fits(with_ctrl, 10));
+    assert!(!fits(with_ctrl, 9));
+}

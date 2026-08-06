@@ -43,6 +43,16 @@ pub fn cluster_width(cluster: &str) -> usize {
 /// Columns occupied by a string when printed to a terminal.
 #[must_use]
 pub fn display_width(text: &str) -> usize {
+    if text.is_ascii() {
+        let bytes = text.as_bytes();
+        let mut width = 0;
+        for &b in bytes {
+            if b >= 0x20 && b != 0x7F {
+                width += 1;
+            }
+        }
+        return width;
+    }
     text.graphemes(true).map(cluster_width).sum()
 }
 
@@ -52,6 +62,22 @@ pub fn display_width(text: &str) -> usize {
 /// against a 24 column cell segments 25 clusters rather than the whole thing.
 #[must_use]
 pub fn fits(text: &str, budget: usize) -> bool {
+    if text.is_ascii() {
+        let bytes = text.as_bytes();
+        if bytes.len() <= budget {
+            return true;
+        }
+        let mut used = 0usize;
+        for &b in bytes {
+            if b >= 0x20 && b != 0x7F {
+                used += 1;
+                if used > budget {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
     let mut used = 0usize;
     for cluster in text.graphemes(true) {
         used += cluster_width(cluster);
@@ -76,11 +102,37 @@ pub fn fits(text: &str, budget: usize) -> bool {
 /// zero-width column renders nothing at all.
 #[must_use]
 pub fn truncate_end(text: &str, budget: usize) -> String {
-    if fits(text, budget) {
-        return text.to_owned();
-    }
     if budget == 0 {
         return String::new();
+    }
+    if text.is_ascii() {
+        let bytes = text.as_bytes();
+        if bytes.len() <= budget {
+            return text.to_owned();
+        }
+        let keep = budget - 1;
+        let mut used = 0usize;
+        let mut end = 0usize;
+        for (i, &b) in bytes.iter().enumerate() {
+            let width = if b >= 0x20 && b != 0x7F { 1 } else { 0 };
+            if used + width > keep {
+                break;
+            }
+            used += width;
+            end = i + 1;
+        }
+        if end == bytes.len() {
+            return text.to_owned();
+        }
+        let head = text[..end].trim_end();
+        let mut out = String::with_capacity(head.len() + ELLIPSIS.len_utf8());
+        out.push_str(head);
+        out.push(ELLIPSIS);
+        return out;
+    }
+
+    if fits(text, budget) {
+        return text.to_owned();
     }
 
     let keep = budget - 1;
@@ -115,14 +167,58 @@ pub fn truncate_end(text: &str, budget: usize) -> String {
 /// The result is never wider than `budget` and never splits a cluster.
 #[must_use]
 pub fn truncate_middle(text: &str, budget: usize) -> String {
-    if fits(text, budget) {
-        return text.to_owned();
-    }
     if budget == 0 {
         return String::new();
     }
     if budget == 1 {
         return ELLIPSIS.to_string();
+    }
+
+    if text.is_ascii() {
+        let bytes = text.as_bytes();
+        if bytes.len() <= budget {
+            return text.to_owned();
+        }
+
+        let available = budget - 1;
+        let tail_budget = available / 2;
+
+        let mut tail_start = bytes.len();
+        let mut tail_used = 0usize;
+        for i in (0..bytes.len()).rev() {
+            let b = bytes[i];
+            let width = if b >= 0x20 && b != 0x7F { 1 } else { 0 };
+            if tail_used + width > tail_budget {
+                break;
+            }
+            tail_used += width;
+            tail_start = i;
+        }
+        let head_budget = available - tail_used;
+
+        let mut head_end = 0usize;
+        let mut used = 0usize;
+        for i in 0..tail_start {
+            let b = bytes[i];
+            let width = if b >= 0x20 && b != 0x7F { 1 } else { 0 };
+            if used + width > head_budget {
+                break;
+            }
+            used += width;
+            head_end = i + 1;
+        }
+
+        let head = text[..head_end].trim_end();
+        let tail = text[tail_start..].trim_start();
+        let mut out = String::with_capacity(head.len() + ELLIPSIS.len_utf8() + tail.len());
+        out.push_str(head);
+        out.push(ELLIPSIS);
+        out.push_str(tail);
+        return out;
+    }
+
+    if fits(text, budget) {
+        return text.to_owned();
     }
 
     let available = budget - 1;

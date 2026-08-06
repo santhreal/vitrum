@@ -178,6 +178,21 @@ impl Matcher {
             Matcher::Regex(regex) => regex.is_match(haystack),
         }
     }
+    /// SIMD prefilter: check if `haystack` could contain a match.
+    #[inline]
+    pub fn is_possible_match(&self, haystack: &[u8]) -> bool {
+        match self {
+            Matcher::Literal(finder) => {
+                let needle = finder.needle();
+                if needle.is_empty() {
+                    true
+                } else {
+                    memchr::memchr(needle[0], haystack).is_some()
+                }
+            }
+            Matcher::Regex(_regex) => true,
+        }
+    }
 
     /// Is this the SIMD fast path?
     pub fn is_fast_literal(&self) -> bool {

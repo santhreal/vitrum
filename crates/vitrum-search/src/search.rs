@@ -337,6 +337,16 @@ fn scan_one(
             }
             continue;
         }
+        // SIMD prefilter: skip stripping and matching if the line cannot match.
+        if state.pending.is_empty() && !matcher.is_possible_match(bytes) {
+            if context_before > 0 {
+                if state.before.len() == context_before {
+                    state.before.pop_front();
+                }
+                state.before.push_back(span);
+            }
+            continue;
+        }
 
         // A line with no escapes and no stray control bytes is matched exactly
         // as it sits in the ring, with no copy and no coordinate translation.
@@ -803,5 +813,22 @@ mod tests {
         assert_eq!(results.sessions_hit, 1);
         // The second haystack is never read: its bytes cannot contribute.
         assert_eq!(results.lines_scanned, 2);
+    }
+
+    #[test]
+    fn simd_prefilter_skips_non_matching_lines_correctly() {
+        let chunk1 = b"line 1: quiet\nline 2: quiet\nline 3: TARGET match\nline 4: quiet\n";
+        let chunk2 = b"line 5: no match\nline 6: no match\n";
+        let query = Query::literal("TARGET").context(0);
+
+        let mut sweep = Sweep::new(&query).expect("compile");
+        assert!(sweep.push(&Haystack {
+            session: 1,
+            base_seq: 0,
+            chunks: &[chunk1, chunk2],
+        }));
+        let results = sweep.finish();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.hits[0].visible_lossy(), "line 3: TARGET match");
     }
 }

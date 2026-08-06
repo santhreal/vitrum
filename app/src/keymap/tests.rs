@@ -274,3 +274,38 @@ fn switching_section_rows_are_exact() {
         ]
     );
 }
+#[test]
+fn packed_key_chord_bitfield_and_matching() {
+    let p1 = PackedKeyChord::pack(true, false, true, false, 1, 42);
+    assert!(p1.ctrl());
+    assert!(!p1.alt());
+    assert!(p1.shift());
+    assert!(!p1.meta());
+
+    let parsed = PackedKeyChord::from_str_fast("Ctrl+Shift+x");
+    assert!(parsed.ctrl());
+    assert!(parsed.shift());
+    assert!(!parsed.alt());
+
+    let chord = CHORDS[0];
+    let packed = chord.packed();
+    assert_eq!(packed.ctrl(), chord.ctrl);
+}
+
+#[test]
+fn frame_aligned_microtask_debouncer() {
+    let mut debouncer = crate::keys::FrameKeyDebouncer::new(16);
+    let action = KeyAction::NextRow;
+
+    // First keypress at t=10ms -> processed immediately
+    let res1 = debouncer.process(action, 10);
+    assert_eq!(res1, Some(crate::keys::DebouncedKeyAction { action, coalesced_repeat_count: 1 }));
+
+    // Rapid repeat keypress at t=15ms (< 16ms budget) -> debounced (coalesced)
+    let res2 = debouncer.process(action, 15);
+    assert_eq!(res2, None);
+
+    // Keypress at t=30ms (>= 16ms budget) -> processes and returns coalesced count = 2
+    let res3 = debouncer.process(action, 30);
+    assert_eq!(res3, Some(crate::keys::DebouncedKeyAction { action, coalesced_repeat_count: 2 }));
+}

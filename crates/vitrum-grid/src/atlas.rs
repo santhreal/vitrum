@@ -208,11 +208,10 @@ impl GlyphAtlas {
     pub fn get(&self, key: GlyphKey) -> Option<AtlasEntry> {
         let val = key.ch as u32;
         if val < 128 {
-            if let Some(entry) = self.ascii_entries[val as usize][key.style as usize] {
-                return Some(entry);
-            }
+            self.ascii_entries[val as usize][key.style as usize]
+        } else {
+            self.entries.get(&key).copied()
         }
-        self.entries.get(&key).copied()
     }
 
     /// Reset the per-frame reset counter. The renderer calls this once at the
@@ -235,8 +234,13 @@ impl GlyphAtlas {
         fonts: &mut FontStack,
         key: GlyphKey,
     ) -> Result<AtlasEntry, AtlasError> {
-        if let Some(entry) = self.get(key) {
-            return Ok(entry);
+        let val = key.ch as u32;
+        if val < 128 {
+            if let Some(entry) = self.ascii_entries[val as usize][key.style as usize] {
+                return Ok(entry);
+            }
+        } else if let Some(entry) = self.entries.get(&key) {
+            return Ok(*entry);
         }
         let glyph = fonts.rasterize(key.ch, key.style);
         self.insert_glyph(queue, key, &glyph)

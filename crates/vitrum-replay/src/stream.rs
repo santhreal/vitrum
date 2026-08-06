@@ -369,7 +369,12 @@ fn decompress_block(block: &CompressedBlock, algorithm: CompressionAlgorithm) ->
             }
             let mut i = 1;
             while i < block.payload.len() {
-                if block.payload[i] == 0x00 && i + 2 < block.payload.len() {
+                if block.payload[i] == 0x00 {
+                    if i + 2 >= block.payload.len() {
+                        return Err(crate::error::Error::StreamCompression(
+                            "Truncated RLE escape sequence".to_string(),
+                        ));
+                    }
                     let count = block.payload[i + 1] as usize;
                     let byte = block.payload[i + 2];
                     out.resize(out.len() + count, byte);
@@ -388,7 +393,12 @@ fn decompress_block(block: &CompressedBlock, algorithm: CompressionAlgorithm) ->
             }
             let mut i = 8;
             while i < block.payload.len() {
-                if block.payload[i] == 0xFF && i + 2 < block.payload.len() {
+                if block.payload[i] == 0xFF {
+                    if i + 2 >= block.payload.len() {
+                        return Err(crate::error::Error::StreamCompression(
+                            "Truncated ZSTD escape sequence".to_string(),
+                        ));
+                    }
                     let count = block.payload[i + 1] as usize;
                     let byte = block.payload[i + 2];
                     out.resize(out.len() + count, byte);

@@ -43,3 +43,15 @@ fn test_stream_zstd_chunked_compression_roundtrip() {
     assert_eq!(base, 5000);
     assert_eq!(decompressed, data);
 }
+#[test]
+fn test_stream_zstd_literal_0xff_roundtrip() {
+    let mut data = vec![0xFF, 0x01, 0xFF, 0xFF, 0xAA];
+    data.resize(data.len() + 100, 0xFF);
+    let chunks = [data.as_slice()];
+    let stream = Stream::new(100, &chunks);
+
+    let archive = stream.compress_archive(CompressionAlgorithm::ZstdChunked, 32);
+    assert!(archive.verify_checksums());
+    let (_, decompressed) = archive.decompress().expect("decompression failed");
+    assert_eq!(decompressed, data);
+}

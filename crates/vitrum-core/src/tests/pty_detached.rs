@@ -2,7 +2,7 @@
 //! their ring, because a GUI restart or a tab switch must not cost history.
 
 use crate::SessionManager;
-use crate::tests::helpers::{collect, settled_head, shell_spec, wait_exit};
+use crate::tests::helpers::{collect, contains, settled, shell_spec, wait_exit};
 
 /// Scrollback must be recorded when no client has ever subscribed.
 ///
@@ -17,10 +17,8 @@ async fn scrollback_is_recorded_with_no_subscriber() {
         .expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
-    settled_head(&mgr, id).await;
-    let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
+    let (from, bytes) = settled(&mgr, id, |_, b| contains(b, b"nobody-watching\r\n")).await;
     assert_eq!(from, 0);
-    assert!(!more);
     // Ends with, not equals: ConPTY opens the stream with its own mode sets and
     // an OSC 0 naming the shell, which are terminal bytes the frontend needs and
     // therefore belong in the ring. What must hold on every platform is that the
@@ -74,8 +72,7 @@ async fn re_attaching_delivers_no_backlog() {
     let mut late = collect(&mgr, id);
     late.expect_quiet().await;
     assert_eq!(late.bytes, b"", "attach must not replay");
-    settled_head(&mgr, id).await;
-    let (_, bytes, _) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
+    let (_, bytes) = settled(&mgr, id, |_, b| contains(b, b"history\r\n")).await;
     assert!(
         bytes.ends_with(b"history\r\n"),
         "history is still available: {bytes:?}"

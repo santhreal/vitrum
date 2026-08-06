@@ -499,13 +499,21 @@ pub fn Search(props: SearchProps) -> Element {
                 // between them.
                 input {
                     class: "rg-search__input",
-                    // Named so the shell can put the caret here when the
-                    // layer opens, the way `rg-filter` is used for the
-                    // sidebar's own field.
                     id: "rg-search-input",
                     r#type: "text",
                     placeholder: "Pattern, then Enter",
                     value: "{props.query}",
+                    // The caret goes here as the layer opens. It has to be done
+                    // on mount rather than by the shell when it handles the
+                    // chord: the element does not exist yet at that point, so a
+                    // focus command issued there finds nothing and the operator
+                    // types into whatever had focus before. Inside a live pane
+                    // that means the pattern is fed to the child process.
+                    onmounted: move |e| {
+                        spawn(async move {
+                            let _ = e.set_focus(true).await;
+                        });
+                    },
                     // Escape is deliberately not handled. The bridge matches
                     // the shell's chord table on `window` in the capture
                     // phase and claims it for Dismiss before any handler here

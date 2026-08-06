@@ -261,8 +261,6 @@ struct ScanState {
     session: Option<u64>,
     /// Hits taken from `session` so far, across every haystack it was split into.
     session_hits: usize,
-    /// Pre-allocated scratch buffer for collecting match ranges without dynamic allocation.
-    matches_scratch: Vec<std::ops::Range<usize>>,
 }
 
 impl ScanState {
@@ -275,7 +273,6 @@ impl ScanState {
             pending: Vec::with_capacity(pending_cap),
             session: None,
             session_hits: 0,
-            matches_scratch: Vec::with_capacity(8),
         }
     }
 }
@@ -353,21 +350,8 @@ fn scan_one(
             (bytes, Map::Identity)
         };
 
-        state.matches_scratch.clear();
         let mut from = 0usize;
         while let Some(range) = matcher.find_at(visible, from) {
-            let is_empty = range.start == range.end;
-            let end = range.end;
-            state.matches_scratch.push(range);
-            if !query.all_matches_per_line {
-                break;
-            }
-            from = if !is_empty { end } else { end + 1 };
-            if from > visible.len() {
-                break;
-            }
-        }
-        for range in state.matches_scratch.drain(..) {
             let original_range = map.range(range.clone());
             let line_seq = haystack.base_seq + span.offset;
 
@@ -385,7 +369,7 @@ fn scan_one(
                 line_seq,
                 match_seq: line_seq + original_range.start as u64,
                 original_range,
-                visible_range: range,
+                visible_range: range.clone(),
                 line_index: span.index,
                 line: bytes.to_vec(),
                 visible: visible.to_vec(),
@@ -406,6 +390,18 @@ fn scan_one(
             if state.session_hits >= query.max_hits_per_session {
                 results.truncated = true;
                 draining = true;
+                break;
+            }
+            if !query.all_matches_per_line {
+                break;
+            }
+            // A zero-width match would otherwise pin `from` in place forever.
+            from = if range.end > range.start {
+                range.end
+            } else {
+                range.end + 1
+            };
+            if from > visible.len() {
                 break;
             }
         }

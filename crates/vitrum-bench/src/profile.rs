@@ -344,7 +344,11 @@ fn clock_ticks_per_sec() -> f64 {
     100.0
 }
 
-#[cfg(test)]
+/// The parsers read `/proc`, so they are only exercised where `/proc` exists.
+/// `Sampler::new` already refuses to run anywhere else, and a test that skipped
+/// its assertions on another platform would report a pass for a check it never
+/// made.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

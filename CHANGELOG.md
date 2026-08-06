@@ -3,6 +3,43 @@
 Notable changes per release. Versions follow [semver](https://semver.org);
 before 1.0 a minor bump may break things, and this file says when it does.
 
+## Unreleased
+
+### Fixed
+
+- **A second window no longer kills the process.** Opening window two panicked
+  with `DuplicateCustomProtocol("vitrum-backdrop")`: every webview is built
+  from one shared `WebContext`, a custom scheme belongs to that context rather
+  than to the webview, and the scheme was being registered again for each
+  window. It is registered once per process now.
+- **The measurement harness connects again.** It still asked for wire protocol
+  1 after the daemon moved to 2, so every run failed at the handshake and
+  created no sessions. A test now asserts the two agree.
+
+### Changed
+
+- **Dual licensed MIT OR Apache-2.0**, from MIT alone. The Apache half carries
+  an explicit patent grant. The vendored forks under `vendor/` and
+  `vendor-pty/` keep the MIT license and copyright they arrived with.
+- **The README's performance figures are generated**, from a checked-in
+  snapshot of real harness runs, and CI fails when a table drifts from it. The
+  `~325 MB` and `0.22%` recorded under v0.1.0 below are superseded: they could
+  not have described twenty windows on that build, which crashed on the second
+  one. Measured on the current tree, twenty windows are 460.1 MB PSS in three
+  client processes, 11.2 MB per extra window, and 0.1% of one core at idle over
+  a minute with no memory drift.
+
+### Added
+
+- `install.sh` and `install.ps1`: the release install as a file you can read,
+  with the archive verified against the release `SHA256SUMS` and no install on
+  a mismatch. Nothing is piped into a shell.
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `AUTHORS`, `NOTICE`,
+  issue forms, a pull request template, and Dependabot.
+- A `cargo-deny` policy and the CI job that enforces it, so a dependency whose
+  license conflicts with the dual license fails the build.
+- `make`: `gate`, `measure`, `readme-perf`, `readme-perf-check`, `package`.
+
 ## v0.1.0 - 2026-08-05
 
 First public release. Pre-1.0: it runs, it is used daily on Linux, and the gaps

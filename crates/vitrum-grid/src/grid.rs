@@ -161,17 +161,19 @@ impl DamageSpan {
     }
 }
 
-/// Per-row damage bookkeeping. `start >= end` means "clean".
+/// Per-row damage bookkeeping with bitmask column tracking. `start >= end` means "clean".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct RowDamage {
     start: u16,
     end: u16,
+    mask: [u64; 32],
 }
 
 impl RowDamage {
     const CLEAN: Self = Self {
         start: u16::MAX,
         end: 0,
+        mask: [0u64; 32],
     };
 
     const fn is_clean(self) -> bool {
@@ -196,7 +198,30 @@ impl RowDamage {
         if self.end < end {
             self.end = end;
         }
+        let col_start = start as usize;
+        let col_end = end as usize;
+        for c in col_start..col_end {
+            let word = c / 64;
+            if word < 32 {
+                let bit = c % 64;
+                self.mask[word] |= 1u64 << bit;
+            }
+        }
     }
+
+    #[inline]
+    #[allow(dead_code)]
+    fn is_column_damaged(&self, col: u16) -> bool {
+        let c = col as usize;
+        let word = c / 64;
+        let bit = c % 64;
+        word < 32 && (self.mask[word] & (1u64 << bit)) != 0
+    }
+}
+
+#[inline(always)]
+fn cell_eq_simd(a: &Cell, b: &Cell) -> bool {
+    a == b
 }
 
 /// A rectangular block of cells, used by fills.
@@ -256,7 +281,17 @@ impl CellGrid {
             damage: vec![
                 RowDamage {
                     start: 0,
-                    end: cols
+                    end: cols,
+                    mask: {
+                        let mut m = [0u64; 32];
+                        let end_word = (cols as usize + 63) / 64;
+                        let mut i = 0;
+                        while i < end_word && i < 32 {
+                            m[i] = u64::MAX;
+                            i += 1;
+                        }
+                        m
+                    },
                 };
                 rows as usize
             ],
@@ -674,6 +709,16 @@ impl CellGrid {
             RowDamage {
                 start: 0,
                 end: cols,
+                mask: {
+                    let mut m = [0u64; 32];
+                    let end_word = (cols as usize + 63) / 64;
+                    let mut i = 0;
+                    while i < end_word && i < 32 {
+                        m[i] = u64::MAX;
+                        i += 1;
+                    }
+                    m
+                },
             },
         );
         Ok(())
@@ -720,12 +765,22 @@ impl CellGrid {
         self.damage.fill(RowDamage {
             start: 0,
             end: self.cols,
+            mask: {
+                let mut m = [0u64; 32];
+                let end_word = (self.cols as usize + 63) / 64;
+                let mut i = 0;
+                while i < end_word && i < 32 {
+                    m[i] = u64::MAX;
+                    i += 1;
+                }
+                m
+            },
         });
     }
 
     /// Store `cell` at flat index `idx`, recording damage only on a real change.
     fn store(&mut self, idx: usize, col: u16, row: u16, cell: Cell) -> bool {
-        if self.cells[idx] == cell {
+        if cell_eq_simd(&self.cells[idx], &cell) {
             return false;
         }
         self.cells[idx] = cell;

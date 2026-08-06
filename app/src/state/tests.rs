@@ -881,7 +881,14 @@ fn orphan_sessions_get_their_own_trailing_group() {
         g[1].key,
         GroupKey::Directory(directory_key(&inbox::project_key("/tmp")))
     );
-    assert_eq!(g[1].label, "/tmp", "the bucket is named by the directory");
+    // Recomputed from the same cwd rather than written out, because the key a
+    // directory gets is a platform fact three ways: `/tmp` is itself on Linux,
+    // canonicalises to `/private/tmp` on macOS, and does not exist on Windows
+    // so it keeps the typed text with its separators unified. Still an
+    // independent expectation: a label taken from anything but the directory
+    // fails this.
+    let tmp = inbox::project_key("/tmp");
+    assert_eq!(g[1].label, tmp, "the bucket is named by the directory");
     assert_eq!(g[1].project, None);
     assert_eq!(ids(&g[1].bands.active), vec![11]);
     assert_eq!(
@@ -2577,24 +2584,21 @@ fn directory_grouping_buckets_by_project_then_by_cwd() {
         .iter()
         .map(|g| (g.key, g.label.as_str(), ids(g.section(Section::Active))))
         .collect();
+    // Recomputed from the cwds above rather than written out: see
+    // `orphan_sessions_get_their_own_trailing_group` for why the key is a
+    // platform fact. The cwds are what a client sends; these are what the
+    // sidebar draws.
+    let (a, b) = (inbox::project_key("/tmp/a"), inbox::project_key("/tmp/b"));
     assert_eq!(
         shape,
         vec![
             (pk(1), "vitrum", vec![10]),
-            (
-                GroupKey::Directory(directory_key(&inbox::project_key("/tmp/a"))),
-                "/tmp/a",
-                vec![22, 20]
-            ),
-            (
-                GroupKey::Directory(directory_key(&inbox::project_key("/tmp/b"))),
-                "/tmp/b",
-                vec![21]
-            ),
+            (GroupKey::Directory(directory_key(&a)), a.as_str(), vec![22, 20]),
+            (GroupKey::Directory(directory_key(&b)), b.as_str(), vec![21]),
         ]
     );
     assert_eq!(tree[0].root.as_deref(), Some("/src/p1"));
-    assert_eq!(tree[1].root.as_deref(), Some("/tmp/a"));
+    assert_eq!(tree[1].root.as_deref(), Some(a.as_str()));
     assert!(
         tree[1].bands.rollup.is_some(),
         "a bucket that is not a project still lights its collapsed header"
@@ -2703,7 +2707,8 @@ fn four_project_ids_for_one_root_draw_one_group() {
     let tree = window_on(DEFAULT_WORKSPACE).tree(&daemon, clock());
     assert_eq!(tree.len(), 1, "one directory is one project group");
     assert_eq!(tree[0].label, "vitrum");
-    assert_eq!(tree[0].root.as_deref(), Some("/src/vitrum"));
+    let root = inbox::project_key("/src/vitrum");
+    assert_eq!(tree[0].root.as_deref(), Some(root.as_str()));
     assert_eq!(ids(tree[0].section(Section::Active)), vec![13, 12, 11, 10]);
     assert_eq!(
         tree[0]
@@ -2747,7 +2752,7 @@ fn two_spellings_of_one_cwd_draw_one_directory_bucket() {
 
     let tree = window_on(DEFAULT_WORKSPACE).tree(&daemon, clock());
     assert_eq!(tree.len(), 1);
-    assert_eq!(tree[0].label, "/tmp");
+    assert_eq!(tree[0].label, inbox::project_key("/tmp"));
     assert_eq!(ids(tree[0].section(Section::Active)), vec![12, 11, 10]);
 }
 

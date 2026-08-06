@@ -77,12 +77,15 @@ fn info(id: u64, cwd: &str) -> SessionInfo {
 #[test]
 fn theme() {
     let before = Settings::default();
-    let light = Settings {
-        theme: ThemePref::Light,
-        ..before.clone()
-    };
-    assert_ne!(theme_attr(&before), theme_attr(&light));
+    let light = Settings { theme: ThemePref::Light, ..before.clone() };
+    let dark = Settings { theme: ThemePref::Dark, ..before.clone() };
+    // Two explicit preferences, not one against the default. The default is
+    // System, which resolves through the desktop, so comparing against it
+    // asserts what the machine running the test happens to be set to: on a
+    // light desktop it reads "light" and the comparison is against itself.
+    assert_ne!(theme_attr(&light), theme_attr(&dark));
     assert_eq!(theme_attr(&light), "light");
+    assert_eq!(theme_attr(&dark), "dark");
 
     let restored = after_restart(|s| s.theme = ThemePref::Light);
     assert_eq!(restored.theme, ThemePref::Light);

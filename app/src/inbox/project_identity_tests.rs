@@ -66,11 +66,13 @@ fn a_trailing_separator_keys_the_same_directory() {
         project_key(gone),
         project_key(" /vitrum-does-not-exist/deep// ")
     );
-    assert_eq!(
-        project_key("/"),
-        "/",
-        "the root is a separator, not padding"
-    );
+    // The root itself, which is the case trimming gets wrong: strip the
+    // separator as padding and the key becomes empty. Spelled as a property
+    // rather than as "/" because on Windows a rooted path resolves against the
+    // current drive and the key comes back as `D:\`, which is equally the root.
+    let root = project_key("/");
+    assert!(!root.is_empty(), "the root is a separator, not padding");
+    assert_eq!(project_key("  /  "), root, "padding around the root is still padding");
 }
 
 /// Case is identity on Linux and is not on macOS or Windows, and the key

@@ -96,7 +96,15 @@ fn a_command_that_is_not_on_path_is_named_at_edit_time() {
         Some(PresetFault::NotOnPath(ABSENT.to_string()))
     );
 
-    let (runnable, _) = one("Shell", "/bin/sh -l");
+    // An absolute path to something that really is executable HERE. `/bin/sh`
+    // is not a file on Windows, so spelling it there asserts the fault path
+    // twice and never the clean one.
+    let real = if cfg!(windows) {
+        std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string())
+    } else {
+        "/bin/sh".to_string()
+    };
+    let (runnable, _) = one("Shell", &format!("{real} -l"));
     assert_eq!(
         preset_fault(&runnable[0]),
         None,

@@ -15,6 +15,8 @@
 //!   I look"; the counts answer "how much is in there", and a group header has
 //!   room for both. T3 Code returns only the pill.
 
+use std::collections::HashMap;
+
 use vitrum_proto::ProjectId;
 use serde::{Deserialize, Serialize};
 
@@ -205,19 +207,18 @@ pub fn rollup_all(
     clock: Clock,
     policy: DispositionPolicy,
 ) -> Vec<ProjectRollup> {
+    // Index by project so absorbing N rows across P projects is O(N), not
+    // O(N·P). First-seen order is preserved: the map stores the vec index of
+    // each project, and new projects are always appended.
     let mut rollups: Vec<ProjectRollup> = Vec::new();
+    let mut index_of: HashMap<ProjectId, usize> = HashMap::new();
     for row in rows {
         let project_id = row.project_id();
-        let index = match rollups
-            .iter()
-            .position(|rollup| rollup.project_id == project_id)
-        {
-            Some(index) => index,
-            None => {
-                rollups.push(ProjectRollup::empty(project_id));
-                rollups.len() - 1
-            }
-        };
+        let next = rollups.len();
+        let index = *index_of.entry(project_id).or_insert_with(|| {
+            rollups.push(ProjectRollup::empty(project_id));
+            next
+        });
         rollups[index].absorb(row, clock, policy);
     }
     for rollup in &mut rollups {

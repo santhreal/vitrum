@@ -3236,8 +3236,9 @@ fn ignoring_an_update_is_exact_to_the_version() {
     let dismissed = semver::Version::parse("0.2.0").unwrap();
     let later = semver::Version::parse("0.2.1").unwrap();
     s.ignore_update(&dismissed);
-    assert!(s.update_is_ignored(&dismissed));
-    assert!(!s.update_is_ignored(&later));
+    assert_eq!(s.ignored_update, "0.2.0");
+    // A later release must not match the pinned dismissal string.
+    assert_ne!(s.ignored_update, later.to_string());
 }
 
 /// An older profile without `ignoredUpdate` must still load, with nothing

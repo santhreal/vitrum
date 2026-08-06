@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
+use bytes::{Bytes, BytesMut};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use vitrum_model::hint::HintDeclaration;
 use vitrum_proto::{Attention, SessionId, SessionInfo, SessionStatus, display_safe};
@@ -80,7 +81,7 @@ pub struct SessionSpec {
 #[derive(Clone, Debug)]
 pub struct OutputChunk {
     pub seq: u64,
-    pub data: Arc<[u8]>,
+    pub data: Bytes,
 }
 
 /// Server-side state for one live or exited session.
@@ -124,7 +125,7 @@ pub(crate) struct Session {
     /// writer thread exit: an exited session can never accept input again, and a
     /// thread parked on this queue for every finished session would accumulate
     /// for as long as the daemon runs.
-    input: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
+    input: Mutex<Option<mpsc::UnboundedSender<Bytes>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// When the operator last had eyes on this session, as a Unix millisecond.
     ///
@@ -213,7 +214,7 @@ impl Session {
         if watched {
             let _ = self.output.send(OutputChunk {
                 seq,
-                data: Arc::from(data),
+                data: Bytes::copy_from_slice(data),
             });
         }
     }
@@ -443,7 +444,7 @@ impl SessionManager {
         let (output, _) = broadcast::channel(OUTPUT_CHANNEL_CHUNKS);
         let (status_tx, _) = watch::channel(SessionStatus::Starting);
         let (observations_tx, _) = watch::channel(0u64);
-        let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (input_tx, input_rx) = mpsc::unbounded_channel::<Bytes>();
 
         let info = SessionInfo {
             id,
@@ -487,7 +488,7 @@ impl SessionManager {
             child_pid,
         });
 
-        let (raw_tx, raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (raw_tx, raw_rx) = mpsc::unbounded_channel::<Bytes>();
         let (exit_tx, exit_rx) = oneshot::channel::<Option<i32>>();
 
         // Dedicated threads, not spawn_blocking: these loops live as long as
@@ -668,7 +669,7 @@ impl SessionManager {
             queue
                 .as_ref()
                 .ok_or_else(|| anyhow!("session {} pty writer is gone", id.0))?
-                .send(data.to_vec())
+                .send(Bytes::copy_from_slice(data))
                 .map_err(|_| anyhow!("session {} pty writer is gone", id.0))?;
         }
         // Input is the one change the probe cannot see coming. A child reading
@@ -818,21 +819,22 @@ impl SessionManager {
 fn read_loop(
     mut reader: Box<dyn Read + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    out: mpsc::UnboundedSender<Vec<u8>>,
+    out: mpsc::UnboundedSender<Bytes>,
     exit: oneshot::Sender<Option<i32>>,
 ) {
-    let mut buf = vec![0u8; READ_CHUNK];
+    let mut pool = BytesMut::with_capacity(READ_CHUNK);
     loop {
-        match reader.read(&mut buf) {
+        pool.resize(READ_CHUNK, 0);
+        match reader.read(&mut pool[..]) {
             Ok(0) => break,
             Ok(n) => {
-                if out.send(buf[..n].to_vec()).is_err() {
+                pool.truncate(n);
+                let chunk = pool.split().freeze();
+                if out.send(chunk).is_err() {
                     break;
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-            // A closed pty reports EIO on Linux and EBADF elsewhere; both mean
-            // the same thing here, which is that the child is done writing.
             Err(_) => break,
         }
     }
@@ -853,7 +855,7 @@ fn read_loop(
 }
 
 /// Blocking PTY write loop. Ends when the session drops its queue.
-fn write_loop(mut writer: Box<dyn Write + Send>, mut input: mpsc::UnboundedReceiver<Vec<u8>>) {
+fn write_loop(mut writer: Box<dyn Write + Send>, mut input: mpsc::UnboundedReceiver<Bytes>) {
     while let Some(data) = input.blocking_recv() {
         if writer
             .write_all(&data)
@@ -868,10 +870,10 @@ fn write_loop(mut writer: Box<dyn Write + Send>, mut input: mpsc::UnboundedRecei
 /// Coalesce raw reads into a few large chunks, then publish them.
 async fn coalesce_loop(
     session: Arc<Session>,
-    mut raw: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut raw: mpsc::UnboundedReceiver<Bytes>,
     exit: oneshot::Receiver<Option<i32>>,
 ) {
-    let mut buf: Vec<u8> = Vec::new();
+    let mut buf = BytesMut::new();
     let mut scan = OutputScan::new();
     let mut hints: Vec<HintDeclaration> = Vec::new();
     // Armed once at spawn so a child that never writes a byte is still
@@ -932,9 +934,9 @@ async fn coalesce_loop(
 /// it.
 async fn next_read(
     session: &Session,
-    raw: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    raw: &mut mpsc::UnboundedReceiver<Bytes>,
     settle_at: &mut Option<Instant>,
-) -> Option<Vec<u8>> {
+) -> Option<Bytes> {
     loop {
         match *settle_at {
             None => {

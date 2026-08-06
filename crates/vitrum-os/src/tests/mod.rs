@@ -18,6 +18,7 @@ mod icon;
 mod notify_payload;
 mod paths;
 mod registration;
+mod pty;
 mod single_instance;
 mod support;
 mod theme_decode;

@@ -11,6 +11,41 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+use std::cell::RefCell;
+
+thread_local! {
+    static TLS_POOL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Execute a closure with access to a thread-local reusable `String` buffer.
+///
+/// The buffer is cleared before and after the closure runs, retaining allocation
+/// capacity across formatting operations to eliminate heap allocations.
+pub fn with_buffer<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut String) -> R,
+{
+    let mut buf = TLS_POOL.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
+    buf.clear();
+    let res = f(&mut buf);
+    buf.clear();
+    TLS_POOL.with(|pool| pool.borrow_mut().push(buf));
+    res
+}
+
+/// A thread-local buffer pool for zero-allocation formatting.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BufferPool;
+
+impl BufferPool {
+    /// Acquire a reusable buffer, clear it, execute `f`, and recycle the capacity.
+    pub fn with_buf<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut String) -> R,
+    {
+        with_buffer(f)
+    }
+}
 
 /// The single character used for every elision in this crate.
 ///
@@ -76,11 +111,19 @@ pub fn fits(text: &str, budget: usize) -> bool {
 /// zero-width column renders nothing at all.
 #[must_use]
 pub fn truncate_end(text: &str, budget: usize) -> String {
+    let mut out = String::new();
+    truncate_end_into(text, budget, &mut out);
+    out
+}
+
+/// Truncate into `out`, avoiding allocation when `out` has existing capacity.
+pub fn truncate_end_into(text: &str, budget: usize, out: &mut String) {
     if fits(text, budget) {
-        return text.to_owned();
+        out.push_str(text);
+        return;
     }
     if budget == 0 {
-        return String::new();
+        return;
     }
 
     let keep = budget - 1;
@@ -96,10 +139,9 @@ pub fn truncate_end(text: &str, budget: usize) -> String {
     }
 
     let head = text[..end].trim_end();
-    let mut out = String::with_capacity(head.len() + ELLIPSIS.len_utf8());
+    out.reserve(head.len() + ELLIPSIS.len_utf8());
     out.push_str(head);
     out.push(ELLIPSIS);
-    out
 }
 
 /// Truncate to `budget` columns by removing the middle.
@@ -115,22 +157,28 @@ pub fn truncate_end(text: &str, budget: usize) -> String {
 /// The result is never wider than `budget` and never splits a cluster.
 #[must_use]
 pub fn truncate_middle(text: &str, budget: usize) -> String {
+    let mut out = String::new();
+    truncate_middle_into(text, budget, &mut out);
+    out
+}
+
+/// Truncate to `budget` columns by removing the middle into `out`.
+pub fn truncate_middle_into(text: &str, budget: usize, out: &mut String) {
     if fits(text, budget) {
-        return text.to_owned();
+        out.push_str(text);
+        return;
     }
     if budget == 0 {
-        return String::new();
+        return;
     }
     if budget == 1 {
-        return ELLIPSIS.to_string();
+        out.push(ELLIPSIS);
+        return;
     }
 
     let available = budget - 1;
     let tail_budget = available / 2;
 
-    // Walk from the right first so the head loop knows where to stop. Without
-    // that bound, zero-width clusters (combining marks) would let the head walk
-    // past the tail and emit them on both sides of the ellipsis.
     let mut tail_start = text.len();
     let mut tail_used = 0usize;
     for (offset, cluster) in text.grapheme_indices(true).rev() {
@@ -159,11 +207,10 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
 
     let head = text[..head_end].trim_end();
     let tail = text[tail_start..].trim_start();
-    let mut out = String::with_capacity(head.len() + ELLIPSIS.len_utf8() + tail.len());
+    out.reserve(head.len() + ELLIPSIS.len_utf8() + tail.len());
     out.push_str(head);
     out.push(ELLIPSIS);
     out.push_str(tail);
-    out
 }
 
 /// Strip escape sequences and control characters so a single-line label stays a
@@ -190,7 +237,14 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
 /// them.
 #[must_use]
 pub fn sanitize_line(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::new();
+    sanitize_line_into(text, &mut out);
+    out
+}
+
+/// Strip escape sequences and control characters into `out`.
+pub fn sanitize_line_into(text: &str, out: &mut String) {
+    out.reserve(text.len());
     let mut chars = text.chars();
     while let Some(ch) = chars.next() {
         match ch {
@@ -209,7 +263,6 @@ pub fn sanitize_line(text: &str) -> String {
             _ => {}
         }
     }
-    out
 }
 
 /// Consume a CSI sequence's parameters and intermediates up to its final byte.
@@ -260,21 +313,32 @@ fn skip_escape_tail(second: char, chars: &mut std::str::Chars<'_>) {
 /// The one call a view layer should make for an untrusted single-line title.
 #[must_use]
 pub fn title(text: &str, budget: usize) -> String {
-    let cleaned = sanitize_line(text);
-    let mut collapsed = String::with_capacity(cleaned.len());
-    let mut pending_space = false;
-    for ch in cleaned.chars() {
-        if ch.is_whitespace() {
-            pending_space = !collapsed.is_empty();
-            continue;
-        }
-        if pending_space {
-            collapsed.push(' ');
-            pending_space = false;
-        }
-        collapsed.push(ch);
-    }
-    truncate_end(&collapsed, budget)
+    let mut out = String::new();
+    title_into(text, budget, &mut out);
+    out
+}
+
+/// Sanitize, collapse runs of whitespace, trim, then truncate to `budget` into `out`.
+pub fn title_into(text: &str, budget: usize, out: &mut String) {
+    with_buffer(|cleaned| {
+        sanitize_line_into(text, cleaned);
+        with_buffer(|collapsed| {
+            collapsed.reserve(cleaned.len());
+            let mut pending_space = false;
+            for ch in cleaned.chars() {
+                if ch.is_whitespace() {
+                    pending_space = !collapsed.is_empty();
+                    continue;
+                }
+                if pending_space {
+                    collapsed.push(' ');
+                    pending_space = false;
+                }
+                collapsed.push(ch);
+            }
+            truncate_end_into(collapsed, budget, out);
+        });
+    });
 }
 
 /// Pad on the right with spaces to exactly `budget` columns, truncating first.
@@ -282,8 +346,16 @@ pub fn title(text: &str, budget: usize) -> String {
 /// For fixed-column layouts where a short label must still consume its cell.
 #[must_use]
 pub fn pad_end(text: &str, budget: usize) -> String {
-    let mut out = truncate_end(text, budget);
-    let width = display_width(&out);
-    out.extend(std::iter::repeat_n(' ', budget - width));
+    let mut out = String::new();
+    pad_end_into(text, budget, &mut out);
     out
+}
+
+/// Pad on the right with spaces to exactly `budget` columns into `out`.
+pub fn pad_end_into(text: &str, budget: usize, out: &mut String) {
+    truncate_end_into(text, budget, out);
+    let width = display_width(out);
+    if budget > width {
+        out.extend(std::iter::repeat_n(' ', budget - width));
+    }
 }

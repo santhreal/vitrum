@@ -71,4 +71,5 @@ mod tests;
 pub use exit::Termination;
 pub use git::Head;
 pub use text::ELLIPSIS;
+pub use text::{BufferPool, with_buffer};
 pub use time::{TimeFormat, Timestamp};

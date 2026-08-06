@@ -69,11 +69,17 @@
 
 /* -- The sheet ---------------------------------------------------------- */
 
-/* 576, against .rg-sheet's 512. A row carries four things where a field
- * carried one, and 576 is also exactly `100% - 4rem` at the 640px minimum
- * window, so the sheet is never the thing that decides the layout. */
+/* 704, against .rg-sheet's 512.
+ *
+ * A row carries four things where a field carried one, and the `in` field now
+ * drops a completion list under itself: at 576 a path deep enough to need
+ * completing was already truncating in the field that was meant to show it.
+ *
+ * `min` rather than a flat width, because 704 is wider than the 640px minimum
+ * window. The sheet takes 704 where there is room and `100% - 4rem` where
+ * there is not, so it is never the thing that decides the layout. */
 .rg-sheet--launcher {
-  width: 36rem;
+  width: min(44rem, calc(100% - 4rem));
 
   /* Anchored near the top, not centred in the window.
    *
@@ -200,6 +206,11 @@
   gap: var(--rg-space-2);
   flex: 0 0 auto;
   padding: 0 var(--rg-space-3);
+
+  /* The completion list hangs off this box. Positioned rather than in flow,
+   * because in flow it is a third flex item that shoves the `run` field down
+   * the sheet on every keystroke that changes the number of matches. */
+  position: relative;
 }
 
 .rg-launch__label {
@@ -213,9 +224,15 @@
 }
 
 /* The directory. Shorter than the command field because it is the half the
- * operator changes less often, and its recents come from the platform's own
- * completion rather than a second popup competing with the row list for the
- * arrow keys. */
+ * operator changes less often.
+ *
+ * It used to lean on a `datalist`, and the comment here used to defend that as
+ * avoiding "a second popup competing with the row list for the arrow keys".
+ * That was wrong twice. The platform list offered only directories already
+ * visited, so the field could not reach anywhere new, and WebKitGTK draws it
+ * as an OS menu that ignores every token on this surface. The competition it
+ * worried about does not happen either: the arrow keys belong to whichever
+ * field has focus, and this list only exists while this field has it. */
 .rg-launch__dir {
   flex: 1 1 auto;
   min-width: 0;
@@ -235,6 +252,67 @@
   outline: none;
   border-color: var(--rg-accent);
   color: var(--rg-fg);
+}
+
+/* The completion list.
+ *
+ * Left edge at the input's, not the sheet's: the list answers the field, and
+ * starting it under the label would leave it pointing at nothing. The 32px
+ * label column plus the flex gap is what that offset is made of.
+ *
+ * Overlays what is below rather than displacing it, for the same reason the
+ * sheet anchors its top edge: the `run` field must not move under the
+ * operator's hand while they are still deciding where to run.
+ *
+ * NO MOTION, like every other state on this surface. A list that fades in
+ * under a held Tab repaints for nothing, and the completion has to feel like
+ * it was already there. */
+.rg-launch__dirs {
+  position: absolute;
+  top: calc(100% + var(--rg-space-1));
+  left: calc(var(--rg-space-3) + var(--rg-space-8) + var(--rg-space-2));
+  right: var(--rg-space-3);
+  z-index: 1;
+
+  margin: 0;
+  padding: var(--rg-space-1);
+  list-style: none;
+
+  border: 1px solid var(--rg-border-strong);
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-surface-overlay);
+  box-shadow: var(--rg-shadow-3);
+}
+
+.rg-launch__diropt {
+  padding: 0 var(--rg-space-2);
+  height: var(--rg-control-h);
+  display: flex;
+  align-items: center;
+
+  border-radius: var(--rg-radius-sm);
+  color: var(--rg-fg-muted);
+  font-family: var(--rg-font-mono);
+  font-size: var(--rg-text-12);
+
+  cursor: pointer;
+}
+
+/* One highlight for both hover and the keyboard cursor. Two would let the
+ * surface show two candidates at once, and Tab only ever takes one of them. */
+.rg-launch__diropt:hover,
+.rg-launch__diropt--on {
+  background-color: var(--rg-ctl-hover);
+  color: var(--rg-fg);
+}
+
+/* The leaf, not the path. Every row under one directory shares the prefix the
+ * field is already showing, so drawing it again spends the width on the one
+ * part that is identical and truncates the part that is not. */
+.rg-launch__dirleaf {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Which agent this row would start.

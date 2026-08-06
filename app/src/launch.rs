@@ -1016,7 +1016,11 @@ pub fn filter_dirs(entries: &[String], fragment: &str, limit: usize) -> Vec<Stri
 }
 
 /// The last path component of `path`, without allocating.
-fn leaf(path: &str) -> &str {
+///
+/// The completion list draws leaves, not full paths: every row under one
+/// directory shares the same prefix, so drawing it repeats the field's own
+/// contents on every line and pushes the part that differs off the edge.
+pub fn leaf(path: &str) -> &str {
     match path.rfind(['/', '\\']) {
         Some(i) => &path[i + 1..],
         None => path,

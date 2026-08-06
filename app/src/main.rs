@@ -454,6 +454,32 @@ fn App() -> Element {
     // never shows onboarding should pay for that.
     let mut detected = use_signal(Vec::<launch::Detected>::new);
 
+    // Quiet update check for the titlebar chip. Separate from About's button
+    // so a release can surface without the operator opening Settings first.
+    //
+    // A forced offer seeds the signal before the first paint so demos and
+    // screenshots do not depend on a future tick racing the capture.
+    let mut update_offer = use_signal(|| {
+        if std::env::var_os("VITRUM_UPDATE_OFFER").is_none() {
+            return None;
+        }
+        let seeded = match update::quiet_check() {
+            Ok(status) => update::chrome_offer(&status, ""),
+            Err(e) => {
+                tracing::warn!("forced update offer failed: {e:#}");
+                None
+            }
+        };
+        tracing::info!(
+            "forced update offer seed: {}",
+            seeded
+                .as_ref()
+                .map(|a| a.version.to_string())
+                .unwrap_or_else(|| "none".into())
+        );
+        seeded
+    });
+
     let bridge = use_hook(|| Bridge {
         eval: document::eval(BOOTSTRAP_JS),
     });
@@ -813,6 +839,47 @@ fn App() -> Element {
         }
     });
 
+    // After first paint. A GitHub round trip must not lengthen the path to a
+    // usable window, and a fixture has no network story to tell.
+    use_future(move || {
+        let mut update_offer = update_offer;
+        async move {
+            if opts.fixture {
+                // Still honour an explicit demo override so screenshots and
+                // review can paint the chip without a live release.
+                if std::env::var_os("VITRUM_UPDATE_OFFER").is_none() {
+                    return;
+                }
+            }
+            // A forced offer is for screenshots and demos; paint it on the
+            // first tick. A real check waits so it cannot compete with the
+            // first paint or the daemon connect for the network.
+            let delay = if std::env::var_os("VITRUM_UPDATE_OFFER").is_some() {
+                std::time::Duration::from_millis(50)
+            } else {
+                std::time::Duration::from_secs(2)
+            };
+            tokio::time::sleep(delay).await;
+            let got = off_thread(update::quiet_check).await;
+            match got {
+                Ok(status) => {
+                    let ignored = st.peek().daemon.settings.ignored_update.clone();
+                    let next = update::chrome_offer(&status, &ignored);
+                    tracing::debug!(
+                        "quiet update check: status={status:?} offer={}",
+                        next.as_ref()
+                            .map(|a| a.version.to_string())
+                            .unwrap_or_else(|| "none".into())
+                    );
+                    update_offer.set(next);
+                }
+                Err(e) => {
+                    tracing::debug!("quiet update check skipped: {e:#}");
+                }
+            }
+        }
+    });
+
     let render_tick = tick();
     let clock = render_tick.fmt;
     let home = clock::home();
@@ -868,6 +935,9 @@ fn App() -> Element {
     // single element. Without these three attributes the
     // appearance settings render controls that change nothing.
     let settings = st.read().daemon.settings.clone();
+    let update_version = update_offer()
+        .as_ref()
+        .map(|a| a.version.to_string());
 
     rsx! {
         div {
@@ -912,6 +982,21 @@ fn App() -> Element {
                     move |()| window.close()
                 },
                 on_shortcuts: move |()| toggle_layer(st, Layer::Shortcuts),
+                update_version,
+                on_update: move |()| {
+                    st.write().window.layer = Layer::Settings(state::SettingsTab::About);
+                },
+                on_dismiss_update: move |()| {
+                    let Some(offer) = update_offer.peek().clone() else {
+                        return;
+                    };
+                    {
+                        let mut w = st.write();
+                        w.daemon.settings.ignore_update(&offer.version);
+                    }
+                    ui::settings::commit(&st.peek());
+                    update_offer.set(None);
+                },
             }
 
             ui::workspaces::WorkspaceBar {
@@ -1125,6 +1210,7 @@ fn App() -> Element {
                             attached.set(None);
                         },
                         on_dismiss: move |()| dismiss(st),
+                        update_offer,
                     }
                 },
                 // Both sheets record that they were seen the moment they

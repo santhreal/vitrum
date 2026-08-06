@@ -46,6 +46,7 @@ use vitrum_replay::asciicast;
 use vitrum_search::ansi::{Stripper, needs_stripping};
 use vitrum_search::matcher::Matcher;
 use vitrum_search::query::Query;
+use vitrum_model::hint::{HintParser, parse_payload};
 
 use crate::report::Report;
 
@@ -129,12 +130,10 @@ struct Outcome {
     panics: Vec<String>,
     /// How many inputs exceeded the allocation bound.
     oversized: Vec<String>,
-    /// How many times each error path fired, for the report's shape counts.
-    errors: [usize; 5],
+    errors: [usize; 6],
 }
 
-/// Targets the probe exercises. Indexed by `errors` slots.
-const TARGETS: [&str; 5] = ["decode_output", "b64", "asciicast", "search", "grid"];
+const TARGETS: [&str; 6] = ["decode_output", "b64", "asciicast", "search", "grid", "osc"];
 
 impl Outcome {
     fn hash(&mut self, bytes: &[u8]) {
@@ -287,7 +286,44 @@ fn probe_one(out: &mut Outcome, case: &Case, idx: usize) {
             vitrum_grid::CharWidth::Control | vitrum_grid::CharWidth::ZeroWidth => 0u8,
         };
         out.hash(&[columns]);
-        let _ = w;
+
+        // --- osc: incremental 7373 extractor over hostile terminal output --
+        // Byte-at-a-time state machine fed full hostile output. `out` grows one
+        // declaration per completed sequence; a hostile stream must never make
+        // it allocate unboundedly (bounded by MAX_SEQUENCE_BYTES internally) or
+        // panic on a malformed interior.
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            let mut parser = HintParser::new();
+            let decls = parser.feed_to_vec(input);
+            (parser.rejected(), decls)
+        }));
+        match r {
+            Err(_) => out.panics.push(format!("osc feed case {idx} variant {which} panicked")),
+            Ok((rejected, decls)) => {
+                out.hash(&rejected.to_le_bytes());
+                for d in &decls {
+                    out.hash(d.label.as_deref().unwrap_or("").as_bytes());
+                    out.hash(&[d.state as u8]);
+                }
+                if decls.len() > bound {
+                    out.oversized.push(format!(
+                        "osc case {idx} variant {which}: {} decls from {} input",
+                        decls.len(),
+                        input.len()
+                    ));
+                }
+            }
+        }
+        // The one-shot parser over a payload slice.
+        let r = catch_unwind(AssertUnwindSafe(|| parse_payload(input)));
+        match r {
+            Err(_) => out.panics.push(format!("osc payload case {idx} variant {which} panicked")),
+            Ok(Some(decl)) => {
+                out.hash(decl.label.as_deref().unwrap_or("").as_bytes());
+                out.hash(&[decl.state as u8]);
+            }
+            Ok(None) => out.errors[5] += 1,
+        }
     }
 }
 
@@ -360,7 +396,7 @@ pub fn run(spec: &ProbeSpec) -> anyhow::Result<Report> {
     }
     let allocated: u64 = outcomes.iter().map(|o| o.allocated).sum();
     let cases_run = spec.cases * spec.threads;
-    let errors: Vec<usize> = (0..5)
+    let errors: Vec<usize> = (0..TARGETS.len())
         .map(|i| outcomes.iter().map(|o| o.errors[i]).sum())
         .collect();
 
@@ -385,6 +421,7 @@ pub fn run(spec: &ProbeSpec) -> anyhow::Result<Report> {
             "asciicast": errors[2],
             "matcher": errors[3],
             "grid": errors[4],
+            "osc": errors[5],
         },
     });
     report.duration_secs = started.elapsed().as_secs_f64();

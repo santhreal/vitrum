@@ -182,6 +182,22 @@ pub fn title(releases: &[Release]) -> String {
     }
 }
 
+/// One sentence under the title, matching the onboarding sheet's shape.
+///
+/// The title already names the version or the count. This line says why the
+/// sheet is here at all: these are the notes for the update the operator just
+/// landed in, not a general changelog browser.
+pub fn intro(releases: &[Release]) -> String {
+    match releases {
+        [] => String::new(),
+        [_] => "The notes for the update you just opened.".into(),
+        many => format!(
+            "The notes for the {} updates since you last looked.",
+            many.len()
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The component
 // ---------------------------------------------------------------------------
@@ -200,6 +216,7 @@ pub struct WhatsNewProps {
 #[component]
 pub fn WhatsNew(props: WhatsNewProps) -> Element {
     let heading = title(&props.releases);
+    let intro_line = intro(&props.releases);
 
     rsx! {
         div {
@@ -213,9 +230,16 @@ pub fn WhatsNew(props: WhatsNewProps) -> Element {
 
                 div { class: "rg-sheet__head",
                     span { class: "rg-sheet__title", "{heading}" }
+                    button {
+                        class: "rg-btn-inline",
+                        r#type: "button",
+                        onclick: move |_| props.on_dismiss.call(()),
+                        "Dismiss"
+                    }
                 }
 
                 div { class: "rg-sheet__body",
+                    p { class: "rg-whatsnew__intro", "{intro_line}" }
                     for release in props.releases.iter() {
                         div { class: "rg-whatsnew__release", key: "{release.version}",
                             div { class: "rg-whatsnew__version",
@@ -452,5 +476,54 @@ Prose that belongs to no release.
         assert_eq!(title(&two), "What changed across 2 releases");
 
         assert_eq!(title(&[]), "");
+    }
+
+    /// The intro names the update, not the whole project history. A blank
+    /// sheet has no intro either: there is nothing to frame.
+    #[test]
+    fn the_intro_matches_how_many_releases_are_shown() {
+        let one = releases_since(THREE, Some(&v("0.1.1")), &v("0.2.0"));
+        assert_eq!(intro(&one), "The notes for the update you just opened.");
+
+        let two = releases_since(THREE, Some(&v("0.1.0")), &v("0.2.0"));
+        assert_eq!(
+            intro(&two),
+            "The notes for the 2 updates since you last looked."
+        );
+
+        assert_eq!(intro(&[]), "");
+    }
+
+    /// The sheet must expose a header dismiss control. Escape is covered by
+    /// `dismiss_persists`; the header is the mouse-reachable equivalent of
+    /// onboarding's Skip, so an operator is not forced onto Got it alone.
+    #[test]
+    fn the_sheet_offers_a_header_dismiss() {
+        use dioxus::prelude::*;
+        #[component]
+        fn Harness() -> Element {
+            let releases = releases_since(THREE, Some(&v("0.1.1")), &v("0.2.0"));
+            rsx! {
+                WhatsNew {
+                    releases,
+                    on_dismiss: move |()| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(Harness);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("rg-whatsnew__intro"),
+            "intro missing from {html}"
+        );
+        assert!(
+            html.contains("The notes for the update you just opened."),
+            "intro copy missing from {html}"
+        );
+        assert!(
+            html.contains(">Dismiss<") || html.contains(">Dismiss</"),
+            "header dismiss missing from {html}"
+        );
     }
 }

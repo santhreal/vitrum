@@ -74,10 +74,41 @@ pub(crate) fn run_search(bridge: Bridge, mut st: Signal<UiState>) {
 }
 
 /// Close whichever layer is open.
+///
+/// Onboarding and What's New both promise that closing them — Skip, Got it,
+/// backdrop, or Escape — records that they were seen. The component handlers
+/// honour that for clicks; Escape goes through this function, so the same
+/// persistence has to live here or a sheet dismissed with Escape returns on
+/// the next launch.
 pub(crate) fn dismiss(mut st: Signal<UiState>) {
-    if st.peek().window.layer.is_open() {
-        st.write().window.layer = Layer::None;
+    let layer = st.peek().window.layer.clone();
+    if !layer.is_open() {
+        return;
     }
+    let persist = dismiss_persists(&layer);
+    {
+        let mut w = st.write();
+        if persist {
+            let current = update::current_version();
+            match layer {
+                Layer::Onboarding => w.daemon.settings.finish_onboarding(&current),
+                Layer::WhatsNew => w.daemon.settings.mark_seen(&current),
+                _ => {}
+            }
+        }
+        w.window.layer = Layer::None;
+    }
+    if persist {
+        ui::settings::commit(&st.peek());
+    }
+}
+
+/// Whether dismissing this layer must also write the "seen" bit.
+///
+/// Extracted so the Escape path and the click handlers can be tested against
+/// the same rule without standing up a VirtualDom.
+pub(crate) fn dismiss_persists(layer: &Layer) -> bool {
+    matches!(layer, Layer::Onboarding | Layer::WhatsNew)
 }
 
 /// Open `next`, or close it if it is already the open layer.

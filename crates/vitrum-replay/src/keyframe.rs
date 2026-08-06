@@ -172,14 +172,19 @@ impl Keyframe {
         }
     }
 
-    /// Reconstruct full Screen from base Screen and delta.
-    #[must_use]
-    pub fn apply_delta(base_screen: &Screen, delta: &KeyframeDelta) -> Screen {
-        let mut screen = base_screen.clone();
+    /// Apply delta snapshot in place onto a mutable Screen.
+    pub fn apply_delta_in_place(screen: &mut Screen, delta: &KeyframeDelta) {
         screen.apply_non_grid_state_from_delta(delta);
         for &(c, r, ref cell) in &delta.cell_diffs {
             let _ = screen.grid_mut().set_cell(c, r, cell.clone());
         }
+    }
+
+    /// Reconstruct full Screen from base Screen and delta.
+    #[must_use]
+    pub fn apply_delta(base_screen: &Screen, delta: &KeyframeDelta) -> Screen {
+        let mut screen = base_screen.clone();
+        Self::apply_delta_in_place(&mut screen, delta);
         screen
     }
 }
@@ -267,7 +272,7 @@ impl KeyframeIndex {
                         let mut current_screen = anchor_k.screen().clone();
                         for idx in (anchor_idx + 1)..=target_idx {
                             if let KeyframeStorage::Delta(ref d) = self.frames[idx] {
-                                current_screen = Keyframe::apply_delta(&current_screen, d);
+                                Keyframe::apply_delta_in_place(&mut current_screen, d);
                             }
                         }
                         let target_seq = self.frames[target_idx].seq();

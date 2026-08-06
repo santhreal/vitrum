@@ -484,8 +484,8 @@ fn test_key_encoding_length() {
 }
 
 pub(crate) struct OwnedNotifyFuture {
-    _notify: Arc<Notify>,
     notified: tokio::sync::futures::Notified<'static>,
+    _notify: Arc<Notify>,
     yielded: bool,
 }
 

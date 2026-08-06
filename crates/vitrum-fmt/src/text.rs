@@ -167,6 +167,10 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
     out
 }
 
+/// True when every byte in `chunk` is printable ASCII (`0x20..=0x7E`).
+///
+/// Packed subtract/add sets the high bit of any byte outside that range, so one
+/// mask test rejects controls, DEL, and any non-ASCII UTF-8 lead/continuation.
 #[inline(always)]
 fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
     let w = u64::from_ne_bytes(*chunk);
@@ -197,11 +201,18 @@ fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
 /// dropping it would run them together. Every other C0 and C1 control is
 /// dropped outright. Runs of spaces are left alone here; [`title`] collapses
 /// them.
+///
+/// Returns [`Cow::Borrowed`] when the whole input is already printable ASCII, so
+/// callers that only need a `&str` (and owned sinks via [`Cow::into_owned`])
+/// avoid allocating on the common clean-title path. Otherwise scans with an
+/// 8-byte SWAR probe, copies the proven-clean prefix, and finishes with the
+/// char-level escape/control state machine from the first dirty byte.
 #[must_use]
 pub fn sanitize_line<'a>(text: &'a str) -> Cow<'a, str> {
     let bytes = text.as_bytes();
 
-    // Fast path: SWAR scan for pure printable ASCII input.
+    // Borrow when every byte is printable ASCII; otherwise `scan` is the first
+    // 8-byte boundary that still looked clean and the slow path resumes there.
     let mut scan = 0;
     while scan + 8 <= bytes.len() {
         let chunk: &[u8; 8] = bytes[scan..scan + 8].try_into().unwrap();

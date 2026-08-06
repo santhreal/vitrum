@@ -287,15 +287,10 @@ fn the_daemon_survives_the_client_that_started_it() {
     let scratch = Scratch::new("survives");
     let fake = scratch.0.join(DAEMON_BIN);
     let flag = scratch.0.join("still-here");
-    // Sleeps, then proves it was still alive by writing the flag. Also
-    // reports its own session id, which is what `setsid` changes.
+    // Sleeps, then proves it was still alive by writing the flag.
     std::fs::write(
         &fake,
-        format!(
-            "#!/bin/sh\nps -o sid= -p $$ > {sid}\nsleep 2\ntouch {flag}\n",
-            sid = scratch.0.join("sid").display(),
-            flag = flag.display()
-        ),
+        format!("#!/bin/sh\nsleep 2\ntouch {flag}\n", flag = flag.display()),
     )
     .expect("writing a script");
     make_executable(&fake);
@@ -308,6 +303,11 @@ fn the_daemon_survives_the_client_that_started_it() {
     // Its session id must differ from ours, which is what keeps a Ctrl-C
     // in the launching terminal from taking the daemon with it.
     //
+    // Asked of the kernel rather than of the child, because the child would
+    // have to spell the question in shell and `ps -o sid=` is a Linux
+    // spelling: BSD `ps` on macOS has no `sid` keyword, so the child wrote
+    // nothing and the only thing this proved there was the deadline.
+    //
     // Polled to a deadline rather than slept at for a fixed 400ms. The
     // fixed sleep was a guess about how long a machine takes to exec a
     // shell script, and this suite runs on machines that are also building
@@ -316,15 +316,15 @@ fn the_daemon_survives_the_client_that_started_it() {
     // condition is both faster when idle and correct when loaded.
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let sid = loop {
-        let raw = std::fs::read_to_string(scratch.0.join("sid")).unwrap_or_default();
-        if let Ok(n) = raw.trim().parse::<i32>() {
-            if n > 0 {
-                break n;
-            }
+        // Safety: reads the session of a pid this test spawned. Returns -1
+        // with ESRCH if it is gone, which the loop treats as not ready yet.
+        let sid = unsafe { getsid(pid as i32) };
+        if sid > 0 && sid as u32 == pid {
+            break sid;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the child never reported a session id"
+            "the child never became its own session leader; getsid said {sid}"
         );
         std::thread::sleep(Duration::from_millis(20));
     };

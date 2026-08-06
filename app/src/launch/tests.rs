@@ -225,7 +225,9 @@ fn a_valid_launch_carries_split_arguments_and_no_warning() {
     assert_eq!(got.args, vec!["-c".to_string(), "echo hi".to_string()]);
     assert_eq!(got.title.as_deref(), Some("review"));
     assert_eq!(got.warning, None);
-    assert_eq!(got.cwd, dir.to_str().unwrap());
+    // As a path, not as text: Windows' `temp_dir` ends in a separator and
+    // `validate` trims it, and `Path` compares components rather than bytes.
+    assert_eq!(std::path::Path::new(&got.cwd), dir.as_path());
 }
 
 /// A blank title must become `None`, not `Some("")`. An empty title makes

@@ -353,21 +353,25 @@ fn an_unreadable_directory_completes_to_nothing() {
 #[test]
 fn the_seed_directory_prefers_what_exists_and_is_never_blank() {
     let root = if cfg!(windows) { "C:\\" } else { "/" };
-    let store = LaunchStore {
-        last_cwd: root.to_string(),
-        ..LaunchStore::default()
+    // Absolute on this platform, and absent on any. A Unix-shaped path is
+    // merely rooted on Windows, not absolute, and `seed_cwd` refuses relative
+    // candidates on purpose, so spelling it that way would assert the refusal
+    // rather than the never-blank rule.
+    let gone = if cfg!(windows) {
+        r"C:\vitrum-no-such-directory-9f3a"
+    } else {
+        "/vitrum-no-such-directory-9f3a"
     };
+    let elsewhere = if cfg!(windows) { r"C:\also-not-here" } else { "/also-not-here" };
+    let store = LaunchStore { last_cwd: root.to_string(), ..LaunchStore::default() };
     // A seed that is gone loses to a last_cwd that is there.
-    assert_eq!(seed_cwd("/vitrum-no-such-directory-9f3a", &store, ""), root);
+    assert_eq!(seed_cwd(gone, &store, ""), root);
     // A seed that is there wins outright.
     assert_eq!(seed_cwd(root, &store, ""), root);
     // Nothing exists anywhere: still not blank.
     let empty = LaunchStore::default();
-    assert_eq!(
-        seed_cwd("/vitrum-no-such-directory-9f3a", &empty, ""),
-        "/vitrum-no-such-directory-9f3a"
-    );
-    assert_eq!(seed_cwd("", &empty, "/also-not-here"), "/also-not-here");
+    assert_eq!(seed_cwd(gone, &empty, ""), gone);
+    assert_eq!(seed_cwd("", &empty, elsewhere), elsewhere);
 }
 
 /// A relative seed must be skipped, not used. Observed against the real

@@ -41,16 +41,28 @@ fn a_traversing_backdrop_path_is_refused() {
 /// exactly the case percent-encoding exists for.
 #[test]
 fn an_absolute_backdrop_path_survives() {
+    // A URL path always uses slashes and always starts with one. On Unix that
+    // slash is the root; on Windows the drive letter sits under it and
+    // `backdrop_path` strips it, so a Unix path spelled here is rooted but
+    // driveless and gets refused. Spelling both keeps this test about the
+    // traversal guard rather than about path syntax.
+    #[cfg(windows)]
+    let (url_root, path_root) = ("/C:/you", "C:/you");
+    #[cfg(not(windows))]
+    let (url_root, path_root) = ("/home/you", "/home/you");
+
+    let plain = format!("{path_root}/wall.png");
     assert_eq!(
-        backdrop_path("/home/you/wall.png").as_deref(),
-        Some(std::path::Path::new("/home/you/wall.png"))
+        backdrop_path(&format!("{url_root}/wall.png")).as_deref(),
+        Some(std::path::Path::new(&plain))
     );
+    let spaced = format!("{path_root}/My Pictures/wall paper.png");
     assert_eq!(
-        backdrop_path("/home/you/My%20Pictures/wall%20paper.png").as_deref(),
-        Some(std::path::Path::new("/home/you/My Pictures/wall paper.png"))
+        backdrop_path(&format!("{url_root}/My%20Pictures/wall%20paper.png")).as_deref(),
+        Some(std::path::Path::new(&spaced))
     );
     // A directory named `..something` is not a traversal and is not refused.
-    assert!(backdrop_path("/home/you/..hidden/wall.png").is_some());
+    assert!(backdrop_path(&format!("{url_root}/..hidden/wall.png")).is_some());
 }
 
 /// A round trip through the encoder and the decoder is the identity.

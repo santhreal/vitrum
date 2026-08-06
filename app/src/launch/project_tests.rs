@@ -81,10 +81,12 @@ fn a_trailing_separator_keys_the_same_project() {
 fn an_existing_directory_keys_canonically() {
     let tmp = std::env::temp_dir();
     let canonical = std::fs::canonicalize(&tmp).unwrap();
-    assert_eq!(
-        project_key(tmp.to_str().unwrap()),
-        canonical.to_str().unwrap()
-    );
+    let canonical = canonical.to_string_lossy();
+    // `canonicalize` hands back Windows' `\\?\` verbatim prefix and a client
+    // that never canonicalised does not, so the key drops it deliberately.
+    // Dropped here too, or this asserts the bug it exists to prevent.
+    let expected = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+    assert_eq!(project_key(tmp.to_str().unwrap()), expected);
 }
 
 /// A path that does not exist keeps the text the user typed, so the dialog
@@ -92,5 +94,9 @@ fn an_existing_directory_keys_canonically() {
 /// field or a canonicalisation failure.
 #[test]
 fn a_nonexistent_path_keeps_what_was_typed() {
-    assert_eq!(project_key("  /no/such/dir  "), "/no/such/dir");
+    // Separators are unified on Windows and only there, because `\` is a legal
+    // character in a Linux filename. So what was typed keeps its text but not
+    // necessarily its slashes.
+    let expected = if cfg!(windows) { r"\no\such\dir" } else { "/no/such/dir" };
+    assert_eq!(project_key("  /no/such/dir  "), expected);
 }

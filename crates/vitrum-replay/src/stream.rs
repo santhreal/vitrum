@@ -253,27 +253,49 @@ impl<'a> Stream<'a> {
         let base_seq = self.base_seq();
         let head_seq = self.head_seq();
 
-        let full_data = self.to_vec(base_seq..head_seq);
-        let mut offset = 0usize;
+        let mut current_block = Vec::with_capacity(block_size);
+        let mut block_seq_start = base_seq;
+        let mut current_offset = 0u64;
         let mut total_compressed = 0u64;
 
-        while offset < full_data.len() {
-            let end = (offset + block_size).min(full_data.len());
-            let chunk = &full_data[offset..end];
-            let seq_start = base_seq + offset as u64;
+        for slice in self.slices(base_seq..head_seq) {
+            let mut slice_pos = 0;
+            while slice_pos < slice.len() {
+                let needed = block_size - current_block.len();
+                let take = needed.min(slice.len() - slice_pos);
+                current_block.extend_from_slice(&slice[slice_pos..slice_pos + take]);
+                slice_pos += take;
 
-            let payload = compress_block(chunk, algorithm);
+                if current_block.len() >= block_size {
+                    let payload = compress_block(&current_block, algorithm);
+                    let checksum = compute_checksum(&payload);
+                    total_compressed += payload.len() as u64;
+
+                    blocks.push(CompressedBlock {
+                        seq_start: block_seq_start,
+                        uncompressed_len: current_block.len() as u32,
+                        checksum,
+                        payload,
+                    });
+
+                    current_offset += current_block.len() as u64;
+                    block_seq_start = base_seq + current_offset;
+                    current_block.clear();
+                }
+            }
+        }
+
+        if !current_block.is_empty() {
+            let payload = compress_block(&current_block, algorithm);
             let checksum = compute_checksum(&payload);
             total_compressed += payload.len() as u64;
 
             blocks.push(CompressedBlock {
-                seq_start,
-                uncompressed_len: chunk.len() as u32,
+                seq_start: block_seq_start,
+                uncompressed_len: current_block.len() as u32,
                 checksum,
                 payload,
             });
-
-            offset = end;
         }
 
         CompressedStreamArchive {

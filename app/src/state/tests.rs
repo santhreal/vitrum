@@ -2597,7 +2597,7 @@ fn directory_grouping_buckets_by_project_then_by_cwd() {
             (GroupKey::Directory(directory_key(&b)), b.as_str(), vec![21]),
         ]
     );
-    assert_eq!(tree[0].root.as_deref(), Some("/src/p1"));
+    assert_eq!(tree[0].root.as_deref(), Some(inbox::project_key("/src/p1").as_str()));
     assert_eq!(tree[1].root.as_deref(), Some(a.as_str()));
     assert!(
         tree[1].bands.rollup.is_some(),

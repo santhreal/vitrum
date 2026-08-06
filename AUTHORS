@@ -1,0 +1,22 @@
+vitrum is written and maintained by santhreal.
+
+Copyright holder:
+  santhreal <https://github.com/santhreal>
+
+Contributors are listed in the git history. See:
+  https://github.com/santhreal/vitrum/graphs/contributors
+
+vitrum carries two vendored forks that are somebody else's work, kept under
+their own upstream copyright and their own MIT license:
+
+  vendor/      a fork of Dioxus desktop
+               Copyright (c) 2021 Jonathan Kelley
+               MIT license, in vendor/LICENSE
+
+  vendor-pty/  a fork of portable-pty
+               Copyright (c) 2018 Wez Furlong
+               MIT license, in vendor-pty/LICENSE.md
+
+Those trees are not relicensed by anything in this repository.
+
+To contribute, see CONTRIBUTING.md.

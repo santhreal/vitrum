@@ -23,6 +23,7 @@
 //! - [`cost`]: measured seek latency and index memory.
 
 mod asciicast_header;
+mod keyframe_delta;
 mod asciicast_jsonstr;
 mod asciicast_reader_errors;
 mod asciicast_roundtrip;

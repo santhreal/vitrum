@@ -12,7 +12,6 @@ mod pty_detached;
 mod pty_escapes;
 mod pty_exit;
 mod pty_geometry;
-mod pty_handshake;
 mod pty_input;
 mod pty_output;
 mod pty_resize;

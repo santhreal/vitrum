@@ -1,0 +1,59 @@
+[package]
+name = "vitrum-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The vitrum desktop client: sidebar and terminal panes."
+
+# The binary is `vitrum`, not `vitrum-app`.
+#
+# `--help` has always said `usage: vitrum`, every error message names
+# `vitrum`, and the README tells you to type `vitrum`. A crate named
+# `vitrum-app` producing a binary called `vitrum-app` made all of those
+# wrong the moment anybody followed them. The daemon is located beside
+# the executable or on PATH by its own name, so this rename does not
+# touch it.
+[[bin]]
+name = "vitrum"
+path = "src/main.rs"
+
+[dependencies]
+vitrum-proto = { workspace = true }
+vitrum-fmt = { workspace = true }
+vitrum-model = { workspace = true }
+vitrum-os = { workspace = true }
+dioxus = { version = "0.7", features = ["desktop"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# `time` only: the one-shot that retires a transient notice. The runtime
+# itself is dioxus-desktop's; nothing here starts one.
+tokio = { version = "1", default-features = false, features = ["time"] }
+anyhow = { workspace = true }
+ureq = { workspace = true }
+semver = { workspace = true }
+sha2 = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+# Reached only through `tao::platform::unix::MonitorHandleExtUnix::gdk_monitor`,
+# which hands back a `gtk::gdk::Monitor` whose `width_mm`/`height_mm` are the
+# only interface on X11 that knows a panel's physical size. tao reports a scale
+# factor of 1.0 for both a 82 dpi and a 163 dpi monitor on a session with
+# `GDK_SCALE` unset, so without this the HiDPI detection has no signal to read.
+# Already in the lockfile via wry, so this costs no extra compilation.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+# Server-side rendering, tests only. The search module had 25 green tests that
+# exercised pure functions and stylesheet text, and not one of them built the
+# markup: a panic in the RSX, or a highlight computed correctly and then
+# dropped by the markup, would have passed every one. These render the real
+# component and assert on the HTML, which is where the byte-offset claim
+# actually has to hold. Pinned with `=` to the dioxus version already in the
+# lockfile so it moves nothing.
+[dev-dependencies]
+dioxus-ssr = "=0.7.10"

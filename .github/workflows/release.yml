@@ -1,0 +1,119 @@
+name: release
+
+# Tagging `v0.1.0` publishes `v0.1.0`. Nothing else does.
+#
+# `vitrum update` downloads `vitrum-<version>-<target>.tar.gz` and refuses a
+# release whose `SHA256SUMS` does not cover it, so the job that collects the
+# per-platform archives into one checksum file is not a convenience: without it
+# every client refuses the release.
+on:
+  push:
+    tags: ["v*"]
+  # Re-running a failed publish must not need a second tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the existing tag to build
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: system webview
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      # The script names the archive from the host triple, which is the same
+      # rule the updater uses to look for it. Cross-compiling is not attempted:
+      # both binaries link against the platform's own webview and PTY.
+      - name: build the archive
+        if: runner.os != 'Windows'
+        run: ./packaging/build-release-asset.sh
+
+      - name: build the archive
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./packaging/build-release-asset.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      # One SHA256SUMS covering every platform, written here rather than by
+      # each builder, because each builder only ever sees its own archive.
+      - name: checksums
+        run: |
+          cd staged
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      # The notes are the section of CHANGELOG.md for this version, which is
+      # the same text the in-app dialog shows after an update. Two sources
+      # would drift, and the one users read is the file.
+      - name: release notes
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          awk -v v="## ${tag}" '
+            $0 ~ "^"v {found=1; next}
+            found && /^## v/ {exit}
+            found {print}
+          ' CHANGELOG.md > NOTES.md
+          test -s NOTES.md || { echo "CHANGELOG.md has no section for $tag"; exit 1; }
+          cat NOTES.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          body_path: NOTES.md
+          files: |
+            staged/*.tar.gz
+            staged/SHA256SUMS
+          fail_on_unmatched_files: true

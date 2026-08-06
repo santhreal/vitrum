@@ -1,0 +1,586 @@
+/* Colour, elevation and depth. Loads last, so every value here is the one
+ * that ships; nothing in this file needs `!important` and nothing uses it.
+ *
+ * Only colour and depth properties are set here: color, background-color,
+ * border-color, box-shadow, opacity, outline-color, and the custom properties
+ * that carry them. No spacing, no size, no type, no motion. This file declares
+ * zero durations and zero animations, so it has nothing for the
+ * reduced-motion block to switch off.
+ *
+ *
+ * ================= THE GREY COUNT =================
+ *
+ * THREE GREYS. Not four. The product shipped seven:
+ *
+ *   #f2f3f6  primary text
+ *   #e6e6ea  --rg-terminal-fg, a second primary that nothing consumed
+ *   #a3a3a3  secondary text, and separately --rg-hue-ready
+ *   #8b949e  --rg-badge-snoozed, a fourth tier invented for one badge
+ *   #838383  tertiary text
+ *   #6f6f6f  --rg-fg-dim
+ *   #6f6f6f  --rg-fg-faint, the same value under a second name
+ *
+ * Six names sat on four values, two pairs were byte-identical, and the two
+ * quietest tiers were 3.1:1 and 3.7:1 against the panel, i.e. below the AA
+ * floor for text outright. More tiers inside less range is why no tier read
+ * as a step: every one of them looked like its neighbour.
+ *
+ * The three that ship, named for the job and not the value:
+ *
+ *   ink     #f2f3f6   titles, the focused terminal, anything that is the
+ *                     answer to the question the operator is asking
+ *   ink-2   #b4b4b4   project names, status text, the second line of a row
+ *   ink-3   #929292   timestamps, counts, chevrons, section captions
+ *
+ * Their separation is 21.7 and 11.3 units of CIE L*, so each is visibly a
+ * step rather than a shade. The old ramp's tightest pair was zero.
+ *
+ * Everything else neutral in the product is ONE white at four alphas
+ * (0.04 / 0.07 / 0.11 fills, 0.09 / 0.16 hairlines) composited over whatever
+ * surface it lands on. An alpha is not a grey: it produces a different pixel
+ * on every surface, which is the point, and it means a control keeps its
+ * relationship to its parent when it moves between the panel and a popover.
+ *
+ * Surfaces are a separate, deliberately stepped set of four and are listed
+ * with their luminances below. They are not part of the text ramp and they
+ * are not interchangeable with it.
+ *
+ *
+ * ================= THE ACCENT ALLOW-LIST =================
+ *
+ * ONE accent, #2f66ef. It appears in exactly these places and nowhere else:
+ *
+ *   1. The keyboard focus ring, on :focus-visible only.
+ *   2. The primary button's fill, at most one per dialog.
+ *   3. The CURRENT ITEM IN A VERTICAL LIST, drawn as a rail on the leading
+ *      edge: the active session, the selected settings tab. One mark, one
+ *      shape, everywhere.
+ *   4. The multi-selection ring on a picked session row, which is the one
+ *      channel no status hue uses.
+ *   5. The active tab's top edge.
+ *   6. The unread dot, the woke badge, and the "on" side of a switch.
+ *   7. Terminal text selection.
+ *
+ * Explicitly NOT on the list, and removed below: the active workspace chip.
+ * A horizontal bar of chips has no leading edge that reads as a rail, so its
+ * current item is a neutral fill plus primary text. An inset blue ring on a
+ * chip was the loudest thing in the window and it was competing with the
+ * session rail to say the same word.
+ *
+ * Status hues (--rg-hue-*) are a separate documented system and are left
+ * alone. --rg-badge-woke was a second blue two steps from the accent; it is
+ * folded onto the accent's text variant here.
+ *
+ *
+ * ================= CONTRAST =================
+ *
+ * Every declaration below states its computed WCAG 2.1 ratio against the
+ * background it is actually painted on. Text clears 4.5:1. Non-text (rails,
+ * rings, dots, hairlines, switch tracks) clears the 3:1 that applies to it,
+ * or is stated as decorative where it separates nothing.
+ *
+ * ink-3 is the tier with the least headroom, so it has a scope rule rather
+ * than a hope: it is certified on the PANEL family (bare, at rest, and on
+ * hover; worst case 4.98:1). On the overlay family, and on any surface
+ * carrying the 0.11 current-item fill, ink-3 would land between 3.7 and
+ * 4.4, so in those scopes it promotes to ink-2 by token override. See
+ * "tertiary promotion" below. */
+
+:root {
+  /* -- Surfaces ---------------------------------------------------------
+   * Four, unchanged in value, restated here so the whole elevation model is
+   * readable in one place. Relative luminance x100:
+   *
+   *   terminal  #08080a   0.25    the grid, and the floor of the window
+   *   panel     #131316   0.66    the sidebar, in front of the grid
+   *   raised    #1b1b1f   1.12    chrome bands and resting controls
+   *   overlay   #212127   1.56    menus, the settings sheet, popovers
+   *
+   * In 8-bit channel steps that is 11, 8 and 6 points. The terminal-to-panel
+   * step was 4 before it was widened, which is under the threshold at which
+   * an LCD renders a boundary at all: the two surfaces read as one void with
+   * a hairline ruled across it. 11 points is the smallest step that renders
+   * as two materials. Verified by sampling the built binary: the terminal
+   * band measures rgb(8,8,10) and the sidebar band rgb(19,19,22).
+   *
+   * The terminal stays the darkest surface on screen. That is the whole
+   * reason the sidebar reads as a panel in front of it rather than a region
+   * of it, and no rule in this file may invert it. */
+
+  /* -- The three greys -------------------------------------------------- */
+
+  /* ink. 18.03:1 on terminal, 16.71:1 on panel, 15.47:1 on raised,
+   * 14.43:1 on overlay, 12.37:1 on a current-item fill. AAA everywhere. */
+  --rg-fg: #f2f3f6;
+  /* Alias, not a fourth value. Callers used --rg-fg-strong for "the title of
+   * an ordinary row" and --rg-fg for "a title that wants you", and the old
+   * value made the promoted one DARKER. Both are ink. 16.71:1 on panel. */
+  --rg-fg-strong: #f2f3f6;
+
+  /* ink-2. 9.65:1 on terminal, 8.94:1 on panel, 8.28:1 on raised,
+   * 7.72:1 on overlay, 6.62:1 on a current-item fill. AA everywhere. */
+  --rg-fg-muted: #b4b4b4;
+
+  /* ink-3. 6.43:1 on terminal, 5.96:1 on panel, 5.52:1 on raised,
+   * 5.46:1 on a resting row fill, 4.98:1 on a hovered row. AA everywhere it
+   * is painted; see the tertiary promotion rule for the two scopes where it
+   * is not painted at all. */
+  --rg-fg-subtle: #929292;
+  /* Aliases. A role that cannot justify its own value does not get one. */
+  --rg-fg-dim: #929292; /* 5.96:1 on panel */
+  --rg-fg-faint: #929292; /* 5.96:1 on panel */
+
+  /* Strays folded into the three. --rg-terminal-fg was a second primary at
+   * #e6e6ea; note that nothing in the shipped CSS or JS reads it, so it was
+   * a grey the product carried without ever drawing. */
+  --rg-terminal-fg: #f2f3f6; /* 18.03:1 on #08080a */
+  /* --rg-badge-snoozed was #8b949e, a tier of its own for one badge. A
+   * parked row is doing its job by being boring, which is exactly ink-3. */
+  --rg-badge-snoozed: #929292; /* 5.96:1 on panel */
+  /* --rg-hue-ready was #a3a3a3, byte-identical to the old secondary. Ready
+   * is the absence of a status, so it is the secondary text colour. */
+  --rg-hue-ready: #b4b4b4; /* 8.94:1 on panel */
+  --rg-hue-ready-soft: rgba(255, 255, 255, 0.09); /* fill, 1.26:1, decorative */
+
+  /* -- Fills: one white, three alphas -----------------------------------
+   * Over the panel these composite to #1c1c1f, #28282b and #39393b, i.e.
+   * steps of 12 and 17 channel points. Every step is at least as large as
+   * the panel-to-raised surface step, so no two states of the same control
+   * can be confused for each other.
+   *
+   * The alphas were 0.04 / 0.07 / 0.11. Measured against the panel that is
+   * 1.09:1, 1.20:1 and 1.35:1, so hover moved the surface by 5% of the
+   * distance the panel already stands from its own raised step, and the
+   * light theme's equivalent step was half of that again. A hover you have
+   * to look for is not feedback. Widened to 0.04 / 0.09 / 0.16, which is
+   * 1.09:1, 1.26:1 and 1.61:1: even steps, and the current item now lands
+   * exactly on --rg-border-strong's composite, which is the quietest edge
+   * in the product that still reads as an edge.
+   *
+   * There are three, not five. `hover` is transient, `current` is the
+   * persistent "you are here", and `rest` closes a container. Pressed reuses
+   * `current` because a control that is being pressed is momentarily the
+   * current thing, and inventing a fourth fill 4 points from its neighbour
+   * would put us straight back where this file started. */
+
+  /* Resting fill for a closed container: a session row, a raised control.
+   * Composites to #1c1c1f on the panel, 1.09:1 against it. Decorative: it
+   * bounds an object, it does not carry text on its own. ink 15.32:1,
+   * ink-2 8.20:1, ink-3 5.46:1 read on top of it. */
+  --rg-fill-rest: rgba(255, 255, 255, 0.04);
+
+  /* Hover. Composites to #28282b on the panel, 1.26:1 against it.
+   * ink 13.25:1, ink-2 7.09:1, ink-3 4.72:1. */
+  --rg-row-hover: rgba(255, 255, 255, 0.09);
+
+  /* Current item, and pressed. Composites to #39393b on the panel, 1.61:1
+   * against it. ink 10.39:1, ink-2 5.56:1. ink-3 would be 3.70:1 here, which
+   * is why the promotion rule below exists. */
+  --rg-row-active: rgba(255, 255, 255, 0.16);
+  /* Multi-selection uses the same fill and is told apart by the accent ring,
+   * not by luminance. Two persistent states 2 points apart is not a state
+   * family, it is a bug that only shows up on one monitor. */
+  --rg-row-selected: rgba(255, 255, 255, 0.16);
+
+  /* -- Hairlines --------------------------------------------------------
+   * White alphas, so a border keeps the same relationship to its parent on
+   * the panel and inside a popover. Both are decorative separators between
+   * two neutrals rather than meaningful boundaries, which is the correct
+   * reading: a hairline that has to carry 3:1 is doing a job that belongs to
+   * a luminance step. */
+  --rg-border: rgba(255, 255, 255, 0.09); /* #28282b on panel, 1.26:1 */
+  --rg-border-strong: rgba(255, 255, 255, 0.16); /* #39393b on panel, 1.61:1 */
+
+  /* -- Depth ------------------------------------------------------------
+   * Three shadow levels and one inner highlight. Apple's dark-mode shadows
+   * are almost subliminal in isolation and only legible as the difference
+   * between a thing that floats and a thing that does not, so these are soft
+   * and wide rather than dark and tight. Every one is pure black at low
+   * alpha; a tinted shadow on a neutral surface reads as a smudge.
+   *
+   * The inner highlight is the other half of it. A raised surface in macOS
+   * dark mode carries a one-pixel lighter line along its top edge, which is
+   * what makes it read as a lit object rather than a lighter rectangle. At
+   * 0.06 white it composites to #2e2e34 on the overlay, 1.19:1: visible as
+   * an edge, invisible as a colour. */
+  --rg-hairline-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --rg-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.26);
+  --rg-shadow-2: 0 2px 4px rgba(0, 0, 0, 0.28), 0 10px 28px rgba(0, 0, 0, 0.42);
+  --rg-shadow-3: 0 4px 10px rgba(0, 0, 0, 0.32), 0 24px 60px rgba(0, 0, 0, 0.5);
+
+  /* -- The accent -------------------------------------------------------
+   * One hue, three jobs, and the jobs are what pick the value.
+   *
+   * --rg-accent is a FILL and a MARK. It has to hold a white label, so it is
+   * darkened from the old #366ffb until it does: white on #366ffb was
+   * 4.35:1, which fails, and white on #2f66ef is 4.92:1, which passes. As a
+   * 3px rail or a 2px ring it reads 3.77:1 against the panel and 3.49:1
+   * against raised chrome, clearing the 3:1 that applies to non-text.
+   *
+   * --rg-accent-strong is ONLY the primary button's hover fill. In dark mode
+   * a blue fill with a white label must darken on hover, not lighten: the
+   * old #6a95fc took the label to 2.87:1, which is a hover state that made
+   * the button unreadable. White on #2a58dc is 5.95:1.
+   *
+   * --rg-accent-text is the accent used AS TEXT, which the fill value cannot
+   * do: #2f66ef reads 3.77:1 on the panel and fails. 6.46:1 on the panel,
+   * 5.58:1 on the overlay, 6.97:1 on the terminal. */
+  --rg-accent: #2f66ef;
+  --rg-accent-strong: #2a58dc;
+  --rg-accent-text: #6a95fc;
+  --rg-focus-ring: #2f66ef; /* 3.77:1 vs panel, non-text, AA */
+  /* The soft ring outside the hard one. Apple's focus treatment is a crisp
+   * edge plus a wide low-alpha halo, and the halo is what stops a 2px
+   * saturated line from being the loudest object in a neutral window. */
+  --rg-focus-halo: 0 0 0 3px rgba(47, 102, 239, 0.26);
+
+  /* The woke badge was #6b8afd, a second blue two steps from the accent and
+   * distinguishable from it only side by side. It is an event marker, which
+   * is the accent's job. */
+  --rg-badge-woke: #6a95fc; /* 6.46:1 on panel */
+  --rg-badge-woke-bg: rgba(106, 149, 252, 0.16); /* fill, decorative */
+
+  /* Selection behind terminal text. Composites to #152858 over #08080a;
+   * ink reads 12.82:1 on it, so a selected line is no harder to read than an
+   * unselected one. */
+  --rg-terminal-selection: rgba(47, 102, 239, 0.34);
+
+  /* Scrollbar thumb. Non-text, and deliberately below the 3:1 an interactive
+   * control would need: the thumb is a position readout on a surface the
+   * operator is already looking at, and at 3:1 it becomes the brightest
+   * vertical line in the panel. */
+  --rg-scroll-thumb: rgba(255, 255, 255, 0.13); /* #2f2f32 on panel, 1.4:1 */
+  --rg-scroll-thumb-hover: rgba(255, 255, 255, 0.22); /* #434346 on panel, 1.9:1 */
+}
+
+/* -- Tertiary promotion -------------------------------------------------
+ * ink-3 clears AA on the panel family and does not clear it on the overlay
+ * family or under the current-item fill. Rather than lift ink-3 until it
+ * survives its worst case, which would collapse it into ink-2 and undo this
+ * whole file, the scopes where it cannot be used stop using it.
+ *
+ * Done by overriding the tokens, so it reaches every descendant without this
+ * file needing to know one child class name, and without a single selector
+ * that would have to be maintained as the markup changes.
+ *
+ * ink-2 in these scopes: 6.24:1 on a hovered menu row, 5.53:1 on an overlay
+ * carrying the current-item fill, 6.62:1 on a current row. */
+.rg-menu,
+.rg-sheet,
+.rg-session--active,
+.rg-session--picked,
+.rg-wsbar__item--active {
+  --rg-fg-subtle: #b4b4b4;
+  --rg-fg-dim: #b4b4b4;
+  --rg-fg-faint: #b4b4b4;
+}
+
+/* -- Depth: the floating layers -----------------------------------------
+ * These are the only elements in the product that are genuinely in front of
+ * something. Everything else is a band, and a band gets a luminance step. */
+
+/* A context menu and the tab overflow list are the same object at the same
+ * height, so they get the same shadow. The old value was a single
+ * `0 8px 24px rgba(0,0,0,0.45)`: one hard blur with no contact shadow, which
+ * reads as a rectangle with a grey smear under it. A near shadow for contact
+ * plus a far one for height is what makes it read as lifted. */
+.rg-menu {
+  box-shadow:
+    var(--rg-hairline-top),
+    0 2px 4px rgba(0, 0, 0, 0.28),
+    0 10px 28px rgba(0, 0, 0, 0.42);
+}
+
+/* The sheet is modal and sits highest, so it casts furthest. */
+.rg-sheet {
+  box-shadow:
+    var(--rg-hairline-top),
+    0 4px 10px rgba(0, 0, 0, 0.32),
+    0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+/* The scrim under a modal layer. Lifted from 0.45 to 0.55 because the sheet
+ * is only 6 channel points above the panel behind it; at 0.45 the panel was
+ * still bright enough that the sheet's own edge did most of the separating,
+ * which is what a scrim exists to avoid. Against the terminal this takes the
+ * grid to #040405, so a dialog reads as the only lit thing in the window. */
+.rg-layer--dim {
+  background-color: rgba(0, 0, 0, 0.55);
+}
+
+/* -- Depth: raised controls ---------------------------------------------
+ * A hairline along the top edge and, for anything that reads as a physical
+ * button, a contact shadow. No fills are set here: control fills belong to
+ * the controls lane and every one of them composes over whatever surface it
+ * lands on. */
+.rg-btn,
+.rg-select,
+.rg-sidebar__search,
+.rg-field__input {
+  box-shadow: var(--rg-hairline-top);
+}
+
+.rg-btn {
+  box-shadow: var(--rg-hairline-top), 0 1px 2px rgba(0, 0, 0, 0.26);
+}
+
+/* -- The interaction family ---------------------------------------------
+ * One vocabulary, so the same gesture reads the same way on a session row, a
+ * menu item, a tab, a chip and a button.
+ *
+ *   hover      +0.07 white. Transient, no accent, ever.
+ *   pressed    +0.11 white. Same fill as current, because it is momentarily
+ *              the current thing.
+ *   current    +0.11 white, primary text, and ONE accent mark: a rail on the
+ *              leading edge of a vertical list. No rail in a horizontal bar.
+ *   selected   +0.11 white plus the inset accent ring, which is the only
+ *              channel no status hue uses.
+ *   focus      2px accent ring on :focus-visible, plus a soft halo.
+ *   disabled   0.4 opacity on the whole control. Dimming the container
+ *              rather than swapping a text colour is what keeps a disabled
+ *              icon, label and border fading together, and it is why this
+ *              file does not need a fourth grey to express "off".
+ */
+
+/* Focus. The hard ring stays; the halo is what stops it shouting. Applied to
+ * the controls that can hold focus and are large enough to carry a halo
+ * without it bleeding into a neighbour. */
+.rg-select:focus-visible,
+.rg-switch:focus-visible,
+.rg-field__input:focus,
+.rg-sidebar__search:focus-within {
+  box-shadow: var(--rg-hairline-top), var(--rg-focus-halo);
+}
+
+/* The button keeps its contact shadow while focused. Restating it is the
+ * price of box-shadow being one property: a focus rule that only names the
+ * halo silently lifts the button off the surface it was resting on. */
+.rg-btn:focus-visible {
+  box-shadow:
+    var(--rg-hairline-top),
+    0 1px 2px rgba(0, 0, 0, 0.26),
+    var(--rg-focus-halo);
+}
+
+/* The search field's resting border was a hairline that lit to a slightly
+ * stronger hairline on focus, which is a 1.26:1 edge becoming a 1.61:1 edge:
+ * not a state change, an accident. Focus is the accent. 3.49:1 against the
+ * raised fill the field sits on, non-text, AA. */
+.rg-sidebar__search:focus-within,
+.rg-field__input:focus {
+  border-color: var(--rg-accent);
+}
+
+/* Hover on a control's border is a neutral step, not a text grey. This was
+ * `--rg-fg-faint`, which put a 5.96:1 line around a resting select: an edge
+ * as loud as the label inside it. */
+.rg-select:hover {
+  border-color: var(--rg-border-strong); /* #39393b on panel, 1.61:1 */
+}
+
+/* Disabled. One rule, one mechanism, everywhere. WCAG exempts inactive
+ * controls from the contrast minimum, which is the only reason this does not
+ * need a grey of its own; at 0.4 opacity ink lands near 4.9:1 on the panel
+ * and stays legible anyway. */
+.rg-btn:disabled,
+.rg-menu__item:disabled,
+.rg-select:disabled {
+  color: var(--rg-fg-muted); /* 8.94:1 on panel before the opacity below */
+  opacity: 0.4;
+}
+
+/* -- Rationing the accent -----------------------------------------------
+ *
+ * The active workspace chip loses its inset accent ring. It is the current
+ * item in a HORIZONTAL bar, and the rail shape that marks a current item in
+ * a vertical list has no edge to sit on here, so it was expressed as a ring
+ * instead: a second, differently-shaped accent mark saying the same word as
+ * the session rail, in the band directly above it. Two shapes for one
+ * meaning is how an accent stops meaning anything.
+ *
+ * What it becomes is the neutral current-item treatment: the +0.11 fill, ink
+ * for the label, and the weight step the markup already applies. That is the
+ * same thing a current row does minus the rail, which is exactly right. */
+.rg-wsbar__item--active {
+  box-shadow: none;
+  color: var(--rg-fg); /* 12.37:1 on the current-item fill */
+}
+
+.rg-wsbar--collapsed .rg-wsbar__item--active {
+  box-shadow: inset 0 0 0 1px var(--rg-border-strong); /* 1.61:1, decorative */
+}
+
+/* An idle attention rail was a 3px bar of tertiary grey drawn down the left
+ * edge of every quiet row in the list, which is most of them. It marks the
+ * absence of anything worth marking. A rail that is always on is not a
+ * signal, it is a margin, and here it was a margin loud enough to read as a
+ * failed container edge. Off. The border keeps its width, so nothing moves.
+ *
+ * The waiting rail went the same way, and for a stronger reason than
+ * loudness. `Attention.waiting == Some(true)` maps to READY, not Input,
+ * deliberately: a shell resting at its prompt blocks in exactly the same
+ * syscall as an agent asking a question, and the product refuses to guess
+ * between them. So the rail was lighting on nearly every idle row while
+ * claiming a distinction the system had already declared it cannot make, and
+ * as a solid 4px bar at 8.94:1 it was the brightest object on the row,
+ * brighter than the title it sat beside. A mark that is always on says
+ * nothing, and a mark that says nothing loudly is worse than none.
+ *
+ * What still earns a rail is a state that genuinely wants the operator:
+ *   bell      ink-2, the secondary ink, non-text
+ *   failed    the failure hue, unchanged
+ * Approval and Input arrive as explicit OSC 7373 hints and carry their own
+ * treatment; they are not inferred, so they are allowed to shout.
+ *
+ * The bell rail READS ink-2 rather than restating its hex. It was a literal
+ * #929292, which is ink-3, the same grey the branch and the timestamp on the
+ * row beside it are set in: a 4px bar in the exact ink of the quietest text
+ * on the row does not read as a signal at all. Ink-2 is one step up and is
+ * still neutral, so the ramp stays a brightness ramp with red reserved for
+ * failure. Reading the token also means the light theme cannot drift: the
+ * two literals here were maintained separately and only one of them had to
+ * be forgotten.
+ *
+ * The border keeps its width in every case, so nothing moves when one lights.
+ */
+.rg-app {
+  --rg-attention-idle: transparent;
+  --rg-attention-bell: var(--rg-fg-muted);
+  --rg-attention-waiting: transparent;
+}
+
+/* The accent used as text. #2f66ef is 3.77:1 on the panel and cannot carry a
+ * glyph; this is the one place in the product that asks it to. */
+.rg-wsbar__add:hover .rg-wsbar__add-glyph {
+  color: var(--rg-accent-text); /* 6.46:1 on panel */
+}
+
+/* ====================================================================== */
+/* LIGHT THEME                                                             */
+/*                                                                         */
+/* This block is LIVE. `main.rs` sets [data-theme] on div.rg-app from the   */
+/* Theme setting, so every rule here paints whenever the operator picks     */
+/* Light, or picks Follow the system on a light desktop.                    */
+/*                                                                         */
+/* The comment that used to sit here said the opposite: that nothing set    */
+/* the attribute and the whole block was unreachable. It was wrong, and     */
+/* wrong in the file that owns the theme, which is exactly how the next     */
+/* reader deletes a live palette while tidying up. A dark role without a    */
+/* light counterpart is a bug on sight, not a bug in waiting.               */
+/*                                                                          */
+/* Read colours here against the element that carries the attribute, never  */
+/* against <html>. `cssVar` used to read getComputedStyle(documentElement)  */
+/* and every terminal colour resolved to the :root dark value, so light     */
+/* mode shipped with a black terminal on a fresh launch as well as a live   */
+/* switch. See `termTheme(el)` in bootstrap.js.                             */
+/* ====================================================================== */
+
+[data-theme="light"] {
+  /* Surfaces, unchanged: panel #f4f4f5, raised #fafafa, overlay #ffffff.
+   * The terminal is #ffffff here, so the depth order inverts and that is
+   * correct: in light mode the content plane is the brightest thing and the
+   * chrome recedes into grey, which is what every macOS light window does. */
+
+  /* The same three greys, inverted. Separation is 20.4 and 8.9 units of L*.
+   * Light has less headroom than dark because the fills lift toward white
+   * instead of away from it, so ink-3 is set against the WORST case rather
+   * than the panel: 4.86:1 on a pressed row. */
+  --rg-fg: #27272a; /* 13.55:1 panel, 14.89:1 overlay, 11.29:1 pressed */
+  --rg-fg-strong: #27272a; /* 13.55:1 on panel */
+  --rg-fg-muted: #4a4a52; /* 7.99:1 panel, 8.78:1 overlay, 6.65:1 pressed */
+  --rg-fg-subtle: #5e5e67; /* 5.84:1 panel, 6.42:1 overlay, 4.86:1 pressed */
+  --rg-fg-dim: #5e5e67; /* 5.84:1 on panel */
+  --rg-fg-faint: #5e5e67; /* 5.84:1 on panel */
+
+  --rg-terminal-fg: #27272a; /* 14.89:1 on #ffffff */
+  --rg-badge-snoozed: #5e5e67; /* 5.84:1 on panel */
+  --rg-hue-ready: #4a4a52; /* 7.99:1 on panel */
+  --rg-hue-ready-soft: rgba(0, 0, 0, 0.06); /* fill, decorative */
+
+  /* Fills darken here instead of lightening, and they stay shallower than
+   * the dark ones: black over a near-white panel eats contrast from the text
+   * on top of it faster than white over a near-black one adds it.
+   *
+   * They were 0.03 / 0.05 / 0.08, compositing to #ededee, #e8e8e9 and
+   * #e0e0e1: a 5-channel-point hover, which is the narrowest state step in
+   * the product and the one the eye misses. 0.03 / 0.07 / 0.13 composites to
+   * #ededee, #e3e3e4 and #d4d4d5, steps of 10 and 15, so hover and the
+   * current item are as far apart here as they are in the dark theme.
+   * ink-3 falls to 4.33:1 on the current item and the promotion rule below
+   * lifts it back to 5.93:1, which is the mechanism that already existed. */
+  --rg-fill-rest: rgba(0, 0, 0, 0.03); /* ink 12.73:1, ink-3 5.48:1 */
+  --rg-row-hover: rgba(0, 0, 0, 0.07); /* ink 11.61:1, ink-3 5.00:1 */
+  --rg-row-active: rgba(0, 0, 0, 0.13); /* ink 10.06:1, ink-2 5.93:1 */
+  --rg-row-selected: rgba(0, 0, 0, 0.13); /* ink 10.06:1, ink-2 5.93:1 */
+
+  --rg-border: rgba(0, 0, 0, 0.1); /* #dcdcdc on panel, 1.25:1 */
+  --rg-border-strong: rgba(0, 0, 0, 0.2); /* #c3c3c4 on panel, 1.60:1 */
+
+  /* A shadow on a light surface has to be lighter than its dark counterpart
+   * or it reads as dirt, and the inner highlight becomes pure white because
+   * a white line on a near-white surface is the only inner edge that shows. */
+  --rg-hairline-top: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --rg-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --rg-shadow-2: 0 2px 4px rgba(0, 0, 0, 0.08), 0 10px 28px rgba(0, 0, 0, 0.12);
+  --rg-shadow-3: 0 4px 10px rgba(0, 0, 0, 0.1), 0 24px 60px rgba(0, 0, 0, 0.18);
+
+  /* The accent darkens one step for light: white on #2d62e6 is 5.25:1, and
+   * as a rail or ring it reads 4.77:1 against the panel. accent-text can be
+   * the same hue here because a dark blue on a light panel is already
+   * legible as text, unlike the dark case. */
+  --rg-accent: #2d62e6;
+  --rg-accent-strong: #1f4bc4; /* white on it 7.34:1, primary hover */
+  --rg-accent-text: #1d4fd8; /* 6.04:1 on panel, 6.64:1 on overlay */
+  --rg-focus-ring: #2d62e6; /* 4.77:1 vs panel, non-text, AA */
+  --rg-focus-halo: 0 0 0 3px rgba(45, 98, 230, 0.24);
+
+  --rg-badge-woke: #1d4fd8; /* 6.04:1 on panel */
+  --rg-badge-woke-bg: rgba(29, 79, 216, 0.12); /* fill, decorative */
+
+  --rg-terminal-selection: rgba(45, 98, 230, 0.22); /* ink on it 10.87:1 */
+
+  --rg-scroll-thumb: rgba(0, 0, 0, 0.16); /* 1.4:1 on panel */
+  --rg-scroll-thumb-hover: rgba(0, 0, 0, 0.28); /* 2.0:1 on panel */
+}
+
+/* Same promotion, same reason: on a white overlay the light ink-3 reads
+ * 6.42:1 bare but drops under the pressed fill inside a menu. */
+[data-theme="light"] .rg-menu,
+[data-theme="light"] .rg-sheet,
+[data-theme="light"] .rg-session--active,
+[data-theme="light"] .rg-session--picked,
+[data-theme="light"] .rg-wsbar__item--active {
+  --rg-fg-subtle: #4a4a52; /* 7.36:1 on a pressed overlay row */
+  --rg-fg-dim: #4a4a52;
+  --rg-fg-faint: #4a4a52;
+}[data-theme="light"] .rg-menu {
+  box-shadow:
+    var(--rg-hairline-top),
+    0 2px 4px rgba(0, 0, 0, 0.08),
+    0 10px 28px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .rg-sheet {
+  box-shadow:
+    var(--rg-hairline-top),
+    0 4px 10px rgba(0, 0, 0, 0.1),
+    0 24px 60px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="light"] .rg-layer--dim {
+  background-color: rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="light"] .rg-btn {
+  box-shadow: var(--rg-hairline-top), 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* No light counterpart is needed for the bell any more: the rule above reads
+ * var(--rg-fg-muted) on the element that carries data-theme, so it resolves
+ * to this theme's own ink-2 with no second declaration to keep in step. The
+ * two transparent rails are restated because a theme block that declares
+ * part of a ramp and inherits the rest is the thing that goes stale. */
+[data-theme="light"] .rg-app {
+  --rg-attention-idle: transparent;
+  --rg-attention-waiting: transparent;
+}

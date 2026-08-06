@@ -1,0 +1,25 @@
+]0;vitrum capture]7373;working;building vitrum-replay\[33m0be8fdac3ab[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Remove leftover hostile-filename adversarial artifact in checkpointkit
+[33mb36a6939452[m backup: 2026-07-19T16:56:23-07:00 (ci-builder00-X870E-AORUS-PRO)
+[33mb912e21f6ab[m backup: 2026-07-19T16:55:21-07:00 (ci-builder00-X870E-AORUS-PRO)
+[33ma2034262940[m backup: 2026-07-19T16:53:48-07:00 (ci-builder00-X870E-AORUS-PRO)
+[33m12d354e52f0[m backup: 2026-07-19T16:53:30-07:00 (ci-builder00-X870E-AORUS-PRO)
+[33mc233116381f[m backup: 2026-07-19T16:53:24-07:00 (ci-builder00-X870E-AORUS-PRO)
+
+[0m[01;34mvitrum-core[0m
+[01;34mvitrum-fmt[0m
+[01;34mvitrum-grid[0m
+[01;34mvitrum-model[0m
+[01;34mvitrum-os[0m
+[01;34mvitrum-overlap[0m
+[01;34mvitrum-proto[0m
+[01;34mvitrum-replay[0m
+
+progress: [Kprogress:  10% ██[Kprogress:  40% ██[Kprogress:  70% ██[Kprogress: 100% ██[Kprogress: done ✓
+utf8: 日本語 café ┌─┐
+latin1 bytes: �� raw �
+(0lqqqk(B box via DEC graphics
+[1;31mERROR[0m [38;2;255;170;0mwarn[0m [38;5;120mgreen[0m
+[s[10;5Hplaced[u after-restore
+[?1049h[HALT SCREEN[3;3Hsecond line[?1049lback on primary
+]7373;approval;force push to main?waiting
+]7373;ready;done\

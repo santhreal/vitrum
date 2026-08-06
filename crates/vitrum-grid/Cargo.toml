@@ -1,0 +1,19 @@
+[package]
+name = "vitrum-grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "GPU terminal cell-grid renderer for the vitrum native (Blitz) path."
+
+[dependencies]
+# Pinned to the version Blitz uses so the renderer can share a `wgpu::Device`
+# with a Blitz custom widget without two incompatible wgpu copies in the tree.
+wgpu = "29"
+bytemuck = { version = "1", features = ["derive"] }
+fontdue = "0.9"
+fontdb = "0.23"
+ttf-parser = "0.25"
+unicode-width = "0.2"
+pollster = "0.4"

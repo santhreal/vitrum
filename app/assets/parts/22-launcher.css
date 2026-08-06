@@ -1,0 +1,572 @@
+/* ======================================================================
+ * 22-launcher.css -- the ranked launcher, and the control that skips it
+ * ======================================================================
+ *
+ * Loads last, after 19-settings.css, so equal specificity is enough and
+ * !important is never needed. Two surfaces live here and they are two halves
+ * of one interaction:
+ *
+ *   .rg-newbar    the sidebar footer's primary control. One click starts the
+ *                 agent it names. Its caret half opens the list.
+ *   .rg-launch__* the list itself, inside .rg-sheet--launcher.
+ *
+ * WHAT THIS REPLACES
+ *
+ * A centred modal form: three stacked text fields, one of them prefilled with
+ * a 47-character absolute path, and three permanent captions explaining how
+ * the daemon names and groups a session. It cost 5 labels, 3 inputs, 3 hints,
+ * 2 buttons and a title to express one intent. This file paints 1 input and a
+ * row of at most 9 launch targets, and the row is the whole vocabulary: what
+ * runs, where, on which branch.
+ *
+ * THE GRID
+ *
+ * Every length here is a multiple of 4px, authored in rem at 1x, and
+ * dialog.rs::every_length_in_the_launcher_is_on_the_four_pixel_grid reads this
+ * file to keep it that way. Colours, type steps and radii are tokens, never
+ * literals, so nothing here has an opinion the design system does not.
+ *
+ *   .rg-sheet--launcher width          576  (36rem)
+ *   .rg-sheet--launcher margin-top     128  (8rem), top-anchored so the query
+ *                                           field does not move as rows filter
+ *   .rg-launch__query height            40  (2.5rem), one step above a
+ *                                           standard 32 control, because this
+ *                                           is the only input on the surface
+ *   .rg-launch__row height              36  (2.25rem)
+ *   .rg-launch__list gap                 4  (--rg-space-1)
+ *   row pitch                           40  constant, every row, always
+ *   nine rows                          356  = 9 x 36 + 8 x 4
+ *   content rail                        12  (--rg-space-3) for the query's
+ *                                           text AND for a row's first glyph,
+ *                                           so there is ONE left edge on this
+ *                                           surface rather than two
+ *   .rg-launch__key reserved slot       16  (--rg-space-4)
+ *   .rg-launch__agent box               16  (--rg-icon-sm), reserved on EVERY
+ *                                           row including directory rows, so
+ *                                           both kinds share one text column
+ *   .rg-newbar__go height               32  (--rg-control-h), the same
+ *                                           control height as the two icon
+ *                                           buttons it sits beside
+ *   .rg-newbar__pick width              20  (--rg-space-5)
+ *
+ * ZERO OVERLAP, BY CONSTRUCTION
+ *
+ * A row is a flex line and its three text parts all carry `min-width: 0` with
+ * an ellipsis, so the longest realistic agent name, project and branch
+ * together CANNOT overlap: they shrink. The shrink factors say which one gives
+ * way first, and the order is deliberate. The branch yields before the place,
+ * and the place before the command, because the command is the only part of a
+ * row that says what the row will do. dialog.rs guards the three declarations.
+ *
+ * NO MOTION AT ALL
+ *
+ * Not a transition, not a keyframe. Idle CPU is this product's headline number
+ * and this surface is opened dozens of times an hour; a fill that fades under
+ * a held arrow key repaints a 576px sheet per repeat for nothing. The
+ * highlight is instant, which is also what a keyboard user wants: the row is
+ * selected the moment the key is pressed, not 90ms afterwards.
+ */
+
+/* -- The sheet ---------------------------------------------------------- */
+
+/* 576, against .rg-sheet's 512. A row carries four things where a field
+ * carried one, and 576 is also exactly `100% - 4rem` at the 640px minimum
+ * window, so the sheet is never the thing that decides the layout. */
+.rg-sheet--launcher {
+  width: 36rem;
+
+  /* Anchored near the top, not centred in the window.
+   *
+   * The layer centres its child, which is right for the settings sheet and
+   * wrong for a palette: this box changes height as rows filter in and out, so
+   * centring it moves the query field vertically WHILE THE OPERATOR IS TYPING
+   * INTO IT. Nine rows and one row put the caret 160px apart, under a cursor
+   * that has not moved.
+   *
+   * Anchoring the top edge fixes the caret at one y for the life of the
+   * surface and lets the list grow downward into space that is already empty,
+   * which is also what every palette the operator already uses does.
+   *
+   * 128px rather than flush: a palette hard against the titlebar reads as a
+   * dropdown belonging to it, and this belongs to the window. */
+  align-self: flex-start;
+  margin-top: 8rem;
+}
+
+/* -- The query ---------------------------------------------------------- */
+
+/* The one input on the surface, so it is a step taller than a control in a
+ * form and carries the body type rather than the small step. `--rg-ctl-rest`
+ * rather than a literal grey: .rg-sheet redefines it, so the field stays the
+ * same material as the sheet under it wherever this sheet is ever shown. */
+.rg-launch__query {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 2.5rem;
+  padding: 0 var(--rg-space-3);
+
+  border: 1px solid var(--rg-border-strong);
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-ctl-rest);
+
+  color: var(--rg-fg);
+  font-family: inherit;
+  font-size: var(--rg-text-13);
+}
+
+.rg-launch__query::placeholder {
+  color: var(--rg-fg-subtle);
+}
+
+/* No focus ring. The field is focused from the moment the launcher opens and
+ * never loses focus while it is open, so a permanent ring would be a border
+ * that is always on, drawn twice. The accent border IS the state. */
+.rg-launch__query:focus {
+  outline: none;
+  border-color: var(--rg-accent);
+}
+
+/* -- The list ----------------------------------------------------------- */
+
+/* In flow, not absolutely positioned. .rg-sheet is a scroll container in both
+ * axes, so an absolutely positioned list is clipped at its padding box; and
+ * this list is the sheet's whole content rather than an overlay on top of a
+ * field, so there is nothing for it to cover. */
+.rg-recents__list,
+.rg-launch__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 36 high with a 4 gap, so the pitch is a constant 40 down the whole list
+ * whether a row carries a branch, a place, both or neither. Nothing here
+ * reserves a line it might not draw, and nothing here can grow one. */
+.rg-recents__row,
+.rg-launch__row {
+  display: flex;
+  align-items: center;
+  gap: var(--rg-space-2);
+
+  height: 2.25rem;
+  min-height: 2.25rem;
+  padding: 0 var(--rg-space-3);
+
+  border-radius: var(--rg-radius-sm);
+  cursor: pointer;
+}
+
+/* Hover and the keyboard highlight are the SAME fill, deliberately. Two
+ * different highlights on one list means the operator has to work out which of
+ * the two rows Enter is going to take. The pointer and the arrow keys move one
+ * cursor. */
+.rg-recents__row:hover,
+.rg-launch__row:hover,
+.rg-launch__row--on {
+  background-color: var(--rg-row-active);
+}
+
+/* A reserved slot, not a gap. The digit is suppressed on a row whose Ctrl+N a
+ * saved preset already owns, and if the slot collapsed with it the rows either
+ * side would sit on two different left edges. 16 wide, right-aligned, so a
+ * single digit lands on one column down the list. */
+.rg-recents__key,
+.rg-launch__key {
+  flex: 0 0 auto;
+  min-width: var(--rg-space-4);
+
+  color: var(--rg-fg-faint);
+  font-size: var(--rg-text-11);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* WHERE and WHAT, one labelled field each.
+ *
+ * The surface used to be a single box reading "Agent, project, branch, or a
+ * /path", which changed mode silently depending on whether what you typed
+ * looked like a path. A session is a command and a directory; two fields say
+ * so, and neither can be set by accident.
+ *
+ * The label is a fixed 32px column so both inputs share one left edge, and
+ * that edge is the same 12px content rail the rows use. One rail on the
+ * surface, not three. */
+.rg-launch__field {
+  display: flex;
+  align-items: center;
+  gap: var(--rg-space-2);
+  flex: 0 0 auto;
+  padding: 0 var(--rg-space-3);
+}
+
+.rg-launch__label {
+  flex: 0 0 var(--rg-space-8);
+  width: var(--rg-space-8);
+
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+  text-align: right;
+}
+
+/* The directory. Shorter than the command field because it is the half the
+ * operator changes less often, and its recents come from the platform's own
+ * completion rather than a second popup competing with the row list for the
+ * arrow keys. */
+.rg-launch__dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--rg-control-h);
+
+  padding: 0 var(--rg-space-2);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-bg);
+
+  color: var(--rg-fg-muted);
+  font-family: var(--rg-font-mono);
+  font-size: var(--rg-text-12);
+}
+
+.rg-launch__dir:focus {
+  outline: none;
+  border-color: var(--rg-accent);
+  color: var(--rg-fg);
+}
+
+/* Which agent this row would start.
+ *
+ * The same seven marks the sidebar puts on a running session, for the same
+ * reason: the launcher used to be a list of words that all look alike at a
+ * glance, so finding `codex` among five agents meant reading five command
+ * names. A shape is recognised without reading.
+ *
+ * A FIXED box on every row, reserved even for a directory row that has no
+ * agent. If it collapsed, path rows and agent rows would sit on two different
+ * text columns and the list would lose its left edge, which is the one thing
+ * a nine-row list cannot afford.
+ *
+ * Inherits the row's own colour rather than a status hue. A launcher row is a
+ * thing that has not started yet, so it has no status to carry, and tinting it
+ * would invent one. */
+.rg-recents__icon,
+.rg-launch__agent {
+  flex: 0 0 auto;
+  width: var(--rg-icon-sm);
+  height: var(--rg-icon-sm);
+  color: var(--rg-fg-muted);
+}
+
+.rg-launch__row--on .rg-launch__agent {
+  color: var(--rg-fg);
+}
+
+/* What the row will run. Shrinks last: it is the only part of a row that says
+ * what taking it does, so the place and the branch give way to it. */
+.rg-recents__text,
+.rg-launch__text {
+  flex: 1 1 auto;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  color: var(--rg-fg);
+  font-size: var(--rg-text-13);
+}
+
+/* The place, project-relative. A chip rather than plain text because it is a
+ * different KIND of thing from the command beside it and the eye has to be
+ * able to separate the two at a glance; a fill and a radius do that with no
+ * border, which is one less hairline in a list of nine.
+ *
+ * 20 of line box in a 36 row, so the chip is centred on the grid. */
+.rg-recents__place,
+.rg-launch__place {
+  flex: 0 1 auto;
+  flex-shrink: 2;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  padding: 0 var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-fill-rest);
+
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-space-5);
+}
+
+.rg-launch__where-label {
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+}
+
+.rg-launch__where-place {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-lead-micro);
+}
+
+/* The branch. Yields first, because a session's checkout is the one part of a
+ * row an operator can usually infer from the other two. */
+.rg-launch__branch {
+  flex: 0 1 auto;
+  flex-shrink: 3;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-11);
+}
+
+/* -- The one line the launcher is allowed to say ------------------------ */
+
+/* Drawn only when the surface is in a state that is genuinely unusual: a query
+ * that matches nothing, a directory that is not a project, a command that has
+ * left PATH. The three permanent captions this replaces described how the
+ * daemon names and groups sessions, which is not something the operator can
+ * act on at launch time. */
+.rg-recents__note,
+.rg-launch__note {
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-space-5);
+}
+
+/* ====================================================================== */
+/* The sidebar footer's primary control                                    */
+/* ====================================================================== */
+
+/* WHY IT IS HERE AND NOT IN THE TOOLBAR
+ *
+ * It has to carry a word. A control that launches on the first click and says
+ * only `+` is a mystery button, and the toolbar cannot hold a word: at the
+ * 224px floor that band is already 116 of filter field plus a 36 attention
+ * chip plus its gaps, and there is no room for a label at any sidebar width
+ * the product offers. The footer is 32 of settings, 32 of collapse and their
+ * gaps, so it has 120 free at the floor against the 112 this control needs at
+ * its widest word. It is also where every platform source list puts an add
+ * action, bottom-leading.
+ *
+ * It replaces the toolbar's `+` rather than joining it. Two controls in one
+ * panel offering the same action is the duplication this pass exists to
+ * remove, and the one that is left says what it will do. */
+.rg-newbar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-right: auto;
+}
+
+/* The footer's trailing auto margin has to go, or the free space splits
+ * between it and this control's and the two icons drift into the middle of the
+ * band. One auto margin per row. */
+.rg-sidebar__footer .rg-sidebar__action:last-child {
+  margin-left: 0;
+}
+
+/* 32, the same control height as the two icon buttons beside it, so the
+ * footer's three controls sit on one baseline and one grid. Radius is squared
+ * on the trailing side because the caret half continues it; the solo modifier
+ * puts it back when there is no caret. */
+.rg-newbar__go {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-2);
+
+  border: 1px solid var(--rg-border-strong);
+  border-radius: var(--rg-radius-sm) 0 0 var(--rg-radius-sm);
+  background-color: var(--rg-ctl-rest);
+
+  color: var(--rg-fg);
+  font-family: inherit;
+  font-size: var(--rg-text-13);
+  cursor: pointer;
+}
+
+/* One control, so one radius. Drawn when the caret would do the same thing the
+ * primary half already does, which is the state where there is nothing
+ * confident to launch and both halves open the list. */
+.rg-newbar--solo .rg-newbar__go {
+  border-radius: var(--rg-radius-sm);
+}
+
+/* The word. A saved preset's label may be 40 characters and a sidebar may be
+ * 224 wide, so it elides rather than widening the control past the band. */
+.rg-newbar__what {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 20 wide: enough for the caret and for a pointer target that is 32 tall,
+ * without spending the width the word needs. No left border, so the seam
+ * between the two halves is one hairline rather than two. */
+.rg-newbar__pick {
+  flex: 0 0 auto;
+
+  width: var(--rg-space-5);
+  height: var(--rg-control-h);
+  padding: 0;
+
+  border: 1px solid var(--rg-border-strong);
+  border-left: 0;
+  border-radius: 0 var(--rg-radius-sm) var(--rg-radius-sm) 0;
+  background-color: var(--rg-ctl-rest);
+
+  color: var(--rg-fg-muted);
+  font-family: inherit;
+  font-size: var(--rg-text-glyph);
+  cursor: pointer;
+}
+
+.rg-newbar__go:hover:enabled,
+.rg-newbar__pick:hover:enabled {
+  background-color: var(--rg-ctl-hover);
+  border-color: var(--rg-fg-faint);
+  color: var(--rg-fg);
+}
+
+.rg-newbar__go:focus-visible,
+.rg-newbar__pick:focus-visible {
+  outline: 2px solid var(--rg-focus-ring);
+  outline-offset: 1px;
+}
+
+.rg-newbar__go:disabled,
+.rg-newbar__pick:disabled {
+  color: var(--rg-fg-faint);
+  cursor: default;
+}
+
+.rg-newbar__go:disabled:hover,
+.rg-newbar__pick:disabled:hover {
+  background-color: var(--rg-ctl-rest);
+  border-color: var(--rg-border-strong);
+  color: var(--rg-fg-faint);
+}
+
+/* At the 3rem rail the footer is a column and there is room for one 32px
+ * control per line, so the caret is not drawn and the word collapses to the
+ * glyph. The list is still one Ctrl+Shift+N away, which is what the tooltip
+ * says there. */
+.rg-sidebar--collapsed .rg-newbar {
+  margin-right: 0;
+}
+
+.rg-sidebar--collapsed .rg-newbar__go {
+  width: var(--rg-control-h);
+  padding: 0;
+  border-radius: var(--rg-radius-sm);
+  justify-content: center;
+}
+
+/* ====================================================================== */
+/* Recent commands, and the icon a saved command wears                     */
+/* ====================================================================== */
+
+/* "What was I just doing, and where." The launcher ranks a whole history for
+ * whatever is typed; this is the short unranked answer, and it is drawn in
+ * the launcher's own vocabulary rather than a second one. Every row rule
+ * above names both classes, so the two lists cannot drift into looking like
+ * different products: one row height, one pitch, one content rail, one
+ * highlight fill.
+ *
+ * What is NOT shared is the keyboard highlight. This list has no cursor of
+ * its own, so it carries `:hover` and nothing else; a `--on` fill here would
+ * promise an arrow-key selection that does not exist. */
+.rg-recents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-space-1);
+  min-width: 0;
+}
+
+/* The note is the only line this surface says, and when the list is empty it
+ * is the whole surface. It sits on the same content rail as a row's first
+ * glyph so an empty list and a full one start at the same left edge. */
+.rg-recents__note {
+  padding: 0 var(--rg-space-3);
+}
+
+/* -- Choosing a command's icon ------------------------------------------ */
+
+/* A flat grid of every shape, wrapped, rather than a dropdown: the set is
+ * fifteen cells including Default, and a menu that hides fourteen of them
+ * costs a click to learn what the choices are.
+ *
+ * The cell is a standard 32 control so the grid lands on the same module as
+ * every other control in a sheet, and it is square so the shape inside it is
+ * the only thing that differs from cell to cell. Nothing here has a fixed
+ * column count: the grid reflows, which is what keeps it correct in a
+ * settings sheet and in a narrow dialog without either one knowing. */
+.rg-iconpick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rg-space-1);
+  min-width: 0;
+}
+
+/* A transparent border at rest, not none, so selecting a cell cannot move the
+ * thirteen beside it by two pixels. */
+.rg-iconpick__cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+
+  width: var(--rg-control-h);
+  height: var(--rg-control-h);
+  padding: 0;
+
+  border: 1px solid transparent;
+  border-radius: var(--rg-radius-sm);
+  background-color: var(--rg-ctl-rest);
+
+  color: var(--rg-fg-muted);
+  cursor: pointer;
+}
+
+.rg-iconpick__cell:hover {
+  background-color: var(--rg-ctl-hover);
+  color: var(--rg-fg);
+}
+
+/* The chosen one. The accent is spent on the border rather than the fill,
+ * because the cell's content is a stroked glyph in currentColor and an accent
+ * plate underneath it would fight the shape it exists to show. */
+.rg-iconpick__cell--on {
+  border-color: var(--rg-accent);
+  background-color: var(--rg-row-active);
+  color: var(--rg-fg);
+}
+
+.rg-iconpick__cell:focus-visible {
+  outline: 2px solid var(--rg-focus-ring);
+  outline-offset: 1px;
+}
+
+/* The glyph inherits the cell's ink, so hover and selection move one colour
+ * and the shape never carries a state of its own. */
+.rg-iconpick__glyph {
+  color: inherit;
+}

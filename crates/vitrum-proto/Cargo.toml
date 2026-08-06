@@ -1,0 +1,12 @@
+[package]
+name = "vitrum-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Wire contract between the vitrum session server and its clients."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,33 @@
+[Unit]
+Description=vitrum session daemon
+Documentation=https://github.com/santhreal/vitrum
+# Ordered after the network is up, but NOT dependent on it: the daemon binds
+# loopback and must come up on a machine with no network at all.
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vitrum-server
+Restart=on-failure
+RestartSec=2s
+
+# The PTY children are this process's children, so a restart loses them. Do not
+# add a watchdog or a memory cap that would make restarts routine: a restart is
+# a failure that costs the operator every running agent, and it should be rare
+# and visible rather than automatic and quiet.
+#
+# `Restart=on-failure` and not `always`: a daemon that exited cleanly was asked
+# to, and bringing it back would fight the operator.
+
+# Agents are the point of this program and they are not the daemon's own work,
+# so the daemon must never be the thing the OOM killer picks. Its children are
+# fair game; it is not.
+OOMScoreAdjust=-500
+
+# Sane defaults for a process that spawns many PTYs. Twenty to thirty agents,
+# each with a master and a slave descriptor plus whatever they open themselves,
+# clears the usual 1024 soft limit without much room to spare.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

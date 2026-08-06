@@ -1,0 +1,909 @@
+/* vitrum spatial system
+ *
+ * ONE OWNER FOR EVERY DISTANCE IN THE WINDOW.
+ *
+ * Spacing is not decoration. Proximity is the only signal that says what
+ * belongs to what: a row's parts must sit closer to each other than to the
+ * next row's parts, a group's members closer than the gap to the next group.
+ * Break the rhythm and the grouping signal inverts, elements read as
+ * belonging to the wrong parent, and the window stops being parseable. So
+ * every padding, margin, gap, height, inset, border width and radius in the
+ * product is decided here and nowhere else.
+ *
+ * THE GRID IS 4px. Every spatial value in this file is a multiple of 4px
+ * written in rem at 1x. The only literals that are not are the 1px hairlines
+ * already in the base sheets, which are device-resolution artefacts rather
+ * than design measurements, and the two calc() subtractions below that back a
+ * border out of a padding so the CONTENT lands on the grid.
+ *
+ *
+ * 1. INVENTORY: WHAT WAS THERE
+ *
+ * Measured out of app/assets/sidebar.css, app/assets/settings.css and
+ * app/src/app.css before this file existed. Values are 1x CSS pixels.
+ *
+ * On the grid already (4, 8, 12, 16, 20, 24, 28, 32, 36, 48, 224, 448):
+ *   space-1 4, space-2 8, space-3 12, space-4 16, space-5 20, space-6 24,
+ *   space-7 28, content-inset 12, row-inset 12, control-gap 8, radius-md 8,
+ *   search-h 32, slim-h 36, line-head 20, line-12 16, line-14 20,
+ *   chevron-w 12, close-w 20, slot-min 32, sidebar min 224 max 448,
+ *   collapsed 48, tab-min-w 104, tab-max-w 224, menu-w 232, menu-item-h 28,
+ *   set-rail-w 176, set-tab-h 32, set-sheet-w 832, set-sheet-h 608,
+ *   sheet 512 / 384 / 640, keys chord 184, wsbar-h-collapsed 24,
+ *   wsbar-chip-h 20, switch-knob 16, switch-travel 16.
+ *
+ * OFF THE GRID, and this is the whole defect:
+ *   space-0-5      2    the card's inter-line gap, the settings rail gap,
+ *                       .rg-badge gap, .rg-keys__group gap
+ *   space-1-5      6    toolbar gap, search gap, search padding-right,
+ *                       project header gap and padding, card line gaps,
+ *                       unread margin, empty-state gaps, .rg-conn gap,
+ *                       .rg-wsw gap
+ *   space-2-5     10    slim row gap, settings tab padding, settings field
+ *                       padding, settings button padding
+ *   radius-sm      6    every small control and tile in the product
+ *   radius-lg     10    nothing reads it; it was the scale's top step
+ *   toolbar-h     44    the sidebar's chrome band
+ *   titlebar-h    36    the window's only handle
+ *   footer-h      36    the sidebar's bottom band
+ *   row-h-project 28    project header (on grid, but off the control scale)
+ *   section-h     16
+ *   card-h        58    two-line card
+ *   glyph-w       18    monogram tile and the filter's magnifier box
+ *   icon-sm       14    status icon box
+ *   unread-size    6    the unread dot
+ *   dot-size       7    the tab and connection dots
+ *   rail-w         3    the attention rail
+ *   row-gap        2    between two session rows
+ *   resizer-w      6    drag handle and scrollbar
+ *   window-control 46   the close / maximise / minimise cluster
+ *   terminal pad   4 top, 0 right, 0 bottom, 8 left
+ *   flash / exit   4 block, 12 inline
+ *   .rg-btn        4 block, 12 inline, no height at all
+ *   field input   30
+ *   .rg-chip       2 block
+ *   .rg-rollup     3 gap
+ *   overflow row  28 high, thumb border 3, thumb radius 5
+ *   more-count     4.8 (0.3rem)
+ *   keys kbd       1 block, 4.8 inline
+ *   set-head-h    44
+ *   set-control-h 30
+ *   switch        36 x 20 track, 2 inset
+ *   wsbar-h       36, wsbar-item-h 28, wsbar-count-min 18, wsw-count-min 18
+ *   .rg-wsw       24 high, .rg-conn 24 high, .rg-attn-count 24 high
+ *
+ * Twenty-eight distinct off-grid lengths, several of them load-bearing in
+ * more than one file. There was no common divisor, which is why measured row
+ * pitches came out 24.7 / 27.3 / 38.7 / 60.0 and why no two left edges in the
+ * sidebar agreed.
+ *
+ *
+ * 2. THE SYSTEM
+ *
+ * --rg-inset  12px, and it is the single number for every window edge.
+ *   The scroller pads 12 on all four sides, so the distance from the window's
+ *   left edge to a row surface, from the toolbar band to the first row, and
+ *   from the last row to the footer hairline are one value. The terminal pads
+ *   12 on all four sides, so the seam between the two panes is 12 + hairline
+ *   + 12 and is symmetric. The sidebar's two bands pad 12 inline, so the
+ *   filter field and the footer's buttons start on the same 12 as every row
+ *   surface below them.
+ *
+ *   What --rg-inset does NOT govern is a band's vertical air, and that is a
+ *   boundary worth stating because it looks like an inconsistency. A band's
+ *   height answers to the control inside it, not to the window edge: the
+ *   sidebar's two are 48 = 8 + 32 + 8, and the window's three, which
+ *   14-chrome.css owns, are 40 / 36 / 40. Inset is content-to-edge; band air
+ *   is control-to-band. Two rules, each applied everywhere it applies.
+ *
+ * TWO VERTICAL RAILS, and only two, everywhere in the sidebar:
+ *   12  every SURFACE edge: row background, filter field, project header,
+ *       section shelf, footer button, toolbar button.
+ *   24  every CONTENT edge: session title, branch, project name, section
+ *       label, the filter field's icon box, .rg-project__more's label, and
+ *       empty-state prose. Left and right are the SAME 24, because a row
+ *       subtracts its 4px attention rail out of its own left padding rather
+ *       than stacking on top of it: 12 scroller + (4 rail + 8 padding) = 24
+ *       leading, 12 scroller + 12 padding = 24 trailing. Exactly one rule in
+ *       the product knows the rail exists. An additive rail would have put
+ *       list content on 28 while .rg-project__more, which renders directly
+ *       under session rows in the same list, stayed on 24, and every element
+ *       any lane adds later would need a calc to stay aligned.
+ *
+ * BANDS ARE GENEROUS, THE LIST IS DENSE. Those are different jobs. Height
+ * spent above the scroller is spent once; height spent on a row is spent
+ * twenty times. So a band is 48 and a card is 60, and a card never reserves
+ * a line it might not draw.
+ *
+ * VERTICAL RHYTHM inside the scroller, smallest gap to largest, so that
+ * proximity always names the right parent:
+ *    4  between two lines of one row, and between two rows
+ *    8  a row's own block padding, above and below its content
+ *   16  above a section shelf head, 8 below it, so the head binds downward
+ *       to the rows it labels rather than floating between two bands
+ *   24  between two project groups
+ * Every step is a clean multiple of the one below it, and the largest gap in
+ * the list (24) is six times the smallest (4). That ratio is the grouping.
+ *
+ *
+ * 3. THE NAMED DEFECTS, BEFORE AND AFTER
+ *
+ * a. ROW PITCH ALTERNATED 86 / 68, a 26% swing.
+ *    Cause: a card is two lines at 12 + 20 + 2 + 20 + 12 = 66, and line three
+ *    renders only when a badge earns it, adding 2 + 16 and taking the box to
+ *    84. Plus the 2px row gap, that is 86 next to 68.
+ *    After, from this file alone: 60 and 80, gap 4, so pitch 64 and 84. Both
+ *    are multiples of 4 AND of the row gap, so a row that grows still lands
+ *    on the grid instead of pushing everything below it off it.
+ *    After, composed with 15-rows.css, which places line three beside the
+ *    title instead of under it: 60, 60, 60 and a CONSTANT 64 pitch, measured.
+ *    The alternation is closed by moving the badge inside the row's existing
+ *    two lines, never by pre-reserving a third: reserving it put 60px of
+ *    content in a 78px box on every ordinary row and is the measured cause of
+ *    "gaps larger than the text". This file supplies the 60 floor, the 4 gap
+ *    and the 4 row-gap that make both halves land on the grid; that file
+ *    supplies the placement. Neither alone is enough.
+ *
+ * b. THE ROW DREW ONE OF FOUR BORDERS, an orphaned 3px left bar.
+ *    Cause: border-left plus border-radius on a box whose other three sides
+ *    have no border-style. The radius curls that single edge's two ends into
+ *    arc fragments, which is the ink measured at x=12,13,14 and nowhere else.
+ *    After: the rail is 4 rather than 3 so it sits on the grid, and it is now
+ *    an inset accent inside a filled, rounded surface rather than the only
+ *    ink on an open box. Radius stays 8. No border is added: four hairlines
+ *    down twenty rows is a table, which is the failure this design exists to
+ *    avoid.
+ *
+ * c. THE FILTER FIELD'S LEFT INSET WAS 12 AT 1.0x AND 8 AT 1.5x.
+ *    Cause: the first ink in the field is a magnifier GLYPH centred in an
+ *    18px box by text-align, so the field's apparent inset was set by glyph
+ *    metrics, which do not scale linearly, rather than by a length. 18 is
+ *    also off the grid, so the box could not land anywhere repeatable.
+ *    After: the icon box is 16, a grid value, and the field's padding backs
+ *    the 1px border out of --rg-inset so the icon BOX starts at exactly 24
+ *    from the window edge at every scale. The inset is now a declared length
+ *    at both scales instead of a rasterisation artefact.
+ *
+ * d. ROWS SAT ~87 APART CARRYING ~40 OF CONTENT.
+ *    After: a two-line card is 60 carrying 44, pitch 64. Content is 69% of
+ *    pitch where it was 46%.
+ *
+ * e. FIVE WINDOW EDGES ARRIVED AT INDEPENDENTLY: sidebar to window left 12,
+ *    sidebar top to titlebar 6, sidebar bottom to footer 12, the seam 8 on
+ *    the terminal side and 12 on the sidebar side, terminal insets 4 / 0 / 0
+ *    / 8.
+ *    After: all five are --rg-inset, 12.
+ *
+ *
+ * 4. WHAT THIS FILE MAY NOT TOUCH
+ *
+ * Colour, font size, weight, shadow, transition and animation belong to other
+ * lanes. Nothing here sets one. There is no motion in this file, so it has
+ * nothing to zero in a reduced-motion block.
+ *
+ * --rg-menu-w and --rg-menu-item-h are deliberately NOT redefined. They are
+ * 232px and 28px, already on the grid, and app/src/ui/menu.rs holds the same
+ * two numbers as Rust constants for the pre-layout clamp, kept in step by
+ * menu.rs::tests::menu_width_matches_the_stylesheet. MENU_SEP_H and
+ * MENU_PAD_H depend on .rg-menu's 4px padding and .rg-menu__item--sep's 4px
+ * margin, so those two are left alone as well.
+ *
+ * Loads after every other stylesheet, so equal specificity is enough and
+ * !important is never used. Where a base sheet relies on load order at equal
+ * specificity, the loser is restated here immediately after the winner: see
+ * .rg-sheet--settings.
+ */
+
+/* ==================================================================== */
+/* 1. THE SCALE                                                          */
+/* ==================================================================== */
+
+/* Declared on :root. Custom properties inherit, and the runtime density
+ * preference is written INLINE on div.rg-app by ui/settings.rs, which beats
+ * any rule here. That ordering is correct: this file is the default, the
+ * operator's density is an override of it. */
+:root {
+  /* The base unit. Compose with calc() rather than inventing a literal. */
+  --rg-u: 0.25rem;
+
+  --rg-space-1: 0.25rem; /* 4 */
+  --rg-space-2: 0.5rem; /* 8 */
+  --rg-space-3: 0.75rem; /* 12 */
+  --rg-space-4: 1rem; /* 16 */
+  --rg-space-5: 1.25rem; /* 20 */
+  --rg-space-6: 1.5rem; /* 24 */
+  --rg-space-7: 1.75rem; /* 28 */
+  --rg-space-8: 2rem; /* 32 */
+  --rg-space-10: 2.5rem; /* 40 */
+  --rg-space-12: 3rem; /* 48 */
+  --rg-space-16: 4rem; /* 64 */
+
+  /* The three half-steps are the single largest source of off-grid lengths
+   * in the product: 2, 6 and 10 appear in real gaps and paddings across all
+   * three base sheets and have no common divisor with anything. They are
+   * snapped up rather than deleted, because deleting them would need a sweep
+   * of three files this file may not write, and because snapping up is the
+   * direction the product needs anyway. Every call site gains air. */
+  --rg-space-0-5: 0.25rem; /* was 2 */
+  --rg-space-1-5: 0.5rem; /* was 6 */
+  --rg-space-2-5: 0.75rem; /* was 10 */
+
+  /* THE WINDOW EDGE. One number, five edges.
+   *
+   * 16, up from 12, after the user looked at the running build and still
+   * called the sidebar cramped. On a 420px panel a 12px outer inset is a
+   * web-app inset; macOS system sidebars sit at 16 to 20. Raising this one
+   * token buys air at every window edge, both seam sides, all four terminal
+   * edges and both band gutters at once, and moves the panel's content rail
+   * from 24 to 32 without any other rule changing. */
+  --rg-inset: 1rem; /* 16 */
+  --rg-content-inset: var(--rg-inset);
+  /* Aliased, never restated. The measured six-left-edge ladder existed
+   * because a row's inset nested inside the panel's and each control then
+   * added its own; the two must be incapable of differing. */
+  --rg-row-inset: var(--rg-inset);
+
+  /* THE PANEL'S TEXT RAIL: the distance from the scroller's content box to a
+   * line of prose or a row's first glyph. 12, so text lands on 24 from the
+   * window, and it is a NAME rather than a repeated var(--rg-inset) because
+   * five elements across three owners have to agree on it: a session row
+   * (which subtracts its rail out of this), .rg-project__more,
+   * .rg-project__empty, the project header's chevron gutter, and the sidebar
+   * empty states in 13-empty.css. Moving the rail is one line here rather
+   * than five edits across four files. */
+  --rg-text-rail: var(--rg-inset);
+
+  /* A row's block padding, named because TWO declarations must agree on it:
+   * .rg-session--card's padding and its contain-intrinsic-size, which is a
+   * content-box height and therefore the row height minus this twice. A
+   * literal in either place rots silently the day the other moves, and the
+   * symptom is a scrollbar that jumps on a long list, which nobody sees until
+   * they scroll one. */
+  --rg-row-pad-block: var(--rg-space-3); /* 12, was 8 */
+  --rg-control-gap: var(--rg-space-2); /* 8 */
+
+  /* THE SIDEBAR'S TWO BANDS, and only those two. 48 = 8 + 32 + 8.
+   *
+   * The WINDOW's bands (titlebar, workspace strip) are 14-chrome.css's
+   * and are not declared here. That split is real rather than territorial: a
+   * window band is a thin handle whose air answers to the controls in it, and
+   * the workspace strip is CONDITIONAL, drawn only while the operator opens it,
+   * so an earlier plan here to make the toolbar and a window band equal heights
+   * bought an alignment that does not exist in the common case and cost 24px of
+   * chrome to buy it. The sidebar's two bands are different: they
+   * bracket the scroller, so their air is read against the scroller's 12 rather
+   * than against the titlebar's, and they must match each other or the panel is
+   * lopsided top to bottom. 8 is one step under that 12, which reads as chrome
+   * sitting inside content rather than as a third inset. */
+  --rg-band-h: 3rem; /* 48 */
+  --rg-control-h: 2rem; /* 32 */
+  --rg-control-pad-x: var(--rg-inset); /* 12 */
+
+  /* 4 / 8 / 12. Was 6 / 8 / 10, which is a two-point spread across three
+   * steps: no step read as a step. */
+  --rg-radius-sm: 0.25rem;
+  --rg-radius-md: 0.5rem;
+  --rg-radius-lg: 0.75rem;
+
+  /* -- Bands ------------------------------------------------------------
+   * --rg-titlebar-h and --rg-wsbar-h are DELIBERATELY ABSENT.
+   * 14-chrome.css owns them (40 / 40). Do not reintroduce them here; two
+   * files declaring one band height is decided by load order alone. */
+  --rg-toolbar-h: var(--rg-band-h); /* 48, was 44 */
+  --rg-footer-h: var(--rg-band-h); /* 48, was 36 */
+  --rg-search-h: var(--rg-control-h); /* 32 */
+
+  /* -- The list ------------------------------------------------------- */
+  /* Dense and exact. A card is 8 + 20 + 4 + 20 + 8 and the third line, when
+   * a badge earns it, adds 4 + 16 and takes the box to 80. Neither number is
+   * reserved and both are grid multiples. */
+  --rg-card-h: 4.25rem; /* 68 = 12 + 20 + 4 + 20 + 12. Was 60 at 8 of padding */
+  --rg-slim-h: 2.75rem; /* 44 = 12 + 20 + 12. Was 36; same block air as a card */
+  --rg-row-h: var(--rg-control-h); /* 32, was 28 */
+  --rg-row-h-project: var(--rg-control-h); /* 32, was 28 */
+  --rg-row-collapsed-h: var(--rg-control-h); /* 32, was 28 */
+  --rg-section-h: 1.25rem; /* 20, was 16 */
+  --rg-line-head: 1.25rem; /* 20 */
+  /* 8, was 4. Rows paint a resting fill now, so this is the distance between
+   * two filled plates rather than between two invisible boxes, and 4 read as
+   * touching. It is also the proximity rule: 4 between two lines INSIDE a row
+   * against 12 + 8 + 12 = 32 between the content of adjacent rows, which is
+   * eight to one. Equal in-row and between-row gaps are exactly what makes a
+   * list read as undifferentiated. */
+  --rg-row-gap: var(--rg-space-2);
+
+  /* THE TWO DISTANCES ABOVE A ROW GAP, named because the list has three
+   * nesting levels and only the innermost one had a name. The other two were
+   * spent as raw --rg-space-8 and --rg-space-6 at their call sites, so
+   * nothing said which level a distance belonged to and the two of them had
+   * drifted to 32 and 24: a shelf inside a group separated its band almost as
+   * hard as the gap to the next project, and the whole scroller read as one
+   * flat column of boxes at three barely different pitches.
+   *
+   * 32 / 16 / 8, a clean doubling. Group boundary is twice a band boundary is
+   * twice a row gap, so proximity alone says whether the thing above a row is
+   * its shelf, its project, or somebody else's. */
+  --rg-group-gap: var(--rg-space-8); /* 32, between two project groups */
+  --rg-band-gap: var(--rg-space-4); /* 16, above a section shelf, was 24 */
+
+  /* -- Parts ---------------------------------------------------------- */
+  --rg-glyph-w: 1.25rem; /* 20, was 18 */
+  --rg-icon-sm: 1rem; /* 16, was 14 */
+  /* 8, not 12. The chevron IS the leading gutter of a header row: 8 chevron
+   * plus the head's 4 gap is 12, which puts a project name and a section
+   * label on the same content rail as a session title, which is 2 x inset. */
+  --rg-chevron-w: var(--rg-space-3);
+  --rg-close-w: 1.5rem; /* 24, was 20, and under the pointer-target floor */
+  --rg-slot-min: 2rem; /* 32 */
+  --rg-unread-size: var(--rg-space-2); /* 8, was 6 */
+  --rg-dot-size: var(--rg-space-2); /* 8, was 7 */
+  --rg-rail-w: var(--rg-space-1); /* 4, was 3 */
+  --rg-resizer-w: var(--rg-space-2); /* 8, was 6 */
+
+  /* -- settings.css --------------------------------------------------- */
+  /* The settings header matched the sidebar's chrome band before this file
+   * and must go on matching it. */
+  --rg-set-head-h: var(--rg-band-h); /* 56, was 44 */
+  --rg-set-control-h: var(--rg-control-h); /* 32, was 30 */
+  --rg-set-tab-h: var(--rg-control-h); /* 32 */
+
+  /* The switch, re-derived on the grid. Its inset was 2 and its track 36x20,
+   * which cannot hold a 16 knob with grid padding. 40x24 with a 4 inset does,
+   * and the travel is unchanged at 40 - (2 x 4) - 16 = 16, so settings.css's
+   * translate still lands the knob flush. */
+  --rg-switch-w: 2.5rem; /* 40, was 36 */
+  --rg-switch-h: 1.5rem; /* 24, was 20 */
+  --rg-switch-pad: var(--rg-space-1); /* 4, was 2 */
+  --rg-switch-knob-size: 1rem; /* 16 */
+  --rg-switch-travel: 1rem; /* 16, unchanged */
+
+  /* --rg-wsbar-h is 14-chrome.css's, like the other two window bands. Only
+   * the chip geometry inside it is here. */
+  --rg-wsbar-item-h: var(--rg-control-h); /* 32, was 28 */
+  --rg-wsbar-count-min: 1.25rem; /* 20, was 18 */
+}
+
+/* ==================================================================== */
+/* 2. THE WINDOW'S EDGES                                                 */
+/* ==================================================================== */
+
+/* The scroller. Four sides, one number: this rule alone answers "sidebar to
+ * window left", "sidebar top to titlebar" and "sidebar bottom to footer". */
+.rg-sidebar__body {
+  padding: var(--rg-inset);
+}
+
+/* The grid. Was 4 top, 0 right, 0 bottom, 8 left, which is four independent
+ * decisions and the reason the terminal's text hugged the sidebar seam. */
+.rg-terminal {
+  padding: var(--rg-inset);
+}
+
+/* The seam. The sidebar's own hairline plus --rg-inset on each side of it. */
+.rg-sidebar__resizer {
+  width: var(--rg-resizer-w);
+}
+
+/* ==================================================================== */
+/* 3. CHROME BANDS                                                       */
+/* ==================================================================== */
+
+.rg-titlebar {
+  height: var(--rg-titlebar-h);
+  padding-left: var(--rg-inset);
+  gap: var(--rg-space-2);
+}
+
+.rg-titlebar__context {
+  padding-left: var(--rg-space-2);
+  gap: var(--rg-space-2);
+}
+
+.rg-titlebar__action {
+  width: var(--rg-control-h);
+  height: var(--rg-control-h);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-window-controls {
+  margin-left: var(--rg-space-2);
+}
+
+/* 48, was 46. Full band height and flush to the corner, so a fast diagonal
+ * throw of the pointer cannot miss close. */
+.rg-window-control {
+  width: var(--rg-space-12);
+  height: var(--rg-titlebar-h);
+}
+
+.rg-wsw {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-control-pad-x);
+  gap: var(--rg-space-2);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-conn {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-2);
+  gap: var(--rg-space-2);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-conn__dot {
+  width: var(--rg-dot-size);
+  height: var(--rg-dot-size);
+}
+
+.rg-wsw__count,
+.rg-wsbar__count {
+  min-width: var(--rg-space-5);
+  height: var(--rg-space-4);
+  padding: 0 var(--rg-space-1);
+}
+
+/* -- One-line strips ---------------------------------------------------
+ * The flash and the exit bar are bands, so they carry the band's inline
+ * inset. Their block padding is 8 rather than 12: they are one line of text
+ * announcing something, not a region with content in it. */
+
+.rg-flash {
+  padding: var(--rg-space-2) var(--rg-inset);
+  gap: var(--rg-space-2);
+}
+
+.rg-exitbar {
+  padding: var(--rg-space-2) var(--rg-inset);
+  gap: var(--rg-space-2);
+}
+
+/* ==================================================================== */
+/* 4. THE SIDEBAR'S OWN BANDS                                            */
+/* ==================================================================== */
+
+.rg-sidebar__toolbar {
+  height: var(--rg-toolbar-h);
+  padding: 0 var(--rg-inset);
+  gap: var(--rg-space-2);
+}
+
+.rg-sidebar__footer {
+  height: var(--rg-footer-h);
+  padding: 0 var(--rg-inset);
+  gap: var(--rg-space-1);
+}
+
+/* 32, was 28, so every icon button in the window is one size and lines up
+ * with the 32 filter field beside it. */
+.rg-sidebar__action {
+  width: var(--rg-control-h);
+  height: var(--rg-control-h);
+  border-radius: var(--rg-radius-sm);
+}
+
+/* THE FILTER FIELD, and defect (c).
+ *
+ * The padding backs the 1px border out of --rg-inset so the field's CONTENT
+ * box starts at exactly 12 + 1 + 11 = 24 from the window's left edge, at
+ * every device scale, as a declared length. Before this, the first ink was a
+ * magnifier glyph centred by text-align in an 18px box, so the apparent inset
+ * was whatever the rasteriser did with that glyph: 12 at 1.0x and 8 at 1.5x
+ * on the same build. */
+.rg-sidebar__search {
+  height: var(--rg-search-h);
+  padding: 0 calc(var(--rg-inset) - 1px);
+  gap: var(--rg-space-2);
+  border-radius: var(--rg-radius-md);
+}
+
+.rg-sidebar__search-icon {
+  width: var(--rg-icon-sm);
+}
+
+.rg-sidebar__search-kbd {
+  padding: 0 var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}
+
+/* Height and inset only. The width is deliberately NOT capped here: a hard
+ * cap fires at 4K where there are two thousand spare pixels and still does
+ * not help at the 224 floor. 16-controls.css protects the pair by priority
+ * instead, giving the filter field a 6rem floor and letting the chip yield
+ * only after the field has. */
+.rg-attn-count {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-control-pad-x);
+  gap: var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}
+
+/* Drawn only while the socket is unhealthy. Aligned to the scroller so it
+ * does not introduce a sixth left edge on the one screen where the operator
+ * is already unhappy.
+ *
+ * No bottom margin. The scroller directly below already pads --rg-inset, and
+ * a margin here stacked on top of it: 8 + 12 = 20 between the banner and the
+ * first row, against 12 everywhere else in the panel. The band boundary is
+ * the scroller's inset, and only one element gets to own it. */
+.rg-sidebar__status {
+  margin: 0 var(--rg-inset);
+  padding: var(--rg-space-2) var(--rg-space-3);
+  gap: var(--rg-space-2);
+  border-radius: var(--rg-radius-sm);
+}
+
+/* ==================================================================== */
+/* 5. THE LIST: PROJECT GROUPS AND SECTION SHELVES                       */
+/* ==================================================================== */
+
+/* 32 between groups, against 8 between rows. Four to one, so a project group
+ * is unmistakably one object. It was 4 against 2, a two-to-one ratio that
+ * read as one undifferentiated column. */
+.rg-project {
+  margin-bottom: var(--rg-group-gap);
+}
+
+/* The header's leading gutter is the chevron itself: 12 inset + 12 chevron +
+ * 4 gap puts the project name on 28, which is the same content rail a row
+ * title lands on. The trailing inset is --rg-inset, so the count's right edge
+ * is on 24 with every other right-hand element in the panel. */
+.rg-project__header {
+  height: var(--rg-row-h-project);
+  margin-bottom: var(--rg-space-1);
+  padding: 0 var(--rg-inset) 0 0;
+  gap: var(--rg-space-1);
+  border-radius: var(--rg-radius-md);
+}
+
+.rg-project__chevron {
+  width: var(--rg-chevron-w);
+  height: var(--rg-space-4);
+}
+
+/* ZERO, deliberately, and it is not an oversight.
+ *
+ * This element's children are BANDS, not rows: .rg-project__empty and the
+ * three .rg-project__section wrappers. Bands separate themselves, with the
+ * shelf head's 16 of margin-top. A gap here was doing two harmful things.
+ * It added 4 on top of that 16, so the measured distance above a shelf was
+ * 20 while the system says 16. And ui/sidebar.rs emits the Active section
+ * unconditionally, by design, so that "the gap between bands comes from one
+ * rule": when a project has nothing active that div is a zero-height flex
+ * item which still collects a gap on each side, so a project with no active
+ * work sat 4px lower than one with some. An invisible element must not be
+ * able to spend space. Rows get their 4 from .rg-project__section, which
+ * only ever contains rows. */
+.rg-project__sessions {
+  gap: 0;
+}
+
+.rg-project__section {
+  gap: var(--rg-row-gap);
+}
+
+/* 16 above, 8 below, and the 8 below is .rg-project__section's own row gap
+ * rather than a margin here, so one distance stays in one place. The head
+ * binds DOWNWARD to the rows it labels: half the gap below it that it has
+ * above it, so the shelf reads as the top of its own band rather than as
+ * something floating between two bands.
+ *
+ * It was 24 above, which this comment already denied. At 24 against the 32
+ * between two whole projects, a shelf boundary and a group boundary were
+ * within one grid step of each other and the eye could not tell a new band
+ * from a new project. */
+.rg-project__section-head {
+  height: var(--rg-section-h);
+  margin: var(--rg-band-gap) 0 0;
+  padding: 0 var(--rg-inset) 0 0;
+  gap: var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}
+
+/* The hairline carries its own 4 either side, so the label-to-rule and
+ * rule-to-count distances are 8 while the head's own gap stays 4 and the
+ * label still lands on the 28 content rail. */
+.rg-project__section-rule {
+  min-width: var(--rg-space-2);
+  margin: 0 var(--rg-space-1);
+}
+
+.rg-project__section-count {
+  min-width: var(--rg-space-5);
+}
+
+/* Row-shaped, but with no rail to subtract, so plain --rg-inset lands their
+ * text on the same 24 as a session title. .rg-project__more renders directly
+ * under session rows in the same list, which is the pair that reads. */
+.rg-project__empty {
+  padding: var(--rg-space-2) var(--rg-text-rail) var(--rg-space-3);
+  gap: var(--rg-space-2);
+}
+
+.rg-project__more {
+  height: var(--rg-slim-h);
+  padding: 0 var(--rg-text-rail);
+  gap: var(--rg-space-2);
+  border-radius: var(--rg-radius-md);
+}
+
+/* "Show all" reuses the shelf's count element, which has no auto margin of
+ * its own because in a shelf head a flex-grow hairline pushes it. There is no
+ * hairline here, so the count sat 8 after the label in the middle of a
+ * 400px row while every other count in the panel was on the trailing rail.
+ * Measured in the render, not reasoned about. */
+.rg-project__more .rg-project__section-count {
+  margin-left: auto;
+}
+
+/* ==================================================================== */
+/* 6. THE SESSION ROW                                                    */
+/* ==================================================================== */
+
+/* The rail is 4 rather than 3, which is the only spatial half of defect (b):
+ * a 3px edge is off the grid and cannot line up with anything, and it is the
+ * one border on a box that also has a radius, so its two ends curl into the
+ * arc fragments that were measured. At 4 it is a grid column, and inside the
+ * filled surface it becomes an inset accent rather than the only ink on an
+ * open box. Radius stays 8; no border is added on the other three sides,
+ * because twenty outlined boxes is a table. */
+.rg-session {
+  border-left-width: var(--rg-rail-w);
+  border-radius: var(--rg-radius-md);
+}
+
+/* 8 block, 12 inline, and the leading 12 is spent as 4 rail plus 8 padding
+ * rather than 12 padding behind a 4 rail. That is the whole of defect (e)'s
+ * last rung: content lands on 24 both sides and no other rule in the product
+ * has to know the rail exists.
+ *
+ * Height is NOT declared here any more. It used to be `min-height`, on the
+ * reasoning that a third line should grow the box rather than have every
+ * other row reserve space for it. That reasoning is now obsolete twice over:
+ * the card carries two unconditional lines, so nothing is conditional to grow
+ * it, and 15-rows.css declares a hard `height: var(--rg-card-h)` so the card
+ * is one height whatever it carries.
+ *
+ * Leaving the `min-height` behind would not have been harmless. A floor and a
+ * fixed height on one box is two rules answering one question, and this file
+ * has already shipped that exact defect once: `--rg-card-h` sat at 58px
+ * against a 66px natural height, where a `min-height` never bound at any
+ * value and read as a constraint while being a comment. */
+.rg-session--card {
+  padding: var(--rg-row-pad-block) var(--rg-text-rail) var(--rg-row-pad-block)
+    calc(var(--rg-text-rail) - var(--rg-rail-w));
+  /* The inter-line 4 lives HERE, as a gap, not as a margin-top on each line.
+   * In today's flex column that is identical. It also survives 15-rows.css
+   * turning the card into a two-row grid to put the badge beside the title
+   * instead of under it. A margin-top would have had to be zeroed in that
+   * file, putting one distance in two files. */
+  row-gap: var(--rg-space-1);
+  /* CONTENT-box height, not border-box, and that is a bug fix rather than a
+   * transcription. A row is content-visibility:auto, so while it is skipped
+   * its used height is padding plus this number. The base sheet declared the
+   * whole 58px row here, so a skipped card measured 58 + 24 = 82 against 66
+   * rendered: measured, the scrollbar jumped 16px per row the first time each
+   * one was scrolled into view. 44 is 60 minus the 8 of block padding above
+   * and below it, so skipped and rendered agree exactly.
+   *
+   * Declared twice on purpose: the bare length first for an engine without
+   * the `auto` keyword, and a plain rem before the calc so an engine that
+   * rejects calc() here still gets the right number. */
+  contain-intrinsic-size: 2.75rem;
+  contain-intrinsic-size: auto
+    calc(var(--rg-card-h) - 2 * var(--rg-row-pad-block));
+}
+
+/* Same 8 of block air as a card, arrived at by centring one 20 line box in a
+ * 36 row rather than by declaring it, and the same rail subtraction, so a
+ * slim title sits on 24 with a card's. Its height is definite, so
+ * contain-intrinsic-size is only the pre-first-layout estimate. */
+.rg-session--slim {
+  height: var(--rg-slim-h);
+  min-height: var(--rg-slim-h);
+  padding: 0 var(--rg-text-rail) 0
+    calc(var(--rg-text-rail) - var(--rg-rail-w));
+  gap: var(--rg-space-2);
+  contain-intrinsic-size: 2.75rem;
+  contain-intrinsic-size: auto var(--rg-slim-h);
+}
+
+/* 4 between the lines of one row, against 4 between two rows plus 8 of block
+ * padding on each of them: 4 inside, 20 across a boundary. Five to one is the
+ * proximity signal that says which title owns which branch. */
+.rg-session__line--head {
+  height: var(--rg-line-head);
+  gap: var(--rg-space-2);
+}
+
+/* margin-top is zeroed explicitly. sidebar.css hangs the inter-line distance
+ * off --rg-space-0-5 here, and that token still resolves (to 4 now), so
+ * without these two zeros the card would carry the margin AND the row-gap and
+ * come out 8 apart instead of 4. */
+.rg-session__line--title {
+  height: var(--rg-line-14);
+  margin-top: 0;
+  gap: var(--rg-space-2);
+}
+
+.rg-session__line--meta {
+  height: var(--rg-line-12);
+  margin-top: 0;
+  gap: var(--rg-space-2);
+}
+
+/* The one-cell grid. Its width is a floor and never its content, which is
+ * what keeps the status label, the timestamp and the close button in one
+ * column at every panel width. --close must stay after it: both are (0,1,0)
+ * and the narrower floor has to win. */
+.rg-session__slot {
+  min-width: var(--rg-slot-min);
+  height: var(--rg-line-head);
+}
+
+.rg-session__slot--close {
+  min-width: var(--rg-close-w);
+  height: var(--rg-line-14);
+}
+
+.rg-session__close {
+  width: var(--rg-close-w);
+  height: var(--rg-close-w);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-session__unread {
+  width: var(--rg-unread-size);
+  height: var(--rg-unread-size);
+  margin-left: var(--rg-space-2);
+}
+
+.rg-pill {
+  height: var(--rg-line-head);
+  gap: var(--rg-space-1);
+}
+
+.rg-pill__icon {
+  width: var(--rg-icon-sm);
+  height: var(--rg-space-4);
+}
+
+/* 16 tall on a 16 line box, so a badge cannot make its line taller than the
+ * line box the card budgeted for it. */
+.rg-badge {
+  height: var(--rg-space-4);
+  padding: 0 var(--rg-space-1);
+  gap: var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-badge__icon {
+  height: var(--rg-space-4);
+}
+
+.rg-rollup {
+  margin-right: var(--rg-space-1);
+  gap: var(--rg-space-1);
+}
+
+.rg-rollup__chip {
+  padding: 0 var(--rg-space-1);
+  gap: var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}
+
+/* ==================================================================== */
+/* 7. THE COLLAPSED RAIL                                                 */
+/* ==================================================================== */
+
+/* 48 wide. 8 of scroller inset each side leaves a 32 row, which is exactly
+ * one control, and the row's 4 rail leaves 28 for a 16 status icon. Every
+ * one of those is a grid value, which is what stops the rail being the one
+ * width where the system does not hold. */
+.rg-sidebar--collapsed .rg-sidebar__body {
+  padding: var(--rg-space-2);
+}
+
+.rg-sidebar--collapsed .rg-sidebar__footer {
+  padding-top: var(--rg-space-2);
+  padding-bottom: var(--rg-space-2);
+}
+
+.rg-sidebar--collapsed .rg-session--card,
+.rg-sidebar--collapsed .rg-session--slim {
+  height: var(--rg-row-collapsed-h);
+  min-height: var(--rg-row-collapsed-h);
+  padding: 0;
+  contain-intrinsic-size: 2rem;
+  contain-intrinsic-size: auto 2rem;
+}
+
+/* -- Sheets ------------------------------------------------------------
+ * 24 of padding and 16 between blocks. A dialog is the one surface in the
+ * window with nothing competing for its space, and it was at 16 and 12.
+ *
+ * .rg-sheet--settings MUST be restated immediately below. Both selectors are
+ * (0,1,0) and this file loads last, so without the restatement the settings
+ * sheet would take this padding and gap, which is the exact regression
+ * settings.css documents: the sheet came out padded, the rail floated, and
+ * the content column starved to a two-words-per-line ribbon. */
+.rg-sheet {
+  padding: var(--rg-space-6);
+  gap: var(--rg-space-4);
+  max-width: calc(100% - var(--rg-space-16));
+  max-height: calc(100% - var(--rg-space-16));
+  border-radius: var(--rg-radius-lg);
+}
+
+.rg-sheet--settings {
+  padding: 0;
+  gap: 0;
+}
+
+.rg-sheet__foot {
+  gap: var(--rg-space-2);
+}
+
+.rg-sheet__error,
+.rg-sheet__warn {
+  padding: var(--rg-space-3);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-field {
+  gap: var(--rg-space-1);
+}
+
+/* 32, was 30, so an input, a select and a button on one dialog row share a
+ * height instead of missing it by two. */
+.rg-field__input {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-3);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-chips {
+  gap: var(--rg-space-1);
+}
+
+.rg-chip {
+  padding: var(--rg-space-1) var(--rg-space-2);
+}
+
+/* .rg-btn had no height at all, so it was content-sized and landed a quarter
+ * of a step short of every input beside it. */
+.rg-btn {
+  height: var(--rg-control-h);
+  padding: 0 var(--rg-space-3);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-btn-inline {
+  padding: 0 var(--rg-space-2);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-keys {
+  gap: var(--rg-space-6);
+}
+
+.rg-keys__group {
+  gap: var(--rg-space-1);
+}
+
+.rg-keys__heading {
+  margin-bottom: var(--rg-space-2);
+}
+
+.rg-keys__row {
+  gap: var(--rg-space-2);
+}
+
+.rg-keys__chord kbd {
+  padding: 0 var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}
+
+.rg-terminal__empty-hint kbd {
+  padding: 0 var(--rg-space-1);
+  border-radius: var(--rg-radius-sm);
+}

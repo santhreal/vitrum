@@ -1,0 +1,11 @@
+[package]
+name = "vitrum-fmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+unicode-segmentation = "1.13"
+unicode-width = "0.2"

@@ -1,0 +1,110 @@
+# Changelog
+
+Notable changes per release. Versions follow [semver](https://semver.org);
+before 1.0 a minor bump may break things, and this file says when it does.
+
+## v0.1.0 - 2026-08-05
+
+First public release. Pre-1.0: it runs, it is used daily on Linux, and the gaps
+below are stated rather than discovered.
+
+### The product
+
+- **A terminal for many coding agents.** Any TUI agent in a real PTY, with no
+  per-agent integration: Claude Code, Codex, Gemini CLI, opencode, veyyon, or a
+  plain shell.
+- **A sidebar that says who is doing what.** Each session draws its agent as a
+  distinct mark, its status, and how long since it last spoke. Grouped by
+  filesystem directory or by folders you name, per workspace.
+- **Same-file collision detection.** Two live sessions writing the same file
+  are both flagged. Not the same repository and not the same directory: only
+  the file, because a warning that fires on shared checkouts is one you mute.
+- **Sessions outlive the window.** The daemon owns the PTYs. Close everything
+  and your agents keep running, scrollback intact.
+- **One web process for every window.** Twenty windows measured at ~325 MB
+  total and 0.22% of one core at idle, headless with software rendering.
+- **Saved commands with your own shortcuts.** Save the invocation you actually
+  use with the directory it belongs in; bind a key that fires from anywhere.
+- **Cross-session scrollback search.** One daemon-side sweep over every
+  session's retained output, which no client can do for itself.
+- **Workspaces** that are genuinely separate: a new one opens onto nothing.
+- **A tray icon carrying the attention count**, with show/hide, a new session
+  and quit. The taskbar badge shows the same number.
+- **Keybinds you can rewrite.** Rebind any action, send literal text, or run an
+  ordered sequence that branches on what the focused session is doing, what
+  layer is open, or whether the workspace wants you.
+- **`vitrum hint`**, one command a wrapper or a shell prompt calls to declare
+  what a session is doing. Approval and Input cannot be observed from a PTY,
+  because an agent asking to force-push and a shell at a prompt block in the
+  same read; this is how those two states reach the sidebar.
+- **A walkthrough on a fresh profile** built from what is on the machine, and
+  the entries from this file after an update.
+- **Recent commands and a chosen icon per saved command.** The launcher offers
+  what you ran and where you ran it, which ranked history cannot express
+  because it holds one directory per command.
+
+### Known gaps
+
+- **Collision detection is Linux only.** On macOS and Windows it reports that
+  this build has no watcher for the platform rather than reporting that nothing
+  is wrong.
+- **Attribution needs a file held open longer than an instant.** A write that
+  opens, appends and closes within microseconds is counted as unattributed
+  rather than guessed at. The count is published; it is never folded into a
+  confident "nothing is colliding".
+- **Only Linux is exercised end to end.** macOS and Windows compile and the
+  platform code exists; neither is tested.
+- **No GPU terminal renderer.** Cells are drawn as DOM. `vitrum-grid` carries a
+  wgpu renderer, but nothing in the window can reach it until Dioxus Native
+  lands; today the crate reaches you only through `vitrum-replay`.
+
+### Hardening
+
+Found by running a daemon and feeding it hostile input, not by reading it.
+
+- **Errors are bounded and cannot forge a line.** A 100,000 character command
+  produced a 200,991 character error, and a directory or command name carrying
+  a newline or a bidi override wrote its own line into the banner. Error text
+  is now sanitised and capped, cut in the middle so both what failed and why
+  survive. The wire variant is sealed so it cannot be built around.
+- **A missing command says what to type instead.** The old message recited
+  every entry of `PATH`, over a kilobyte, and answered nothing.
+- **A repository cannot forge a sidebar row.** `.git/HEAD` is read directly, so
+  a crafted or corrupt one used to reach the tooltip intact, and a multibyte
+  one crashed the session on spawn.
+
+### Updating
+
+`vitrum update` installs the newest published release, verified against the
+SHA-256 published beside it. The same code runs behind Settings, About. A
+release that publishes no checksums is refused rather than trusted.
+
+Two things it is honest about, because both cost you something:
+
+- **The daemon is a separate process that outlives every window.** Updating
+  replaces its file; the running process keeps serving the old version until it
+  is restarted, and restarting it ends every session it is holding. About shows
+  which version the live daemon is actually on.
+- **A copy installed by something else is refused**, before the download rather
+  than after it.
+
+### The mark
+
+One square pane of glass, cut once on a diagonal, the two halves slipped along
+the cut. Provisional, and expected to be refined.
+
+It appears on the launcher entry, and on a loading screen if one is ever built.
+**Nowhere else.** Not the titlebar, not the sidebar, not Settings, not an empty
+state. The window is for watching agents work, and a logo in there answers a
+question nobody asked. The rule is in `assets/logo/README.md` and a test
+enforces it.
+
+Every icon is generated by `packaging/build-icons.py` from three numbers, so
+the SVG, the PNGs and the `.ico` cannot drift apart.
+
+### Notes
+
+`vendor/` carries a patched `dioxus-desktop`. It exposes WebKit's
+`webkit_web_view_new_with_related_view`, which upstream wry has and
+dioxus-desktop did not surface, and it is the reason every window shares one
+web process instead of spending one each.

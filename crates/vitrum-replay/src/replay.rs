@@ -226,7 +226,10 @@ impl<'a> Replay<'a> {
             writer.add_chunk(current_seq, micros, chunk);
             current_seq = end_seq;
         }
-        writer.import_keyframe_index(&self.index);
+        let base_seq = self.stream.base_seq();
+        for frame in self.index.frames() {
+            writer.add_keyframe(frame.seq, frame.seq - base_seq, 0);
+        }
         writer.serialize()
     }
 }

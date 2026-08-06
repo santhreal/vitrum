@@ -76,7 +76,11 @@ fn a_presets_chord_fires_from_anywhere() {
 fn a_preset_without_a_chord_adds_no_entry() {
     let base = live_chords(&KeyboardPrefs::default(), &[]).len();
     let with = live_chords(&KeyboardPrefs::default(), &[preset(7, "Plain", None)]);
-    assert_eq!(with.len(), base, "a chordless preset still took a table slot");
+    assert_eq!(
+        with.len(),
+        base,
+        "a chordless preset still took a table slot"
+    );
 }
 
 /// An unparseable chord contributes nothing, and does not poison the rest.

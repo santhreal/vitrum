@@ -115,11 +115,7 @@ pub fn parse_changelog(text: &str) -> Vec<Release> {
         // with a space, because the line breaks in the file are hard wrapping
         // for an editor and mean nothing to a rendered sentence.
         if line.starts_with(' ') && !line.trim().is_empty() {
-            if let Some(entry) = release
-                .groups
-                .last_mut()
-                .and_then(|g| g.entries.last_mut())
-            {
+            if let Some(entry) = release.groups.last_mut().and_then(|g| g.entries.last_mut()) {
                 entry.push(' ');
                 entry.push_str(&clean(line.trim()));
             }
@@ -141,10 +137,7 @@ fn parse_heading(rest: &str) -> Option<(Version, String)> {
         None => (rest, ""),
     };
     let version = Version::parse(head.trim_start_matches('v')).ok()?;
-    let date = tail
-        .trim_start_matches(['—', '–', '-'])
-        .trim()
-        .to_string();
+    let date = tail.trim_start_matches(['—', '–', '-']).trim().to_string();
     Some((version, date))
 }
 
@@ -164,11 +157,7 @@ fn clean(text: &str) -> String {
 ///
 /// A first ever run is the one case that is genuinely separate: absent is not
 /// a version, and there is no window to take.
-pub fn releases_since(
-    text: &str,
-    last_seen: Option<&Version>,
-    current: &Version,
-) -> Vec<Release> {
+pub fn releases_since(text: &str, last_seen: Option<&Version>, current: &Version) -> Vec<Release> {
     let Some(last_seen) = last_seen else {
         return Vec::new();
     };
@@ -310,7 +299,10 @@ Prose that belongs to no release.
     fn a_release_parses_into_versioned_grouped_entries() {
         let releases = parse_changelog(THREE);
         assert_eq!(
-            releases.iter().map(|r| r.version.to_string()).collect::<Vec<_>>(),
+            releases
+                .iter()
+                .map(|r| r.version.to_string())
+                .collect::<Vec<_>>(),
             ["0.2.0", "0.1.1", "0.1.0"]
         );
 

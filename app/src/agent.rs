@@ -126,10 +126,7 @@ impl AgentKind {
         // does resolve but only by accident of that platform accepting both.
         // The command string arrives from `SessionInfo` exactly as the operator
         // or the launcher wrote it, and both forms are ordinary.
-        let base = command
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(command);
+        let base = command.rsplit(['/', '\\']).next().unwrap_or(command);
         let lower = base.to_ascii_lowercase();
         let name = EXECUTABLE_SUFFIXES
             .iter()
@@ -309,8 +306,7 @@ mod tests {
             seen[index(kind)] += 1;
         }
         assert_eq!(
-            seen,
-            [1; 7],
+            seen, [1; 7],
             "ALL must name each variant once; index {seen:?} counted per variant"
         );
     }
@@ -389,11 +385,7 @@ mod tests {
     fn every_agent_has_its_own_mark_and_its_own_label() {
         let marks: Vec<AgentMark> = ALL.iter().map(|k| k.mark()).collect();
         for (i, a) in marks.iter().enumerate() {
-            assert!(
-                !a.stroke.is_empty(),
-                "{:?} has no stroked path",
-                ALL[i]
-            );
+            assert!(!a.stroke.is_empty(), "{:?} has no stroked path", ALL[i]);
             for (j, b) in marks.iter().enumerate().skip(i + 1) {
                 assert_ne!(a, b, "{:?} and {:?} draw the same mark", ALL[i], ALL[j]);
             }

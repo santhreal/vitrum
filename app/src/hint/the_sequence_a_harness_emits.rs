@@ -16,7 +16,10 @@ fn read_back(bytes: &str) -> Vec<HintDeclaration> {
     for byte in bytes.as_bytes() {
         parser.feed(&[*byte], &mut out);
     }
-    assert!(!parser.is_mid_sequence(), "sequence left the parser mid-flight");
+    assert!(
+        !parser.is_mid_sequence(),
+        "sequence left the parser mid-flight"
+    );
     assert_eq!(parser.rejected(), 0, "the parser rejected our own output");
     out
 }
@@ -75,7 +78,10 @@ fn a_label_round_trips_verbatim() {
 /// silently lose the state, which is the one thing that must never happen.
 #[test]
 fn control_characters_in_a_label_do_not_lose_the_declaration() {
-    let parsed = only(&sequence(HintState::Input, Some("first line\nsecond\tline\x1b[0m")));
+    let parsed = only(&sequence(
+        HintState::Input,
+        Some("first line\nsecond\tline\x1b[0m"),
+    ));
     assert_eq!(parsed.state, HintState::Input);
     assert_eq!(parsed.label.as_deref(), Some("first line second line [0m"));
 }
@@ -110,7 +116,11 @@ fn an_over_long_label_still_parses() {
         let parsed = only(&built);
         assert_eq!(parsed.state, HintState::Approval);
         let kept = parsed.label.expect("a truncated label is still a label");
-        assert!(kept.chars().count() <= MAX_LABEL_CHARS, "{} chars", kept.chars().count());
+        assert!(
+            kept.chars().count() <= MAX_LABEL_CHARS,
+            "{} chars",
+            kept.chars().count()
+        );
         // The parser buffers the payload only: `ESC ]` and `ESC \` are two
         // bytes each and never reach the buffer.
         let payload = built.len() - 4;
@@ -175,7 +185,11 @@ fn clearing_declares_working_with_no_label() {
 /// would swallow the next one.
 #[test]
 fn back_to_back_declarations_both_parse() {
-    let stream = format!("{}some output\n{}", sequence(HintState::Working, Some("build")), sequence(HintState::Ready, None));
+    let stream = format!(
+        "{}some output\n{}",
+        sequence(HintState::Working, Some("build")),
+        sequence(HintState::Ready, None)
+    );
     assert_eq!(
         read_back(&stream),
         vec![

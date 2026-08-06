@@ -850,7 +850,9 @@ pub fn command_suggestions(
         if seen.contains(&line) {
             continue;
         }
-        if !q.is_empty() && !line.to_lowercase().contains(&q) && !d.label.to_lowercase().contains(&q)
+        if !q.is_empty()
+            && !line.to_lowercase().contains(&q)
+            && !d.label.to_lowercase().contains(&q)
         {
             continue;
         }
@@ -916,7 +918,10 @@ pub fn expand_home(input: &str, home: &str) -> String {
     if input == "~" {
         return home.to_string();
     }
-    match input.strip_prefix("~/").or_else(|| input.strip_prefix("~\\")) {
+    match input
+        .strip_prefix("~/")
+        .or_else(|| input.strip_prefix("~\\"))
+    {
         Some(rest) => format!(
             "{}{MAIN_SEPARATOR}{rest}",
             home.trim_end_matches(['/', '\\'])
@@ -978,7 +983,9 @@ pub fn list_dirs(dir: &str) -> Vec<String> {
             break;
         }
         let Ok(entry) = entry else { continue };
-        let Ok(kind) = entry.file_type() else { continue };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
         if !(kind.is_dir() || (kind.is_symlink() && path.is_dir())) {
             continue;

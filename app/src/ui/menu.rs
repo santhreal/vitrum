@@ -278,5 +278,4 @@ mod tests {
             MENU_ITEM_H as u32
         );
     }
-
 }

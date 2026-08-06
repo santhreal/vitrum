@@ -413,7 +413,9 @@ mod tests {
     #[test]
     fn every_named_palette_is_complete() {
         for p in ALL.into_iter().filter(|p| *p != TermPalette::Inherit) {
-            let c = p.colours().unwrap_or_else(|| panic!("{} has no colours", p.slug()));
+            let c = p
+                .colours()
+                .unwrap_or_else(|| panic!("{} has no colours", p.slug()));
             for (n, slot) in c.ansi.iter().enumerate() {
                 assert!(!slot.is_empty(), "{} ansi slot {n} is empty", p.slug());
             }
@@ -489,7 +491,10 @@ mod tests {
         }
         let theme = js_theme(TermPalette::Nord);
         for field in ANSI_FIELDS {
-            assert!(theme.contains(&format!("{field}:")), "{theme} has no {field}");
+            assert!(
+                theme.contains(&format!("{field}:")),
+                "{theme} has no {field}"
+            );
         }
         // Order, not just presence: the sixteen slots are positional in the
         // table and a rotated row would give every palette the wrong hues.
@@ -500,7 +505,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{field} out of order in {theme}"));
             at += found + field.len();
         }
-        assert!(theme.contains(r##"black:"#3b4252""##), "Nord slot 0 moved: {theme}");
+        assert!(
+            theme.contains(r##"black:"#3b4252""##),
+            "Nord slot 0 moved: {theme}"
+        );
         assert!(
             theme.contains(r##"brightWhite:"#eceff4""##),
             "Nord slot 15 moved: {theme}"
@@ -515,9 +523,15 @@ mod tests {
     #[test]
     fn the_css_fragment_is_a_terminated_declaration_list() {
         let css = css_tokens(TermPalette::Dracula);
-        assert!(css.ends_with(';'), "{css} would swallow the next declaration");
+        assert!(
+            css.ends_with(';'),
+            "{css} would swallow the next declaration"
+        );
         assert_eq!(css.matches(';').count(), 3, "{css}");
         assert!(css.contains("--rg-terminal-bg:#282a36;"), "{css}");
-        assert!(!css.contains('\n'), "an attribute value cannot be multi-line");
+        assert!(
+            !css.contains('\n'),
+            "an attribute value cannot be multi-line"
+        );
     }
 }

@@ -19,10 +19,7 @@ fn the_home_directory_is_written_the_way_people_write_it() {
     let home = "/home/user";
     assert_eq!(place_of(&[], home, home), "~");
     assert_eq!(place_of(&[], "/home/user/src", home), "~/src");
-    assert_eq!(
-        place_of(&[], "/home/user/src/vitrum", home),
-        "~/src/vitrum"
-    );
+    assert_eq!(place_of(&[], "/home/user/src/vitrum", home), "~/src/vitrum");
 }
 
 /// A path outside home keeps the two-component form, and a project still

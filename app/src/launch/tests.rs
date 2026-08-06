@@ -132,7 +132,11 @@ fn detection_reports_only_installed_agents_in_table_order() {
         .collect();
     assert_eq!(got, expected);
     for d in &got {
-        assert!(on_path(d.command), "{} was offered but is absent", d.command);
+        assert!(
+            on_path(d.command),
+            "{} was offered but is absent",
+            d.command
+        );
     }
 }
 

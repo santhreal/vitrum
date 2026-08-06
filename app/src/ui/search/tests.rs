@@ -186,7 +186,10 @@ fn a_truncated_answer_says_these_are_the_first_n() {
         "First 2 matches in 1 session of every session's scrollback, then the sweep hit its \
          cap of 500. There are more. Swept 2.0 MiB so far.",
     );
-    assert_eq!(out.class, "rg-search__summary rg-search__summary--truncated");
+    assert_eq!(
+        out.class,
+        "rg-search__summary rg-search__summary--truncated"
+    );
 
     let complete = summary(
         Some(&answer(vec![hit(b"boom", 0, 4)], false, 2 * 1024 * 1024)),
@@ -405,7 +408,10 @@ fn the_context_budget_keeps_several_hits_on_screen_at_once() {
         "changing the context budget changes the height of every hit row"
     );
     let row_px = (1 + 2 * u32::from(CONTEXT_LINES)) * 20 + 16;
-    assert_eq!(row_px, 116, "a hit row is no longer five lines and its padding");
+    assert_eq!(
+        row_px, 116,
+        "a hit row is no longer five lines and its padding"
+    );
     // A results area of 600px is what a 900px window leaves after the
     // layer's 48 of block padding, the sheet's 24, and the head, field,
     // switches and summary above the list.
@@ -687,8 +693,18 @@ fn every_runtime_class_is_styled() {
         summary(None, true, 0).class,
         summary(None, false, 0).class,
         summary(Some(&answer(Vec::new(), false, scanned)), false, 0).class,
-        summary(Some(&answer(vec![hit(b"x", 0, 1)], false, scanned)), false, 0).class,
-        summary(Some(&answer(vec![hit(b"x", 0, 1)], true, scanned)), false, 0).class,
+        summary(
+            Some(&answer(vec![hit(b"x", 0, 1)], false, scanned)),
+            false,
+            0,
+        )
+        .class,
+        summary(
+            Some(&answer(vec![hit(b"x", 0, 1)], true, scanned)),
+            false,
+            0,
+        )
+        .class,
     ];
 
     for full in names {
@@ -712,8 +728,18 @@ fn each_summary_state_has_its_own_modifier() {
         summary(None, true, 0).class,
         summary(None, false, 0).class,
         summary(Some(&answer(Vec::new(), false, scanned)), false, 0).class,
-        summary(Some(&answer(vec![hit(b"x", 0, 1)], false, scanned)), false, 0).class,
-        summary(Some(&answer(vec![hit(b"x", 0, 1)], true, scanned)), false, 0).class,
+        summary(
+            Some(&answer(vec![hit(b"x", 0, 1)], false, scanned)),
+            false,
+            0,
+        )
+        .class,
+        summary(
+            Some(&answer(vec![hit(b"x", 0, 1)], true, scanned)),
+            false,
+            0,
+        )
+        .class,
     ];
     let mut unique = all.to_vec();
     unique.sort_unstable();

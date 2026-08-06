@@ -120,8 +120,14 @@ fn a_tampered_archive_is_refused_with_both_digests() {
     let e = verify(tampered, &sums, "release.tar.gz").unwrap_err();
     let m = e.to_string();
     assert!(m.contains("checksum mismatch"), "{m}");
-    assert!(m.contains(&hex(&Sha256::digest(good))), "no published digest: {m}");
-    assert!(m.contains(&hex(&Sha256::digest(tampered))), "no actual digest: {m}");
+    assert!(
+        m.contains(&hex(&Sha256::digest(good))),
+        "no published digest: {m}"
+    );
+    assert!(
+        m.contains(&hex(&Sha256::digest(tampered))),
+        "no actual digest: {m}"
+    );
 }
 
 /// A sums file that does not mention the archive is refused.
@@ -288,13 +294,18 @@ fn a_staged_binary_is_executable() {
     header.set_mode(0o644);
     header.set_cksum();
     let mut tar = tar::Builder::new(Vec::new());
-    tar.append_data(&mut header, "vitrum", b"body".as_slice()).unwrap();
+    tar.append_data(&mut header, "vitrum", b"body".as_slice())
+        .unwrap();
     let raw = tar.into_inner().unwrap();
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     gz.write_all(&raw).unwrap();
     let staged = unpack(&gz.finish().unwrap(), &dir).expect("unpacked");
     let mode = fs::metadata(&staged[0].0).unwrap().permissions().mode();
-    assert_eq!(mode & 0o111, 0o111, "staged binary is not executable: {mode:o}");
+    assert_eq!(
+        mode & 0o111,
+        0o111,
+        "staged binary is not executable: {mode:o}"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -303,7 +314,10 @@ fn a_staged_binary_is_executable() {
 fn the_archive_name_carries_version_and_target() {
     let n = archive_name(&Version::parse("1.2.3").unwrap());
     assert_eq!(n, format!("vitrum-1.2.3-{TARGET}.tar.gz"));
-    assert!(!TARGET.is_empty(), "the build script did not record a target");
+    assert!(
+        !TARGET.is_empty(),
+        "the build script did not record a target"
+    );
 }
 
 /// The script that builds the asset and the code that looks for it agree.

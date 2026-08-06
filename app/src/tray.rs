@@ -100,9 +100,13 @@ impl Handle {
 /// in the log rather than a silent absence.
 pub(crate) fn install() -> Option<Handle> {
     match vitrum_os::tray::tray(Arc::new(|command| COMMANDS.post(command))) {
-        Ok(tray) => {
-            Some(Handle { inner: Rc::new(RefCell::new(Live { tray, count: 0, visible: true })) })
-        }
+        Ok(tray) => Some(Handle {
+            inner: Rc::new(RefCell::new(Live {
+                tray,
+                count: 0,
+                visible: true,
+            })),
+        }),
         Err(why) => {
             tracing::info!("no tray icon on this session: {why}");
             None

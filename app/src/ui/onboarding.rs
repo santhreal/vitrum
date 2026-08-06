@@ -238,7 +238,11 @@ pub fn intro(machine: &Machine) -> String {
 
 /// The word on the primary control.
 pub fn finish_label(machine: &Machine) -> &'static str {
-    if all_clear(machine) { "Close" } else { "Got it" }
+    if all_clear(machine) {
+        "Close"
+    } else {
+        "Got it"
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -450,12 +454,12 @@ mod tests {
             (true, true, &[StepKind::Agents, StepKind::Settings]),
         ];
         for (connected, any_session, expected) in cases {
-            let m = machine(
-                vec![agent("Codex", "codex")],
-                *connected,
-                *any_session,
+            let m = machine(vec![agent("Codex", "codex")], *connected, *any_session);
+            assert_eq!(
+                kinds(&m),
+                *expected,
+                "connected={connected} session={any_session}"
             );
-            assert_eq!(kinds(&m), *expected, "connected={connected} session={any_session}");
             assert_eq!(all_clear(&m), *connected && *any_session);
         }
     }
@@ -510,7 +514,8 @@ mod tests {
         let step = find(&machine(vec![], true, true), StepKind::Settings).expect("present");
         assert_eq!(step.state, StepState::Info);
         assert!(
-            step.body.starts_with("The gear at the bottom of the sidebar"),
+            step.body
+                .starts_with("The gear at the bottom of the sidebar"),
             "{}",
             step.body
         );

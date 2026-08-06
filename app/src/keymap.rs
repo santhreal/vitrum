@@ -217,8 +217,12 @@ impl Group {
 }
 
 /// Every group, in overlay order.
-pub const GROUPS: [Group; 4] =
-    [Group::Switching, Group::Sessions, Group::Sidebar, Group::Window];
+pub const GROUPS: [Group; 4] = [
+    Group::Switching,
+    Group::Sessions,
+    Group::Sidebar,
+    Group::Window,
+];
 
 /// The overlay row a chord contributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,7 +467,11 @@ pub const CHORDS: &[Chord] = &[
         true,
         Shift::Off,
         Scope::Global,
-        help_as(Group::Switching, "Focus session by position", "Alt+1 - Alt+9"),
+        help_as(
+            Group::Switching,
+            "Focus session by position",
+            "Alt+1 - Alt+9",
+        ),
     ),
     c(
         KeyAction::SelectTab(1),
@@ -1060,9 +1068,7 @@ impl Predicate {
             Predicate::SessionFocused => Some(facts.focused.is_some()),
             Predicate::FocusedStatus { status } => (*status != StatusKind::Unknown)
                 .then(|| facts.focused.as_ref().is_some_and(|s| s.status == *status)),
-            Predicate::FocusedUnread => {
-                Some(facts.focused.as_ref().is_some_and(|s| s.unread))
-            }
+            Predicate::FocusedUnread => Some(facts.focused.as_ref().is_some_and(|s| s.unread)),
             Predicate::LayerOpen { layer } => {
                 (*layer != LayerKind::Unknown).then(|| facts.layer == Some(*layer))
             }
@@ -1073,10 +1079,9 @@ impl Predicate {
                     .as_ref()
                     .is_some_and(|s| s.command.contains(text.as_str())),
             ),
-            Predicate::WorkspaceHasAttention { attention } => {
-                (*attention != AttentionKind::Unknown)
-                    .then(|| facts.workspace_attention.contains(attention))
-            }
+            Predicate::WorkspaceHasAttention { attention } => (*attention
+                != AttentionKind::Unknown)
+                .then(|| facts.workspace_attention.contains(attention)),
             Predicate::Unknown => None,
         }
     }
@@ -1154,9 +1159,7 @@ pub enum Effect {
 /// Named to keep it distinct from `crate::ui::settings::Binding`, which is the
 /// chord half of a rebinding of a BUILT-IN action. This is the other feature:
 /// an action list of the operator's own.
-#[derive(
-    Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CustomBinding {
     /// What the settings list and the shortcut overlay call this binding.
@@ -1269,7 +1272,9 @@ fn check_steps(steps: &[Step], depth: usize) -> Result<(), BindingError> {
             Step::Text { text } => {
                 decode_literal(text)?;
             }
-            Step::When { then, otherwise, .. } => {
+            Step::When {
+                then, otherwise, ..
+            } => {
                 check_steps(then, depth + 1)?;
                 check_steps(otherwise, depth + 1)?;
             }

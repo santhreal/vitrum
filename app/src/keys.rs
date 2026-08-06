@@ -2,9 +2,7 @@
 
 use super::*;
 
-use crate::keymap::{
-    AttentionKind, CustomBinding, Effect, Facts, FocusedSession, LayerKind,
-};
+use crate::keymap::{AttentionKind, CustomBinding, Effect, Facts, FocusedSession, LayerKind};
 
 /// The wire prefix the bridge uses for a chord the operator defined.
 ///
@@ -32,7 +30,13 @@ pub(crate) fn dispatch_key(
 ) {
     if let Some(text) = wire.strip_prefix(CUSTOM_ACTION_PREFIX) {
         let found = launch::parse_chord(text).and_then(|chord| {
-            st.peek().daemon.settings.keyboard.custom.lookup(&chord).cloned()
+            st.peek()
+                .daemon
+                .settings
+                .keyboard
+                .custom
+                .lookup(&chord)
+                .cloned()
         });
         match found {
             Some(binding) => run_binding(
@@ -70,7 +74,15 @@ pub(crate) fn dispatch_key(
         return;
     }
 
-    on_key(action, bridge, st, attached, opts, pending_terminate, pending_open);
+    on_key(
+        action,
+        bridge,
+        st,
+        attached,
+        opts,
+        pending_terminate,
+        pending_open,
+    );
 }
 
 /// The custom binding sitting on this action's live chord, if there is one.
@@ -121,7 +133,15 @@ fn run_binding(
     for effect in effects {
         match effect {
             Effect::Action(action) => {
-                on_key(action, bridge, st, attached, opts, pending_terminate, pending_open);
+                on_key(
+                    action,
+                    bridge,
+                    st,
+                    attached,
+                    opts,
+                    pending_terminate,
+                    pending_open,
+                );
             }
             Effect::Text(bytes) => send_literal(bridge, st, bytes),
         }
@@ -136,8 +156,7 @@ fn run_binding(
 /// saying so beats dropping the keystroke silently.
 fn send_literal(bridge: Bridge, mut st: Signal<UiState>, data: Vec<u8>) {
     let Some(session) = st.peek().window.focused else {
-        st.write().window.flash =
-            Some(Flash::notice("Focus a session before sending text to it."));
+        st.write().window.flash = Some(Flash::notice("Focus a session before sending text to it."));
         return;
     };
     bridge.msg(&ClientMsg::Input { session, data });
@@ -360,7 +379,12 @@ pub(crate) fn jump_to_attention(bridge: Bridge, mut st: Signal<UiState>, directi
 /// Always asks the bridge to scroll the row into view. Focus moving to a row
 /// below the fold with no scroll is indistinguishable from the key doing
 /// nothing, which is defect 7's other half.
-pub(crate) fn step_rows(bridge: Bridge, mut st: Signal<UiState>, direction: Direction, extend: bool) {
+pub(crate) fn step_rows(
+    bridge: Bridge,
+    mut st: Signal<UiState>,
+    direction: Direction,
+    extend: bool,
+) {
     let model_clock = tick().model;
     let Some(id) = st.peek().step_target(model_clock, direction) else {
         return;

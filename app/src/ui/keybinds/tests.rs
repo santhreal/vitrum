@@ -182,11 +182,14 @@ fn a_fault_sentence_names_the_thing_to_fix() {
         at: 4,
         what: "\\q".to_string(),
     });
-    assert!(said.contains("\\q"), "the sentence hides the bad escape: {said}");
+    assert!(
+        said.contains("\\q"),
+        "the sentence hides the bad escape: {said}"
+    );
     assert!(said.contains('4'), "the sentence hides the offset: {said}");
 
     let chord = fault_sentence(&BindingError::BadChord {
-        chord: "Ctrl+".to_string()
+        chord: "Ctrl+".to_string(),
     });
     assert!(
         chord.contains("Ctrl+"),
@@ -224,6 +227,12 @@ fn recording_a_shifted_digit_stores_the_digit() {
 
     // A `code` that merely starts with Digit is not one physical key, so it
     // must fall back to `key` rather than half-parse into an unreachable chord.
-    assert_eq!(crate::keymap::chord_from_event("x", "Digit", true, false, false).key, "x");
-    assert_eq!(crate::keymap::chord_from_event("x", "Digit12", true, false, false).key, "x");
+    assert_eq!(
+        crate::keymap::chord_from_event("x", "Digit", true, false, false).key,
+        "x"
+    );
+    assert_eq!(
+        crate::keymap::chord_from_event("x", "Digit12", true, false, false).key,
+        "x"
+    );
 }

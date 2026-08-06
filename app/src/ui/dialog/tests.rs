@@ -130,7 +130,15 @@ fn a_query_matches_on_the_directory_alone() {
         session(1, "/src/vitrum", "claude", None),
         session(2, "/src/harness", "claude", None),
     ];
-    let rows = intents(&st, &LaunchStore::default(), &[], "", "/src/vitrum", "/home/u", 2_000);
+    let rows = intents(
+        &st,
+        &LaunchStore::default(),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
     let hits = ranked(&rows, "harness");
     assert_eq!(hits.len(), 1);
     assert_eq!(rows[hits[0]].place, "harness");
@@ -149,7 +157,15 @@ fn a_query_matches_on_the_branch_alone() {
         session(1, "/src/vitrum", "claude", Some("main")),
         session(2, "/src/vitrum/app", "codex", Some("wip/rewrite")),
     ];
-    let rows = intents(&st, &LaunchStore::default(), &[], "", "/src/vitrum", "/home/u", 2_000);
+    let rows = intents(
+        &st,
+        &LaunchStore::default(),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
     let hits = ranked(&rows, "main");
     assert_eq!(hits.len(), 1);
     assert_eq!(rows[hits[0]].branch.as_deref(), Some("main"));
@@ -171,7 +187,15 @@ fn two_terms_narrow_across_two_fields() {
         session(1, "/src/vitrum", "claude", Some("main")),
         session(2, "/src/vitrum", "codex", Some("main")),
     ];
-    let rows = intents(&st, &LaunchStore::default(), &[], "", "/src/vitrum", "/home/u", 2_000);
+    let rows = intents(
+        &st,
+        &LaunchStore::default(),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
     let hits = ranked(&rows, "codex main");
     assert_eq!(hits.len(), 1);
     assert_eq!(rows[hits[0]].command, "codex");
@@ -231,7 +255,15 @@ fn the_list_never_draws_a_row_without_a_number() {
         ("a10", 10),
         ("a11", 11),
     ];
-    let rows = intents(&st, &store_with(&history), &[], "", "/src/vitrum", "/home/u", 2_000);
+    let rows = intents(
+        &st,
+        &store_with(&history),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
     assert_eq!(rows.len(), 11);
     assert_eq!(ranked(&rows, "").len(), ROWS_MAX);
     assert_eq!(ROWS_MAX, 9);
@@ -330,7 +362,13 @@ fn a_command_that_left_path_is_named_in_the_reason() {
     let mut st = UiState::default();
     st.daemon.projects = vec![project(1, "root", dir)];
     assert_eq!(
-        primary_of(&st, &store_with(&[("vitrum-gone-9f3a", 3)]), dir, "/home/u", 2_000),
+        primary_of(
+            &st,
+            &store_with(&[("vitrum-gone-9f3a", 3)]),
+            dir,
+            "/home/u",
+            2_000
+        ),
         Primary::Choose("vitrum-gone-9f3a is not on this machine's PATH.".to_string())
     );
 }
@@ -363,7 +401,10 @@ fn the_primary_control_is_labelled_with_what_it_will_do() {
         go_tip(Some("claude"), ""),
         "Start claude. Ctrl+Shift+N to choose something else."
     );
-    assert_eq!(go_tip(None, "vitrum"), "Choose what to start (Ctrl+Shift+N).");
+    assert_eq!(
+        go_tip(None, "vitrum"),
+        "Choose what to start (Ctrl+Shift+N)."
+    );
 }
 
 /// With no history but a saved preset the control wears the preset's own
@@ -396,13 +437,19 @@ fn a_saved_preset_names_the_control_when_there_is_no_history() {
 fn the_place_is_project_relative_never_absolute() {
     let projects = vec![project(1, "vitrum", "/src/vitrum")];
     assert_eq!(place_of(&projects, "/src/vitrum", "/home/u"), "vitrum");
-    assert_eq!(place_of(&projects, "/src/vitrum/app", "/home/u"), "vitrum/app");
+    assert_eq!(
+        place_of(&projects, "/src/vitrum/app", "/home/u"),
+        "vitrum/app"
+    );
     assert_eq!(
         place_of(&projects, "/src/vitrum/crates/vitrum-model", "/home/u"),
         "vitrum/crates/vitrum-model"
     );
     // Nothing known about it: the last two components, still not the path.
-    assert_eq!(place_of(&projects, "/opt/vendor/software", "/home/u"), "vendor/software");
+    assert_eq!(
+        place_of(&projects, "/opt/vendor/software", "/home/u"),
+        "vendor/software"
+    );
     assert_eq!(place_of(&[], "/tmp/scratch", "/home/u"), "tmp/scratch");
     assert_eq!(place_of(&[], "/", "/home/u"), "/");
 }
@@ -415,7 +462,10 @@ fn the_deepest_project_names_the_place() {
         project(1, "outer", "/src"),
         project(2, "vitrum", "/src/vitrum"),
     ];
-    assert_eq!(place_of(&projects, "/src/vitrum/app", "/home/u"), "vitrum/app");
+    assert_eq!(
+        place_of(&projects, "/src/vitrum/app", "/home/u"),
+        "vitrum/app"
+    );
     assert_eq!(place_of(&projects, "/src/other", "/home/u"), "outer/other");
 }
 
@@ -455,7 +505,10 @@ fn a_directory_row_names_the_folder_and_shortens_its_parent() {
     assert_eq!(v.tip, "/home/op/src/vitrum");
     // Outside home it stays as it is rather than growing a wrong `~`.
     let v = view(&Pick::Cd("/srv/build".to_string()), "/home/op");
-    assert_eq!(v.place, Some(("/srv".to_string(), "/srv/build".to_string())));
+    assert_eq!(
+        v.place,
+        Some(("/srv".to_string(), "/srv/build".to_string()))
+    );
 }
 
 /// A query that looks like a path turns the list into directories; a bare
@@ -480,8 +533,17 @@ fn only_a_rooted_query_becomes_a_directory_search() {
 fn anything_typed_is_still_launchable() {
     let mut st = UiState::default();
     st.daemon.projects = vec![project(1, "vitrum", "/src/vitrum")];
-    let rows = intents(&st, &store_with(&[("claude", 3)]), &[], "", "/src/vitrum", "/home/u", 2_000);
-    let extra = typed_intent(&rows, &st, "/src/vitrum", "make test", "/home/u").expect("a typed row");
+    let rows = intents(
+        &st,
+        &store_with(&[("claude", 3)]),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
+    let extra =
+        typed_intent(&rows, &st, "/src/vitrum", "make test", "/home/u").expect("a typed row");
     assert_eq!(extra.command, "make test");
     assert_eq!(extra.place, "vitrum");
     assert_eq!(extra.band, Band::Typed);
@@ -537,10 +599,7 @@ fn what_runs_elsewhere_ranks_below_what_runs_here() {
         "/home/u",
         2_000,
     );
-    let shown: Vec<(&str, &str)> = rows
-        .iter()
-        .map(|i| (i.text(), i.place.as_str()))
-        .collect();
+    let shown: Vec<(&str, &str)> = rows.iter().map(|i| (i.text(), i.place.as_str())).collect();
     assert_eq!(
         shown,
         vec![
@@ -564,7 +623,15 @@ fn a_repeated_command_in_one_place_is_offered_once() {
         session(2, "/src/vitrum", "claude", None),
         session(3, "/src/vitrum", "claude", None),
     ];
-    let rows = intents(&st, &LaunchStore::default(), &[], "", "/src/vitrum", "/home/u", 2_000);
+    let rows = intents(
+        &st,
+        &LaunchStore::default(),
+        &[],
+        "",
+        "/src/vitrum",
+        "/home/u",
+        2_000,
+    );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text(), "claude");
 }
@@ -732,7 +799,10 @@ fn a_working_preset_shows_the_line_it_will_run() {
         shortcut: None,
         icon: None,
     };
-    assert_eq!(preset_tip(&good), format!("{shell} -c \"echo hi\" in {root}"));
+    assert_eq!(
+        preset_tip(&good),
+        format!("{shell} -c \"echo hi\" in {root}")
+    );
 }
 
 /// A `code` that merely starts with Digit but is not one key must be left
@@ -858,7 +928,9 @@ fn every_row_part_can_yield_before_it_overlaps() {
     let mut checked: Vec<&str> = Vec::new();
     for (at, _) in css.match_indices(".rg-launch__") {
         let rest = &css[at + 1..];
-        let Some(head) = rest.find(" {") else { continue };
+        let Some(head) = rest.find(" {") else {
+            continue;
+        };
         let class = &rest[..head];
         if class.contains([' ', ',', ':', '.']) {
             continue;
@@ -1205,7 +1277,9 @@ fn the_one_click_control_actually_launches() {
     let (_, ready) = body
         .split_once("Primary::Ready(")
         .expect("launch_now has no Ready arm");
-    let ready = ready.split_once("Primary::Choose").map_or(ready, |(b, _)| b);
+    let ready = ready
+        .split_once("Primary::Choose")
+        .map_or(ready, |(b, _)| b);
     assert!(
         ready.contains("start_session("),
         "the Ready arm does not send; a confident launch must not open a layer"

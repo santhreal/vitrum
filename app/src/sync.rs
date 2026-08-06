@@ -133,7 +133,6 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
     });
 }
 
-
 /// Open the session a `vitrum://session/N` handoff named, once the daemon has
 /// confirmed it exists.
 ///
@@ -366,7 +365,15 @@ pub(crate) fn on_bridge_event(
         // consults the operator's own bindings first, so a chord they rebound
         // shadows the built-in one, and it reports an unknown chord itself.
         BridgeEvent::Key { action } => {
-            dispatch_key(&action, bridge, st, attached, opts, pending_terminate, pending_open);
+            dispatch_key(
+                &action,
+                bridge,
+                st,
+                attached,
+                opts,
+                pending_terminate,
+                pending_open,
+            );
         }
 
         BridgeEvent::Copied { ok, text } => {
@@ -394,7 +401,11 @@ pub(crate) fn on_bridge_event(
 /// than reconnecting silently forever.
 #[must_use]
 pub(crate) fn reconnect_delay_ms(attempt: u32) -> Option<u64> {
-    (attempt < RECONNECT_ATTEMPTS).then(|| RECONNECT_BASE_MS.saturating_mul(1 << attempt.min(7)).min(RECONNECT_MAX_MS))
+    (attempt < RECONNECT_ATTEMPTS).then(|| {
+        RECONNECT_BASE_MS
+            .saturating_mul(1 << attempt.min(7))
+            .min(RECONNECT_MAX_MS)
+    })
 }
 
 /// Try the daemon again, later.

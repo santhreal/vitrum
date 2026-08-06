@@ -840,5 +840,4 @@ mod the_workspace_control_says_nothing_until_it_must {
     fn an_empty_set_draws_no_name_rather_than_a_placeholder() {
         assert!(!names_the_workspace(0));
     }
-
 }

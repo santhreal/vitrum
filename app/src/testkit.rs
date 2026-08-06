@@ -164,7 +164,11 @@ impl Row {
 /// None of these files carries inline tests any more, so all of it is shipped
 /// code and no `#[cfg(test)]` half needs stripping.
 pub fn shell() -> String {
-    SHELL_FILES.iter().map(|(_, src)| *src).collect::<Vec<_>>().join("\n")
+    SHELL_FILES
+        .iter()
+        .map(|(_, src)| *src)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The files `shell` is made of, named, for guards that report where a link

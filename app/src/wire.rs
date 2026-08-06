@@ -15,8 +15,8 @@
 //! JSON shape is pinned by tests here so the JavaScript cannot drift from
 //! `vitrum-proto`.
 
-use vitrum_proto::{ClientMsg, ServerMsg};
 use serde::{Deserialize, Serialize};
+use vitrum_proto::{ClientMsg, ServerMsg};
 
 /// Where the session daemon listens unless `--server` says otherwise.
 ///
@@ -820,9 +820,7 @@ mod tests {
         let inner = arg
             .strip_prefix("backfill_max_bytes(")
             .and_then(|s| s.strip_suffix(')'))
-            .unwrap_or_else(|| {
-                panic!("max_bytes is `{arg}`, not a call to `backfill_max_bytes`")
-            })
+            .unwrap_or_else(|| panic!("max_bytes is `{arg}`, not a call to `backfill_max_bytes`"))
             .trim();
 
         assert!(

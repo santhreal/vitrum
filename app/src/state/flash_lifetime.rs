@@ -21,7 +21,10 @@ use super::*;
 /// worse than a banner that overstays.
 #[test]
 fn only_a_notice_is_transient() {
-    assert_eq!(Flash::notice("Started bash in tmp.").kind, FlashKind::Notice);
+    assert_eq!(
+        Flash::notice("Started bash in tmp.").kind,
+        FlashKind::Notice
+    );
     assert_eq!(Flash::error("The daemon went away.").kind, FlashKind::Error);
     assert_ne!(
         FlashKind::Notice,

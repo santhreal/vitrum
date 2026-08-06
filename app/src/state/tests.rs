@@ -493,7 +493,10 @@ fn gap_error_for_focused_session_requests_refill() {
     assert_eq!(
         apply(
             &mut st,
-            ServerMsg::error(Some(SessionId(10)), format!("{GAP_ERROR_PREFIX} resume at 4096"))
+            ServerMsg::error(
+                Some(SessionId(10)),
+                format!("{GAP_ERROR_PREFIX} resume at 4096")
+            )
         ),
         Reaction::Refill {
             session: SessionId(10)
@@ -511,7 +514,10 @@ fn gap_error_for_other_session_does_not_repaint() {
     assert_eq!(
         apply(
             &mut st,
-            ServerMsg::error(Some(SessionId(10)), format!("{GAP_ERROR_PREFIX} resume at 10"))
+            ServerMsg::error(
+                Some(SessionId(10)),
+                format!("{GAP_ERROR_PREFIX} resume at 10")
+            )
         ),
         Reaction::None
     );
@@ -1415,11 +1421,7 @@ fn reveal_opens_the_project_the_band_and_the_preview() {
     assert!(st.visible_ids(clock()).is_empty());
 
     st.reveal(SessionId(10), clock());
-    assert!(
-        !st.window
-            .collapsed
-            .contains(&pk(1))
-    );
+    assert!(!st.window.collapsed.contains(&pk(1)));
     assert!(st.section_open(pk(1), Section::Settled));
     assert!(st.window.preview_expanded(pk(1)));
     assert!(st.visible_ids(clock()).contains(&SessionId(10)));
@@ -1578,10 +1580,7 @@ fn a_right_click_outside_the_selection_acts_on_one_row() {
         st.menu_targets(SessionId(11), clock()),
         vec![SessionId(12), SessionId(11)]
     );
-    assert_eq!(
-        st.menu_targets(SessionId(10), clock()),
-        vec![SessionId(10)]
-    );
+    assert_eq!(st.menu_targets(SessionId(10), clock()), vec![SessionId(10)]);
 }
 
 /// Bulk labels carry their count, straight from the model. A bulk action
@@ -1655,10 +1654,7 @@ fn a_fully_parked_selection_offers_wake_instead_of_snooze() {
 #[test]
 fn a_menu_on_a_vanished_session_is_empty() {
     let st = with(&[1], &[(10, 1, 0)]);
-    assert!(
-        st.menu_items(SessionId(404), clock())
-            .is_empty()
-    );
+    assert!(st.menu_items(SessionId(404), clock()).is_empty());
 }
 
 // ---- Rollup -----------------------------------------------------------
@@ -2049,10 +2045,8 @@ fn the_badge_count_spans_every_workspace() {
     let scratch = daemon.workspaces.create("Scratch").unwrap();
     // One failure in the workspace on screen, one filed out of sight, and
     // one healthy session that must not be counted anywhere.
-    daemon.row_mut(SessionId(10)).unwrap().info.status =
-        SessionStatus::Exited { code: Some(1) };
-    daemon.row_mut(SessionId(11)).unwrap().info.status =
-        SessionStatus::Exited { code: Some(1) };
+    daemon.row_mut(SessionId(10)).unwrap().info.status = SessionStatus::Exited { code: Some(1) };
+    daemon.row_mut(SessionId(11)).unwrap().info.status = SessionStatus::Exited { code: Some(1) };
     place(&mut daemon, 11, scratch);
 
     assert_eq!(
@@ -2207,9 +2201,7 @@ fn a_daemon_snapshot_replaces_daemon_state_without_clobbering_the_window() {
     window.sidebar_collapsed = true;
     window.filter = "session".into();
     window.collapsed.insert(pk(1));
-    window
-        .sections_expanded
-        .insert((pk(1), Section::Settled));
+    window.sections_expanded.insert((pk(1), Section::Settled));
     window.workspace_bar_open = true;
     // An operator ruling, which lives daemon-side and must also survive.
     daemon.snooze(&[SessionId(11)], NOW + HOUR, NOW);
@@ -2714,7 +2706,12 @@ fn four_project_ids_for_one_root_draw_one_group() {
     assert_eq!(tree[0].root.as_deref(), Some("/src/vitrum"));
     assert_eq!(ids(tree[0].section(Section::Active)), vec![13, 12, 11, 10]);
     assert_eq!(
-        tree[0].bands.rollup.as_ref().expect("a bucket rolls up").total,
+        tree[0]
+            .bands
+            .rollup
+            .as_ref()
+            .expect("a bucket rolls up")
+            .total,
         4,
         "the collapsed header must count all four, not the one its lead id owns"
     );
@@ -2761,15 +2758,17 @@ fn two_spellings_of_one_cwd_draw_one_directory_bucket() {
 #[test]
 fn the_current_project_is_pinned_and_survives_activity_elsewhere() {
     let mut st = with(&[1, 2, 3], &[(10, 1, 0), (20, 2, 0), (30, 3, 0)]);
-    let order = |st: &UiState| -> Vec<String> {
-        st.tree(clock()).into_iter().map(|g| g.label).collect()
-    };
+    let order =
+        |st: &UiState| -> Vec<String> { st.tree(clock()).into_iter().map(|g| g.label).collect() };
     assert_eq!(order(&st), vec!["p1", "p2", "p3"], "daemon order, unpinned");
 
     st.open(SessionId(30), NOW);
     assert_eq!(order(&st), vec!["p3", "p1", "p2"]);
     let tree = st.tree(clock());
-    assert!(tree[0].current, "the pinned bucket is the one drawn as current");
+    assert!(
+        tree[0].current,
+        "the pinned bucket is the one drawn as current"
+    );
     assert!(
         !tree[1].current && !tree[2].current,
         "exactly one bucket can be current"
@@ -2825,7 +2824,10 @@ fn the_current_project_falls_back_to_the_last_tab_touched() {
 
     st.window.tab_mru.clear();
     let tree = st.tree(clock());
-    assert_eq!(tree[0].label, "p1", "no signal, no pin: daemon order returns");
+    assert_eq!(
+        tree[0].label, "p1",
+        "no signal, no pin: daemon order returns"
+    );
     assert!(!tree.iter().any(|g| g.current));
 }
 
@@ -2846,7 +2848,11 @@ fn a_bucket_is_current_even_when_the_preview_cut_hid_the_focused_row() {
     assert_eq!(tree[0].label, "p2");
     assert!(tree[0].current);
     assert!(
-        tree[0].bands.active.iter().any(|r| r.id() == SessionId(100)),
+        tree[0]
+            .bands
+            .active
+            .iter()
+            .any(|r| r.id() == SessionId(100)),
         "the focused row is rescued from the cut, which is the easy half"
     );
 
@@ -3219,10 +3225,20 @@ fn an_unreadable_seen_version_shows_the_notes_again() {
 /// socket at all.
 #[test]
 fn fixture_data_does_not_count_as_connected() {
-    assert!(ConnState::Live { server_version: "1".into() }.is_live());
+    assert!(
+        ConnState::Live {
+            server_version: "1".into()
+        }
+        .is_live()
+    );
     assert!(!ConnState::Fixture.is_live());
     assert!(!ConnState::Connecting.is_live());
-    assert!(!ConnState::Failed { detail: "refused".into() }.is_live());
+    assert!(
+        !ConnState::Failed {
+            detail: "refused".into()
+        }
+        .is_live()
+    );
 }
 
 // ---- Persistence -------------------------------------------------------
@@ -3408,7 +3424,8 @@ fn the_strip_the_collapse_and_the_filing_all_survive_a_restart() {
     // A second workspace with its own strip, parked by switching away.
     w.set_workspace(&mut daemon, review, NOW).unwrap();
     w.open(&mut daemon, SessionId(12), NOW);
-    w.set_workspace(&mut daemon, DEFAULT_WORKSPACE, NOW).unwrap();
+    w.set_workspace(&mut daemon, DEFAULT_WORKSPACE, NOW)
+        .unwrap();
 
     assert_eq!(w.tabs, vec![SessionId(10), SessionId(11)]);
     assert_eq!(w.tab_mru, vec![SessionId(11), SessionId(10)]);
@@ -3537,12 +3554,22 @@ fn a_document_written_before_a_field_existed_still_loads_whole() {
         vec![WorkspaceId(2), DEFAULT_WORKSPACE],
         "the operator's workspaces, in their order"
     );
-    assert_eq!(daemon.workspaces.get(WorkspaceId(2)).unwrap().name, "Review");
+    assert_eq!(
+        daemon.workspaces.get(WorkspaceId(2)).unwrap().name,
+        "Review"
+    );
     assert_eq!(
         daemon.workspaces.get(WorkspaceId(2)).unwrap().folders()[0].name,
         "Waiting"
     );
-    assert!(!daemon.workspaces.get(WorkspaceId(2)).unwrap().sections.snoozed);
+    assert!(
+        !daemon
+            .workspaces
+            .get(WorkspaceId(2))
+            .unwrap()
+            .sections
+            .snoozed
+    );
 
     // The placement, which is the field a corrupt-and-default would lose
     // most quietly: the session simply reappears in the wrong list.
@@ -3748,7 +3775,9 @@ fn bench_roots() -> Vec<String> {
     (0..11)
         .map(|i| {
             let dir = if i < 8 {
-                base.join(format!("repo-{i}")).join("worktrees").join("main")
+                base.join(format!("repo-{i}"))
+                    .join("worktrees")
+                    .join("main")
             } else {
                 base.join(format!("detached-{i}"))
             };
@@ -4040,12 +4069,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
         unsafe { std::alloc::System.alloc_zeroed(layout) }
     }
 
-    unsafe fn realloc(
-        &self,
-        ptr: *mut u8,
-        layout: std::alloc::Layout,
-        new_size: usize,
-    ) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
         count_one();
         unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
     }
@@ -4494,7 +4518,11 @@ fn an_update_never_moves_a_row_that_stayed_in_the_inbox() {
             // Approval outranks Input, so the set spans two urgencies and
             // a urgency comparator cannot reproduce creation order.
             if i % 2 == 1 {
-                built.hint(HintState::Approval, Some("approve this write?"), NOW - 60_000)
+                built.hint(
+                    HintState::Approval,
+                    Some("approve this write?"),
+                    NOW - 60_000,
+                )
             } else {
                 built
             }

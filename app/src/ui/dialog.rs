@@ -288,9 +288,7 @@ pub fn intents(
     // on the daemon's own activity stamp, so the checkout touched last leads
     // rather than whichever session happens to be first in the list.
     let mut live: Vec<&vitrum_model::SessionView> = st.daemon.sessions.iter().collect();
-    live.sort_by_key(|r| {
-        std::cmp::Reverse(r.info.last_activity_ms.max(r.info.created_at_ms))
-    });
+    live.sort_by_key(|r| std::cmp::Reverse(r.info.last_activity_ms.max(r.info.created_at_ms)));
     let mut here_live: Vec<Intent> = Vec::new();
     let mut away: Vec<Intent> = Vec::new();
     for r in live {
@@ -1568,7 +1566,12 @@ fn push_input(id: &str, value: &str) {
 fn preset_tip(preset: &SavedPreset) -> String {
     match launch::preset_fault(preset) {
         Some(fault) => fault.sentence(),
-        None => match preset.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        None => match preset
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
             Some(cwd) => format!(
                 "{} in {cwd}",
                 launch::join_command(&preset.command, &preset.args)
@@ -1663,7 +1666,11 @@ impl<T> Future for Take<T> {
         // Replaced rather than pushed: one task ever waits on one slot, and a
         // re-poll under a different waker must leave the newest one behind or
         // the wake goes to a task that has been moved off this future.
-        if !inner.waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
+        if !inner
+            .waker
+            .as_ref()
+            .is_some_and(|w| w.will_wake(cx.waker()))
+        {
             inner.waker = Some(cx.waker().clone());
         }
         Poll::Pending

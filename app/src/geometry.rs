@@ -153,8 +153,8 @@ pub(crate) fn quantize_ui_scale(raw: f64) -> f64 {
 /// signal that distinguishes the two.
 #[cfg(target_os = "linux")]
 pub(crate) fn density_of(monitor: &MonitorHandle) -> Density {
-    use vitrum_dioxus_desktop::tao::platform::unix::MonitorHandleExtUnix;
     use gtk::gdk::prelude::MonitorExt;
+    use vitrum_dioxus_desktop::tao::platform::unix::MonitorHandleExtUnix;
 
     let gdk = monitor.gdk_monitor();
     // GDK reports geometry in logical pixels and tao reports it in device
@@ -496,7 +496,10 @@ pub(crate) fn save_geometry() {
 /// The monitor list in the form [`window_state::clamp_to_monitors`] wants,
 /// primary first because that function breaks ties by position in the slice
 /// and "the second screen is gone" has to land on the primary.
-pub(crate) fn monitor_rects(primary: Option<&MonitorHandle>, all: &[MonitorHandle]) -> Vec<Monitor> {
+pub(crate) fn monitor_rects(
+    primary: Option<&MonitorHandle>,
+    all: &[MonitorHandle],
+) -> Vec<Monitor> {
     let rect = |m: &MonitorHandle| {
         let p = m.position();
         let s = m.size();
@@ -542,7 +545,11 @@ pub(crate) fn measure(window: &Window, ordinal: usize) -> WindowGeometry {
 /// ones is deliberate: the two agree on this machine and diverge the moment
 /// somebody sets `GDK_SCALE`, and a rectangle saved in one unit and restored
 /// in the other is a window at a quarter size with no clue why.
-pub(crate) fn fresh_geometry(monitor: Option<&MonitorHandle>, scale: f64, ordinal: usize) -> WindowGeometry {
+pub(crate) fn fresh_geometry(
+    monitor: Option<&MonitorHandle>,
+    scale: f64,
+    ordinal: usize,
+) -> WindowGeometry {
     let density = monitor.map(density_of);
     let os_scale = density.map_or(1.0, |d| d.os_scale).max(1.0);
     let (mx, my, mw, mh) = match monitor {

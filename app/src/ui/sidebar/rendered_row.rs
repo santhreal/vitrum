@@ -122,10 +122,7 @@ fn each_agent_draws_its_own_mark_on_the_row() {
 fn the_mark_carries_exactly_one_status_hue() {
     let cases = [
         (row(4).running().build(), "rg-session__agent--running"),
-        (
-            row(4).exited(Some(0)).build(),
-            "rg-session__agent--exited",
-        ),
+        (row(4).exited(Some(0)).build(), "rg-session__agent--exited"),
         (
             row(4).exited(Some(1)).build(),
             "rg-session__agent--exited-error",

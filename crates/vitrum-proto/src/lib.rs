@@ -579,6 +579,415 @@ impl ServerMsg {
         }
     }
 }
+/// Error during varint or compact binary decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarintError {
+    BufferTooSmall,
+    ValueOverflow,
+    UnexpectedEof,
+    InvalidUtf8,
+    UnknownDiscriminant(u8),
+}
+
+impl core::fmt::Display for VarintError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VarintError::BufferTooSmall => f.write_str("varint buffer too small"),
+            VarintError::ValueOverflow => f.write_str("varint value overflowed integer type"),
+            VarintError::UnexpectedEof => f.write_str("unexpected EOF while reading varint"),
+            VarintError::InvalidUtf8 => f.write_str("invalid UTF-8 sequence in varint string"),
+            VarintError::UnknownDiscriminant(d) => write!(f, "unknown compact enum discriminant {d}"),
+        }
+    }
+}
+
+impl core::error::Error for VarintError {}
+
+/// Encode an unsigned 64-bit integer into varint LEB128 format.
+pub fn encode_varint_u64(mut val: u64, out: &mut Vec<u8>) -> usize {
+    let start = out.len();
+    loop {
+        let mut byte = (val & 0x7f) as u8;
+        val >>= 7;
+        if val != 0 {
+            byte |= 0x80;
+            out.push(byte);
+        } else {
+            out.push(byte);
+            break;
+        }
+    }
+    out.len() - start
+}
+
+/// Decode an unsigned 64-bit integer from varint LEB128 format.
+pub fn decode_varint_u64(buf: &[u8]) -> Result<(u64, usize), VarintError> {
+    let mut result = 0u64;
+    let mut shift = 0;
+    for (i, &byte) in buf.iter().enumerate() {
+        if shift >= 64 {
+            return Err(VarintError::ValueOverflow);
+        }
+        let val = u64::from(byte & 0x7f);
+        result |= val << shift;
+        if (byte & 0x80) == 0 {
+            return Ok((result, i + 1));
+        }
+        shift += 7;
+    }
+    Err(VarintError::UnexpectedEof)
+}
+
+/// Encode a signed 64-bit integer into ZigZag varint LEB128 format.
+pub fn encode_varint_i64(val: i64, out: &mut Vec<u8>) -> usize {
+    let u = ((val << 1) ^ (val >> 63)) as u64;
+    encode_varint_u64(u, out)
+}
+
+/// Decode a signed 64-bit integer from ZigZag varint LEB128 format.
+pub fn decode_varint_i64(buf: &[u8]) -> Result<(i64, usize), VarintError> {
+    let (u, read) = decode_varint_u64(buf)?;
+    let val = ((u >> 1) as i64) ^ (-((u & 1) as i64));
+    Ok((val, read))
+}
+
+/// Trait for compact 1-byte enum discriminants.
+pub trait CompactEnum: Sized {
+    fn discriminant(&self) -> u8;
+    fn from_discriminant(discriminant: u8) -> Option<Self>;
+}
+
+impl CompactEnum for SessionStatus {
+    fn discriminant(&self) -> u8 {
+        match self {
+            SessionStatus::Starting => 0,
+            SessionStatus::Running => 1,
+            SessionStatus::Exited { .. } => 2,
+        }
+    }
+
+    fn from_discriminant(discriminant: u8) -> Option<Self> {
+        match discriminant {
+            0 => Some(SessionStatus::Starting),
+            1 => Some(SessionStatus::Running),
+            2 => Some(SessionStatus::Exited { code: None }),
+            _ => None,
+        }
+    }
+}
+
+impl CompactEnum for HintState {
+    fn discriminant(&self) -> u8 {
+        match self {
+            HintState::Approval => 0,
+            HintState::Input => 1,
+            HintState::Working => 2,
+            HintState::Ready => 3,
+        }
+    }
+
+    fn from_discriminant(discriminant: u8) -> Option<Self> {
+        match discriminant {
+            0 => Some(HintState::Approval),
+            1 => Some(HintState::Input),
+            2 => Some(HintState::Working),
+            3 => Some(HintState::Ready),
+            _ => None,
+        }
+    }
+}
+
+impl CompactEnum for Credit {
+    fn discriminant(&self) -> u8 {
+        match self {
+            Credit::Observed => 0,
+            Credit::Inferred => 1,
+        }
+    }
+
+    fn from_discriminant(discriminant: u8) -> Option<Self> {
+        match discriminant {
+            0 => Some(Credit::Observed),
+            1 => Some(Credit::Inferred),
+            _ => None,
+        }
+    }
+}
+
+impl CompactEnum for ClientMsg {
+    fn discriminant(&self) -> u8 {
+        match self {
+            ClientMsg::Hello { .. } => 0,
+            ClientMsg::List => 1,
+            ClientMsg::CreateSession { .. } => 2,
+            ClientMsg::Attach { .. } => 3,
+            ClientMsg::Detach { .. } => 4,
+            ClientMsg::Input { .. } => 5,
+            ClientMsg::Resize { .. } => 6,
+            ClientMsg::Rename { .. } => 7,
+            ClientMsg::Close { .. } => 8,
+            ClientMsg::Scrollback { .. } => 9,
+            ClientMsg::Search { .. } => 10,
+            ClientMsg::WatchCollisions { .. } => 11,
+            ClientMsg::Collisions => 12,
+        }
+    }
+
+    fn from_discriminant(discriminant: u8) -> Option<Self> {
+        match discriminant {
+            0 => Some(ClientMsg::Hello { protocol: 0 }),
+            1 => Some(ClientMsg::List),
+            12 => Some(ClientMsg::Collisions),
+            _ => None,
+        }
+    }
+}
+
+impl CompactEnum for ServerMsg {
+    fn discriminant(&self) -> u8 {
+        match self {
+            ServerMsg::Welcome { .. } => 0,
+            ServerMsg::Projects { .. } => 1,
+            ServerMsg::Sessions { .. } => 2,
+            ServerMsg::SessionCreated(_) => 3,
+            ServerMsg::SessionUpdated(_) => 4,
+            ServerMsg::SessionRemoved { .. } => 5,
+            ServerMsg::ScrollbackChunk { .. } => 6,
+            ServerMsg::SearchResults { .. } => 7,
+            ServerMsg::CollisionReport { .. } => 8,
+            ServerMsg::Exited { .. } => 9,
+            ServerMsg::Error { .. } => 10,
+        }
+    }
+
+    fn from_discriminant(discriminant: u8) -> Option<Self> {
+        match discriminant {
+            1 => Some(ServerMsg::Projects { projects: Vec::new() }),
+            2 => Some(ServerMsg::Sessions { sessions: Vec::new() }),
+            _ => None,
+        }
+    }
+}
+
+impl ClientMsg {
+    /// Encode message into compact binary format.
+    pub fn encode_compact(&self, out: &mut Vec<u8>) {
+        out.push(self.discriminant());
+        match self {
+            ClientMsg::Hello { protocol } => {
+                encode_varint_u64(*protocol as u64, out);
+            }
+            ClientMsg::List => {}
+            ClientMsg::CreateSession { project_id, cwd, command, args, cols, rows, title } => {
+                encode_varint_u64(project_id.0, out);
+                encode_varint_u64(cwd.len() as u64, out);
+                out.extend_from_slice(cwd.as_bytes());
+                encode_varint_u64(command.len() as u64, out);
+                out.extend_from_slice(command.as_bytes());
+                encode_varint_u64(args.len() as u64, out);
+                for arg in args {
+                    encode_varint_u64(arg.len() as u64, out);
+                    out.extend_from_slice(arg.as_bytes());
+                }
+                encode_varint_u64(*cols as u64, out);
+                encode_varint_u64(*rows as u64, out);
+                if let Some(t) = title {
+                    out.push(1);
+                    encode_varint_u64(t.len() as u64, out);
+                    out.extend_from_slice(t.as_bytes());
+                } else {
+                    out.push(0);
+                }
+            }
+            ClientMsg::Attach { session, cols, rows } => {
+                encode_varint_u64(session.0, out);
+                encode_varint_u64(*cols as u64, out);
+                encode_varint_u64(*rows as u64, out);
+            }
+            ClientMsg::Detach { session } => {
+                encode_varint_u64(session.0, out);
+            }
+            ClientMsg::Input { session, data } => {
+                encode_varint_u64(session.0, out);
+                encode_varint_u64(data.len() as u64, out);
+                out.extend_from_slice(data);
+            }
+            ClientMsg::Resize { session, cols, rows } => {
+                encode_varint_u64(session.0, out);
+                encode_varint_u64(*cols as u64, out);
+                encode_varint_u64(*rows as u64, out);
+            }
+            ClientMsg::Rename { session, title } => {
+                encode_varint_u64(session.0, out);
+                encode_varint_u64(title.len() as u64, out);
+                out.extend_from_slice(title.as_bytes());
+            }
+            ClientMsg::Close { session } => {
+                encode_varint_u64(session.0, out);
+            }
+            ClientMsg::Scrollback { session, before_seq, max_bytes } => {
+                encode_varint_u64(session.0, out);
+                encode_varint_u64(*before_seq, out);
+                encode_varint_u64(*max_bytes as u64, out);
+            }
+            ClientMsg::Search { sessions, pattern, regex, case_insensitive, whole_word, context_lines, max_hits } => {
+                encode_varint_u64(sessions.len() as u64, out);
+                for s in sessions {
+                    encode_varint_u64(s.0, out);
+                }
+                encode_varint_u64(pattern.len() as u64, out);
+                out.extend_from_slice(pattern.as_bytes());
+                let flags = (*regex as u8) | ((*case_insensitive as u8) << 1) | ((*whole_word as u8) << 2);
+                out.push(flags);
+                encode_varint_u64(*context_lines as u64, out);
+                encode_varint_u64(*max_hits as u64, out);
+            }
+            ClientMsg::WatchCollisions { enabled } => {
+                out.push(*enabled as u8);
+            }
+            ClientMsg::Collisions => {}
+        }
+    }
+
+    /// Decode message from compact binary format.
+    pub fn decode_compact(buf: &[u8]) -> Result<(Self, usize), VarintError> {
+        if buf.is_empty() {
+            return Err(VarintError::UnexpectedEof);
+        }
+        let disc = buf[0];
+        let mut pos = 1;
+        match disc {
+            0 => {
+                let (proto, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                Ok((ClientMsg::Hello { protocol: proto as u32 }, pos))
+            }
+            1 => Ok((ClientMsg::List, pos)),
+            2 => {
+                let (proj_id, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                let (cwd_len, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                let cwd_len = cwd_len as usize;
+                if buf.len() < pos + cwd_len { return Err(VarintError::UnexpectedEof); }
+                let cwd = std::str::from_utf8(&buf[pos..pos+cwd_len]).map_err(|_| VarintError::InvalidUtf8)?.to_string();
+                pos += cwd_len;
+                let (cmd_len, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                let cmd_len = cmd_len as usize;
+                if buf.len() < pos + cmd_len { return Err(VarintError::UnexpectedEof); }
+                let command = std::str::from_utf8(&buf[pos..pos+cmd_len]).map_err(|_| VarintError::InvalidUtf8)?.to_string();
+                pos += cmd_len;
+                let (args_count, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                let mut args = Vec::with_capacity(args_count as usize);
+                for _ in 0..args_count {
+                    let (arg_len, read) = decode_varint_u64(&buf[pos..])?;
+                    pos += read;
+                    let arg_len = arg_len as usize;
+                    if buf.len() < pos + arg_len { return Err(VarintError::UnexpectedEof); }
+                    let arg = std::str::from_utf8(&buf[pos..pos+arg_len]).map_err(|_| VarintError::InvalidUtf8)?.to_string();
+                    pos += arg_len;
+                    args.push(arg);
+                }
+                let (cols, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                let (rows, read) = decode_varint_u64(&buf[pos..])?;
+                pos += read;
+                if pos >= buf.len() { return Err(VarintError::UnexpectedEof); }
+                let has_title = buf[pos];
+                pos += 1;
+                let title = if has_title == 1 {
+                    let (t_len, read) = decode_varint_u64(&buf[pos..])?;
+                    pos += read;
+                    let t_len = t_len as usize;
+                    if buf.len() < pos + t_len { return Err(VarintError::UnexpectedEof); }
+                    let t = std::str::from_utf8(&buf[pos..pos+t_len]).map_err(|_| VarintError::InvalidUtf8)?.to_string();
+                    pos += t_len;
+                    Some(t)
+                } else {
+                    None
+                };
+                Ok((ClientMsg::CreateSession {
+                    project_id: ProjectId(proj_id),
+                    cwd,
+                    command,
+                    args,
+                    cols: cols as u16,
+                    rows: rows as u16,
+                    title,
+                }, pos))
+            }
+            3 => {
+                let (s, r1) = decode_varint_u64(&buf[pos..])?;
+                pos += r1;
+                let (cols, r2) = decode_varint_u64(&buf[pos..])?;
+                pos += r2;
+                let (rows, r3) = decode_varint_u64(&buf[pos..])?;
+                pos += r3;
+                Ok((ClientMsg::Attach { session: SessionId(s), cols: cols as u16, rows: rows as u16 }, pos))
+            }
+            4 => {
+                let (s, r) = decode_varint_u64(&buf[pos..])?;
+                pos += r;
+                Ok((ClientMsg::Detach { session: SessionId(s) }, pos))
+            }
+            5 => {
+                let (s, r1) = decode_varint_u64(&buf[pos..])?;
+                pos += r1;
+                let (d_len, r2) = decode_varint_u64(&buf[pos..])?;
+                pos += r2;
+                let d_len = d_len as usize;
+                if buf.len() < pos + d_len { return Err(VarintError::UnexpectedEof); }
+                let data = buf[pos..pos+d_len].to_vec();
+                pos += d_len;
+                Ok((ClientMsg::Input { session: SessionId(s), data }, pos))
+            }
+            6 => {
+                let (s, r1) = decode_varint_u64(&buf[pos..])?;
+                pos += r1;
+                let (cols, r2) = decode_varint_u64(&buf[pos..])?;
+                pos += r2;
+                let (rows, r3) = decode_varint_u64(&buf[pos..])?;
+                pos += r3;
+                Ok((ClientMsg::Resize { session: SessionId(s), cols: cols as u16, rows: rows as u16 }, pos))
+            }
+            7 => {
+                let (s, r1) = decode_varint_u64(&buf[pos..])?;
+                pos += r1;
+                let (t_len, r2) = decode_varint_u64(&buf[pos..])?;
+                pos += r2;
+                let t_len = t_len as usize;
+                if buf.len() < pos + t_len { return Err(VarintError::UnexpectedEof); }
+                let title = std::str::from_utf8(&buf[pos..pos+t_len]).map_err(|_| VarintError::InvalidUtf8)?.to_string();
+                pos += t_len;
+                Ok((ClientMsg::Rename { session: SessionId(s), title }, pos))
+            }
+            8 => {
+                let (s, r) = decode_varint_u64(&buf[pos..])?;
+                pos += r;
+                Ok((ClientMsg::Close { session: SessionId(s) }, pos))
+            }
+            9 => {
+                let (s, r1) = decode_varint_u64(&buf[pos..])?;
+                pos += r1;
+                let (seq, r2) = decode_varint_u64(&buf[pos..])?;
+                pos += r2;
+                let (mb, r3) = decode_varint_u64(&buf[pos..])?;
+                pos += r3;
+                Ok((ClientMsg::Scrollback { session: SessionId(s), before_seq: seq, max_bytes: mb as u32 }, pos))
+            }
+            11 => {
+                if pos >= buf.len() { return Err(VarintError::UnexpectedEof); }
+                let enabled = buf[pos] != 0;
+                pos += 1;
+                Ok((ClientMsg::WatchCollisions { enabled }, pos))
+            }
+            12 => Ok((ClientMsg::Collisions, pos)),
+            _ => Err(VarintError::UnknownDiscriminant(disc)),
+        }
+    }
+}
 
 /// Errors from decoding a data-plane frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1409,5 +1818,60 @@ mod tests {
             serde_json::from_str::<ServerMsg>(&json).expect("round trips"),
             chunk
         );
+    }
+    #[test]
+    fn varint_u64_and_i64_roundtrip() {
+        let test_u64s = vec![0u64, 1, 127, 128, 255, 300, 16383, 16384, 0xffff_ffff, u64::MAX];
+        for val in test_u64s {
+            let mut buf = Vec::new();
+            let written = encode_varint_u64(val, &mut buf);
+            assert_eq!(written, buf.len());
+            let (decoded, read) = decode_varint_u64(&buf).expect("must decode u64 varint");
+            assert_eq!(read, buf.len());
+            assert_eq!(decoded, val);
+        }
+
+        let test_i64s = vec![0i64, -1, 1, -127, 127, -128, 128, -300, 300, i64::MIN, i64::MAX];
+        for val in test_i64s {
+            let mut buf = Vec::new();
+            let written = encode_varint_i64(val, &mut buf);
+            assert_eq!(written, buf.len());
+            let (decoded, read) = decode_varint_i64(&buf).expect("must decode i64 varint");
+            assert_eq!(read, buf.len());
+            assert_eq!(decoded, val);
+        }
+    }
+
+    #[test]
+    fn compact_enum_discriminants_and_binary_roundtrip() {
+        assert_eq!(SessionStatus::Starting.discriminant(), 0);
+        assert_eq!(SessionStatus::Running.discriminant(), 1);
+        assert_eq!(SessionStatus::Exited { code: Some(0) }.discriminant(), 2);
+
+        assert_eq!(HintState::Approval.discriminant(), 0);
+        assert_eq!(HintState::Ready.discriminant(), 3);
+
+        assert_eq!(Credit::Observed.discriminant(), 0);
+        assert_eq!(Credit::Inferred.discriminant(), 1);
+
+        let msg = ClientMsg::CreateSession {
+            project_id: ProjectId(42),
+            cwd: "/tmp/project".to_string(),
+            command: "bun".to_string(),
+            args: vec!["run".to_string(), "dev".to_string()],
+            cols: 100,
+            rows: 30,
+            title: Some("dev-server".to_string()),
+        };
+
+        let mut compact_bytes = Vec::new();
+        msg.encode_compact(&mut compact_bytes);
+
+        let json_bytes = serde_json::to_vec(&msg).unwrap();
+        assert!(compact_bytes.len() < json_bytes.len() / 2, "compact bytes {} vs json {}", compact_bytes.len(), json_bytes.len());
+
+        let (decoded, read) = ClientMsg::decode_compact(&compact_bytes).expect("must decode compact client msg");
+        assert_eq!(read, compact_bytes.len());
+        assert_eq!(decoded, msg);
     }
 }

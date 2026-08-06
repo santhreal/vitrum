@@ -151,6 +151,10 @@ fn a_report_writes_json_and_markdown_into_its_own_directory() {
 /// Captured through a pipe, so this sees the payload width. On a pty the kernel
 /// translates the newline to CR LF, which is the one extra byte per line that
 /// [`crate::load::LINE_BYTES`] accounts for.
+/// Runs `/bin/sh`, which is the shell the daemon spawns the generator with, so
+/// this only runs where that shell exists. Faking it elsewhere would test a
+/// different command from the one the workload sends.
+#[cfg(unix)]
 #[test]
 fn the_load_generator_emits_the_width_the_delivery_check_assumes() {
     let out = std::process::Command::new("/bin/sh")

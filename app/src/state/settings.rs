@@ -378,13 +378,12 @@ impl Settings {
     }
 
     /// Record that the operator dismissed an available update of this version.
+    ///
+    /// The quiet titlebar check compares this string against a ready release
+    /// via [`crate::update::chrome_offer`]. Keeping the rule in one place is
+    /// why there is no separate `is_ignored` predicate on `Settings`.
     pub fn ignore_update(&mut self, version: &semver::Version) {
         self.ignored_update = version.to_string();
-    }
-
-    /// Whether the quiet chrome should still mention this version.
-    pub fn update_is_ignored(&self, version: &semver::Version) -> bool {
-        self.ignored_update.trim() == version.to_string()
     }
 }
 

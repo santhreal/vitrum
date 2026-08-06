@@ -397,6 +397,29 @@ pub(crate) fn terminate(bridge: Bridge, mut st: Signal<UiState>, id: SessionId, 
     st.write().close_tab(id);
 }
 
+/// Is this press the answer to the prompt already on screen?
+///
+/// `None` means nothing is armed for these rows, so ask. `Some(retire)` means
+/// go ahead, and `retire` says whether the prompt is still the message on the
+/// strip and so must come down with it.
+///
+/// Pure, and separate from the signals, because the retiring is the part that
+/// was missing: an error flash never expires by design, so a prompt that had
+/// already been answered kept asking about a session that no longer existed,
+/// which reads as an armed prompt rather than a spent one. Comparing the text
+/// keeps a newer message about something else on screen.
+pub(crate) fn answers_prompt(
+    armed: &[SessionId],
+    live: &[SessionId],
+    flash: Option<&Flash>,
+    prompt: &str,
+) -> Option<bool> {
+    if armed != live {
+        return None;
+    }
+    Some(flash.is_some_and(|f| f.text == prompt))
+}
+
 /// Terminate, or ask first.
 ///
 /// `Settings::confirm_terminate` defaults to on, and it has to mean something:
@@ -439,15 +462,6 @@ pub(crate) fn request_terminate(
         return;
     }
 
-    // Second press on an armed prompt for the same rows is the confirmation.
-    if *pending.peek() == confirmed {
-        pending.set(Vec::new());
-        for id in targets {
-            terminate(bridge, st, *id, opts);
-        }
-        return;
-    }
-
     let text = match confirmed.len() {
         1 => {
             let title = st
@@ -461,8 +475,32 @@ pub(crate) fn request_terminate(
             "Terminate {n} sessions? Their child processes are killed and there is no undo."
         ),
     };
-    pending.set(confirmed);
-    st.write().window.flash = Some(Flash::error(text));
+
+    let decision = {
+        let read = st.peek();
+        answers_prompt(
+            &pending.peek(),
+            &confirmed,
+            read.window.flash.as_ref(),
+            &text,
+        )
+    };
+    match decision {
+        None => {
+            pending.set(confirmed);
+            st.write().window.flash = Some(Flash::error(text));
+            return;
+        }
+        Some(retire) => {
+            pending.set(Vec::new());
+            if retire {
+                st.write().window.flash = None;
+            }
+        }
+    }
+    for id in targets {
+        terminate(bridge, st, *id, opts);
+    }
 }
 
 /// Perform one context-menu entry.

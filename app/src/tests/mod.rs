@@ -5,6 +5,7 @@
 //! different reading tasks, and a file you scroll past a thousand assertions
 //! to reach the next function is a file nobody reads twice.
 
+mod actions;
 mod readme;
 mod upstream;
 mod workflows;

@@ -101,16 +101,6 @@ pub struct VirtualSlice {
 }
 
 impl VirtualSlice {
-    pub fn full(total_items: usize) -> Self {
-        Self {
-            start_index: 0,
-            end_index: total_items,
-            top_spacer_px: 0.0,
-            bottom_spacer_px: 0.0,
-            total_items,
-            visible_count: total_items,
-        }
-    }
 
     /// Computes an overscanned virtual window over `total_items`.
     pub fn compute(
@@ -121,7 +111,14 @@ impl VirtualSlice {
         overscan_count: usize,
     ) -> Self {
         if total_items == 0 {
-            return Self::full(0);
+            return Self {
+                start_index: 0,
+                end_index: 0,
+                top_spacer_px: 0.0,
+                bottom_spacer_px: 0.0,
+                total_items: 0,
+                visible_count: 0,
+            };
         }
         let safe_item_height = if item_height <= 0.0 { 32.0 } else { item_height };
         let safe_viewport = if viewport_height <= 0.0 { 800.0 } else { viewport_height };
@@ -651,11 +648,13 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                         {
                                             let active_rows = &group.bands.active;
                                             let h = if draws_card(Section::Active, fields.always_slim) { 56.0 } else { 28.0 };
-                                            let slice = if props.scroll_top.is_some() || props.viewport_height.is_some() || active_rows.len() > 30 {
-                                                VirtualSlice::compute(active_rows.len(), props.scroll_top.unwrap_or(0.0), props.viewport_height.unwrap_or(800.0), h, props.overscan.unwrap_or(5))
-                                            } else {
-                                                VirtualSlice::full(active_rows.len())
-                                            };
+                                            let slice = VirtualSlice::compute(
+                                                active_rows.len(),
+                                                props.scroll_top.unwrap_or(0.0),
+                                                props.viewport_height.unwrap_or(800.0),
+                                                h,
+                                                props.overscan.unwrap_or(5),
+                                            );
                                             rsx! {
                                                 if slice.top_spacer_px > 0.0 {
                                                     div {
@@ -729,11 +728,13 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                         if open {
                                                             {
                                                                 let sliced_rows = &rows[..shown];
-                                                                let slice = if props.scroll_top.is_some() || props.viewport_height.is_some() || sliced_rows.len() > 30 {
-                                                                    VirtualSlice::compute(sliced_rows.len(), props.scroll_top.unwrap_or(0.0), props.viewport_height.unwrap_or(800.0), 28.0, props.overscan.unwrap_or(5))
-                                                                } else {
-                                                                    VirtualSlice::full(sliced_rows.len())
-                                                                };
+                                                                let slice = VirtualSlice::compute(
+                                                                    sliced_rows.len(),
+                                                                    props.scroll_top.unwrap_or(0.0),
+                                                                    props.viewport_height.unwrap_or(800.0),
+                                                                    28.0,
+                                                                    props.overscan.unwrap_or(5),
+                                                                );
                                                                 rsx! {
                                                                     if slice.top_spacer_px > 0.0 {
                                                                         div {

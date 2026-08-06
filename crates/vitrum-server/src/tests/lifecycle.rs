@@ -174,10 +174,7 @@ async fn a_session_outlives_the_client_that_created_it() {
 
     // Still driveable, and still recording.
     second
-        .send(ClientMsg::Input {
-            session: id,
-            data: b"\n".to_vec(),
-        })
+        .send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
         .await;
     second
         .until("the exit", |s| {
@@ -241,10 +238,7 @@ async fn a_disconnect_releases_the_attachment() {
         })
         .await;
     second
-        .send(ClientMsg::Input {
-            session: id,
-            data: b"\n".to_vec(),
-        })
+        .send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
         .await;
     second
         .until("the exit", |s| {

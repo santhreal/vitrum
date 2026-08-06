@@ -159,7 +159,7 @@ pub const fn page_back_max_bytes(painted: u64, scrollback_lines: u32) -> Option<
 pub const JUMP_TAIL_BYTES: u64 = 8 * 1024;
 
 /// Encode a control-plane message as the JSON text frame the server expects.
-pub fn encode(msg: &ClientMsg) -> String {
+pub fn encode(msg: &ClientMsg<'_>) -> String {
     // ClientMsg is a closed enum of plain data with no map keys that can fail
     // to serialize, so this cannot error in practice; a panic here would mean
     // vitrum-proto changed shape underneath us.
@@ -292,7 +292,7 @@ mod tests {
     fn input_frame_matches_the_shape_bootstrap_js_builds() {
         let got = encode(&ClientMsg::Input {
             session: SessionId(7),
-            data: vec![104, 105],
+            data: vec![104, 105].into(),
         });
         assert_eq!(got, r#"{"t":"input","session":7,"data":[104,105]}"#);
     }
@@ -316,7 +316,7 @@ mod tests {
     fn input_carries_arbitrary_bytes_not_text() {
         let got = encode(&ClientMsg::Input {
             session: SessionId(1),
-            data: vec![0x1b, 0x5b, 0x4d, 0x20, 0xff, 0x80, 0x00],
+            data: vec![0x1b, 0x5b, 0x4d, 0x20, 0xff, 0x80, 0x00].into(),
         });
         assert_eq!(
             got,
@@ -382,7 +382,7 @@ mod tests {
             before_seq: BEFORE_SEQ_HEAD,
             max_bytes: 1,
         });
-        let back: ClientMsg = serde_json::from_str(&text).unwrap();
+        let back: ClientMsg<'_> = serde_json::from_str(&text).unwrap();
         let ClientMsg::Scrollback { before_seq, .. } = back else {
             panic!("wrong variant");
         };

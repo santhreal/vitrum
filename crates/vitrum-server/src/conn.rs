@@ -1,5 +1,6 @@
 //! One client connection: control plane in, control and data planes out.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -198,15 +199,15 @@ impl Conn {
             } => {
                 let spec = SessionSpec {
                     project_id,
-                    cwd: PathBuf::from(&cwd),
-                    command,
-                    args,
+                    cwd: PathBuf::from(cwd.as_ref()),
+                    command: command.into_owned(),
+                    args: args.into_iter().map(|a| a.into_owned()).collect(),
                     // The protocol carries no environment, so the child inherits
                     // the daemon's, plus the TERM the PTY layer guarantees.
                     env: Vec::new(),
                     cols,
                     rows,
-                    title,
+                    title: title.map(|t| t.into_owned()),
                 };
                 match self.hub.manager.spawn(spec) {
                     Ok(id) => {

@@ -175,12 +175,12 @@ pub(crate) fn start_session(
     }));
     bridge.msg(&ClientMsg::CreateSession {
         project_id: project,
-        cwd: l.cwd,
-        command: l.command,
-        args: l.args,
+        cwd: l.cwd.into(),
+        command: l.command.into(),
+        args: l.args.into_iter().map(Into::into).collect(),
         cols,
         rows,
-        title: l.title,
+        title: l.title.map(Into::into),
     });
     // One click now spawns a real child, so the strip names it and names the
     // way back. Ctrl+Shift+X is already aimed at it, because `claim_launch`
@@ -300,12 +300,12 @@ pub(crate) fn duplicate_session(bridge: Bridge, mut st: Signal<UiState>, id: Ses
     };
     bridge.msg(&ClientMsg::CreateSession {
         project_id: project,
-        cwd: l.cwd,
-        command: l.command,
-        args: l.args,
+        cwd: l.cwd.into(),
+        command: l.command.into(),
+        args: l.args.into_iter().map(Into::into).collect(),
         cols,
         rows,
-        title: l.title,
+        title: l.title.map(Into::into),
     });
 }
 

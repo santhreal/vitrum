@@ -230,6 +230,22 @@ pub mod bytes_seq_cow {
         
     }
 }
+/// `#[serde(with = "crate::b64::bytes_cow_vec")]` for a `Cow<'a, [u8]>` field serialized as integer array.
+pub mod bytes_cow_vec {
+    use super::*;
+
+    /// # Errors
+    /// Propagates whatever the serializer reports.
+    pub fn serialize<S: Serializer>(data: &std::borrow::Cow<'_, [u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+        data.as_ref().serialize(serializer)
+    }
+
+    /// # Errors
+    /// Fails when deserializing invalid array.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<std::borrow::Cow<'de, [u8]>, D::Error> {
+        Vec::<u8>::deserialize(deserializer).map(std::borrow::Cow::Owned)
+    }
+}
 
 #[cfg(test)]
 mod tests {

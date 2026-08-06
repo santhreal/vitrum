@@ -314,7 +314,7 @@ impl Bridge {
     }
 
     /// Encode and send a control-plane message.
-    fn msg(&self, m: &ClientMsg) {
+    fn msg<'a>(&self, m: &ClientMsg<'a>) {
         self.cmd(BridgeCmd::Send {
             text: wire::encode(m),
         });
@@ -1189,7 +1189,10 @@ fn App() -> Element {
                     ui::dialog::RenameDialog {
                         seed,
                         on_rename: move |(session, title): (SessionId, String)| {
-                            bridge.msg(&ClientMsg::Rename { session, title });
+                            bridge.msg(&ClientMsg::Rename {
+                                session,
+                                title: title.into(),
+                            });
                             dismiss(st);
                         },
                         on_dismiss: move |()| dismiss(st),

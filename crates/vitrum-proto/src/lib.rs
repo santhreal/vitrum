@@ -270,7 +270,7 @@ pub struct SessionInfo {
 /// Client to server, control plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ClientMsg {
+pub enum ClientMsg<'a> {
     /// First message on a connection. The server replies [`ServerMsg::Welcome`].
     Hello { protocol: u32 },
     /// Request the current project and session lists.
@@ -278,12 +278,16 @@ pub enum ClientMsg {
     /// Create and spawn a new session.
     CreateSession {
         project_id: ProjectId,
-        cwd: String,
-        command: String,
-        args: Vec<String>,
+        #[serde(borrow)]
+        cwd: Cow<'a, str>,
+        #[serde(borrow)]
+        command: Cow<'a, str>,
+        #[serde(borrow)]
+        args: Vec<Cow<'a, str>>,
         cols: u16,
         rows: u16,
-        title: Option<String>,
+        #[serde(borrow)]
+        title: Option<Cow<'a, str>>,
     },
     /// Begin receiving live output frames for `session`.
     Attach {
@@ -295,7 +299,11 @@ pub enum ClientMsg {
     Detach { session: SessionId },
     /// Write bytes to the session's PTY. Base64 is avoided here because input is
     /// low rate and always originates from a keyboard or paste buffer.
-    Input { session: SessionId, data: Vec<u8> },
+    Input {
+        session: SessionId,
+        #[serde(borrow, with = "crate::b64::bytes_cow_vec")]
+        data: Cow<'a, [u8]>,
+    },
     /// Resize the session's PTY.
     Resize {
         session: SessionId,
@@ -309,7 +317,11 @@ pub enum ClientMsg {
     /// restart and is invisible to a second window. The server owns session
     /// identity, so it owns the name, and it echoes [`ServerMsg::SessionUpdated`]
     /// so every connected client renames at once.
-    Rename { session: SessionId, title: String },
+    Rename {
+        session: SessionId,
+        #[serde(borrow)]
+        title: Cow<'a, str>,
+    },
     /// Terminate the child process and drop the session.
     Close { session: SessionId },
     /// Ask for buffered history older than `before_seq`.
@@ -327,7 +339,8 @@ pub enum ClientMsg {
     Search {
         /// Restrict to these sessions, or every session when empty.
         sessions: Vec<SessionId>,
-        pattern: String,
+        #[serde(borrow)]
+        pattern: Cow<'a, str>,
         /// Treat `pattern` as a regular expression rather than a literal.
         regex: bool,
         case_insensitive: bool,
@@ -355,6 +368,76 @@ pub enum ClientMsg {
     /// rather than waiting for a change that, in a quiet repository, never
     /// comes.
     Collisions,
+}
+impl<'a> ClientMsg<'a> {
+    /// Zero-copy control plane deserialization borrowing from input JSON string.
+    pub fn deserialize_zero_copy(json: &'a str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    pub fn into_owned(self) -> ClientMsg<'static> {
+        match self {
+            ClientMsg::Hello { protocol } => ClientMsg::Hello { protocol },
+            ClientMsg::List => ClientMsg::List,
+            ClientMsg::CreateSession {
+                project_id,
+                cwd,
+                command,
+                args,
+                cols,
+                rows,
+                title,
+            } => ClientMsg::CreateSession {
+                project_id,
+                cwd: Cow::Owned(cwd.into_owned()),
+                command: Cow::Owned(command.into_owned()),
+                args: args.into_iter().map(|a| Cow::Owned(a.into_owned())).collect(),
+                cols,
+                rows,
+                title: title.map(|t| Cow::Owned(t.into_owned())),
+            },
+            ClientMsg::Attach { session, cols, rows } => ClientMsg::Attach { session, cols, rows },
+            ClientMsg::Detach { session } => ClientMsg::Detach { session },
+            ClientMsg::Input { session, data } => ClientMsg::Input {
+                session,
+                data: Cow::Owned(data.into_owned()),
+            },
+            ClientMsg::Resize { session, cols, rows } => ClientMsg::Resize { session, cols, rows },
+            ClientMsg::Rename { session, title } => ClientMsg::Rename {
+                session,
+                title: Cow::Owned(title.into_owned()),
+            },
+            ClientMsg::Close { session } => ClientMsg::Close { session },
+            ClientMsg::Scrollback {
+                session,
+                before_seq,
+                max_bytes,
+            } => ClientMsg::Scrollback {
+                session,
+                before_seq,
+                max_bytes,
+            },
+            ClientMsg::Search {
+                sessions,
+                pattern,
+                regex,
+                case_insensitive,
+                whole_word,
+                context_lines,
+                max_hits,
+            } => ClientMsg::Search {
+                sessions,
+                pattern: Cow::Owned(pattern.into_owned()),
+                regex,
+                case_insensitive,
+                whole_word,
+                context_lines,
+                max_hits,
+            },
+            ClientMsg::WatchCollisions { enabled } => ClientMsg::WatchCollisions { enabled },
+            ClientMsg::Collisions => ClientMsg::Collisions,
+        }
+    }
 }
 
 /// One search hit, projected for rendering.
@@ -578,348 +661,6 @@ impl ServerMsg {
             session,
             message: text::error_text(message.as_ref()),
         }
-    }
-}
-// Zero-Copy Cow types for control-plane deserialization
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectInfoCow<'a> {
-    pub id: ProjectId,
-    #[serde(borrow)]
-    pub name: Cow<'a, str>,
-    #[serde(borrow)]
-    pub root: Cow<'a, str>,
-}
-
-impl<'a> ProjectInfoCow<'a> {
-    pub fn into_owned(self) -> ProjectInfo {
-        ProjectInfo {
-            id: self.id,
-            name: self.name.into_owned(),
-            root: self.root.into_owned(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentHintCow<'a> {
-    pub state: HintState,
-    #[serde(borrow)]
-    pub label: Option<Cow<'a, str>>,
-    pub received_at_ms: u64,
-}
-
-impl<'a> AgentHintCow<'a> {
-    pub fn into_owned(self) -> AgentHint {
-        AgentHint {
-            state: self.state,
-            label: self.label.map(|l| l.into_owned()),
-            received_at_ms: self.received_at_ms,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionInfoCow<'a> {
-    pub id: SessionId,
-    pub project_id: ProjectId,
-    #[serde(borrow)]
-    pub title: Cow<'a, str>,
-    #[serde(borrow)]
-    pub cwd: Cow<'a, str>,
-    #[serde(borrow)]
-    pub command: Cow<'a, str>,
-    #[serde(borrow)]
-    pub args: Vec<Cow<'a, str>>,
-    pub status: SessionStatus,
-    pub created_at_ms: u64,
-    pub last_activity_ms: u64,
-    pub cols: u16,
-    pub rows: u16,
-    #[serde(borrow)]
-    pub git_branch: Option<Cow<'a, str>>,
-    pub unread: bool,
-    pub attention: Attention,
-    #[serde(borrow)]
-    pub hint: Option<AgentHintCow<'a>>,
-}
-
-impl<'a> SessionInfoCow<'a> {
-    pub fn into_owned(self) -> SessionInfo {
-        SessionInfo {
-            id: self.id,
-            project_id: self.project_id,
-            title: self.title.into_owned(),
-            cwd: self.cwd.into_owned(),
-            command: self.command.into_owned(),
-            args: self.args.into_iter().map(|a| a.into_owned()).collect(),
-            status: self.status,
-            created_at_ms: self.created_at_ms,
-            last_activity_ms: self.last_activity_ms,
-            cols: self.cols,
-            rows: self.rows,
-            git_branch: self.git_branch.map(|g| g.into_owned()),
-            unread: self.unread,
-            attention: self.attention,
-            hint: self.hint.map(|h| h.into_owned()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ClientMsgCow<'a> {
-    Hello { protocol: u32 },
-    List,
-    CreateSession {
-        project_id: ProjectId,
-        #[serde(borrow)]
-        cwd: Cow<'a, str>,
-        #[serde(borrow)]
-        command: Cow<'a, str>,
-        #[serde(borrow)]
-        args: Vec<Cow<'a, str>>,
-        cols: u16,
-        rows: u16,
-        #[serde(borrow)]
-        title: Option<Cow<'a, str>>,
-    },
-    Attach { session: SessionId, cols: u16, rows: u16 },
-    Detach { session: SessionId },
-    Input {
-        session: SessionId,
-        #[serde(borrow, with = "crate::b64::bytes_cow")]
-        data: Cow<'a, [u8]>,
-    },
-    Resize { session: SessionId, cols: u16, rows: u16 },
-    Rename {
-        session: SessionId,
-        #[serde(borrow)]
-        title: Cow<'a, str>,
-    },
-    Close { session: SessionId },
-    Scrollback { session: SessionId, before_seq: u64, max_bytes: u32 },
-    Search {
-        sessions: Vec<SessionId>,
-        #[serde(borrow)]
-        pattern: Cow<'a, str>,
-        regex: bool,
-        case_insensitive: bool,
-        whole_word: bool,
-        context_lines: u16,
-        max_hits: u32,
-    },
-    WatchCollisions { enabled: bool },
-    Collisions,
-}
-
-impl<'a> ClientMsgCow<'a> {
-    pub fn from_json_str(json: &'a str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
-    }
-
-    pub fn into_owned(self) -> ClientMsg {
-        match self {
-            ClientMsgCow::Hello { protocol } => ClientMsg::Hello { protocol },
-            ClientMsgCow::List => ClientMsg::List,
-            ClientMsgCow::CreateSession { project_id, cwd, command, args, cols, rows, title } => ClientMsg::CreateSession {
-                project_id,
-                cwd: cwd.into_owned(),
-                command: command.into_owned(),
-                args: args.into_iter().map(|a| a.into_owned()).collect(),
-                cols,
-                rows,
-                title: title.map(|t| t.into_owned()),
-            },
-            ClientMsgCow::Attach { session, cols, rows } => ClientMsg::Attach { session, cols, rows },
-            ClientMsgCow::Detach { session } => ClientMsg::Detach { session },
-            ClientMsgCow::Input { session, data } => ClientMsg::Input { session, data: data.into_owned() },
-            ClientMsgCow::Resize { session, cols, rows } => ClientMsg::Resize { session, cols, rows },
-            ClientMsgCow::Rename { session, title } => ClientMsg::Rename { session, title: title.into_owned() },
-            ClientMsgCow::Close { session } => ClientMsg::Close { session },
-            ClientMsgCow::Scrollback { session, before_seq, max_bytes } => ClientMsg::Scrollback { session, before_seq, max_bytes },
-            ClientMsgCow::Search { sessions, pattern, regex, case_insensitive, whole_word, context_lines, max_hits } => ClientMsg::Search {
-                sessions,
-                pattern: pattern.into_owned(),
-                regex,
-                case_insensitive,
-                whole_word,
-                context_lines,
-                max_hits,
-            },
-            ClientMsgCow::WatchCollisions { enabled } => ClientMsg::WatchCollisions { enabled },
-            ClientMsgCow::Collisions => ClientMsg::Collisions,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchHitCow<'a> {
-    pub session: SessionId,
-    pub line_seq: u64,
-    #[serde(borrow, with = "crate::b64::bytes_cow")]
-    pub visible: Cow<'a, [u8]>,
-    pub match_start: u32,
-    pub match_end: u32,
-    #[serde(borrow, with = "crate::b64::bytes_seq_cow")]
-    pub before: Vec<Cow<'a, [u8]>>,
-    #[serde(borrow, with = "crate::b64::bytes_seq_cow")]
-    pub after: Vec<Cow<'a, [u8]>>,
-}
-
-impl<'a> SearchHitCow<'a> {
-    pub fn into_owned(self) -> SearchHit {
-        SearchHit {
-            session: self.session,
-            line_seq: self.line_seq,
-            visible: self.visible.into_owned(),
-            match_start: self.match_start,
-            match_end: self.match_end,
-            before: self.before.into_iter().map(|b| b.into_owned()).collect(),
-            after: self.after.into_iter().map(|a| a.into_owned()).collect(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollisionCow<'a> {
-    #[serde(borrow)]
-    pub path: Cow<'a, str>,
-    pub participants: Vec<CollisionParticipant>,
-}
-
-impl<'a> CollisionCow<'a> {
-    pub fn into_owned(self) -> Collision {
-        Collision {
-            path: self.path.into_owned(),
-            participants: self.participants,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollisionSessionCow<'a> {
-    pub session: SessionId,
-    #[serde(borrow)]
-    pub root: Cow<'a, str>,
-    pub tracked_paths: u32,
-    pub unattributed: u64,
-}
-
-impl<'a> CollisionSessionCow<'a> {
-    pub fn into_owned(self) -> CollisionSession {
-        CollisionSession {
-            session: self.session,
-            root: self.root.into_owned(),
-            tracked_paths: self.tracked_paths,
-            unattributed: self.unattributed,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ServerMsgCow<'a> {
-    Welcome {
-        protocol: u32,
-        #[serde(borrow)]
-        server_version: Cow<'a, str>,
-    },
-    Projects {
-        #[serde(borrow)]
-        projects: Vec<ProjectInfoCow<'a>>,
-    },
-    Sessions {
-        #[serde(borrow)]
-        sessions: Vec<SessionInfoCow<'a>>,
-    },
-    SessionCreated(#[serde(borrow)] SessionInfoCow<'a>),
-    SessionUpdated(#[serde(borrow)] SessionInfoCow<'a>),
-    SessionRemoved { session: SessionId },
-    ScrollbackChunk {
-        session: SessionId,
-        from_seq: u64,
-        #[serde(borrow, with = "crate::b64::bytes_cow")]
-        data: Cow<'a, [u8]>,
-        more: bool,
-    },
-    SearchResults {
-        #[serde(borrow)]
-        pattern: Cow<'a, str>,
-        #[serde(borrow)]
-        hits: Vec<SearchHitCow<'a>>,
-        truncated: bool,
-        bytes_scanned: u64,
-    },
-    CollisionReport {
-        watching: bool,
-        #[serde(borrow)]
-        collisions: Vec<CollisionCow<'a>>,
-        #[serde(borrow)]
-        sessions: Vec<CollisionSessionCow<'a>>,
-        #[serde(borrow)]
-        degraded: Vec<Cow<'a, str>>,
-    },
-    Exited {
-        session: SessionId,
-        code: Option<i32>,
-    },
-    Error {
-        session: Option<SessionId>,
-        #[serde(borrow)]
-        message: Cow<'a, str>,
-    },
-}
-
-impl<'a> ServerMsgCow<'a> {
-    pub fn from_json_str(json: &'a str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
-    }
-
-    pub fn into_owned(self) -> ServerMsg {
-        match self {
-            ServerMsgCow::Welcome { protocol, server_version } => ServerMsg::Welcome { protocol, server_version: server_version.into_owned() },
-            ServerMsgCow::Projects { projects } => ServerMsg::Projects { projects: projects.into_iter().map(|p| p.into_owned()).collect() },
-            ServerMsgCow::Sessions { sessions } => ServerMsg::Sessions { sessions: sessions.into_iter().map(|s| s.into_owned()).collect() },
-            ServerMsgCow::SessionCreated(info) => ServerMsg::SessionCreated(info.into_owned()),
-            ServerMsgCow::SessionUpdated(info) => ServerMsg::SessionUpdated(info.into_owned()),
-            ServerMsgCow::SessionRemoved { session } => ServerMsg::SessionRemoved { session },
-            ServerMsgCow::ScrollbackChunk { session, from_seq, data, more } => ServerMsg::ScrollbackChunk { session, from_seq, data: data.into_owned(), more },
-            ServerMsgCow::SearchResults { pattern, hits, truncated, bytes_scanned } => ServerMsg::SearchResults {
-                pattern: pattern.into_owned(),
-                hits: hits.into_iter().map(|h| h.into_owned()).collect(),
-                truncated,
-                bytes_scanned,
-            },
-            ServerMsgCow::CollisionReport { watching, collisions, sessions, degraded } => ServerMsg::CollisionReport {
-                watching,
-                collisions: collisions.into_iter().map(|c| c.into_owned()).collect(),
-                sessions: sessions.into_iter().map(|s| s.into_owned()).collect(),
-                degraded: degraded.into_iter().map(|d| d.into_owned()).collect(),
-            },
-            ServerMsgCow::Exited { session, code } => ServerMsg::Exited { session, code },
-            ServerMsgCow::Error { session, message } => ServerMsg::Error { session, message: message.into_owned() },
-        }
-    }
-}
-
-impl ClientMsg {
-    /// Zero-copy control plane deserialization borrowing from input JSON string.
-    pub fn deserialize_zero_copy<'a>(json: &'a str) -> Result<ClientMsgCow<'a>, serde_json::Error> {
-        ClientMsgCow::from_json_str(json)
-    }
-}
-
-impl ServerMsg {
-    /// Zero-copy control plane deserialization borrowing from input JSON string.
-    pub fn deserialize_zero_copy<'a>(json: &'a str) -> Result<ServerMsgCow<'a>, serde_json::Error> {
-        ServerMsgCow::from_json_str(json)
     }
 }
 
@@ -1385,12 +1126,12 @@ mod tests {
             ClientMsg::List,
             ClientMsg::CreateSession {
                 project_id: ProjectId(1),
-                cwd: "/srv/santh".to_string(),
-                command: "bash".to_string(),
-                args: vec!["-l".to_string()],
+                cwd: Cow::Borrowed("/srv/santh"),
+                command: Cow::Borrowed("bash"),
+                args: vec![Cow::Borrowed("-l")],
                 cols: 200,
                 rows: 46,
-                title: Some("shell".to_string()),
+                title: Some(Cow::Borrowed("shell")),
             },
             ClientMsg::Attach {
                 session: SessionId(5),
@@ -1402,7 +1143,7 @@ mod tests {
             },
             ClientMsg::Input {
                 session: SessionId(5),
-                data: vec![0x03],
+                data: Cow::Borrowed(b"\x03"),
             },
             ClientMsg::Resize {
                 session: SessionId(5),
@@ -1411,7 +1152,7 @@ mod tests {
             },
             ClientMsg::Rename {
                 session: SessionId(5),
-                title: "review auth refactor".to_string(),
+                title: Cow::Borrowed("review auth refactor"),
             },
             ClientMsg::Close {
                 session: SessionId(5),
@@ -1758,7 +1499,7 @@ mod tests {
         let json = r#"{"t":"createSession","projectId":1,"cwd":"/mnt/work","command":"cargo","args":["test","--lib"],"cols":120,"rows":40,"title":"builder"}"#;
         let cow = ClientMsg::deserialize_zero_copy(json).expect("must deserialize zero-copy");
         match &cow {
-            ClientMsgCow::CreateSession { cwd, command, args, title, .. } => {
+            ClientMsg::CreateSession { cwd, command, args, title, .. } => {
                 assert!(matches!(cwd, Cow::Borrowed(_)));
                 assert_eq!(cwd, "/mnt/work");
                 assert!(matches!(command, Cow::Borrowed(_)));
@@ -1774,7 +1515,7 @@ mod tests {
         let json_rename = r#"{"t":"rename","session":5,"title":"new-title"}"#;
         let cow_rename = ClientMsg::deserialize_zero_copy(json_rename).expect("must deserialize zero-copy");
         match &cow_rename {
-            ClientMsgCow::Rename { title, .. } => {
+            ClientMsg::Rename { title, .. } => {
                 assert!(matches!(title, Cow::Borrowed(_)));
                 assert_eq!(title, "new-title");
             }
@@ -1785,34 +1526,12 @@ mod tests {
             owned,
             ClientMsg::CreateSession {
                 project_id: ProjectId(1),
-                cwd: "/mnt/work".to_string(),
-                command: "cargo".to_string(),
-                args: vec!["test".to_string(), "--lib".to_string()],
+                cwd: Cow::Borrowed("/mnt/work"),
+                command: Cow::Borrowed("cargo"),
+                args: vec![Cow::Borrowed("test"), Cow::Borrowed("--lib")],
                 cols: 120,
                 rows: 40,
-                title: Some("builder".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn zero_copy_server_msg_deserialization_borrows_strings() {
-        let json = r#"{"t":"welcome","protocol":2,"serverVersion":"v1.2.3"}"#;
-        let cow = ServerMsg::deserialize_zero_copy(json).expect("must deserialize zero-copy");
-        match &cow {
-            ServerMsgCow::Welcome { protocol, server_version } => {
-                assert_eq!(*protocol, 2);
-                assert!(matches!(server_version, Cow::Borrowed(_)));
-                assert_eq!(server_version, "v1.2.3");
-            }
-            _ => panic!("unexpected variant"),
-        }
-        let owned = cow.into_owned();
-        assert_eq!(
-            owned,
-            ServerMsg::Welcome {
-                protocol: 2,
-                server_version: "v1.2.3".to_string(),
+                title: Some(Cow::Borrowed("builder")),
             }
         );
     }

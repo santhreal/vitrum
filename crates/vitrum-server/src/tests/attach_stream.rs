@@ -19,10 +19,7 @@ async fn attach_streams_the_exact_child_bytes() {
 
     c.attach(id, 80, 24).await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"go\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"go\n".to_vec().into() })
     .await;
     c.until("the child's output", |s| {
         s.bytes(id).ends_with(b"streamed\r\n")
@@ -95,20 +92,14 @@ async fn detach_stops_the_stream_but_not_the_session() {
     let id = c.create(create(1, "read -r x; echo first; read -r y; echo second")).await;
 
     c.attach(id, 80, 24).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the first line", |s| s.bytes(id).ends_with(b"first\r\n"))
         .await;
     let before_detach = c.seen.data_frames;
 
     c.send(ClientMsg::Detach { session: id }).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the exit", |s| {
         s.has(|m| matches!(m, ServerMsg::Exited { .. }))
@@ -141,10 +132,7 @@ async fn re_attaching_resumes_at_the_current_offset() {
     let id = c.create(create(1, "read -r x; echo one; read -r y; echo two")).await;
 
     c.attach(id, 80, 24).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the first line", |s| s.bytes(id).ends_with(b"one\r\n"))
         .await;
@@ -153,10 +141,7 @@ async fn re_attaching_resumes_at_the_current_offset() {
 
     c.send(ClientMsg::Detach { session: id }).await;
     c.attach(id, 80, 24).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the second line", |s| s.bytes(id).ends_with(b"two\r\n"))
         .await;
@@ -208,10 +193,7 @@ async fn attaching_applies_the_client_viewport() {
         other => panic!("expected SessionUpdated, got {other:?}"),
     }
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the child's view of its size", |s| {
         s.bytes(id).ends_with(b"\r\n") && s.bytes(id).len() > 2
@@ -262,10 +244,7 @@ async fn two_attached_clients_both_receive_output() {
         c.attach(id, 80, 24).await;
     }
 
-    a.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    a.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     a.until("a's copy", |s| s.bytes(id).ends_with(b"shared\r\n"))
         .await;
@@ -289,10 +268,7 @@ async fn escape_sequences_cross_the_socket_as_real_bytes() {
         .create(create(1, "read -r x; printf '\\033[32mgreen\\033[0m'"))
         .await;
     c.attach(id, 80, 24).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the coloured output", |s| s.bytes(id).ends_with(b"[0m"))
         .await;
@@ -325,19 +301,13 @@ async fn an_escape_split_across_data_frames_reassembles() {
         .await;
     c.attach(id, 80, 24).await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the bare ESC", |s| s.bytes(id).ends_with(b"\x1b")).await;
     let frames_after_esc = c.seen.data_frames;
     assert_eq!(c.seen.bytes(id), b"\r\n\x1b");
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the rest of the sequence", |s| {
         s.bytes(id).ends_with(b"[0m")

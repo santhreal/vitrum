@@ -21,10 +21,7 @@ async fn input_reaches_the_child_and_the_reply_returns() {
 
     c.attach(id, 80, 24).await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"typed\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"typed\n".to_vec().into() })
     .await;
     c.until("the reply", |s| s.bytes(id).ends_with(b"got=typed"))
         .await;
@@ -45,10 +42,7 @@ async fn input_order_is_preserved_across_messages() {
     c.attach(id, 80, 24).await;
 
     for i in 1..=4u8 {
-        c.send(ClientMsg::Input {
-            session: id,
-            data: format!("{i}\n").into_bytes(),
-        })
+        c.send(ClientMsg::Input { session: id, data: format!("{i}\n").into_bytes().into() })
         .await;
     }
     c.until("the last reply", |s| {
@@ -98,10 +92,7 @@ async fn resize_reaches_the_child() {
         rows: 55,
     })
     .await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the new size", |s| s.bytes(id).ends_with(b"55 140\r\n"))
         .await;
@@ -186,10 +177,7 @@ async fn a_resize_from_a_detached_client_is_ignored() {
 async fn input_to_an_unknown_session_errors() {
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
-    c.send(ClientMsg::Input {
-        session: SessionId(77),
-        data: b"x".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: SessionId(77), data: b"x".to_vec().into() })
     .await;
     c.until("the error", |s| !s.errors().is_empty()).await;
     assert!(
@@ -211,10 +199,7 @@ async fn input_to_an_exited_session_errors() {
     })
     .await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"x".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"x".to_vec().into() })
     .await;
     c.until("the error", |s| !s.errors().is_empty()).await;
     assert!(

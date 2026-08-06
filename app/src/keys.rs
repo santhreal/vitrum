@@ -159,7 +159,10 @@ fn send_literal(bridge: Bridge, mut st: Signal<UiState>, data: Vec<u8>) {
         st.write().window.flash = Some(Flash::notice("Focus a session before sending text to it."));
         return;
     };
-    bridge.msg(&ClientMsg::Input { session, data });
+    bridge.msg(&ClientMsg::Input {
+        session,
+        data: data.into(),
+    });
 }
 
 /// The state snapshot a binding's predicates ask about.

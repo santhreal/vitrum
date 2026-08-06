@@ -251,7 +251,7 @@ impl Client {
         Ok(client)
     }
 
-    async fn send(&mut self, msg: &ClientMsg) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send(&mut self, msg: &ClientMsg<'_>) -> Result<(), Box<dyn std::error::Error>> {
         self.ws
             .send(Message::Text(serde_json::to_string(msg)?))
             .await?;
@@ -302,9 +302,9 @@ impl Client {
     ) -> Result<SessionId, Box<dyn std::error::Error>> {
         self.send(&ClientMsg::CreateSession {
             project_id: ProjectId(project),
-            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), script.to_string()],
+            cwd: std::env::temp_dir().to_string_lossy().into_owned().into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), script.into()],
             cols: 80,
             rows: 24,
             title: None,
@@ -497,7 +497,7 @@ async fn search(opts: &Options) -> Result<(), Box<dyn std::error::Error>> {
     control
         .send(&ClientMsg::Search {
             sessions: Vec::new(),
-            pattern: opts.pattern.clone(),
+            pattern: opts.pattern.clone().into(),
             regex: false,
             case_insensitive: false,
             whole_word: false,

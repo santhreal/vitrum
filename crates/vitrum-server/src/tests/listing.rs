@@ -139,8 +139,8 @@ async fn a_create_with_a_missing_command_reports_an_error() {
     let mut c = h.greeted().await;
     c.send(ClientMsg::CreateSession {
         project_id: ProjectId(1),
-        cwd: std::env::temp_dir().to_string_lossy().into_owned(),
-        command: "vitrum-nonexistent-agent".to_string(),
+        cwd: std::env::temp_dir().to_string_lossy().into_owned().into(),
+        command: "vitrum-nonexistent-agent".into(),
         args: Vec::new(),
         cols: 80,
         rows: 24,
@@ -165,12 +165,12 @@ async fn the_requested_title_and_geometry_are_reflected() {
     let id = c
         .create(ClientMsg::CreateSession {
             project_id: ProjectId(3),
-            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
-            command,
-            args,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned().into(),
+            command: command.into(),
+            args: args.into_iter().map(Into::into).collect(),
             cols: 132,
             rows: 43,
-            title: Some("codex".to_string()),
+            title: Some("codex".into()),
         })
         .await;
     // Asserted on the create delta, which is what a client actually receives now.

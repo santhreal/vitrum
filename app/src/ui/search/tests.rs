@@ -376,7 +376,7 @@ fn the_request_carries_the_options_and_the_declared_caps() {
         msg,
         ClientMsg::Search {
             sessions: vec![SessionId(3)],
-            pattern: "oom".to_string(),
+            pattern: "oom".into(),
             regex: true,
             case_insensitive: false,
             whole_word: true,

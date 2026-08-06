@@ -47,11 +47,11 @@ fn search(pattern: &str) -> Req {
     }
 }
 
-impl From<Req> for ClientMsg {
+impl From<Req> for ClientMsg<'static> {
     fn from(req: Req) -> Self {
         ClientMsg::Search {
             sessions: req.sessions,
-            pattern: req.pattern,
+            pattern: req.pattern.into(),
             regex: req.regex,
             case_insensitive: req.case_insensitive,
             whole_word: req.whole_word,
@@ -685,7 +685,7 @@ async fn output_keeps_flowing_to_an_attached_client_during_a_search() {
         worker
             .send(ClientMsg::Input {
                 session: echo,
-                data: format!("{token}\n").into_bytes(),
+                data: format!("{token}\n").into_bytes().into(),
             })
             .await;
         worker

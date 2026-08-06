@@ -33,6 +33,10 @@ pub struct Report {
     pub failures: Vec<String>,
     /// Free-form measurements a particular workload adds.
     pub extra: serde_json::Value,
+    /// Binary inputs that triggered a failure. Written under `repro/` when the
+    /// report is persisted; skipped from JSON so a report stays readable.
+    #[serde(skip)]
+    pub artifacts: Vec<(String, Vec<u8>)>,
 }
 
 impl Report {
@@ -48,6 +52,7 @@ impl Report {
             checks_passed: Vec::new(),
             failures: Vec::new(),
             extra: serde_json::Value::Null,
+            artifacts: Vec::new(),
         }
     }
 
@@ -56,11 +61,23 @@ impl Report {
     }
 
     /// Write `report.json` and `report.md` under `dir/<run_id>/`.
+    ///
+    /// When [`Self::artifacts`] is non-empty, also writes each input under
+    /// `repro/<name>` so a panic or bound failure carries the exact bytes that
+    /// triggered it — not just a description that has to be reverse-engineered
+    /// from a seed and an index.
     pub fn write(&self, dir: &Path) -> anyhow::Result<PathBuf> {
         let out = dir.join(&self.run_id);
         std::fs::create_dir_all(&out)?;
         std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(self)?)?;
         std::fs::write(out.join("report.md"), self.markdown())?;
+        if !self.artifacts.is_empty() {
+            let repro = out.join("repro");
+            std::fs::create_dir_all(&repro)?;
+            for (name, bytes) in &self.artifacts {
+                std::fs::write(repro.join(name), bytes)?;
+            }
+        }
         Ok(out)
     }
 
@@ -116,6 +133,18 @@ impl Report {
             let _ = writeln!(s, "## Failures\n");
             for f in &self.failures {
                 let _ = writeln!(s, "- {f}");
+            }
+            let _ = writeln!(s);
+        }
+
+        if !self.artifacts.is_empty() {
+            let _ = writeln!(s, "## Repro artifacts\n");
+            let _ = writeln!(
+                s,
+                "Exact inputs that triggered a failure, under `repro/` next to this report:\n"
+            );
+            for (name, bytes) in &self.artifacts {
+                let _ = writeln!(s, "- `{name}` ({} bytes)", bytes.len());
             }
             let _ = writeln!(s);
         }

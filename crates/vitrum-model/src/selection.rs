@@ -12,10 +12,230 @@
 //! narrowing a range by repeated shift-clicks pivots around the row you started
 //! on rather than the row you touched last.
 
-use std::collections::BTreeSet;
-
 use vitrum_proto::SessionId;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+const INLINE_CAP: usize = 8;
+
+/// Zero-allocation selection set for small sets (<= 8 items),
+/// falling back to a sorted `Vec` for larger sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionSet {
+    Inline {
+        data: [SessionId; INLINE_CAP],
+        len: u8,
+    },
+    Heap(Vec<SessionId>),
+}
+
+impl Default for SelectionSet {
+    fn default() -> Self {
+        SelectionSet::Inline {
+            data: [SessionId(0); INLINE_CAP],
+            len: 0,
+        }
+    }
+}
+
+impl SelectionSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            SelectionSet::Inline { len, .. } => *len as usize,
+            SelectionSet::Heap(vec) => vec.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn contains(&self, session: SessionId) -> bool {
+        match self {
+            SelectionSet::Inline { data, len } => data[..*len as usize].binary_search(&session).is_ok(),
+            SelectionSet::Heap(vec) => vec.binary_search(&session).is_ok(),
+        }
+    }
+
+    pub fn insert(&mut self, session: SessionId) -> bool {
+        match self {
+            SelectionSet::Inline { data, len } => {
+                let count = *len as usize;
+                match data[..count].binary_search(&session) {
+                    Ok(_) => false,
+                    Err(pos) => {
+                        if count < INLINE_CAP {
+                            for i in (pos..count).rev() {
+                                data[i + 1] = data[i];
+                            }
+                            data[pos] = session;
+                            *len += 1;
+                            true
+                        } else {
+                            let mut vec = data[..count].to_vec();
+                            vec.insert(pos, session);
+                            *self = SelectionSet::Heap(vec);
+                            true
+                        }
+                    }
+                }
+            }
+            SelectionSet::Heap(vec) => {
+                match vec.binary_search(&session) {
+                    Ok(_) => false,
+                    Err(pos) => {
+                        vec.insert(pos, session);
+                        true
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn remove(&mut self, session: SessionId) -> bool {
+        match self {
+            SelectionSet::Inline { data, len } => {
+                let count = *len as usize;
+                if let Ok(pos) = data[..count].binary_search(&session) {
+                    for i in pos..count - 1 {
+                        data[i] = data[i + 1];
+                    }
+                    *len -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SelectionSet::Heap(vec) => {
+                if let Ok(pos) = vec.binary_search(&session) {
+                    vec.remove(pos);
+                    if vec.len() <= INLINE_CAP {
+                        let mut data = [SessionId(0); INLINE_CAP];
+                        data[..vec.len()].copy_from_slice(vec);
+                        *self = SelectionSet::Inline {
+                            data,
+                            len: vec.len() as u8,
+                        };
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(SessionId) -> bool,
+    {
+        match self {
+            SelectionSet::Inline { data, len } => {
+                let mut write = 0;
+                let count = *len as usize;
+                for read in 0..count {
+                    if f(data[read]) {
+                        data[write] = data[read];
+                        write += 1;
+                    }
+                }
+                *len = write as u8;
+            }
+            SelectionSet::Heap(vec) => {
+                vec.retain(|id| f(*id));
+                if vec.len() <= INLINE_CAP {
+                    let mut data = [SessionId(0); INLINE_CAP];
+                    data[..vec.len()].copy_from_slice(vec);
+                    *self = SelectionSet::Inline {
+                        data,
+                        len: vec.len() as u8,
+                    };
+                }
+            }
+        }
+    }
+    pub fn clear(&mut self) {
+        *self = SelectionSet::default();
+    }
+
+    pub fn from_slice(slice: &[SessionId]) -> Self {
+        let mut set = SelectionSet::new();
+        for &id in slice {
+            set.insert(id);
+        }
+        set
+    }
+
+    pub fn extend_from_slice(&mut self, slice: &[SessionId]) {
+        for &id in slice {
+            self.insert(id);
+        }
+    }
+
+    pub fn iter(&self) -> SelectionIter<'_> {
+        match self {
+            SelectionSet::Inline { data, len } => SelectionIter::Inline(data[..*len as usize].iter()),
+            SelectionSet::Heap(vec) => SelectionIter::Heap(vec.iter()),
+        }
+    }
+}
+
+pub enum SelectionIter<'a> {
+    Inline(core::slice::Iter<'a, SessionId>),
+    Heap(core::slice::Iter<'a, SessionId>),
+}
+
+impl<'a> Iterator for SelectionIter<'a> {
+    type Item = SessionId;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            SelectionIter::Inline(iter) => iter.next().copied(),
+            SelectionIter::Heap(iter) => iter.next().copied(),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            SelectionIter::Inline(iter) => iter.size_hint(),
+            SelectionIter::Heap(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for SelectionIter<'_> {}
+
+impl Serialize for SelectionSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for id in self.iter() {
+            seq.serialize_element(&id)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SelectionSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let vec = Vec::<SessionId>::deserialize(deserializer)?;
+        let mut set = SelectionSet::new();
+        for id in vec {
+            set.insert(id);
+        }
+        Ok(set)
+    }
+}
 
 use crate::disposition::Disposition;
 use crate::view::{Clock, SessionView};
@@ -27,7 +247,7 @@ use crate::view::{Clock, SessionView};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Selection {
-    selected: BTreeSet<SessionId>,
+    selected: SelectionSet,
     anchor: Option<SessionId>,
     lead: Option<SessionId>,
 }
@@ -59,7 +279,7 @@ impl Selection {
     /// file manager: a subsequent shift-click ranges from the row you last
     /// touched.
     pub fn toggle(&mut self, session: SessionId) {
-        if !self.selected.remove(&session) {
+        if !self.selected.remove(session) {
             self.selected.insert(session);
         }
         self.anchor = Some(session);
@@ -75,27 +295,27 @@ impl Selection {
     /// The anchor is left where it was, so shift-clicking again from the same
     /// anchor narrows or widens the same range.
     pub fn extend_to(&mut self, visible: &[SessionId], session: SessionId) {
-        let Some(range) = self.range_between(visible, session) else {
+        let Some((low, high)) = self.range_indices(visible, session) else {
             self.select_one(session);
             return;
         };
-        self.selected = range;
+        self.selected = SelectionSet::from_slice(&visible[low..=high]);
         self.lead = Some(session);
     }
 
     /// Ctrl-shift-click: union the anchored range into the existing selection.
     pub fn extend_to_additive(&mut self, visible: &[SessionId], session: SessionId) {
-        let Some(range) = self.range_between(visible, session) else {
+        let Some((low, high)) = self.range_indices(visible, session) else {
             self.toggle(session);
             return;
         };
-        self.selected.extend(range);
+        self.selected.extend_from_slice(&visible[low..=high]);
         self.lead = Some(session);
     }
 
     /// Select every visible row, anchoring at the top and leading at the bottom.
     pub fn select_all(&mut self, visible: &[SessionId]) {
-        self.selected = visible.iter().copied().collect();
+        self.selected = SelectionSet::from_slice(visible);
         self.anchor = visible.first().copied();
         self.lead = visible.last().copied();
     }
@@ -114,18 +334,17 @@ impl Selection {
     /// and a count in a menu label that does not match what the operator can see
     /// is worse than useless.
     pub fn retain_visible(&mut self, visible: &[SessionId]) {
-        let on_screen: BTreeSet<SessionId> = visible.iter().copied().collect();
-        self.selected.retain(|session| on_screen.contains(session));
-        if self.anchor.is_some_and(|anchor| !on_screen.contains(&anchor)) {
+        self.selected.retain(|session| visible.contains(&session));
+        if self.anchor.is_some_and(|anchor| !visible.contains(&anchor)) {
             self.anchor = None;
         }
-        if self.lead.is_some_and(|lead| !on_screen.contains(&lead)) {
+        if self.lead.is_some_and(|lead| !visible.contains(&lead)) {
             self.lead = None;
         }
     }
 
     pub fn contains(&self, session: SessionId) -> bool {
-        self.selected.contains(&session)
+        self.selected.contains(session)
     }
 
     pub fn len(&self) -> usize {
@@ -148,7 +367,7 @@ impl Selection {
 
     /// Selected ids in id order. Use [`Selection::ordered`] for screen order.
     pub fn iter(&self) -> impl Iterator<Item = SessionId> + '_ {
-        self.selected.iter().copied()
+        self.selected.iter()
     }
 
     /// Selected ids in the order they appear on screen, which is the order a
@@ -157,20 +376,20 @@ impl Selection {
         visible
             .iter()
             .copied()
-            .filter(|session| self.selected.contains(session))
+            .filter(|session| self.selected.contains(*session))
             .collect()
     }
 
-    fn range_between(
+    fn range_indices(
         &self,
         visible: &[SessionId],
         session: SessionId,
-    ) -> Option<BTreeSet<SessionId>> {
+    ) -> Option<(usize, usize)> {
         let anchor = self.anchor?;
         let from = visible.iter().position(|other| *other == anchor)?;
         let to = visible.iter().position(|other| *other == session)?;
         let (low, high) = if from <= to { (from, to) } else { (to, from) };
-        Some(visible[low..=high].iter().copied().collect())
+        Some((low, high))
     }
 }
 
@@ -736,5 +955,27 @@ mod tests {
         assert_eq!(back.anchor(), Some(session(2)));
         assert_eq!(back.lead(), Some(session(4)));
         assert_eq!(back.ordered(&visible), ids(&[2, 3, 4]));
+    }
+    #[test]
+    fn selection_set_inline_and_heap_transitions() {
+        let mut set = SelectionSet::new();
+        assert!(matches!(set, SelectionSet::Inline { .. }));
+        assert_eq!(set.len(), 0);
+
+        for i in 1..=8 {
+            set.insert(SessionId(i));
+            assert!(matches!(set, SelectionSet::Inline { .. }));
+        }
+        assert_eq!(set.len(), 8);
+
+        // 9th element promotes to Heap
+        set.insert(SessionId(9));
+        assert!(matches!(set, SelectionSet::Heap(_)));
+        assert_eq!(set.len(), 9);
+
+        // Remove down to 8 demotes back to Inline
+        set.remove(SessionId(9));
+        assert!(matches!(set, SelectionSet::Inline { .. }));
+        assert_eq!(set.len(), 8);
     }
 }

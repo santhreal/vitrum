@@ -6,6 +6,7 @@
 //! to reach the next function is a file nobody reads twice.
 
 mod readme;
+mod upstream;
 
 use super::*;
 

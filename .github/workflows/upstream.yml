@@ -1,0 +1,39 @@
+name: upstream
+
+# The vendored dioxus-desktop fork, checked against the crate it forked.
+#
+# Weekly rather than per push, because nothing in a normal change can make this
+# fail except editing `vendor/`, and the failure it exists to catch is upstream
+# publishing a release while nobody was looking. A fork that is never diffed
+# becomes a permanent one, and this is the thing that keeps asking.
+on:
+  schedule:
+    # Mondays, 07:00 UTC. Early enough in the week that absorbing a release is
+    # not a Friday job.
+    - cron: "0 7 * * 1"
+  # Also on any change to the fork or to the check itself, because that is when
+  # the divergence list is most likely to stop being true.
+  push:
+    branches: [main]
+    paths:
+      - "vendor/**"
+      - "tools/upstream/**"
+      - ".github/workflows/upstream.yml"
+  pull_request:
+    paths:
+      - "vendor/**"
+      - "tools/upstream/**"
+      - ".github/workflows/upstream.yml"
+  workflow_dispatch:
+
+jobs:
+  divergence:
+    name: fork divergence and upstream version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain and no build: this compares source text and asks crates.io
+      # a question. Installing Rust here would be a minute spent on nothing.
+      - name: Check the fork against upstream
+        run: sh tools/upstream/check.sh

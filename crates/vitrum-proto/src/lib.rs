@@ -374,11 +374,14 @@ pub enum ClientMsg {
 pub struct SearchHit {
     pub session: SessionId,
     pub line_seq: u64,
+    #[serde(with = "crate::b64::bytes")]
     pub visible: Vec<u8>,
     /// Byte range of the match within `visible`.
     pub match_start: u32,
     pub match_end: u32,
+    #[serde(with = "crate::b64::bytes_seq")]
     pub before: Vec<Vec<u8>>,
+    #[serde(with = "crate::b64::bytes_seq")]
     pub after: Vec<Vec<u8>>,
 }
 
@@ -1363,5 +1366,48 @@ mod tests {
         assert_eq!(hint.state, HintState::Approval);
         assert_eq!(hint.label.as_deref(), Some("run `rm -rf build/`?"));
         assert!(hint.state.blocks_on_operator());
+    }
+
+    /// WHY: every field on the control plane that carries raw PTY bytes must
+    /// ride as base64, not as serde's default array of decimal integers. The
+    /// default costs about 3.5 bytes of JSON per payload byte and, on the
+    /// receiving side, one boxed number per byte before anything can use it.
+    ///
+    /// Pinned as a shape rather than a round trip because a round trip passes
+    /// either way: `Vec<u8>` deserializes happily from the array form, so only
+    /// asserting on the emitted JSON can catch the attribute being dropped.
+    #[test]
+    fn every_byte_carrying_field_rides_as_base64_not_an_integer_array() {
+        let hit = SearchHit {
+            session: SessionId(1),
+            line_seq: 7,
+            // Deliberately not valid UTF-8: these are terminal bytes.
+            visible: vec![b'h', b'i', 0xff],
+            match_start: 0,
+            match_end: 2,
+            before: vec![vec![b'a'], vec![0x00, 0x1b]],
+            after: vec![],
+        };
+        let json = serde_json::to_string(&hit).expect("a hit serializes");
+        assert!(json.contains(r#""visible":"aGn/""#), "visible: {json}");
+        assert!(json.contains(r#""before":["YQ==","ABs="]"#), "before: {json}");
+        assert!(json.contains(r#""after":[]"#), "after: {json}");
+        assert_eq!(
+            serde_json::from_str::<SearchHit>(&json).expect("round trips"),
+            hit
+        );
+
+        let chunk = ServerMsg::ScrollbackChunk {
+            session: SessionId(2),
+            from_seq: 0,
+            data: vec![0x1b, b'[', b'0', b'm', 0xfe],
+            more: false,
+        };
+        let json = serde_json::to_string(&chunk).expect("a chunk serializes");
+        assert!(json.contains(r#""data":"G1swbf4=""#), "data: {json}");
+        assert_eq!(
+            serde_json::from_str::<ServerMsg>(&json).expect("round trips"),
+            chunk
+        );
     }
 }

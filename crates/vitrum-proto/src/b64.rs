@@ -156,6 +156,41 @@ pub mod bytes {
     }
 }
 
+/// `#[serde(with = "crate::b64::bytes_seq")]` for a `Vec<Vec<u8>>` field, which
+/// serde would otherwise emit as an array of arrays of decimal integers.
+///
+/// Search context lines are the only such field, and a sweep is capped at 500
+/// hits each carrying several lines, so the array form ships hundreds of
+/// thousands of integers for one gesture.
+pub mod bytes_seq {
+    use super::{Deserialize, Deserializer, Serialize, Serializer, decode, encode};
+
+    /// # Errors
+    /// Propagates whatever the serializer reports.
+    pub fn serialize<S: Serializer>(
+        lines: &Vec<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        lines
+            .iter()
+            .map(|line| encode(line))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    /// # Errors
+    /// Fails when the field is not an array of strings, or any element is not
+    /// valid base64.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Vec<u8>>, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .iter()
+            .map(|text| decode(text).map_err(serde::de::Error::custom))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

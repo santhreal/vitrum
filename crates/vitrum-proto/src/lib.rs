@@ -816,6 +816,37 @@ mod tests {
         }
     }
 
+    /// The measurement harness speaks the version this crate defines.
+    ///
+    /// `harness/remote/sessions.py` opens a real connection to a real daemon,
+    /// which is the point of it, and the daemon refuses any protocol number but
+    /// its own. Bumping `PROTOCOL_VERSION` here without bumping it there breaks
+    /// every measurement run at the handshake, and it did: after the scrollback
+    /// frames moved to base64 the harness failed with "unsupported protocol 1;
+    /// this server speaks 2" and stayed broken, because nothing in the build
+    /// reads that file.
+    #[test]
+    fn the_harness_speaks_this_protocol_version() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("the crate sits two levels under the workspace root");
+        let sessions = std::fs::read_to_string(root.join("harness/remote/sessions.py"))
+            .expect("the harness client is readable");
+        let declared = sessions
+            .lines()
+            .find_map(|l| l.strip_prefix("PROTOCOL_VERSION = "))
+            .expect("the harness declares PROTOCOL_VERSION")
+            .trim()
+            .parse::<u32>()
+            .expect("it declares a number");
+        assert_eq!(
+            declared, PROTOCOL_VERSION,
+            "harness/remote/sessions.py speaks protocol {declared}, this crate speaks \
+             {PROTOCOL_VERSION}; the daemon will refuse the handshake"
+        );
+    }
+
     /// Every workspace member must be in both publish lists, in one order.
     ///
     /// `cargo publish` resolves each crate's dependencies from the registry, so

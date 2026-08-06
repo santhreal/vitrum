@@ -1,8 +1,31 @@
-# vitrum
+<p align="center">
+  <img src="assets/screenshots/hero.png" alt="Three sessions in one vitrum window: a finished git log, a cargo run and a shell, with the sidebar showing what each one is doing." width="960" />
+</p>
 
-A terminal for running many coding agents at once.
+<p align="center">
+  <a href="https://crates.io/crates/vitrum"><img src="https://img.shields.io/crates/v/vitrum?style=flat-square&color=7aa2f7&label=crates.io&labelColor=0a0a0a" alt="vitrum on crates.io" /></a>&nbsp;
+  <a href="https://docs.rs/vitrum-core"><img src="https://img.shields.io/badge/docs-vitrum-7aa2f7?style=flat-square&labelColor=0a0a0a" alt="vitrum documentation" /></a>&nbsp;
+  <a href="https://github.com/santhreal/vitrum/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/santhreal/vitrum/ci.yml?style=flat-square&label=CI&labelColor=0a0a0a" alt="CI" /></a>&nbsp;
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-7aa2f7?style=flat-square&labelColor=0a0a0a" alt="License: MIT OR Apache-2.0" /></a>&nbsp;
+  <a href="https://github.com/santhreal/vitrum/stargazers"><img src="https://img.shields.io/github/stars/santhreal/vitrum?style=flat-square&color=7aa2f7&labelColor=0a0a0a" alt="Stars" /></a>
+</p>
 
-![Three sessions in one window: a finished git log, a cargo run and a shell, with the sidebar showing what each one is doing.](assets/screenshots/hero.png)
+<p align="center">
+  <strong><a href="#install">Install</a></strong> ·
+  <strong><a href="#watch-it-work">Demo</a></strong> ·
+  <strong><a href="#what-it-costs-to-run">Performance</a></strong> ·
+  <strong><a href="#first-run">First run</a></strong> ·
+  <strong><a href="CONTRIBUTING.md">Contributing</a></strong> ·
+  <strong><a href="SECURITY.md">Security</a></strong>
+</p>
+
+# A terminal for running many coding agents at once
+
+You run several coding agents at a time. Each one wants a terminal, none of them
+tell you when they are done, and a tab bar does not scale past about four. vitrum
+gives every session a row that says which agent is running it and whether it is
+working, waiting for you, or dead, and it keeps them all alive in one daemon so
+closing the window costs you nothing.
 
 ## Install
 
@@ -49,6 +72,20 @@ daemon beside itself, so a client without `vitrum-server` has nothing to talk
 to.
 
 Prefer to build it yourself? See [Build from source](#build-from-source).
+
+### With a script you can read first
+
+The pastes above are one line each. If you would rather see what runs, the same
+work is in [`install.sh`](install.sh) and [`install.ps1`](install.ps1): they
+resolve the latest release, verify the archive against the release
+`SHA256SUMS`, and refuse to install on a mismatch. Download it, read it, then
+run it. Nothing here is ever piped straight into a shell.
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh
+less install.sh
+sh install.sh
+```
 
 ---
 
@@ -114,28 +151,68 @@ from elsewhere over SSH is sketched in `DESIGN-REMOTE.md` and is not built.
 process, which is the difference between this and an Electron-shaped app that
 spends a renderer per window.
 
-Measured on a headless Ubuntu 24.04 host with software rendering, twenty
-windows open and nothing running in them:
-
-| | |
-|---|---|
-| WebKit web processes | **1**, for all twenty |
-| Total memory | **~325 MB** PSS across every vitrum and WebKit process (323.9 and 326.5 on two runs) |
-| Idle CPU | **0.22%** of one core, averaged over 60 seconds |
-
-Reproduce it with the numbers in `harness/`. Expect a lower idle figure with
-hardware rendering and a higher one while agents are actually printing.
-
-Cold start, measured separately on the same host with a single window: the web
-process exists **0.20 s** after exec, and the window is painted and back to
-doing no work at **1.31 s** (1.26, 1.31, and 1.36 on three runs). Idle after
-that is 4 CPU ticks per 30 seconds across the client and the web process
-together, which is the noise floor of the measurement rather than a number
-worth quoting.
-
 **Saved commands with your own shortcuts.** Nobody runs a bare `claude`. Save
 the invocation you actually use, with the directory it belongs in, and bind a key
 to it. The key works from anywhere in the app, not just inside a dialog.
+
+---
+
+## What it costs to run
+
+Every number in this section is measured by `harness/` on a real host and
+written here by `make readme-perf`. Nothing in it is typed by hand, and CI fails
+if a figure here drifts from the snapshot it came from.
+
+### Memory
+
+<!-- BENCH:footprint:start -->
+Measured on **13th Gen Intel(R) Core(TM) i9-13900K**, 32 logical cores, WebKitGTK 2.52.3-0ubuntu0.24.04.1, `Linux 6.8.0-136-generic x86_64`. Every window holds a live shell against one `vitrum-server`. The figure is PSS, which charges shared pages once, so the totals below add up across processes instead of counting the same engine twice. `vitrum 0.1.0` at `18df8cb`.
+
+| Windows | Client tree | Client processes | Daemon tree | Daemon processes |
+|---:|---:|---:|---:|---:|
+| 1 | 247.8 MB | 3 | 5.5 MB | 2 |
+| 20 | 460.1 MB | 3 | 40.6 MB | 21 |
+
+The 20-window client tree is still 3 processes, not 60: every window is a view onto one shared web process and one network process. Going from 1 to 20 windows costs **11.2 MB per extra window**.
+
+Where the 20-window client tree goes:
+
+| Process | Count | PSS |
+|---|---:|---:|
+| `WebKitWebProcess` | 1 | 298.0 MB |
+| `vitrum` | 1 | 140.8 MB |
+| `WebKitNetworkProcess` | 1 | 21.3 MB |
+
+The daemon side of the same run is 40.6 MB across 21 processes, and the shells the operator asked for are most of it:
+
+| Process | Count | PSS |
+|---|---:|---:|
+| `bash` | 20 | 35.0 MB |
+| `vitrum-server` | 1 | 5.6 MB |
+
+Reproduce: `harness/run.sh memory 1` and `harness/run.sh memory 20`, then `make readme-perf`.
+<!-- BENCH:footprint:end -->
+
+### Idle cost
+
+<!-- BENCH:idle:start -->
+An idle terminal should cost nothing. Measured over 60 s with 20 windows open, every one holding a live shell, on **13th Gen Intel(R) Core(TM) i9-13900K**, 32 logical cores, WebKitGTK 2.52.3-0ubuntu0.24.04.1, `Linux 6.8.0-136-generic x86_64`.
+
+| Tree | CPU | PSS before | PSS after | Drift |
+|---|---:|---:|---:|---:|
+| Client | 0.1000% of one core | 447.4 MB | 447.4 MB | +0.0 MB |
+| Daemon | 0.0000% of one core | 40.7 MB | 40.7 MB | +0.0 MB |
+
+That is 6 scheduler ticks in 60 seconds across 20 windows. Nothing polls, so nothing accumulates: the drift is the point of the last column.
+
+Reproduce: `harness/run.sh idle-cpu 60 20`, then `make readme-perf`.
+<!-- BENCH:idle:end -->
+
+Expect a lower idle figure with hardware rendering, and a higher one while
+agents are actually printing. Cold start, measured separately on the same host
+with a single window: the web process exists **0.20 s** after exec, and the
+window is painted and back to doing no work at **1.31 s** (1.26, 1.31, and 1.36
+on three runs).
 
 ---
 
@@ -697,4 +774,15 @@ Two things this codebase is strict about, because it has been bitten by both:
 
 ---
 
-MIT.
+## License
+
+Dual licensed under either of
+
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+
+at your option. Unless you say otherwise, any contribution you submit is dual
+licensed on those same terms.
+
+The two forks under `vendor/` and `vendor-pty/` are somebody else's work, kept
+under the MIT license and copyright they arrived with. `NOTICE` names them.

@@ -26,6 +26,9 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # A cold release build of the whole workspace on the slowest runner, with
+    # room to spare and none for a hang.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -50,10 +53,7 @@ jobs:
 
       - name: system webview
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+        run: ./.github/system-webview.sh
 
       # The script names the archive from the host triple, which is the same
       # rule the updater uses to look for it. Cross-compiling is not attempted:
@@ -76,6 +76,9 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # It downloads four archives and creates a release. Anything longer is a
+    # stuck upload.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:

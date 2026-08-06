@@ -7,6 +7,7 @@
 
 mod readme;
 mod upstream;
+mod workflows;
 
 use super::*;
 

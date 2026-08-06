@@ -39,6 +39,9 @@
 //!   transitions under 150ms. A keyframe animation that repeats is a repaint
 //!   per frame forever and costs the most exactly when the most rows are lit.
 
+use std::borrow::Cow;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use vitrum_fmt::TimeFormat;
 use vitrum_model::{Disposition, Section, SessionView, SidebarStatus};
@@ -182,6 +185,9 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     // Read once per paint, not once per row: `Settings` is not `Copy`, and
     // twenty rows each reaching into it is twenty reads of the same three bits.
     let fields = RowFields::of(&st.daemon.settings);
+    // One buffer for every row's tooltip. Cloning the `String` per row cost an
+    // allocation and a copy per row per paint; a refcount bump costs neither.
+    let home: Rc<str> = Rc::from(props.home.as_str());
     // Why there is nothing to draw, computed only when there IS nothing to
     // draw. It walks every session, and on every paint that has rows the
     // answer would be thrown away.
@@ -424,17 +430,18 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         // A folder or directory bucket's label is a path, and
                         // an absolute path in a 14rem column is all prefix and
                         // no name. A daemon project's label is already a bare
-                        // name and must be left alone.
-                        let name = if group.label.starts_with('/') {
-                            vitrum_fmt::path::shorten_home_relative(
+                        // name and is borrowed rather than cloned: only the
+                        // path case has to build a string.
+                        let name: Cow<'_, str> = if group.label.starts_with('/') {
+                            Cow::Owned(vitrum_fmt::path::shorten_home_relative(
                                 &group.label,
                                 &props.home,
                                 GROUP_LABEL_COLUMNS,
-                            )
+                            ))
                         } else {
-                            group.label.clone()
+                            Cow::Borrowed(group.label.as_str())
                         };
-                        let root = group.root.clone().unwrap_or_default();
+                        let root: &str = group.root.as_deref().unwrap_or_default();
                         // The Unfiled bucket has no name to look for its rows
                         // under, so it cannot be collapsed: doing so would hide
                         // sessions behind a header that does not say what is in
@@ -458,7 +465,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         // in named grouping shipped a literal `title=""`.
                         let header_title = {
                             let mut text =
-                                if root.is_empty() { name.clone() } else { root.clone() };
+                                String::from(if root.is_empty() { name.as_ref() } else { root });
                             if let Some(r) = rollup.as_ref() {
                                 text.push('\n');
                                 text.push_str(&inbox::rollup_title(r));
@@ -586,7 +593,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                 active: st.window.focused == Some(s.id()),
                                                 picked: st.window.selection.contains(s.id()),
                                                 clock: props.clock,
-                                                home: props.home.clone(),
+                                                home: Rc::clone(&home),
                                                 contested: st.daemon.collisions.for_session(s.id()),
                                                 on_select: props.on_select,
                                                 on_close: props.on_close_session,
@@ -642,7 +649,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                                     active: st.window.focused == Some(s.id()),
                                                                     picked: st.window.selection.contains(s.id()),
                                                                     clock: props.clock,
-                                                                    home: props.home.clone(),
+                                                                    home: Rc::clone(&home),
                                                                     contested: st.daemon.collisions.for_session(s.id()),
                                                                     on_select: props.on_select,
                                                                     on_close: props.on_close_session,
@@ -876,8 +883,13 @@ struct SessionRowProps {
     fields: RowFields,
     active: bool,
     picked: bool,
+    /// The operator's home directory, for the tooltip's path shortening.
+    ///
+    /// Shared rather than owned. Twenty rows each holding their own copy is
+    /// twenty heap allocations and twenty memcpys of the same string on every
+    /// paint; one buffer and a refcount bump per row is the same string.
+    home: Rc<str>,
     clock: TimeFormat,
-    home: String,
     /// Files this session is contesting, and how many other sessions it is
     /// contesting them with. `None` when it is fighting nobody, which is the
     /// overwhelmingly common case and draws no element at all.
@@ -1189,18 +1201,26 @@ fn SessionRow(props: SessionRowProps) -> Element {
     // One status resolution per row per paint. `Pill::of` already ran it, and
     // `SessionView::status()` would run it a second time for the same answer.
     let pill = Pill::of(row);
-    let disposition = inbox::disposition_badge(row, model_clock, policy);
     let completion = inbox::completion_badge(row);
-    let parked = inbox::parked_label(row, model_clock, policy);
     let woke = row.disposition(model_clock, policy) == Disposition::Woke;
     let attention = attention_modifier(&info.attention);
     let card = draws_card(props.section, props.fields.always_slim);
+    // Both of these allocate, and each is drawn by exactly one of the two row
+    // shapes. A snoozed row is the case that mattered: `disposition_badge`
+    // built a class, a countdown and a "Parked until ..." sentence for every
+    // slim row on every paint, and the slim markup below never reads it.
+    let disposition = card
+        .then(|| inbox::disposition_badge(row, model_clock, policy))
+        .flatten();
+    let parked = (!card)
+        .then(|| inbox::parked_label(row, model_clock, policy))
+        .flatten();
     // How long the turn that is running right now has been running, or
     // `None`. A different question from the row's timestamp, which is when
     // the agent last SPOKE: an agent silently computing for an hour has a
     // fresh timestamp and is the row worth finding. Absent unless a turn is
     // live, so a list at rest emits no element for it at all.
-    let aux = inbox::working_aux(row, model_clock);
+    let aux = card.then(|| inbox::working_aux(row, model_clock)).flatten();
     let class = row_class(RowState {
         section: props.section,
         always_slim: props.fields.always_slim,
@@ -1291,7 +1311,15 @@ fn SessionRow(props: SessionRowProps) -> Element {
                             class: "{pill.class}",
                             title: "{pill.title}",
                             "aria-label": "{pill.word}",
-                            span { class: "rg-pill__word", "{pill.word}" }
+                            // Off leaves the pill's box and its hue, which is
+                            // exactly what the collapsed rail already draws:
+                            // `.rg-sidebar--collapsed .rg-pill__word` hides
+                            // the same element. `aria-label` above still
+                            // carries the word, so the state is never lost to
+                            // a screen reader, only to the column.
+                            if props.fields.status_word {
+                                span { class: "rg-pill__word", "{pill.word}" }
+                            }
                             if let Some(aux) = aux {
                                 span { class: "rg-pill__aux", "{aux}" }
                             }

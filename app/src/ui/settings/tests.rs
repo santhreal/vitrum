@@ -978,3 +978,230 @@ fn every_settings_tab_is_reachable_and_named() {
         "the rail lists a tab twice, or lists one that is not a variant"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A stored value the menu cannot express
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One `SelectRow`, rendered exactly as the sheet would render it.
+#[derive(Props, Clone, PartialEq)]
+struct SelectHarnessProps {
+    value: String,
+    options: Vec<(String, String)>,
+}
+
+#[component]
+fn SelectHarness(props: SelectHarnessProps) -> Element {
+    rsx! {
+        SelectRow {
+            label: "Text scale",
+            desc: String::new(),
+            value: props.value.clone(),
+            options: props.options.clone(),
+            onpick: move |_: String| {},
+        }
+    }
+}
+
+fn scale_options() -> Vec<(String, String)> {
+    UI_SCALE_STEPS
+        .iter()
+        .map(|pct| (pct.to_string(), format!("{pct}%")))
+        .collect()
+}
+
+fn render_select(value: &str) -> String {
+    let mut dom = VirtualDom::new_with_props(
+        SelectHarness,
+        SelectHarnessProps {
+            value: value.to_string(),
+            options: scale_options(),
+        },
+    );
+    dom.rebuild_in_place();
+    dioxus_ssr::render(&dom)
+}
+
+/// WHY: a stored value outside the menu made the control state a setting
+/// that was not the one in effect.
+///
+/// `set_text_scale` clamps to a RANGE, `TEXT_SCALE_MIN_PCT..=TEXT_SCALE_MAX_PCT`,
+/// while the menu offers eight STEPS. A hand-edited `"textScalePct": 137` is
+/// therefore accepted whole and really does render the shell at 137%, but no
+/// `<option>` carried that value, and a `<select>` whose value matches none of
+/// its options does not error and does not blank: it selects the FIRST one.
+/// So the Appearance tab read "80%" over a window running at 137%, and picking
+/// any other step would have been the operator's only way to find out.
+///
+/// Exactly one option is selected in every case, because two would be the same
+/// defect wearing different clothes.
+#[test]
+fn a_stored_scale_the_menu_cannot_express_is_shown_rather_than_swallowed() {
+    let html = render_select("137");
+    assert!(
+        html.contains(
+            r#"<option value="137" selected=true>137 (in effect, not one of the choices)</option>"#
+        ),
+        "the stored value got no option of its own: {html}"
+    );
+    assert_eq!(
+        html.matches("selected=true").count(),
+        1,
+        "exactly one option may be selected: {html}"
+    );
+    assert!(
+        !html.contains(r#"<option value="80" selected=true>"#),
+        "80% is still being presented as the setting in effect: {html}"
+    );
+}
+
+/// A value the menu DOES offer gets no extra option, and selects its own.
+///
+/// The other half of the contract: the repair must not add a duplicate row to
+/// every menu in the sheet.
+#[test]
+fn a_stored_scale_the_menu_offers_selects_that_option_alone() {
+    let html = render_select("125");
+    assert!(
+        html.contains(r#"<option value="125" selected=true>125%</option>"#),
+        "the offered step is not the selected one: {html}"
+    );
+    assert!(
+        !html.contains("not one of the choices"),
+        "an offered value grew a stray option: {html}"
+    );
+    assert_eq!(
+        html.matches("<option").count(),
+        UI_SCALE_STEPS.len(),
+        "the menu grew or lost a row: {html}"
+    );
+}
+
+/// Every numeric menu in the sheet can reach the stray state, so the rule is
+/// asserted on the fold rather than on one control.
+///
+/// `AppearancePrefs::clamp` is a range clamp too: 73% opacity, a 10px blur and
+/// a 33% dim all survive it and none of them is a step.
+#[test]
+fn stray_option_fires_for_every_value_outside_the_offered_steps() {
+    let opacity: Vec<(String, String)> = OPACITY_STEPS
+        .iter()
+        .map(|p| (p.to_string(), format!("{p}%")))
+        .collect();
+    assert_eq!(
+        stray_option("73", &opacity).as_deref(),
+        Some("73 (in effect, not one of the choices)")
+    );
+    assert_eq!(stray_option("70", &opacity), None);
+
+    let blur: Vec<(String, String)> = BLUR_STEPS
+        .iter()
+        .map(|p| (p.to_string(), blur_label(*p)))
+        .collect();
+    assert_eq!(
+        stray_option("10", &blur).as_deref(),
+        Some("10 (in effect, not one of the choices)")
+    );
+    assert_eq!(stray_option("8", &blur), None);
+
+    let dim: Vec<(String, String)> = DIM_STEPS
+        .iter()
+        .map(|p| (p.to_string(), format!("{p}%")))
+        .collect();
+    assert_eq!(
+        stray_option("33", &dim).as_deref(),
+        Some("33 (in effect, not one of the choices)")
+    );
+    assert_eq!(stray_option("30", &dim), None);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The sheet, rendered
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Props, Clone, PartialEq)]
+struct SheetHarnessProps {
+    tab: SettingsTab,
+}
+
+/// The signal has to be created INSIDE the component: `Signal::new` needs a
+/// live Dioxus runtime and panics when a test builds one up front.
+#[component]
+fn SheetHarness(props: SheetHarnessProps) -> Element {
+    let state = use_signal(UiState::default);
+    rsx! {
+        SettingsSheet {
+            state,
+            tab: props.tab,
+            on_tab: move |_: SettingsTab| {},
+            on_reconnect: move |_: String| {},
+            on_dismiss: move |()| {},
+        }
+    }
+}
+
+fn render_tab(tab: SettingsTab) -> String {
+    let mut dom = VirtualDom::new_with_props(SheetHarness, SheetHarnessProps { tab });
+    dom.rebuild_in_place();
+    dioxus_ssr::render(&dom)
+}
+
+/// WHY: every panel in this sheet reads its preferences through a `use_memo`
+/// over `UiState`, and nothing in this suite had ever built one.
+///
+/// The panels used to read `UiState` straight, which subscribed each of them
+/// to the session list and repainted a preference tab every time an agent
+/// printed a line. They now read a memo and hold its guard across the whole
+/// body. That is the right shape and it is also the shape that panics at
+/// runtime if a body ever reads and writes the same signal in one pass, which
+/// is a blank modal for the operator and which no pure-function test in this
+/// file can see. Every tab is built, because the panels are separate
+/// components and a fault in one of them is invisible from the other eight.
+#[test]
+fn every_tab_of_the_sheet_builds_and_names_itself() {
+    for tab in SettingsTab::ALL {
+        let html = render_tab(tab);
+        assert!(
+            html.contains(r#"aria-label="Settings""#),
+            "the {tab:?} tab did not build the sheet: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"class="rg-sheet__tab rg-sheet__tab--active" type="button" role="tab" aria-selected="true">{}"#,
+                tab.label()
+            )),
+            "the {tab:?} tab is not the one marked active: {html}"
+        );
+        assert!(
+            html.contains(r#"role="tabpanel""#),
+            "the {tab:?} tab rendered no panel: {html}"
+        );
+    }
+}
+
+/// The Appearance tab draws the controls whose values come through the memo.
+///
+/// WHY: `every_tab_of_the_sheet_builds_and_names_itself` proves the panel does
+/// not panic, which a panel returning nothing at all also satisfies. This
+/// asserts the defaults reach the DOM as the selected options, so a memo that
+/// resolved to the wrong document, or never resolved, is a failure here.
+#[test]
+fn the_appearance_tab_renders_the_stored_defaults_as_selected() {
+    let html = render_tab(SettingsTab::Appearance);
+    let d = Settings::default();
+    assert!(
+        html.contains(&format!(
+            r#"<option value="{}" selected=true>{}%</option>"#,
+            d.text_scale_pct, d.text_scale_pct
+        )),
+        "the stored text scale is not the selected step: {html}"
+    );
+    assert!(
+        html.contains(r#"<option value="system" selected=true>"#),
+        "the stored theme is not the selected option: {html}"
+    );
+    assert!(
+        !html.contains("not one of the choices"),
+        "a shipped default is not expressible by its own menu: {html}"
+    );
+}

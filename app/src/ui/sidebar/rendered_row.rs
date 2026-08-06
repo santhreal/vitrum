@@ -16,6 +16,7 @@ use crate::testkit::{NOW, row};
 struct HarnessProps {
     row: SessionView,
     section: Section,
+    fields: RowFields,
     contested: Option<(usize, usize)>,
 }
 
@@ -25,16 +26,11 @@ fn Harness(props: HarnessProps) -> Element {
         SessionRow {
             row: props.row.clone(),
             section: props.section,
-            fields: RowFields {
-                branch: true,
-                time: true,
-                status_word: true,
-                always_slim: false,
-            },
+            fields: props.fields,
             active: false,
             picked: false,
             clock: TimeFormat::new(vitrum_fmt::Timestamp::from_millis(NOW as i64), 0),
-            home: "/home/u".to_string(),
+            home: Rc::from("/home/u"),
             contested: props.contested,
             on_select: move |_: (SessionId, Click)| {},
             on_close: move |_: SessionId| {},
@@ -43,13 +39,29 @@ fn Harness(props: HarnessProps) -> Element {
     }
 }
 
+/// Every optional row element on, which is the shipped default.
+fn all_fields() -> RowFields {
+    RowFields {
+        branch: true,
+        time: true,
+        status_word: true,
+        always_slim: false,
+    }
+}
+
 /// One row's HTML, exactly as the webview would receive it.
 fn render(view: SessionView, section: Section) -> String {
+    render_with(view, section, all_fields())
+}
+
+/// One row's HTML with the operator's row-element switches set explicitly.
+fn render_with(view: SessionView, section: Section, fields: RowFields) -> String {
     let mut dom = VirtualDom::new_with_props(
         Harness,
         HarnessProps {
             row: view,
             section,
+            fields,
             contested: None,
         },
     );
@@ -233,4 +245,51 @@ fn the_tooltip_names_the_agent_behind_the_session() {
         );
     }
     let _ = NOW;
+}
+
+/// WHY: "Show the status word" round-tripped to disk and changed nothing.
+///
+/// `RowFields::status_word` was read out of `Settings`, carried into every
+/// row's props and compared by `PartialEq`, and then no markup ever looked at
+/// it: `rg-pill__word` was emitted unconditionally. So the switch persisted,
+/// re-rendered the whole sidebar, and left the row identical. That is exactly
+/// the failure `settings.rs`'s own module doc forbids in its first paragraph,
+/// and no test in this file could see it, because every one of them rendered
+/// with the field on.
+///
+/// Off drops the word and keeps the pill, which is what the collapsed rail
+/// already draws through `.rg-sidebar--collapsed .rg-pill__word`. The
+/// accessible name is asserted in both directions because dropping the word
+/// from the DOM must not drop the state from a screen reader.
+#[test]
+fn the_status_word_switch_adds_and_removes_the_word() {
+    let view = row(4).title("review auth").build();
+    let word = inbox::status_word(inbox::StateWord::of(Pill::of(&view).status));
+
+    let on = render_with(view.clone(), Section::Active, all_fields());
+    assert!(
+        on.contains(&format!(r#"<span class="rg-pill__word">{word}</span>"#)),
+        "the word is missing with the switch on: {on}"
+    );
+
+    let off = render_with(
+        view,
+        Section::Active,
+        RowFields {
+            status_word: false,
+            ..all_fields()
+        },
+    );
+    assert!(
+        !off.contains("rg-pill__word"),
+        "the word survived the switch being off: {off}"
+    );
+    assert!(
+        off.contains("rg-pill "),
+        "the pill's own box and hue must stay: {off}"
+    );
+    assert!(
+        off.contains(&format!(r#"aria-label="{word}""#)),
+        "the state was lost to a screen reader, not just to the column: {off}"
+    );
 }

@@ -60,6 +60,7 @@
 //!   band rule. The honest version of what that control was reaching for is
 //!   the Compact density, which shrinks both variants together and is real.
 
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use dioxus::prelude::*;
@@ -72,9 +73,20 @@ use vitrum_proto::{SessionId, SessionStatus};
 
 use crate::keymap::{CHORDS, Help, KeyAction, Scope, Shift};
 use crate::state::{
-    BackdropFit, Density, FolderId, Grouping, KeyboardPrefs, Settings, SettingsTab, TermRenderer,
-    TerminalPrefs, ThemePref, UiState, WorkspaceId,
+    BackdropFit, Density, KeyboardPrefs, Settings, SettingsTab, TermRenderer, TerminalPrefs,
+    ThemePref, UiState,
 };
+
+/// The About tab. Edits no preference; it reports what is installed.
+mod about;
+/// Saved commands: the validation rules and the editor that applies them.
+mod presets;
+/// The Workspaces tab, the one panel that edits no `Settings` field.
+mod workspaces;
+
+use about::AboutPanel;
+use presets::PresetsPanel;
+use workspaces::WorkspacesPanel;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Appearance
@@ -270,36 +282,65 @@ pub fn opacity_note(a: &crate::state::AppearancePrefs) -> &'static str {
 /// Nothing is emitted for a default profile. An operator who has never opened
 /// the Appearance tab gets the same document they got before this existed,
 /// which keeps the opaque path free of `rgba` compositing it does not need.
+///
+/// # Three of these tokens switch layers on rather than parameterise them
+///
+/// `--rg-backdrop-layer`, `--rg-scrim-layer` and `--rg-surface-blur` are the
+/// existence of an effect, not its value, and they are here because the
+/// claim in the paragraph above was not true of the compositor.
+///
+/// `.rg-app::before` and `::after` are `content: var(--rg-*-layer)`, which is
+/// `none` unless this function says otherwise, so a default profile generates
+/// neither pseudo-element. It used to generate both unconditionally: two
+/// fixed, viewport-sized layers on every install, one of them carrying
+/// `filter: blur(0px)`, which is not a no-op. Any `filter` other than `none`
+/// makes an element a containing block, a stacking context and its own
+/// composited layer, so the opaque path was paying for a wallpaper it did not
+/// have.
+///
+/// `--rg-surface-blur` is the same argument for `backdrop-filter` on sheets,
+/// menus and tooltips. That blur exists to keep text legible where the
+/// DESKTOP shows through, and its own comment said so, but nothing gated it:
+/// every menu and every tooltip in a fully opaque window forced a readback
+/// and a Gaussian blur of everything behind it, to composite it against an
+/// opaque surface.
 #[must_use]
 pub fn appearance_tokens(a: &crate::state::AppearancePrefs) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     if a.opacity_pct < crate::state::OPACITY_MAX_PCT {
-        out.push_str(&format!(
-            "--rg-opacity:{};",
-            f64::from(a.opacity_pct) / 100.0
-        ));
+        let _ = write!(out, "--rg-opacity:{};", f64::from(a.opacity_pct) / 100.0);
+        // Only where the desktop genuinely shows through.
+        out.push_str("--rg-surface-blur:blur(var(--rg-space-3));");
     }
     if a.terminal_opacity_pct < crate::state::OPACITY_MAX_PCT {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "--rg-terminal-opacity:{};",
             f64::from(a.terminal_opacity_pct) / 100.0
-        ));
+        );
     }
     let backdrop = a.backdrop.trim();
     if !backdrop.is_empty() {
         let (size, repeat) = a.backdrop_fit.css();
-        out.push_str(&format!(
-            "--rg-backdrop:url(\"{}\");--rg-backdrop-size:{size};--rg-backdrop-repeat:{repeat};",
+        let _ = write!(
+            out,
+            "--rg-backdrop-layer:\"\";--rg-backdrop:url(\"{}\");\
+             --rg-backdrop-size:{size};--rg-backdrop-repeat:{repeat};",
             backdrop_url(backdrop)
-        ));
+        );
         if a.backdrop_blur_px > 0 {
-            out.push_str(&format!("--rg-backdrop-blur:{}px;", a.backdrop_blur_px));
+            let _ = write!(out, "--rg-backdrop-blur:{}px;", a.backdrop_blur_px);
         }
         if a.backdrop_dim_pct > 0 {
-            out.push_str(&format!(
-                "--rg-backdrop-dim:{};",
+            // The scrim is a second full-viewport layer and earns one only
+            // when it would actually paint something.
+            let _ = write!(
+                out,
+                "--rg-scrim-layer:\"\";--rg-backdrop-dim:{};",
                 f64::from(a.backdrop_dim_pct) / 100.0
-            ));
+            );
         }
     }
     out
@@ -667,11 +708,19 @@ impl Notable {
 /// At most one notification per session per snapshot, taken in severity order.
 /// A child that exits non-zero satisfies both "failed" and "finished", and two
 /// notifications about one event is how a product teaches people to mute it.
+///
+/// Linear in the two lists rather than quadratic. The previous snapshot was
+/// scanned from the top for every row of the new one, which at twenty agents
+/// on a daemon pushing several snapshots a second is 400 comparisons per push
+/// to answer twenty questions. One index over the old rows answers all of them
+/// in one pass, and it holds references rather than copies.
 #[must_use]
 pub fn notable_transitions(before: &[SessionView], after: &[SessionView]) -> Vec<Notable> {
+    let was_by_id: HashMap<SessionId, &SessionView> =
+        before.iter().map(|row| (row.id(), row)).collect();
     let mut out = Vec::new();
     for row in after {
-        let Some(was) = before.iter().find(|old| old.id() == row.id()) else {
+        let Some(&was) = was_by_id.get(&row.id()) else {
             continue;
         };
         let kind = if failed(row) && !failed(was) {
@@ -1318,329 +1367,6 @@ pub fn effective_help_rows(prefs: &KeyboardPrefs) -> Vec<crate::keymap::HelpRow>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Saved commands
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Longest label the editor will store, in characters.
-///
-/// Counted in `char`s and not bytes, so a label in a non-Latin script gets the
-/// same allowance as one in English. The number is what fits the picker's row
-/// in the new-session dialog without eliding; a label that only ever appears
-/// as `Claude in vitrum, resu…` is a label that has failed at the one job it
-/// has.
-pub const PRESET_LABEL_MAX: usize = 40;
-
-/// Which field of a saved command an edit is aimed at.
-///
-/// The editor commits one field at a time rather than assembling a whole
-/// candidate and writing it back. Four independent commits means a typo in the
-/// shortcut cannot silently discard the working directory typed a second
-/// earlier, which is exactly what a whole-record write does when validation
-/// refuses it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresetField {
-    Label,
-    /// The program and its arguments as one line, split by
-    /// [`crate::launch::split_command`].
-    CommandLine,
-    /// Default working directory. Empty clears it.
-    Cwd,
-    /// Chord that starts this command from the new-session dialog. Empty
-    /// clears it.
-    Shortcut,
-    /// Slug of the icon this command draws. Empty clears it back to the one
-    /// derived from the command text.
-    Icon,
-}
-
-/// Why an edit to the saved commands was refused.
-///
-/// A variant per reason rather than a `String`, because two of them are
-/// asserted in tests against exact content and because the panel renders the
-/// sentence in one place. Every message names the value that was refused: a
-/// form that answers "invalid input" over four fields has said nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PresetRefusal {
-    /// The label was empty or only whitespace.
-    NoLabel,
-    /// The label was longer than [`PRESET_LABEL_MAX`].
-    LabelTooLong(usize),
-    /// Another saved command already answers to that label.
-    DuplicateLabel(String),
-    /// There is no program in the command line: it was empty, whitespace, or
-    /// quoting that yields a blank first word.
-    NoCommand,
-    /// The shortcut is not a chord this build can match.
-    BadShortcut(String),
-    /// The shortcut is already a shell chord, so the dialog would never see
-    /// the keydown. Carries the sentence [`crate::launch::chord_conflict`]
-    /// produced, which names the action that owns it.
-    ShortcutTaken(String),
-    /// Another saved command already answers to that chord. Carries the
-    /// canonical chord and the other row's label.
-    ShortcutInUse(String, String),
-    /// The row was deleted by another window between the render and the edit.
-    Vanished,
-}
-
-impl std::fmt::Display for PresetRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PresetRefusal::NoLabel => f.write_str(
-                "A saved command needs a label. It is the only part of it the picker shows.",
-            ),
-            PresetRefusal::LabelTooLong(len) => write!(
-                f,
-                "That label is {len} characters. The picker shows {PRESET_LABEL_MAX}."
-            ),
-            PresetRefusal::DuplicateLabel(label) => write!(
-                f,
-                "\u{201c}{label}\u{201d} is already the label of another saved command. Two rows \
-                 with one name means the picker offers the same word twice and neither says \
-                 which is which."
-            ),
-            PresetRefusal::NoCommand => f.write_str(
-                "A saved command needs a program to run. Anything on PATH works, and so does an \
-                 absolute path.",
-            ),
-            PresetRefusal::BadShortcut(text) => write!(
-                f,
-                "\u{201c}{text}\u{201d} is not a chord this build can match. Write it as \
-                 Ctrl+Shift+K: the modifiers are Ctrl, Alt and Shift, in any case, joined by +."
-            ),
-            PresetRefusal::ShortcutTaken(why) => write!(
-                f,
-                "{why} A saved command cannot take a chord the shell already claims: the \
-                 keydown is handled before the dialog sees it, so the shortcut would be one \
-                 this tab shows and the product never fires."
-            ),
-            PresetRefusal::ShortcutInUse(chord, label) => write!(
-                f,
-                "{chord} already starts \u{201c}{label}\u{201d}. Two saved commands on one chord \
-                 means the first in the list wins and the other is dead, with nothing on screen \
-                 saying so."
-            ),
-            PresetRefusal::Vanished => f.write_str(
-                "That saved command was deleted in another window, so there was nothing to \
-                 change. The list above is what is on disk now.",
-            ),
-        }
-    }
-}
-
-/// Is `label` free, ignoring the row that already owns it?
-///
-/// Case-insensitive, because the picker is read by a person and `Claude` and
-/// `claude` are one name to them. ASCII case folding rather than a full
-/// Unicode fold: the comparison has to be identical to the one a test can
-/// state, and a locale-dependent fold is not.
-fn label_is_free(list: &[crate::launch::SavedPreset], label: &str, except: u64) -> bool {
-    !list
-        .iter()
-        .any(|p| p.id != except && p.label.eq_ignore_ascii_case(label))
-}
-
-/// Check and normalise a label, or say why not.
-fn accept_label(
-    list: &[crate::launch::SavedPreset],
-    label: &str,
-    except: u64,
-) -> Result<String, PresetRefusal> {
-    let label = label.trim();
-    if label.is_empty() {
-        return Err(PresetRefusal::NoLabel);
-    }
-    let len = label.chars().count();
-    if len > PRESET_LABEL_MAX {
-        return Err(PresetRefusal::LabelTooLong(len));
-    }
-    if !label_is_free(list, label, except) {
-        return Err(PresetRefusal::DuplicateLabel(label.to_string()));
-    }
-    Ok(label.to_string())
-}
-
-/// Check and split a command line, or say why not.
-///
-/// [`crate::launch::split_command`] has no failure mode of its own beyond
-/// "there was no word here": an unclosed quote takes the rest of the line as
-/// one argument rather than erroring, which is the behaviour the dialog's own
-/// field has and the two must agree. So the only refusal is an absent
-/// program, and it is checked on the SPLIT result and not on the raw line,
-/// because `"   "` is a non-empty line whose first word is blank.
-fn accept_command(line: &str) -> Result<(String, Vec<String>), PresetRefusal> {
-    let Some((command, args)) = crate::launch::split_command(line.trim()) else {
-        return Err(PresetRefusal::NoCommand);
-    };
-    if command.trim().is_empty() {
-        return Err(PresetRefusal::NoCommand);
-    }
-    Ok((command, args))
-}
-
-/// Check and canonicalise a shortcut, or say why not. Empty means none.
-///
-/// Stored in the canonical form [`crate::launch::format_chord`] produces
-/// rather than as typed, so the file never holds two spellings of one chord
-/// and the matcher never has to fold anything at match time. Canonicalising
-/// first is also what makes the duplicate check below exact: `alt+j` and
-/// `Alt+J` are one binding and comparing the typed strings would miss it.
-fn accept_shortcut(
-    list: &[crate::launch::SavedPreset],
-    text: &str,
-    except: u64,
-) -> Result<Option<String>, PresetRefusal> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    let Some(chord) = crate::launch::parse_chord(text) else {
-        return Err(PresetRefusal::BadShortcut(text.to_string()));
-    };
-    // A chord the shell already claims never reaches the dialog's keydown, so
-    // storing it would produce exactly the thing this tab refuses to ship: a
-    // shortcut the settings panel displays and the product never fires.
-    if let Some(why) = crate::launch::chord_conflict(&chord) {
-        return Err(PresetRefusal::ShortcutTaken(why));
-    }
-    let canonical = crate::launch::format_chord(&chord);
-    // And the same argument one level down: the dialog takes the first preset
-    // in list order that matches, so a second preset on one chord is a row
-    // that can never be reached by keyboard.
-    if let Some(other) = list
-        .iter()
-        .find(|p| p.id != except && p.shortcut.as_deref() == Some(canonical.as_str()))
-    {
-        return Err(PresetRefusal::ShortcutInUse(canonical, other.label.clone()));
-    }
-    Ok(Some(canonical))
-}
-
-/// Apply one field edit to the saved command with this id.
-///
-/// Keyed by id and not by position, and that is not fussiness. The list on
-/// disk is shared by every window: a second window that deleted a row leaves
-/// this window rendering positions that no longer mean what they meant, and an
-/// index-keyed edit would then rewrite the wrong row's label. An id that is
-/// gone is [`PresetRefusal::Vanished`], which the panel shows and then
-/// refreshes from disk.
-///
-/// Nothing is written unless the value is accepted, so a refused edit leaves
-/// the list byte-identical.
-pub fn revise(
-    list: &mut [crate::launch::SavedPreset],
-    id: u64,
-    field: PresetField,
-    value: &str,
-) -> Result<(), PresetRefusal> {
-    let Some(index) = list.iter().position(|p| p.id == id) else {
-        return Err(PresetRefusal::Vanished);
-    };
-    match field {
-        PresetField::Label => {
-            let label = accept_label(list, value, id)?;
-            list[index].label = label;
-        }
-        PresetField::CommandLine => {
-            let (command, args) = accept_command(value)?;
-            list[index].command = command;
-            list[index].args = args;
-        }
-        PresetField::Cwd => {
-            let cwd = value.trim();
-            // Empty clears it rather than storing `Some("")`. An empty string
-            // is a directory the picker would try to enter and the daemon
-            // would refuse, which is a launch failure standing in for "no
-            // opinion".
-            list[index].cwd = if cwd.is_empty() {
-                None
-            } else {
-                Some(cwd.to_string())
-            };
-        }
-        PresetField::Shortcut => {
-            let shortcut = accept_shortcut(list, value, id)?;
-            list[index].shortcut = shortcut;
-        }
-        PresetField::Icon => {
-            // An unknown slug clears rather than refuses. The picker can only
-            // emit slugs it owns, so the only way to reach this is a
-            // hand-edited profile or one written by a build with an icon this
-            // one dropped, and losing the choice beats refusing the save.
-            let slug = value.trim();
-            list[index].icon = crate::ui::icons::from_slug(slug).map(|i| i.slug.to_string());
-        }
-    }
-    Ok(())
-}
-
-/// Append a saved command, returning the id it was given.
-///
-/// The id comes from [`crate::launch::mint_preset_id`] and is then bumped
-/// until it is free. Minting from the label and the command alone is stable,
-/// which is what makes it a good id, but stable also means a label that was
-/// used, renamed and used again mints the number a live row already holds.
-/// Two rows with one id is the picker launching the wrong command, so the
-/// collision is resolved here, at the only place that ever creates one.
-pub fn create(
-    list: &mut Vec<crate::launch::SavedPreset>,
-    label: &str,
-    command_line: &str,
-) -> Result<u64, PresetRefusal> {
-    let label = accept_label(list, label, u64::MAX)?;
-    let (command, args) = accept_command(command_line)?;
-    let mut id = crate::launch::mint_preset_id(&label, &command);
-    while list.iter().any(|p| p.id == id) {
-        id = id.wrapping_add(1);
-    }
-    list.push(crate::launch::SavedPreset {
-        id,
-        label,
-        command,
-        args,
-        cwd: None,
-        shortcut: None,
-        icon: None,
-    });
-    Ok(id)
-}
-
-/// Drop the saved command with this id. False when it was already gone.
-pub fn remove(list: &mut Vec<crate::launch::SavedPreset>, id: u64) -> bool {
-    let before = list.len();
-    list.retain(|p| p.id != id);
-    list.len() != before
-}
-
-/// Move a saved command `delta` places, clamped to the ends of the list.
-///
-/// Returns false when the move would fall off either end, which is what
-/// disables the arrow rather than leaving a button that visibly does nothing
-/// at the top and bottom of the list.
-pub fn move_by(list: &mut [crate::launch::SavedPreset], id: u64, delta: isize) -> bool {
-    let Some(from) = list.iter().position(|p| p.id == id) else {
-        return false;
-    };
-    let Some(to) = from.checked_add_signed(delta) else {
-        return false;
-    };
-    if to >= list.len() || delta == 0 {
-        return false;
-    }
-    // A rotation and not a swap: moving a row three places past two others
-    // must not reverse the pair it stepped over. With `delta` of one the two
-    // are the same operation, and the panel only offers one, but the function
-    // is the one place the ordering is decided and it should be right for the
-    // argument it takes.
-    if to > from {
-        list[from..=to].rotate_left(1);
-    } else {
-        list[to..=from].rotate_right(1);
-    }
-    true
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Applying and persisting
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1924,6 +1650,27 @@ struct SelectProps {
     onpick: EventHandler<String>,
 }
 
+/// The extra option a stored value that matches no choice needs, if any.
+///
+/// A `<select>` whose `value` matches no `<option>` does not error and does
+/// not stay blank: the DOM selects the FIRST option, so the control shows a
+/// setting that is not the one in effect. Every numeric preference in this
+/// sheet can reach that state, because [`crate::state::AppearancePrefs::clamp`]
+/// and [`crate::state::Settings::set_text_scale`] clamp to a RANGE while these
+/// menus offer a handful of STEPS: a hand-edited `"textScalePct": 137` is
+/// accepted whole, renders the shell at 137%, and would have read "80%".
+///
+/// So the value gets an option of its own rather than being silently
+/// swallowed. It is labelled as unoffered, because it is a real state the
+/// operator can be in and the honest thing is to name it; picking any other
+/// row leaves it, and it cannot be returned to.
+fn stray_option(value: &str, options: &[(String, String)]) -> Option<String> {
+    if options.iter().any(|(v, _)| v == value) {
+        return None;
+    }
+    Some(format!("{value} (in effect, not one of the choices)"))
+}
+
 /// A labelled menu row.
 ///
 /// A native `<select>` rather than a custom popup: it is one element, it is
@@ -1932,7 +1679,8 @@ struct SelectProps {
 /// can.
 #[component]
 fn SelectRow(props: SelectProps) -> Element {
-    let current = props.value.clone();
+    let onpick = props.onpick;
+    let stray = stray_option(&props.value, &props.options);
     rsx! {
         div { class: "rg-field",
             span { class: "rg-field__label", "{props.label}" }
@@ -1940,12 +1688,20 @@ fn SelectRow(props: SelectProps) -> Element {
                 select {
                     class: "rg-select",
                     aria_label: "{props.label}",
-                    onchange: move |e| props.onpick.call(e.value()),
+                    onchange: move |e| onpick.call(e.value()),
+                    if let Some(label) = stray {
+                        option {
+                            key: "{props.value}",
+                            value: "{props.value}",
+                            selected: true,
+                            "{label}"
+                        }
+                    }
                     for (value, label) in props.options.iter() {
                         option {
                             key: "{value}",
                             value: "{value}",
-                            selected: *value == current,
+                            selected: *value == props.value,
                             "{label}"
                         }
                     }
@@ -1970,7 +1726,16 @@ struct PanelProps {
 #[component]
 fn AppearancePanel(props: PanelProps) -> Element {
     let state = props.state;
-    let settings = state.read().daemon.settings.clone();
+    // A memo, not a read, and the difference is one whole class of work.
+    //
+    // Reading `UiState` in a panel body subscribes the panel to it, and
+    // `UiState` carries the session list, so a daemon streaming output twenty
+    // times a second re-ran this body twenty times a second: a clone of the
+    // whole `Settings` document each time, plus the thirty-odd option strings
+    // the menus below build, to draw a tab whose contents had not changed.
+    // A memo only marks the panel dirty when `Settings` itself differs.
+    let settings = use_memo(move || state.read().daemon.settings.clone());
+    let settings = settings.read();
     let mut detected = use_signal(system_theme);
     let mut backdrop = use_signal(|| settings.appearance.backdrop.clone());
 
@@ -2235,7 +2000,10 @@ const SETTLE_STEPS: &[(Option<u64>, &str)] = &[
 #[component]
 fn SidebarPanel(props: PanelProps) -> Element {
     let state = props.state;
-    let settings = state.read().daemon.settings.clone();
+    // Memoized for the reason `AppearancePanel` gives: a preference tab must
+    // not repaint because an agent printed a line.
+    let settings = use_memo(move || state.read().daemon.settings.clone());
+    let settings = settings.read();
 
     rsx! {
         SwitchRow {
@@ -2252,8 +2020,9 @@ fn SidebarPanel(props: PanelProps) -> Element {
         }
         SwitchRow {
             label: "Show the status word".to_string(),
-            desc: "Off leaves the status icon, which is what the collapsed sidebar already \
-                   renders, so a narrow list stays readable."
+            desc: "Off leaves the pill's colour, which is what the collapsed sidebar already \
+                   renders, so a narrow list stays readable. The state stays on the row for \
+                   a screen reader either way."
                 .to_string(),
             on: settings.show_status_word,
             onchange: move |on| edit(state, |s| s.show_status_word = on),
@@ -2301,679 +2070,14 @@ fn SidebarPanel(props: PanelProps) -> Element {
 }
 
 // ---------------------------------------------------------------------------
-// Workspaces
-// ---------------------------------------------------------------------------
-
-#[component]
-fn WorkspacesPanel(props: PanelProps) -> Element {
-    let state = props.state;
-    let snapshot = state.read();
-    let workspaces: Vec<(WorkspaceId, String, usize)> = snapshot
-        .daemon
-        .workspaces
-        .iter()
-        .map(|w| {
-            (
-                w.id,
-                w.display_name().to_string(),
-                snapshot.daemon.workspaces.session_count(w.id),
-            )
-        })
-        .collect();
-    let count = workspaces.len();
-    let intake = snapshot.daemon.workspaces.intake();
-    let viewing = snapshot.window.workspace;
-    let selected = snapshot
-        .daemon
-        .workspaces
-        .get(viewing)
-        .map(|w| (w.display_name().to_string(), w.grouping, w.sections));
-    let folders: Vec<(FolderId, String)> = snapshot
-        .daemon
-        .workspaces
-        .get(viewing)
-        .map(|w| w.folders().iter().map(|f| (f.id, f.name.clone())).collect())
-        .unwrap_or_default();
-    drop(snapshot);
-
-    let error = use_signal(String::new);
-    let mut new_name = use_signal(String::new);
-    let mut new_folder = use_signal(String::new);
-
-    rsx! {
-        div { class: "rg-field",
-            span { class: "rg-field__label", "Workspaces" }
-            span { class: "rg-field__desc",
-                "A workspace is a separate top-level context, above projects. Every session \
-                 belongs to exactly one, so a new workspace starts genuinely empty. New sessions \
-                 land in whichever workspace you are looking at."
-            }
-        }
-
-        // Above the list, not below it. A refusal rendered after a long list
-        // is off the bottom of the scroller, and a message nobody can see
-        // without scrolling is the same as no message: the control looks like
-        // it silently did nothing. Measured in the running binary, where a
-        // refused shortcut put its sentence three scroll notches below the
-        // fold.
-        if !error.read().is_empty() {
-            div { class: "rg-sheet__error", "{error}" }
-        }
-
-        for (index , (id , name , sessions)) in workspaces.iter().cloned().enumerate() {
-            div {
-                class: if id == viewing { "rg-field rg-field--ws rg-field--ws-active" } else { "rg-field rg-field--ws" },
-                key: "{id.0}",
-
-                input {
-                    class: "rg-field__input rg-field__input--prose",
-                    r#type: "text",
-                    value: "{name}",
-                    spellcheck: false,
-                    autocomplete: "off",
-                    aria_label: "Workspace name",
-                    onchange: move |e| {
-                        let text = e.value();
-                        try_edit(state, error, |st| st.daemon.workspaces.rename(id, &text));
-                    },
-                }
-
-                span { class: "rg-field__hint",
-                    if sessions == 1 { "1 session" } else { "{sessions} sessions" }
-                    if id == intake { " · new sessions land here" }
-                }
-
-                span { class: "rg-field__control",
-                    button {
-                        class: "rg-btn",
-                        r#type: "button",
-                        disabled: id == viewing,
-                        onclick: move |_| {
-                            let now = crate::tick().now_ms;
-                            try_edit(state, error, |st| st.set_workspace(id, now));
-                        },
-                        if id == viewing { "Viewing" } else { "Switch to" }
-                    }
-                    button {
-                        class: "rg-btn",
-                        r#type: "button",
-                        disabled: index == 0,
-                        aria_label: "Move up",
-                        onclick: move |_| {
-                            try_edit(
-                                state,
-                                error,
-                                |st| st.daemon.workspaces.move_to(id, index.saturating_sub(1)),
-                            );
-                        },
-                        "\u{2191}"
-                    }
-                    button {
-                        class: "rg-btn",
-                        r#type: "button",
-                        disabled: index + 1 >= count,
-                        aria_label: "Move down",
-                        onclick: move |_| {
-                            try_edit(state, error, |st| st.daemon.workspaces.move_to(id, index + 1));
-                        },
-                        "\u{2193}"
-                    }
-                    button {
-                        class: "rg-btn rg-btn--danger",
-                        r#type: "button",
-                        onclick: move |_| {
-                            let now = crate::tick().now_ms;
-                            try_edit(state, error, |st| st.delete_workspace(id, now));
-                        },
-                        "Delete"
-                    }
-                }
-            }
-        }
-
-        div { class: "rg-field",
-            span { class: "rg-field__label", "New workspace" }
-            span { class: "rg-field__control",
-                input {
-                    class: "rg-field__input rg-field__input--prose",
-                    r#type: "text",
-                    placeholder: "Name",
-                    value: "{new_name}",
-                    spellcheck: false,
-                    autocomplete: "off",
-                    aria_label: "New workspace name",
-                    // `onchange`, never `oninput`. See `PresetsPanel`.
-                    onchange: move |e| new_name.set(e.value()),
-                }
-                button {
-                    class: "rg-btn rg-btn--primary",
-                    r#type: "button",
-                    onclick: move |_| {
-                        let name = new_name.peek().clone();
-                        let before = state.peek().daemon.workspaces.len();
-                        try_edit(state, error, |st| st.create_workspace(&name));
-                        if state.peek().daemon.workspaces.len() > before {
-                            new_name.set(String::new());
-                        }
-                    },
-                    "Create"
-                }
-            }
-        }
-
-        if let Some((name, grouping, sections)) = selected {
-            div { class: "rg-field",
-                span { class: "rg-field__label", "{name}" }
-                span { class: "rg-field__desc",
-                    "Grouping and band visibility belong to the workspace, not to you: \
-                     \u{201c}this one is my review queue, show me settled work\u{201d} is a fact \
-                     about the context and not about the person."
-                }
-            }
-
-            SelectRow {
-                label: "Group rows by",
-                desc: match grouping {
-                    Grouping::Directory => "A session under a project root the daemon knows files under that project; everything else gets a bucket per directory."
-                        .to_string(),
-                    Grouping::Named => "Folders you create, in your order, plus an Unfiled bucket. Move rows between folders from the right-click menu."
-                        .to_string(),
-                },
-                value: match grouping {
-                    Grouping::Directory => "directory",
-                    Grouping::Named => "named",
-                }
-                    .to_string(),
-                options: vec![
-                    ("directory".to_string(), Grouping::Directory.label().to_string()),
-                    ("named".to_string(), Grouping::Named.label().to_string()),
-                ],
-                onpick: move |v: String| {
-                    edit_state(
-                        state,
-                        |st| {
-                            if let Some(w) = st.daemon.workspaces.get_mut(viewing) {
-                                w.grouping = if v == "named" {
-                                    Grouping::Named
-                                } else {
-                                    Grouping::Directory
-                                };
-                            }
-                        },
-                    );
-                },
-            }
-
-            for (disposition , label , on) in [
-                (vitrum_model::Disposition::Active, "Active", sections.active),
-                (vitrum_model::Disposition::Woke, "Woke", sections.woke),
-                (vitrum_model::Disposition::Snoozed, "Snoozed", sections.snoozed),
-                (vitrum_model::Disposition::Settled, "Settled", sections.settled),
-            ] {
-                SwitchRow {
-                    key: "{label}",
-                    // `format!`, not `"Show {label}".to_string()`: rsx
-                    // interpolates text nodes and attribute values, not a
-                    // string literal being passed to `.to_string()`, so the
-                    // latter ships the four literal characters `{lab` … to the
-                    // screen. It did, and the screenshot caught it.
-                    label: format!("Show {label}"),
-                    desc: String::new(),
-                    on,
-                    onchange: move |want| {
-                        edit_state(
-                            state,
-                            |st| {
-                                if let Some(w) = st.daemon.workspaces.get_mut(viewing) {
-                                    w.sections.set(disposition, want);
-                                }
-                            },
-                        );
-                    },
-                }
-            }
-
-            if sections.hidden_count() > 0 {
-                div { class: "rg-field",
-                    span { class: "rg-field__hint",
-                        // Hidden bands are a footgun: the rows still exist, are
-                        // still counted in every rollup, and are simply not on
-                        // screen. Four unlabelled switches do not say how many
-                        // you have turned off, and "where did that session go"
-                        // is the question this line exists to answer.
-                        if sections.hidden_count() == 1 {
-                            "1 band is hidden in this workspace. Its sessions still exist and still count; they are just not drawn."
-                        } else {
-                            "{sections.hidden_count()} bands are hidden in this workspace. Their sessions still exist and still count; they are just not drawn."
-                        }
-                    }
-                }
-            }
-
-            if grouping == Grouping::Named {
-                div { class: "rg-field",
-                    span { class: "rg-field__label", "Folders" }
-                    if folders.is_empty() {
-                        span { class: "rg-field__hint",
-                            "No folders yet. Every session shows under Unfiled until you make one."
-                        }
-                    }
-                }
-
-                for (index , (fid , fname)) in folders.iter().cloned().enumerate() {
-                    div { class: "rg-field rg-field--ws", key: "{fid.0}",
-                        input {
-                            class: "rg-field__input rg-field__input--prose",
-                            r#type: "text",
-                            value: "{fname}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            aria_label: "Folder name",
-                            onchange: move |e| {
-                                let text = e.value();
-                                try_edit(
-                                    state,
-                                    error,
-                                    |st| st.daemon.workspaces.rename_folder(viewing, fid, &text),
-                                );
-                            },
-                        }
-                        span { class: "rg-field__control",
-                            button {
-                                class: "rg-btn",
-                                r#type: "button",
-                                disabled: index == 0,
-                                aria_label: "Move folder up",
-                                onclick: move |_| {
-                                    try_edit(
-                                        state,
-                                        error,
-                                        |st| {
-                                            st.daemon
-                                                .workspaces
-                                                .move_folder(viewing, fid, index.saturating_sub(1))
-                                        },
-                                    );
-                                },
-                                "\u{2191}"
-                            }
-                            button {
-                                class: "rg-btn",
-                                r#type: "button",
-                                disabled: index + 1 >= folders.len(),
-                                aria_label: "Move folder down",
-                                onclick: move |_| {
-                                    try_edit(
-                                        state,
-                                        error,
-                                        |st| st.daemon.workspaces.move_folder(viewing, fid, index + 1),
-                                    );
-                                },
-                                "\u{2193}"
-                            }
-                            button {
-                                class: "rg-btn rg-btn--danger",
-                                r#type: "button",
-                                onclick: move |_| {
-                                    try_edit(
-                                        state,
-                                        error,
-                                        |st| st.daemon.workspaces.delete_folder(viewing, fid),
-                                    );
-                                },
-                                "Delete"
-                            }
-                        }
-                    }
-                }
-
-                div { class: "rg-field",
-                    span { class: "rg-field__control",
-                        input {
-                            class: "rg-field__input rg-field__input--prose",
-                            r#type: "text",
-                            placeholder: "New folder",
-                            value: "{new_folder}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            aria_label: "New folder name",
-                            onchange: move |e| new_folder.set(e.value()),
-                        }
-                        button {
-                            class: "rg-btn",
-                            r#type: "button",
-                            onclick: move |_| {
-                                let name = new_folder.peek().clone();
-                                try_edit(
-                                    state,
-                                    error,
-                                    |st| st.daemon.workspaces.create_folder(viewing, &name),
-                                );
-                                if error.peek().is_empty() {
-                                    new_folder.set(String::new());
-                                }
-                            },
-                            "Add folder"
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Presets
-// ---------------------------------------------------------------------------
-
-/// Re-read the saved commands, apply one change, write them back.
-///
-/// Re-reads rather than trusting the signal it is about to overwrite. Every
-/// window in the process edits one file, so a copy taken when this panel
-/// mounted is stale the moment a second window adds a row, and writing that
-/// stale copy back whole would delete the other window's work with nothing on
-/// screen saying so.
-///
-/// The signal is only advanced when the write succeeded. A row that is on the
-/// screen but not on the disk is the defect this whole tab exists to avoid, so
-/// a failed write leaves the fields showing what is actually stored and puts
-/// the reason underneath them.
-fn edit_presets(
-    mut list: Signal<Vec<crate::launch::SavedPreset>>,
-    mut error: Signal<String>,
-    state: Signal<UiState>,
-    change: impl FnOnce(&mut Vec<crate::launch::SavedPreset>) -> Result<(), PresetRefusal>,
-) {
-    let mut next = crate::launch::presets_saved();
-    match change(&mut next) {
-        // Nothing was mutated: every operation validates before it writes. The
-        // list is still advanced because the re-read above may itself be news,
-        // which is the case `Vanished` is reporting.
-        Err(why) => {
-            error.set(why.to_string());
-            list.set(next);
-        }
-        Ok(()) => match crate::launch::save_presets(&next) {
-            Ok(()) => {
-                error.set(String::new());
-                list.set(next);
-                // A preset's chord lives in the SAME table the built-in
-                // chords do, so saving one has to re-push that table or the
-                // shortcut the operator just bound does nothing until the app
-                // restarts. Presets are not part of `Settings`, so the commit
-                // path that normally does this never runs for them: this is
-                // the one place that closes the link.
-                apply_live(&state.peek().daemon.settings);
-            }
-            Err(why) => error.set(format!(
-                "The saved commands could not be written: {why}. Nothing on disk changed."
-            )),
-        },
-    }
-}
-
-/// The saved-command editor.
-///
-/// Takes no props, and that is a statement about where the data lives. Saved
-/// commands are not in [`Settings`]: they are a list of records the operator
-/// authored, they are consumed by [`crate::launch`] rather than by any
-/// derivation in this module, and putting them in the settings document would
-/// have meant every window's `save_prefs` rewriting them on every unrelated
-/// preference change.
-///
-/// Editing is direct. There is no "edit preset" sub-dialog, because a dialog
-/// inside a dialog gives the escape key two meanings that nothing on screen
-/// distinguishes, and because a four-field record is smaller than the modal
-/// that would frame it.
-///
-/// # Every field commits on `onchange`, and none on `oninput`
-///
-/// Measured, not preferred. A text input whose `value` is bound to a signal
-/// and whose `oninput` writes that signal re-renders the panel on every
-/// keystroke, and the re-render writes `value` back into the DOM node while
-/// the operator is still typing into it. Characters are lost. Driving the
-/// running binary through xdotool at a 20 ms inter-key delay, the two create
-/// fields in this panel took `Missing agent` as `Misn aet` and
-/// `no-such-agent-xyz --flag` as `n-uh-agt-xy -flag`, while the row fields
-/// beside them, which already committed on `onchange`, took a 16-character
-/// path at the same delay with every character intact.
-///
-/// So nothing in this file reads a half-typed field. `onchange` fires on
-/// blur, and the blur that a click on the primary button causes is dispatched
-/// before that button's click, which is what makes reading the signal in the
-/// click handler correct. The same defect was in the Workspaces panel's two
-/// name fields and the Advanced panel's daemon URL, and all three are fixed
-/// the same way.
-#[component]
-fn PresetsPanel(state: Signal<UiState>) -> Element {
-    let list = use_signal(crate::launch::presets_saved);
-    let error = use_signal(String::new);
-    let mut new_label = use_signal(String::new);
-    let mut new_command = use_signal(String::new);
-
-    let rows = list();
-    let count = rows.len();
-
-    rsx! {
-        div { class: "rg-field",
-            span { class: "rg-field__label", "Saved commands" }
-            span { class: "rg-field__desc",
-                "A label, a program, and its arguments. Saved commands appear in the \
-                 new-session dialog's picker, so the agent you start twenty times a day is one \
-                 click rather than a retyped command line. A shortcut starts its command while \
-                 that dialog is open; nothing binds these keys anywhere else."
-            }
-        }
-
-        // Above the list. See the same banner in `WorkspacesPanel`.
-        if !error.read().is_empty() {
-            div { class: "rg-sheet__error", "{error}" }
-        }
-
-        if rows.is_empty() {
-            div { class: "rg-preset__empty",
-                "None saved yet. The new-session dialog still accepts any command line; a saved \
-                 command is for the ones you type often."
-            }
-        }
-
-        for (index , preset) in rows.iter().cloned().enumerate() {
-            {
-                let id = preset.id;
-                // One PATH walk per row, on a panel that re-renders only when
-                // a field is committed. It is the same check the dialog runs
-                // before it spawns, run early enough to be useful.
-                let fault = crate::launch::preset_fault(&preset);
-                let line = crate::launch::join_command(&preset.command, &preset.args);
-                let cwd = preset.cwd.clone().unwrap_or_default();
-                let shortcut = preset.shortcut.clone().unwrap_or_default();
-                rsx! {
-                    div { class: "rg-field rg-field--preset", key: "{id}",
-                        input {
-                            class: "rg-field__input rg-field__input--prose rg-preset__label",
-                            r#type: "text",
-                            value: "{preset.label}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            aria_label: "Label",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    state,
-                                    |l| revise(l, id, PresetField::Label, &text),
-                                );
-                            },
-                        }
-                        span { class: "rg-field__control",
-                            button {
-                                class: "rg-btn",
-                                r#type: "button",
-                                disabled: index == 0,
-                                aria_label: "Move up",
-                                onclick: move |_| {
-                                    edit_presets(
-                                        list,
-                                        error,
-                                        state,
-                                        |l| {
-                                            move_by(l, id, -1).then_some(()).ok_or(PresetRefusal::Vanished)
-                                        },
-                                    );
-                                },
-                                "\u{2191}"
-                            }
-                            button {
-                                class: "rg-btn",
-                                r#type: "button",
-                                disabled: index + 1 >= count,
-                                aria_label: "Move down",
-                                onclick: move |_| {
-                                    edit_presets(
-                                        list,
-                                        error,
-                                        state,
-                                        |l| {
-                                            move_by(l, id, 1).then_some(()).ok_or(PresetRefusal::Vanished)
-                                        },
-                                    );
-                                },
-                                "\u{2193}"
-                            }
-                            button {
-                                class: "rg-btn rg-btn--danger",
-                                r#type: "button",
-                                onclick: move |_| {
-                                    edit_presets(
-                                        list,
-                                        error,
-                                        state,
-                                        |l| remove(l, id).then_some(()).ok_or(PresetRefusal::Vanished),
-                                    );
-                                },
-                                "Delete"
-                            }
-                        }
-                        input {
-                            class: "rg-field__input rg-preset__cmd",
-                            r#type: "text",
-                            value: "{line}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            placeholder: "Command and arguments",
-                            aria_label: "Command and arguments",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    state,
-                                    |l| revise(l, id, PresetField::CommandLine, &text),
-                                );
-                            },
-                        }
-                        input {
-                            class: "rg-field__input rg-preset__cwd",
-                            r#type: "text",
-                            value: "{cwd}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            placeholder: "Working directory, or the dialog's",
-                            aria_label: "Default working directory",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(list, error, state, |l| revise(l, id, PresetField::Cwd, &text));
-                            },
-                        }
-                        input {
-                            class: "rg-field__input rg-preset__key",
-                            r#type: "text",
-                            value: "{shortcut}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            placeholder: "Shortcut",
-                            aria_label: "Shortcut",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    state,
-                                    |l| revise(l, id, PresetField::Shortcut, &text),
-                                );
-                            },
-                        }
-                        if let Some(fault) = fault {
-                            span { class: "rg-field__hint rg-preset__fault", "{fault.sentence()}" }
-                        }
-                        crate::ui::icons::IconPicker {
-                            selected: preset.icon.clone(),
-                            command_line: line.clone(),
-                            on_pick: move |slug: Option<String>| {
-                                let text = slug.unwrap_or_default();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    state,
-                                    |l| revise(l, id, PresetField::Icon, &text),
-                                );
-                            },
-                        }
-                    }
-                }
-            }
-        }
-
-        div { class: "rg-field rg-field--preset-new",
-            input {
-                class: "rg-field__input rg-field__input--prose rg-preset__label",
-                r#type: "text",
-                value: "{new_label}",
-                spellcheck: false,
-                autocomplete: "off",
-                placeholder: "Label",
-                aria_label: "New saved command label",
-                onchange: move |e| new_label.set(e.value()),
-            }
-            input {
-                class: "rg-field__input rg-preset__cmd",
-                r#type: "text",
-                value: "{new_command}",
-                spellcheck: false,
-                autocomplete: "off",
-                placeholder: "Command and arguments",
-                aria_label: "New saved command line",
-                onchange: move |e| new_command.set(e.value()),
-            }
-            span { class: "rg-field__control",
-                button {
-                    class: "rg-btn rg-btn--primary",
-                    r#type: "button",
-                    onclick: move |_| {
-                        let label = new_label.peek().clone();
-                        let command = new_command.peek().clone();
-                        edit_presets(list, error, state, |l| create(l, &label, &command).map(|_| ()));
-                        if error.peek().is_empty() {
-                            new_label.set(String::new());
-                            new_command.set(String::new());
-                        }
-                    },
-                    "Save command"
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Terminal
 // ---------------------------------------------------------------------------
 
 #[component]
 fn TerminalPanel(props: PanelProps) -> Element {
     let state = props.state;
-    let prefs = state.read().daemon.settings.terminal.clone();
+    let prefs = use_memo(move || state.read().daemon.settings.terminal.clone());
+    let prefs = prefs.read();
 
     rsx! {
         SelectRow {
@@ -3077,7 +2181,8 @@ fn TerminalPanel(props: PanelProps) -> Element {
 #[component]
 fn NotificationsPanel(props: PanelProps) -> Element {
     let state = props.state;
-    let prefs = state.read().daemon.settings.notifications;
+    let prefs = use_memo(move || state.read().daemon.settings.notifications);
+    let prefs = prefs();
     // Connecting is a D-Bus handshake. Once per mount of this panel, never per
     // render, and never while the modal is on another tab.
     let support = use_hook(notify_support);
@@ -3136,7 +2241,8 @@ struct AdvancedProps {
 #[component]
 fn AdvancedPanel(props: AdvancedProps) -> Element {
     let state = props.state;
-    let settings = state.read().daemon.settings.clone();
+    let settings = use_memo(move || state.read().daemon.settings.clone());
+    let settings = settings.read();
     let mut url = use_signal(|| settings.daemon_url.clone());
 
     // Eight probes, several of them a service handshake. Once per mount of this
@@ -3232,170 +2338,6 @@ fn AdvancedPanel(props: AdvancedProps) -> Element {
     }
 }
 
-// ---------------------------------------------------------------------------
-// About
-// ---------------------------------------------------------------------------
-
-/// What the update control is doing right now.
-///
-/// One value rather than a set of booleans, because the states are mutually
-/// exclusive and a pair of flags is how a control ends up saying "checking"
-/// and "up to date" at once.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum UpdateUi {
-    /// Nothing asked for yet.
-    Idle,
-    /// A check or an install is in flight; the string is the current step.
-    Busy(String),
-    /// The answer to the last check.
-    Answer(crate::update::Status),
-    /// The update finished and the new binaries are on disk.
-    Installed(String),
-    /// The last attempt failed, and why.
-    Failed(String),
-}
-
-#[component]
-fn AboutPanel(state: Signal<UiState>) -> Element {
-    let mut ui = use_signal(|| UpdateUi::Idle);
-    let current = crate::update::current_version();
-
-    // The daemon is a separate process that outlives every window, so its
-    // version is not this binary's version and after an update it will not be.
-    // Read from the Welcome frame rather than assumed.
-    let daemon_version = match &state.read().daemon.conn {
-        crate::state::ConnState::Live { server_version } => Some(server_version.clone()),
-        _ => None,
-    };
-    let daemon_is_stale = daemon_version
-        .as_deref()
-        .is_some_and(|v| v != current.to_string());
-
-    // Held so the Install button knows what it is installing without asking
-    // the network a second time and risking a different answer than the one
-    // the operator is looking at.
-    let mut ready = use_signal(|| None::<crate::update::Available>);
-
-    rsx! {
-        div { class: "rg-field",
-            span { class: "rg-field__label", "Version" }
-            span { class: "rg-field__hint", "vitrum {current} ({crate::update::TARGET})" }
-            span { class: "rg-field__hint",
-                match &daemon_version {
-                    Some(v) if daemon_is_stale => format!(
-                        "The daemon holding your sessions is still running {v}. Restarting it \
-                         picks up {current} and ends every session it is holding."
-                    ),
-                    Some(v) => format!("Daemon {v}, running your sessions."),
-                    None => "Not connected to a daemon.".to_string(),
-                }
-            }
-        }
-
-        div { class: "rg-field",
-            span { class: "rg-field__label", "Updates" }
-            span { class: "rg-field__control",
-                button {
-                    class: "rg-btn rg-btn--primary",
-                    r#type: "button",
-                    disabled: matches!(ui(), UpdateUi::Busy(_)),
-                    onclick: move |_| {
-                        ui.set(UpdateUi::Busy("checking".to_string()));
-                        ready.set(None);
-                        spawn(async move {
-                            // The check is a blocking HTTP round trip. On the
-                            // UI thread it would freeze every window in this
-                            // process, since they share one event loop.
-                            let got = crate::off_thread(crate::update::check).await;
-                            match got {
-                                Ok(status) => {
-                                    if let crate::update::Status::Ready(a) = &status {
-                                        ready.set(Some(a.clone()));
-                                    }
-                                    ui.set(UpdateUi::Answer(status));
-                                }
-                                Err(e) => ui.set(UpdateUi::Failed(format!("{e:#}"))),
-                            }
-                        });
-                    },
-                    "Check for updates"
-                }
-                if let Some(available) = ready() {
-                    button {
-                        class: "rg-btn rg-btn--primary",
-                        r#type: "button",
-                        disabled: matches!(ui(), UpdateUi::Busy(_)),
-                        onclick: move |_| {
-                            let available = available.clone();
-                            ui.set(UpdateUi::Busy("starting".to_string()));
-                            spawn(async move {
-                                let done = crate::off_thread(move || {
-                                    let dir = crate::update::install_dir()?;
-                                    if !crate::update::writable(&dir) {
-                                        anyhow::bail!(
-                                            "cannot write to {}. This copy was installed by \
-                                             something else; update it the same way.",
-                                            dir.display()
-                                        );
-                                    }
-                                    // Progress is discarded on this path on
-                                    // purpose: a signal cannot be written from
-                                    // the worker thread, and the steps take a
-                                    // few seconds in total. The button says
-                                    // what is happening; a per-step readout
-                                    // that flickers past is not worth a
-                                    // channel.
-                                    crate::update::install(&available, &dir, &mut |_| {})?;
-                                    Ok::<_, anyhow::Error>(available.version.to_string())
-                                })
-                                .await;
-                                match done {
-                                    Ok(v) => ui.set(UpdateUi::Installed(v)),
-                                    Err(e) => ui.set(UpdateUi::Failed(format!("{e:#}"))),
-                                }
-                            });
-                        },
-                        "Install {available.version}"
-                    }
-                }
-            }
-            span { class: "rg-field__hint",
-                match ui() {
-                    UpdateUi::Idle => format!(
-                        "Checks the latest release of {}, never the branch. \
-                         The download's checksum must match the one published beside it.",
-                        crate::update::REPO
-                    ),
-                    UpdateUi::Busy(step) => step,
-                    UpdateUi::Answer(crate::update::Status::UpToDate { version }) =>
-                        format!("vitrum {version} is the newest release."),
-                    UpdateUi::Answer(crate::update::Status::NoReleases) => format!(
-                        "No releases published for {} yet.", crate::update::REPO
-                    ),
-                    UpdateUi::Answer(crate::update::Status::NoAssetForPlatform { version, target }) =>
-                        format!(
-                            "vitrum {version} is available but published no build for {target}. \
-                             Build it from source."
-                        ),
-                    UpdateUi::Answer(crate::update::Status::Ready(a)) =>
-                        format!("vitrum {} is available. You have {current}.", a.version),
-                    UpdateUi::Installed(v) =>
-                        format!("Updated to {v}. {}", crate::update::AFTER_INSTALL),
-                    UpdateUi::Failed(why) => why,
-                }
-            }
-        }
-
-        div { class: "rg-field",
-            span { class: "rg-field__label", "From a terminal" }
-            span { class: "rg-field__hint",
-                "vitrum update --check   reports what is available and installs nothing. \
-                 vitrum update           installs it. Same code as the button above."
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -3416,18 +2358,6 @@ mod tests;
 /// visible without reading the tests.
 #[cfg(test)]
 mod round_trip;
-
-/// The saved-command editor, which is the only writer of `launch.json`'s
-/// preset list.
-///
-/// Every test here defends one invariant the new-session dialog is entitled to
-/// assume, because it consumes this list and cannot re-validate it: labels are
-/// unique and non-empty, ids are unique, a stored shortcut is one the matcher
-/// can match, and a stored working directory is either a real string or
-/// absent. A refused edit leaves the list byte-identical, so a validation
-/// failure can never be a partial write.
-#[cfg(test)]
-mod saved_commands;
 
 /// Captions in this sheet against what the product actually does.
 ///

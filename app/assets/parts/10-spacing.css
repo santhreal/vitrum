@@ -762,11 +762,6 @@
   gap: var(--rg-space-1);
 }
 
-.rg-pill__icon {
-  width: var(--rg-icon-sm);
-  height: var(--rg-space-4);
-}
-
 /* 16 tall on a 16 line box, so a badge cannot make its line taller than the
  * line box the card budgeted for it. */
 .rg-badge {

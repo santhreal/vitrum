@@ -121,5 +121,5 @@ pub use keyframe::{Keyframe, KeyframeIndex};
 pub use palette::Palette;
 pub use replay::Replay;
 pub use screen::{Charset, Charsets, Cursor, Modes, SavedCursor, Screen, ScrollRegion, TabStops};
-pub use stream::{Slices, Stream};
+pub use stream::{CompressedBlock, CompressedStreamArchive, CompressionAlgorithm, Slices, Stream};
 pub use timeline::{ChunkStamp, Marker, Timeline};

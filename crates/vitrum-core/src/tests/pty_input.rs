@@ -43,9 +43,13 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 async fn input_reaches_the_child_and_its_reply_returns() {
     let mgr = SessionManager::new(64 * 1024);
     let id = mgr
-        .spawn(shell_spec("set /p L= && cmd /V:ON /C echo got=!L!"))
+        .spawn(shell_spec("set /p L=ask: && cmd /V:ON /C echo got=!L!"))
         .expect("spawn");
     let mut c = collect(&mgr, id);
+    // The prompt is what makes the ordering observable. Writing straight after
+    // spawn types into a console whose child may not be reading yet, and the
+    // bytes are then echoed but never consumed.
+    c.until(|b| b.windows(4).any(|w| w == b"ask:")).await;
     mgr.write(id, b"hello\r\n").expect("write");
     c.until(|b| b.windows(9).any(|w| w == b"got=hello")).await;
     let hits = c.bytes.windows(9).filter(|w| *w == b"got=hello").count();

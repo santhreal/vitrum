@@ -19,12 +19,14 @@ async fn scrollback_is_recorded_with_no_subscriber() {
 
     let (from, bytes) = settled(&mgr, id, |_, b| contains(b, b"nobody-watching\r\n")).await;
     assert_eq!(from, 0);
-    // Ends with, not equals: ConPTY opens the stream with its own mode sets and
-    // an OSC 0 naming the shell, which are terminal bytes the frontend needs and
-    // therefore belong in the ring. What must hold on every platform is that the
-    // child's line was recorded, whole and last, with nobody listening.
+    // Contains, not equals or ends with: a pseudoconsole surrounds the child's
+    // bytes with its own, mode sets and a screen clear before it and an OSC 0
+    // naming the shell after it. Those are terminal bytes the frontend needs and
+    // therefore belong in the ring, and where the host puts them is the host's
+    // business. What must hold on every platform is that the child's line was
+    // recorded, whole, with nobody listening.
     assert!(
-        bytes.ends_with(b"nobody-watching\r\n"),
+        contains(&bytes, b"nobody-watching\r\n"),
         "recorded {bytes:?}"
     );
 }
@@ -74,7 +76,7 @@ async fn re_attaching_delivers_no_backlog() {
     assert_eq!(late.bytes, b"", "attach must not replay");
     let (_, bytes) = settled(&mgr, id, |_, b| contains(b, b"history\r\n")).await;
     assert!(
-        bytes.ends_with(b"history\r\n"),
+        contains(&bytes, b"history\r\n"),
         "history is still available: {bytes:?}"
     );
 }

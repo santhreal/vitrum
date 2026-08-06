@@ -1,5 +1,5 @@
 [package]
-name = "vitrum-app"
+name = "vitrum"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,17 +7,15 @@ authors.workspace = true
 repository.workspace = true
 description = "The vitrum desktop client: sidebar and terminal panes."
 
-# The binary is `vitrum`, not `vitrum-app`.
+# The package and the binary are both `vitrum`, so there is no `[[bin]]` here:
+# `src/main.rs` in a package named `vitrum` already produces `vitrum`.
 #
-# `--help` has always said `usage: vitrum`, every error message names
-# `vitrum`, and the README tells you to type `vitrum`. A crate named
-# `vitrum-app` producing a binary called `vitrum-app` made all of those
-# wrong the moment anybody followed them. The daemon is located beside
-# the executable or on PATH by its own name, so this rename does not
-# touch it.
-[[bin]]
-name = "vitrum"
-path = "src/main.rs"
+# It was `vitrum-app` for both. `--help` has always said `usage: vitrum`, every
+# error message names `vitrum`, and the README tells you to type `vitrum`, so
+# the old name made all of those wrong the moment anybody followed them. The
+# registry entry is `vitrum` for the same reason: `cargo install vitrum` should
+# install the thing this product is called. The daemon is located beside the
+# executable or on PATH by its own name, so none of this touches it.
 
 [dependencies]
 vitrum-proto = { workspace = true }

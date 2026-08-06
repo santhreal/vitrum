@@ -164,7 +164,7 @@ harness/run.sh memory 20
 
 What that does, in order, and why each step is there:
 
-1. Copies `vitrum-app` and `vitrum-server` from your release build. It refuses
+1. Copies `vitrum` and `vitrum-server` from your release build. It refuses
    to run if your build's glibc is newer than the host's, because the failure
    mode otherwise is an unexplained "version GLIBC_x.y not found" at launch.
 2. Takes `/tmp/vitrum-harness.lock`. Only one run at a time, because the client
@@ -183,7 +183,7 @@ What that does, in order, and why each step is there:
 5. Starts `vitrum-server` on port 7737. If anything is already listening it
    stops rather than measure against a daemon it did not start.
 6. Creates twenty sessions over the wire protocol, each running `/bin/bash -i`.
-7. Launches `vitrum-app` once with `vitrum://session/<first id>`, then launches
+7. Launches `vitrum` once with `vitrum://session/<first id>`, then launches
    it nineteen more times, each with the next session's URL. Those nineteen do
    not start a second copy of the program: they hand their request to the
    process holding the single-instance lock and exit. That is what puts twenty
@@ -620,7 +620,7 @@ Verified against `perfhost`, and the probe additionally against
   with. Verified for all three commands, each refusing in under a second.
 - The crash path, for a dependency that could slip past preflight. Observed
   before preflight existed, with `libwebkit2gtk-4.1.so.0` genuinely absent: the
-  run reports `vitrum-app exited before mapping its first window` in under
+  run reports `vitrum exited before mapping its first window` in under
   three seconds and exits non-zero, instead of waiting out the ninety-second
   window timeout.
 - Probing the second host, which is what caught two defects in this harness:

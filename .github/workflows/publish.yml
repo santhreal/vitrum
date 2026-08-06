@@ -2,8 +2,8 @@ name: publish
 
 # Publishes every crate to crates.io when a `v*` tag is pushed.
 #
-# `vitrum-dioxus-desktop` is first and `vitrum-app` is last, and both are here
-# on purpose. The fork exists because `[patch.crates-io]` is ignored by anyone
+# `vitrum-dioxus-desktop` is first and `vitrum` (the client) is last, and both
+# are here on purpose. The fork exists because `[patch.crates-io]` is ignored by anyone
 # installing from the registry, so publishing the client without publishing the
 # fork it depends on would fail to resolve, and publishing the fork without the
 # client would leave the whole rename pointless.
@@ -58,7 +58,7 @@ jobs:
         run: |
           for c in vitrum-dioxus-desktop vitrum-proto vitrum-fmt \
                    vitrum-search vitrum-grid vitrum-model vitrum-os \
-                   vitrum-core vitrum-server vitrum-replay vitrum-app; do
+                   vitrum-core vitrum-server vitrum-replay vitrum; do
             cargo package -p "$c" --allow-dirty
           done
 
@@ -69,7 +69,7 @@ jobs:
         run: |
           for c in vitrum-dioxus-desktop vitrum-proto vitrum-fmt \
                    vitrum-search vitrum-grid vitrum-model vitrum-os \
-                   vitrum-core vitrum-server vitrum-replay vitrum-app; do
+                   vitrum-core vitrum-server vitrum-replay vitrum; do
             # Already at this version: a re-run after a partial failure must
             # finish the list rather than stop on the crates that succeeded.
             if cargo publish -p "$c" 2>&1 | tee /tmp/out; then

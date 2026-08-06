@@ -650,6 +650,63 @@ mod tests {
         assert_eq!(checked, 7, "the set of internal dependencies changed");
     }
 
+    /// Every workspace member must be in both publish lists, in one order.
+    ///
+    /// `cargo publish` resolves each crate's dependencies from the registry, so
+    /// the list in `publish.yml` is a topological sort and a crate missing from
+    /// it is not a missing upload: it is the next crate in the list failing to
+    /// resolve, halfway through a release that cannot be rolled back because
+    /// crates.io does not free a version.
+    ///
+    /// The count is the check, not the names, because the failure being caught
+    /// is adding a member and not thinking about publishing at all. Names would
+    /// need this test edited by the same person in the same commit, which is
+    /// exactly the step that gets skipped.
+    ///
+    /// The two lists are compared to each other as well. A dry run that
+    /// packages a different set from what the publish step uploads verifies
+    /// nothing about the release it is supposed to be rehearsing.
+    #[test]
+    fn the_publish_workflow_covers_every_workspace_member() {
+        let manifest = include_str!("../../../Cargo.toml");
+        let members = manifest
+            .split("members = [")
+            .nth(1)
+            .and_then(|rest| rest.split_once(']'))
+            .expect("the workspace lists members")
+            .0
+            .lines()
+            .filter(|l| l.contains('"'))
+            .count();
+
+        let workflow = include_str!("../../../.github/workflows/publish.yml");
+        let lists: Vec<Vec<&str>> = workflow
+            .split("for c in ")
+            .skip(1)
+            .map(|rest| {
+                rest.split_once("; do")
+                    .expect("each loop closes")
+                    .0
+                    .split_whitespace()
+                    .filter(|w| *w != "\\")
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(lists.len(), 2, "publish.yml no longer has a dry run and a publish");
+        assert_eq!(
+            lists[0], lists[1],
+            "the dry run packages a different set of crates from the publish step"
+        );
+        assert_eq!(
+            lists[0].len(),
+            members,
+            "the workspace has {members} members and publish.yml names {}: {:?}",
+            lists[0].len(),
+            lists[0]
+        );
+    }
+
     /// A frame must survive the round trip byte for byte.
     ///
     /// This is the contract the whole data plane rests on: the terminal renders

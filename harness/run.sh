@@ -127,7 +127,7 @@ harness: no release build found. Looked in:
 $(printf '  %s\n' "${candidates[@]}")
 
 Build it here, then run this again:
-  cargo build --release -p vitrum-app -p vitrum-server
+  cargo build --release -p vitrum -p vitrum-server
 
 This script will not build for you. A measurement run that silently rebuilds
 is a measurement run that can report a binary you did not mean to test.

@@ -15,6 +15,7 @@
 //// visible without reading the tests.
 
 use super::*;
+use crate::state::OPACITY_MAX_PCT;
 use crate::state::{
     DaemonState, Grouping, Persisted, SettingsTab, UiStateLoad, WindowState, encode_ui_state,
     parse_ui_state,
@@ -247,11 +248,11 @@ fn the_settle_menu_can_express_the_shipped_default() {
 /// instance, and every one survives the file.
 #[test]
 fn terminal_controls() {
-    let base = term_options_script(&Settings::default().terminal);
+    let base = term_options_script(&Settings::default().terminal, OPACITY_MAX_PCT);
 
     let renderer = after_restart(|s| s.terminal.renderer = TermRenderer::Webgl);
     assert_eq!(renderer.terminal.renderer, TermRenderer::Webgl);
-    let script = term_options_script(&renderer.terminal);
+    let script = term_options_script(&renderer.terminal, OPACITY_MAX_PCT);
     assert!(script.contains(r#"renderer:"webgl""#), "{script}");
     assert_ne!(script, base);
 
@@ -259,17 +260,19 @@ fn terminal_controls() {
         s.terminal.font_family = "\"Fira Code\", ui-monospace, monospace".to_string();
     });
     assert!(
-        term_options_script(&font.terminal).contains("Fira Code"),
+        term_options_script(&font.terminal, OPACITY_MAX_PCT).contains("Fira Code"),
         "the font choice did not survive the file"
     );
 
     let size = after_restart(|s| s.terminal.font_size_px = 20);
     assert_eq!(size.terminal.font_size_px, 20);
-    assert!(term_options_script(&size.terminal).contains("fontSize:20"));
+    assert!(term_options_script(&size.terminal, OPACITY_MAX_PCT).contains("fontSize:20"));
 
     let scrollback = after_restart(|s| s.terminal.scrollback_lines = 20_000);
     assert_eq!(scrollback.terminal.scrollback_lines, 20_000);
-    assert!(term_options_script(&scrollback.terminal).contains("scrollback:20000"));
+    assert!(
+        term_options_script(&scrollback.terminal, OPACITY_MAX_PCT).contains("scrollback:20000")
+    );
 }
 
 // -- Notifications ------------------------------------------------------

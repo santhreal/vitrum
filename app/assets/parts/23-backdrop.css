@@ -1,0 +1,126 @@
+/* Translucency and the backdrop image.
+ *
+ * Loaded last so it can soften surfaces every earlier part painted opaque,
+ * without any of them needing to know this file exists.
+ *
+ * Everything here is inert by default. `ui/settings.rs::appearance_tokens`
+ * emits nothing for a default profile, so `--rg-opacity` is unset, every
+ * fallback below resolves to the opaque value, and the document is byte for
+ * byte the one this product served before the Appearance tab existed. That
+ * matters more than it sounds: `rgba` surfaces and a blurred layer are real
+ * compositing work, and an operator who never asked for either should not pay
+ * for the option.
+ *
+ * The layering, back to front:
+ *
+ *   1. the desktop, visible only where the window itself is see-through
+ *   2. `.rg-app::before`, the backdrop image, blurred
+ *   3. `.rg-app::after`, the scrim that keeps text readable over a photograph
+ *   4. the interface
+ *
+ * 2 and 3 are pseudo-elements of `.rg-app` rather than extra DOM because a
+ * backdrop is presentation with no content and no behaviour, and putting it in
+ * the tree would give every hit test two more boxes to walk. */
+
+:root {
+  /* Opaque unless the profile says otherwise. Every rule below reads through
+   * these, so the whole feature is off when they are unset. */
+  --rg-opacity: 1;
+  --rg-terminal-opacity: 1;
+  --rg-backdrop: none;
+  --rg-backdrop-size: cover;
+  --rg-backdrop-repeat: no-repeat;
+  --rg-backdrop-blur: 0px;
+  --rg-backdrop-dim: 0;
+}
+
+/* The window surface itself.
+ *
+ * `background-color` is set on both because they are two stacked opaque
+ * layers: leaving either one solid means the other's alpha shows nothing. The
+ * `color-mix` is against `transparent`, which is how a plain hex token becomes
+ * translucent without restating it as three channels; `--rg-bg` stays the one
+ * definition of the colour. */
+html,
+body {
+  background-color: color-mix(in srgb, var(--rg-bg) calc(var(--rg-opacity) * 100%), transparent);
+}
+
+.rg-app {
+  background-color: color-mix(in srgb, var(--rg-bg) calc(var(--rg-opacity) * 100%), transparent);
+}
+
+/* The backdrop image.
+ *
+ * `position: fixed` and not `absolute`: a blurred layer sized to the element
+ * would be re-rasterised on every layout of it, and this box never moves.
+ *
+ * The negative inset is the reason the blur looks right at the edges. A
+ * Gaussian blur samples outside the pixel it is writing, and at the boundary
+ * there is nothing to sample, so the browser fades toward transparent and
+ * leaves a soft vignette all the way around the window. Growing the layer by
+ * twice the blur radius puts that artefact off-screen. */
+.rg-app::before {
+  content: "";
+  position: fixed;
+  inset: calc(-2 * var(--rg-backdrop-blur));
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--rg-backdrop);
+  background-size: var(--rg-backdrop-size);
+  background-repeat: var(--rg-backdrop-repeat);
+  background-position: center center;
+  filter: blur(var(--rg-backdrop-blur));
+}
+
+/* The scrim.
+ *
+ * Separate from the image so the blur does not apply to it: blurring a flat
+ * colour costs the same as blurring a photograph and changes nothing. */
+.rg-app::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: color-mix(in srgb, var(--rg-bg) calc(var(--rg-backdrop-dim) * 100%), transparent);
+}
+
+/* Everything the operator interacts with sits above both layers.
+ *
+ * `.rg-app` is already `position: relative`, so a child with a positive
+ * z-index and no position of its own would still paint below the
+ * pseudo-elements. Giving the two structural children a stacking position is
+ * what puts the interface in front of its own wallpaper. */
+.rg-titlebar,
+.rg-body {
+  position: relative;
+  z-index: 1;
+}
+
+/* The terminal pane.
+ *
+ * Its own opacity, because the arrangement people actually want is an opaque
+ * shell with a see-through grid: the wallpaper reads behind the text while the
+ * sidebar stays legible. The cells themselves are xterm's to paint, and
+ * `ui/settings.rs::term_options_script` hands it a matching alpha. */
+.rg-terminal,
+.rg-pane {
+  background-color: color-mix(
+    in srgb,
+    var(--rg-terminal-bg) calc(var(--rg-terminal-opacity) * 100%),
+    transparent
+  );
+}
+
+/* A translucent window still needs its text to survive whatever is behind it.
+ *
+ * Only at the point where the desktop actually shows through, so an opaque
+ * profile keeps the flat surfaces the palette was designed for. */
+@supports (backdrop-filter: blur(1px)) {
+  .rg-sheet,
+  .rg-menu,
+  .rg-tooltip {
+    backdrop-filter: blur(var(--rg-space-3));
+  }
+}

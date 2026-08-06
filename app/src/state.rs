@@ -88,6 +88,7 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use vitrum_model::{
     Clock, Disposition, DispositionPolicy, Section, Selection, SelectionFacts, SessionView,
     SettleOverride, Snooze, SnoozePreset, SnoozePresetId,
@@ -99,7 +100,6 @@ use vitrum_proto::{
     Attention, IDLE_ATTENTION_MS, PROTOCOL_VERSION, ProjectId, ProjectInfo, SearchHit, ServerMsg,
     SessionId, SessionInfo, SessionStatus,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::inbox::{self, Group};
 
@@ -900,7 +900,6 @@ pub enum Density {
     Compact,
 }
 
-
 /// Which palette to paint, before the OS gets a say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -929,6 +928,115 @@ pub enum TermRenderer {
     /// genuinely prefer it, and disclosed with its idle cost in the settings
     /// row rather than presented as the fast option.
     Webgl,
+}
+
+/// How a backdrop image is fitted to the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackdropFit {
+    /// Fill the window, cropping the overflow. The default, because a
+    /// wallpaper picked for a screen is nearly always meant to fill it.
+    #[default]
+    Cover,
+    /// Fit the whole image, letterboxing the remainder.
+    Contain,
+    /// Repeat at native size. The one that suits a small texture.
+    Tile,
+    /// Native size, centred, no repeat.
+    Center,
+}
+
+impl BackdropFit {
+    /// The `background-size` and `background-repeat` pair for this fit.
+    #[must_use]
+    pub fn css(self) -> (&'static str, &'static str) {
+        match self {
+            BackdropFit::Cover => ("cover", "no-repeat"),
+            BackdropFit::Contain => ("contain", "no-repeat"),
+            BackdropFit::Tile => ("auto", "repeat"),
+            BackdropFit::Center => ("auto", "no-repeat"),
+        }
+    }
+}
+
+/// Below this the window is too faint to read or to aim at.
+///
+/// A floor and not a suggestion. Opacity is the one appearance setting that
+/// can hide the control that would undo it: at 0 the operator has an invisible
+/// window, no settings modal to find, and no reason to suspect the config file.
+pub const OPACITY_MIN_PCT: u8 = 20;
+/// Fully opaque, and the default.
+pub const OPACITY_MAX_PCT: u8 = 100;
+/// The widest blur worth offering. Past this the image is a flat colour and
+/// the GPU is doing the work of producing one.
+pub const BACKDROP_BLUR_MAX_PX: u8 = 64;
+
+/// Window translucency and the backdrop image behind the interface.
+///
+/// Separate from [`ThemePref`] because they answer different questions. A
+/// theme is which palette to paint; this is how much of the desktop shows
+/// through it, and an operator who rices their desktop wants the second
+/// without giving up the first.
+///
+/// Chrome and terminal carry their own opacity. The common arrangement is an
+/// opaque shell with a translucent grid, so the wallpaper reads behind the
+/// text and the sidebar stays legible; one shared number cannot express it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppearancePrefs {
+    /// Opacity of the window chrome, percent.
+    pub opacity_pct: u8,
+    /// Opacity of the terminal grid, percent, independent of the chrome.
+    pub terminal_opacity_pct: u8,
+    /// Absolute path to a backdrop image. Empty means none.
+    pub backdrop: String,
+    pub backdrop_fit: BackdropFit,
+    /// Gaussian blur over the backdrop, in CSS pixels.
+    pub backdrop_blur_px: u8,
+    /// A scrim between the backdrop and the interface, percent. This is what
+    /// keeps text readable over a bright photograph, so it is offered beside
+    /// the image rather than left for the operator to solve with opacity.
+    pub backdrop_dim_pct: u8,
+}
+
+impl Default for AppearancePrefs {
+    fn default() -> Self {
+        AppearancePrefs {
+            opacity_pct: OPACITY_MAX_PCT,
+            terminal_opacity_pct: OPACITY_MAX_PCT,
+            backdrop: String::new(),
+            backdrop_fit: BackdropFit::default(),
+            backdrop_blur_px: 0,
+            backdrop_dim_pct: 0,
+        }
+    }
+}
+
+impl AppearancePrefs {
+    /// True when anything here needs the window itself to be see-through.
+    ///
+    /// A backdrop image does NOT: it is painted inside the window, so it needs
+    /// no help from the compositor. Only an opacity below 100 does, and the
+    /// distinction matters because a transparent window is the part that
+    /// depends on the desktop having a compositor at all.
+    #[must_use]
+    pub fn needs_transparent_window(&self) -> bool {
+        self.opacity_pct < OPACITY_MAX_PCT || self.terminal_opacity_pct < OPACITY_MAX_PCT
+    }
+
+    /// Clamp every value into the range the interface can survive.
+    ///
+    /// Applied on load, not just at the controls. The sliders cannot produce
+    /// an out-of-range value; a hand-edited `ui.json` is the path that
+    /// actually produces an unusable window, and it does not go through them.
+    pub fn clamp(&mut self) {
+        self.opacity_pct = self.opacity_pct.clamp(OPACITY_MIN_PCT, OPACITY_MAX_PCT);
+        self.terminal_opacity_pct = self
+            .terminal_opacity_pct
+            .clamp(OPACITY_MIN_PCT, OPACITY_MAX_PCT);
+        self.backdrop_blur_px = self.backdrop_blur_px.min(BACKDROP_BLUR_MAX_PX);
+        self.backdrop_dim_pct = self.backdrop_dim_pct.min(100);
+    }
 }
 
 /// Terminal preferences.
@@ -1057,6 +1165,7 @@ pub struct Settings {
     /// normal case, not an exotic one.
     pub text_scale_pct: u16,
     pub terminal: TerminalPrefs,
+    pub appearance: AppearancePrefs,
     pub notifications: NotifyPrefs,
     pub keyboard: KeyboardPrefs,
     /// Daemon URL override. Empty means "use whatever the command line said",
@@ -1088,6 +1197,7 @@ impl Default for Settings {
             theme: ThemePref::default(),
             text_scale_pct: 100,
             terminal: TerminalPrefs::default(),
+            appearance: AppearancePrefs::default(),
             notifications: NotifyPrefs::default(),
             keyboard: KeyboardPrefs::default(),
             daemon_url: String::new(),
@@ -1355,15 +1465,16 @@ impl FoldedProjects {
         self.from
             .extend(projects.iter().map(|p| (p.id, p.root.clone())));
         self.groups.clear();
-        self.groups
-            .extend(folded.groups().iter().map(|group| FoldedGroup {
+        self.groups.extend(folded.groups().iter().map(|group| {
+            FoldedGroup {
                 key: group.key.clone(),
                 id: group.id,
                 lead: projects
                     .iter()
                     .position(|p| core::ptr::eq(p, group.lead))
                     .expect("a folded group's lead is one of the projects it was folded from"),
-            }));
+            }
+        }));
         self.index.clear();
         self.index.extend(
             projects
@@ -1676,7 +1787,9 @@ impl DaemonState {
                 bytes: data,
                 more,
             },
-            ServerMsg::Error { session, message, .. } => Broadcast::Error { session, message },
+            ServerMsg::Error {
+                session, message, ..
+            } => Broadcast::Error { session, message },
             // Folded, not fanned out, for the reason on the field. The
             // broadcast is `None` because there is no EXTRA window reaction to
             // run: each window owns its own `UiState` and the write itself is
@@ -2779,7 +2892,6 @@ impl WindowState {
         !self.filter.trim().is_empty() && tree_is_empty
     }
 
-
     /// Clamp and store a dragged sidebar width, with the window's own width as
     /// an extra ceiling.
     ///
@@ -2850,9 +2962,7 @@ impl WindowState {
             let bucket_collapsed = group.collapsible() && self.collapsed.contains(&group.key);
             [Section::Active, Section::Snoozed, Section::Settled]
                 .into_iter()
-                .filter(move |section| {
-                    !bucket_collapsed && self.section_open(group.key, *section)
-                })
+                .filter(move |section| !bucket_collapsed && self.section_open(group.key, *section))
                 .flat_map(move |section| group.section(section).iter().copied())
         })
     }
@@ -3594,7 +3704,6 @@ impl UiState {
         self.window.set_workspace(&mut self.daemon, to, now_ms)
     }
 
-
     /// Create a workspace. It starts blank; nothing moves into it by itself.
     pub fn create_workspace(&mut self, name: &str) -> Result<WorkspaceId, WorkspaceError> {
         self.daemon.workspaces.create(name)
@@ -3625,7 +3734,6 @@ impl UiState {
     ) -> Result<usize, WorkspaceError> {
         self.daemon.move_to_folder(ids, folder)
     }
-
 
     /// Switch pages inside an already-open settings modal. A no-op when it is
     /// not open, so a stray shortcut cannot summon it sideways.
@@ -3912,6 +4020,9 @@ pub fn parse_ui_state(text: &str) -> UiStateLoad {
     match serde_json::from_value::<Persisted>(value) {
         Ok(mut doc) => {
             doc.workspaces.normalize();
+            // Repaired here rather than at the controls, because this is the
+            // path a hand-edited file takes and the controls are not on it.
+            doc.settings.appearance.clamp();
             UiStateLoad::Loaded(Box::new(doc))
         }
         Err(e) => UiStateLoad::Corrupt {
@@ -4114,7 +4225,6 @@ pub struct MenuState {
     pub y: f64,
     pub target: SessionId,
 }
-
 
 /// Starting values for the new-session dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]

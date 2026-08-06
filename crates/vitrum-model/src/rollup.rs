@@ -256,24 +256,6 @@ pub fn rollup_all(
     rollups
 }
 
-/// Roll up every project present in `rows`, returning an O(1) hash map indexed by `ProjectId`.
-pub fn rollup_all_mapped(
-    rows: &[SessionView],
-    clock: Clock,
-    policy: DispositionPolicy,
-) -> FxHashMap<ProjectId, ProjectRollup> {
-    let mut map: FxHashMap<ProjectId, ProjectRollup> = FxHashMap::default();
-    for row in rows {
-        let project_id = row.project_id();
-        map.entry(project_id)
-            .or_insert_with(|| ProjectRollup::empty(project_id))
-            .absorb(row, clock, policy);
-    }
-    for rollup in map.values_mut() {
-        rollup.indicator = rollup.counts.most_urgent();
-    }
-    map
-}
 
 #[cfg(test)]
 mod tests {
@@ -653,20 +635,5 @@ mod tests {
             rollup_project(vitrum_proto::ProjectId(1), &rows, clock(), policy()),
             rollup_rows(vitrum_proto::ProjectId(1), &mine, clock(), policy())
         );
-    }
-    #[test]
-    fn rollup_all_mapped_matches_rollup_all() {
-        let rows = vec![
-            ViewBuilder::new(1).project(10).running().waiting(Some(true)).build(),
-            ViewBuilder::new(2).project(20).running().waiting(Some(false)).build(),
-            ViewBuilder::new(3).project(10).exited(0).build(),
-        ];
-        let rollups_vec = rollup_all(&rows, clock(), policy());
-        let rollups_map = rollup_all_mapped(&rows, clock(), policy());
-
-        assert_eq!(rollups_vec.len(), 2);
-        assert_eq!(rollups_map.len(), 2);
-        assert_eq!(rollups_map.get(&vitrum_proto::ProjectId(10)), Some(&rollups_vec[0]));
-        assert_eq!(rollups_map.get(&vitrum_proto::ProjectId(20)), Some(&rollups_vec[1]));
     }
 }

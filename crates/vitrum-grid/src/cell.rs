@@ -62,6 +62,33 @@ impl Rgba {
             a: bytes[3],
         }
     }
+
+    /// Return the colour packed into a single 32-bit integer.
+    #[must_use]
+    #[inline]
+    pub const fn to_u32(self) -> u32 {
+        u32::from_ne_bytes([self.r, self.g, self.b, self.a])
+    }
+
+    /// Rebuild a colour from a packed 32-bit integer.
+    #[must_use]
+    #[inline]
+    pub const fn from_u32(packed: u32) -> Self {
+        let bytes = packed.to_ne_bytes();
+        Self {
+            r: bytes[0],
+            g: bytes[1],
+            b: bytes[2],
+            a: bytes[3],
+        }
+    }
+
+    /// Fast 32-bit integer colour equality check.
+    #[must_use]
+    #[inline]
+    pub const fn eq_fast(self, other: Self) -> bool {
+        self.to_u32() == other.to_u32()
+    }
 }
 
 /// Rendition bits for one cell.
@@ -243,6 +270,7 @@ impl Default for Style {
 
 /// One grid cell: exactly 16 bytes, no heap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(C, align(4))]
 pub struct Cell {
     /// The character drawn here. `'\0'` for a [`CellSlot::WideTail`], which
     /// draws nothing.
@@ -255,6 +283,8 @@ pub struct Cell {
     pub attrs: Attrs,
     /// Which column of a (possibly wide) character this is.
     pub slot: CellSlot,
+    /// Explicit 2-byte alignment padding to ensure deterministic 16-byte zero-hole layout.
+    pub _pad: [u8; 2],
 }
 
 impl Cell {
@@ -267,6 +297,7 @@ impl Cell {
             bg: style.bg,
             attrs: style.attrs,
             slot: CellSlot::Single,
+            _pad: [0, 0],
         }
     }
 
@@ -283,6 +314,7 @@ impl Cell {
             bg: style.bg,
             attrs: style.attrs,
             slot: CellSlot::Single,
+            _pad: [0, 0],
         }
     }
 

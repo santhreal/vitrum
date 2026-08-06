@@ -456,6 +456,7 @@ impl CellGrid {
                     bg: style.bg,
                     attrs: style.attrs,
                     slot: CellSlot::Single,
+                    _pad: [0, 0],
                 },
             );
         } else {
@@ -469,6 +470,7 @@ impl CellGrid {
                     bg: style.bg,
                     attrs: style.attrs,
                     slot: CellSlot::WideHead,
+                    _pad: [0, 0],
                 },
             );
             self.store(
@@ -481,6 +483,7 @@ impl CellGrid {
                     bg: style.bg,
                     attrs: style.attrs,
                     slot: CellSlot::WideTail,
+                    _pad: [0, 0],
                 },
             );
         }

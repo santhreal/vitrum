@@ -149,6 +149,260 @@ impl<'a> Stream<'a> {
             .and_then(|slice| slice.first().copied())
     }
 }
+/// Compression algorithms supported for log stream archiving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompressionAlgorithm {
+    /// Fast run-length byte packing tailored for terminal VT escape sequences and repeated space fills.
+    #[default]
+    RleDeflate,
+    /// Chunked frame compression simulating Zstd frame headers and checksum verification.
+    ZstdChunked,
+}
+
+/// A individual compressed block in a stream archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompressedBlock {
+    /// Starting sequence number of this block.
+    pub seq_start: u64,
+    /// Uncompressed length of data in bytes.
+    pub uncompressed_len: u32,
+    /// CRC32 / FNV checksum for data integrity verification.
+    pub checksum: u32,
+    /// Compressed payload bytes.
+    pub payload: Vec<u8>,
+}
+
+/// High-throughput compressed stream archive for session log storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompressedStreamArchive {
+    /// Initial base sequence.
+    pub base_seq: u64,
+    /// Final head sequence.
+    pub head_seq: u64,
+    /// Total uncompressed length in bytes.
+    pub uncompressed_len: u64,
+    /// Total compressed length in bytes.
+    pub compressed_len: u64,
+    /// Algorithm used to compress the blocks.
+    pub algorithm: CompressionAlgorithm,
+    /// Sequence-indexed compressed blocks.
+    pub blocks: Vec<CompressedBlock>,
+}
+
+impl CompressedStreamArchive {
+    /// Compression ratio achieved (uncompressed / compressed).
+    #[must_use]
+    pub fn compression_ratio(&self) -> f64 {
+        if self.compressed_len == 0 {
+            1.0
+        } else {
+            self.uncompressed_len as f64 / self.compressed_len as f64
+        }
+    }
+
+    /// Verify integrity of all blocks via checksum validation.
+    #[must_use]
+    pub fn verify_checksums(&self) -> bool {
+        for block in &self.blocks {
+            let actual = compute_checksum(&block.payload);
+            if actual != block.checksum {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Decompress the whole archive back into raw bytes and base_seq.
+    pub fn decompress(&self) -> crate::error::Result<(u64, Vec<u8>)> {
+        let mut result = Vec::with_capacity(self.uncompressed_len as usize);
+        for block in &self.blocks {
+            let decompressed = decompress_block(block, self.algorithm)?;
+            result.extend_from_slice(&decompressed);
+        }
+        Ok((self.base_seq, result))
+    }
+
+    /// Random-access targeted decompression of a specific sequence range.
+    pub fn decompress_range(&self, range: Range<u64>) -> crate::error::Result<Vec<u8>> {
+        let mut result = Vec::new();
+        for block in &self.blocks {
+            let block_end = block.seq_start + block.uncompressed_len as u64;
+            if block.seq_start < range.end && block_end > range.start {
+                let decompressed = decompress_block(block, self.algorithm)?;
+                let slice_start = range.start.saturating_sub(block.seq_start) as usize;
+                let slice_end = (range.end.saturating_sub(block.seq_start) as usize).min(decompressed.len());
+                if slice_start < decompressed.len() && slice_start < slice_end {
+                    result.extend_from_slice(&decompressed[slice_start..slice_end]);
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+impl<'a> Stream<'a> {
+    /// Compress the stream into a [`CompressedStreamArchive`] for high-throughput log archiving.
+    pub fn compress_archive(
+        &self,
+        algorithm: CompressionAlgorithm,
+        block_size: usize,
+    ) -> CompressedStreamArchive {
+        let block_size = block_size.max(256);
+        let mut blocks = Vec::new();
+        let total_uncompressed = self.len();
+        let base_seq = self.base_seq();
+        let head_seq = self.head_seq();
+
+        let full_data = self.to_vec(base_seq..head_seq);
+        let mut offset = 0usize;
+        let mut total_compressed = 0u64;
+
+        while offset < full_data.len() {
+            let end = (offset + block_size).min(full_data.len());
+            let chunk = &full_data[offset..end];
+            let seq_start = base_seq + offset as u64;
+
+            let payload = compress_block(chunk, algorithm);
+            let checksum = compute_checksum(&payload);
+            total_compressed += payload.len() as u64;
+
+            blocks.push(CompressedBlock {
+                seq_start,
+                uncompressed_len: chunk.len() as u32,
+                checksum,
+                payload,
+            });
+
+            offset = end;
+        }
+
+        CompressedStreamArchive {
+            base_seq,
+            head_seq,
+            uncompressed_len: total_uncompressed,
+            compressed_len: total_compressed,
+            algorithm,
+            blocks,
+        }
+    }
+}
+
+/// Helper function to compute lightweight FNV-1a 32-bit checksum.
+fn compute_checksum(data: &[u8]) -> u32 {
+    let mut hash = 0x811c9dc5u32;
+    for &byte in data {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
+}
+
+/// Compress a block payload using specified algorithm.
+fn compress_block(data: &[u8], algorithm: CompressionAlgorithm) -> Vec<u8> {
+    match algorithm {
+        CompressionAlgorithm::RleDeflate => {
+            let mut out = Vec::with_capacity(data.len());
+            out.push(b'R'); // Header marker
+            let mut i = 0;
+            while i < data.len() {
+                let byte = data[i];
+                let mut count = 1u8;
+                while i + (count as usize) < data.len() && data[i + count as usize] == byte && count < 255 {
+                    count += 1;
+                }
+                if count > 3 || byte == 0x00 || byte == b' ' {
+                    out.push(0x00); // RLE escape tag
+                    out.push(count);
+                    out.push(byte);
+                    i += count as usize;
+                } else {
+                    out.push(byte);
+                    i += 1;
+                }
+            }
+            out
+        }
+        CompressionAlgorithm::ZstdChunked => {
+            let mut out = Vec::with_capacity(data.len() + 12);
+            out.extend_from_slice(b"ZSTD");
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            // Fast LZ-window style compression simulation for Zstd chunk frame
+            let mut i = 0;
+            while i < data.len() {
+                let byte = data[i];
+                let mut run = 1u8;
+                while i + (run as usize) < data.len() && data[i + run as usize] == byte && run < 255 {
+                    run += 1;
+                }
+                if run > 2 {
+                    out.push(0xFF);
+                    out.push(run);
+                    out.push(byte);
+                    i += run as usize;
+                } else {
+                    out.push(byte);
+                    i += 1;
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Decompress a block payload using specified algorithm.
+fn decompress_block(block: &CompressedBlock, algorithm: CompressionAlgorithm) -> crate::error::Result<Vec<u8>> {
+    let actual_checksum = compute_checksum(&block.payload);
+    if actual_checksum != block.checksum {
+        return Err(crate::error::Error::StreamCompression(
+            "Compressed block checksum verification failed".to_string(),
+        ));
+    }
+
+    let mut out = Vec::with_capacity(block.uncompressed_len as usize);
+
+    match algorithm {
+        CompressionAlgorithm::RleDeflate => {
+            if block.payload.first() != Some(&b'R') {
+                return Err(crate::error::Error::StreamCompression(
+                    "Invalid RLE block header".to_string(),
+                ));
+            }
+            let mut i = 1;
+            while i < block.payload.len() {
+                if block.payload[i] == 0x00 && i + 2 < block.payload.len() {
+                    let count = block.payload[i + 1] as usize;
+                    let byte = block.payload[i + 2];
+                    out.resize(out.len() + count, byte);
+                    i += 3;
+                } else {
+                    out.push(block.payload[i]);
+                    i += 1;
+                }
+            }
+        }
+        CompressionAlgorithm::ZstdChunked => {
+            if block.payload.len() < 8 || &block.payload[0..4] != b"ZSTD" {
+                return Err(crate::error::Error::StreamCompression(
+                    "Invalid ZSTD block header".to_string(),
+                ));
+            }
+            let mut i = 8;
+            while i < block.payload.len() {
+                if block.payload[i] == 0xFF && i + 2 < block.payload.len() {
+                    let count = block.payload[i + 1] as usize;
+                    let byte = block.payload[i + 2];
+                    out.resize(out.len() + count, byte);
+                    i += 3;
+                } else {
+                    out.push(block.payload[i]);
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
 
 /// Borrowed runs of a seq range, yielded in stream order.
 ///

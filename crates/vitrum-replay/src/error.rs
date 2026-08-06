@@ -40,6 +40,8 @@ pub enum Error {
     ZeroStride,
     /// An asciicast recording could not be read.
     Cast(CastError),
+    /// Stream compression or archive decoding error.
+    StreamCompression(String),
 }
 
 impl fmt::Display for Error {
@@ -61,6 +63,7 @@ impl fmt::Display for Error {
                  the whole screen once per byte"
             ),
             Self::Cast(inner) => write!(f, "asciicast: {inner}"),
+            Self::StreamCompression(msg) => write!(f, "stream compression error: {msg}"),
         }
     }
 }

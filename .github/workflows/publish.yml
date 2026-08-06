@@ -2,11 +2,12 @@ name: publish
 
 # Publishes every crate to crates.io when a `v*` tag is pushed.
 #
-# `vitrum-dioxus-desktop` is first and `vitrum` (the client) is last, and both
-# are here on purpose. The fork exists because `[patch.crates-io]` is ignored by anyone
-# installing from the registry, so publishing the client without publishing the
-# fork it depends on would fail to resolve, and publishing the fork without the
-# client would leave the whole rename pointless.
+# The two forks, `vitrum-dioxus-desktop` and `vitrum-portable-pty`, come first
+# and `vitrum` (the client) is last, and all of that is on purpose. A fork exists
+# because `[patch.crates-io]` is ignored by anyone installing from the registry,
+# so publishing a crate without publishing the fork it depends on would fail to
+# resolve, and publishing a fork without its consumer would leave the whole
+# rename pointless.
 #
 # Order is not cosmetic: cargo resolves each crate's dependencies from the
 # registry at publish time, so a crate whose dependency is not up there yet is
@@ -56,9 +57,9 @@ jobs:
       - name: dry run
         if: inputs.dry_run
         run: |
-          for c in vitrum-dioxus-desktop vitrum-proto vitrum-fmt \
-                   vitrum-search vitrum-grid vitrum-model vitrum-os \
-                   vitrum-core vitrum-server vitrum-replay vitrum; do
+          for c in vitrum-dioxus-desktop vitrum-portable-pty vitrum-proto \
+                   vitrum-fmt vitrum-search vitrum-grid vitrum-model \
+                   vitrum-os vitrum-core vitrum-server vitrum-replay vitrum; do
             cargo package -p "$c" --allow-dirty
           done
 
@@ -67,9 +68,9 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          for c in vitrum-dioxus-desktop vitrum-proto vitrum-fmt \
-                   vitrum-search vitrum-grid vitrum-model vitrum-os \
-                   vitrum-core vitrum-server vitrum-replay vitrum; do
+          for c in vitrum-dioxus-desktop vitrum-portable-pty vitrum-proto \
+                   vitrum-fmt vitrum-search vitrum-grid vitrum-model \
+                   vitrum-os vitrum-core vitrum-server vitrum-replay vitrum; do
             # Already at this version: a re-run after a partial failure must
             # finish the list rather than stop on the crates that succeeded.
             if cargo publish -p "$c" 2>&1 | tee /tmp/out; then

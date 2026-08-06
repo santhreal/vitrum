@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -113,13 +113,6 @@ pub(crate) struct Session {
     /// honest way to show that nothing here runs on a timer: a session left
     /// alone must hold this count still forever.
     probes: AtomicU64,
-    /// How many times the pseudoconsole's startup query has been answered.
-    ///
-    /// Diagnostic, and Windows only in practice. A session that produces its
-    /// preamble and then nothing is either waiting for an answer that was never
-    /// sent or waiting for something else entirely, and those two have different
-    /// fixes. Shared with the reader thread, which is where the answer is sent.
-    handshakes: Arc<AtomicU64>,
     /// Raised when the operator does something the probe's last answer may not
     /// survive, so a settled session is re-examined without a periodic tick.
     activity: Notify,
@@ -451,11 +444,6 @@ impl SessionManager {
         let (status_tx, _) = watch::channel(SessionStatus::Starting);
         let (observations_tx, _) = watch::channel(0u64);
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        // The reader answers the pseudoconsole's startup query on Windows, so
-        // it needs a way back into the pty.
-        let handshake_tx = input_tx.clone();
-        let handshakes = Arc::new(AtomicU64::new(0));
-        let reader_handshakes = Arc::clone(&handshakes);
 
         let info = SessionInfo {
             id,
@@ -492,7 +480,6 @@ impl SessionManager {
             viewers: Mutex::new(BTreeMap::new()),
             resizes: AtomicU64::new(0),
             probes: AtomicU64::new(0),
-            handshakes,
             activity: Notify::new(),
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(killer),
@@ -509,16 +496,7 @@ impl SessionManager {
         // shutdown wait on a read that only ends when the child exits.
         std::thread::Builder::new()
             .name(format!("vitrum-pty-read-{}", id.0))
-            .spawn(move || {
-                read_loop(
-                    reader,
-                    child,
-                    raw_tx,
-                    exit_tx,
-                    handshake_tx,
-                    reader_handshakes,
-                )
-            })
+            .spawn(move || read_loop(reader, child, raw_tx, exit_tx))
             .context("starting the pty reader thread")?;
 
         std::thread::Builder::new()
@@ -742,17 +720,6 @@ impl SessionManager {
         Some(self.get(id)?.probes.load(Ordering::Relaxed))
     }
 
-    /// How many times this session answered the pseudoconsole's startup query.
-    ///
-    /// Diagnostic, and Windows only in practice. `PSEUDOCONSOLE_INHERIT_CURSOR`
-    /// makes conhost withhold the child until the cursor is reported, so a
-    /// session that produced its preamble and then stopped is a different fault
-    /// depending on whether this is zero or one: nothing answered, or something
-    /// answered and the host wanted more than an answer.
-    pub fn handshake_count(&self, id: SessionId) -> Option<u64> {
-        Some(self.get(id)?.handshakes.load(Ordering::Relaxed))
-    }
-
     /// Process id of this session's child, while that child is still live.
     ///
     /// `None` covers three distinct cases and deliberately collapses them,
@@ -861,8 +828,6 @@ fn read_loop(
     child: Box<dyn portable_pty::Child + Send + Sync>,
     out: mpsc::UnboundedSender<Vec<u8>>,
     exit: oneshot::Sender<Option<i32>>,
-    input: mpsc::UnboundedSender<Vec<u8>>,
-    handshakes: Arc<AtomicU64>,
 ) {
     if let Err(e) = std::thread::Builder::new()
         .name("vitrum-pty-wait".to_string())
@@ -876,41 +841,12 @@ fn read_loop(
         // ever answer and the session cannot report an exit code.
         tracing::warn!(error = %e, "no thread to reap the pty child");
     }
-    // Only Windows has a handshake to answer. On Unix this is false from the
-    // start and the loop below is byte for byte what it always was.
-    let mut awaiting_handshake = cfg!(windows);
-    #[cfg(not(windows))]
-    let _ = &input;
-    // Set while an answer has been sent and nothing has arrived since. The
-    // watchdog reads it to decide whether the answer was heard.
-    let answered_nothing_since = Arc::new(AtomicBool::new(false));
     let mut buf = vec![0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let mut bytes = &buf[..n];
-                let stripped;
-                let mut just_answered = false;
-                if awaiting_handshake {
-                    if let Some(rest) = take_cursor_query(bytes) {
-                        awaiting_handshake = false;
-                        just_answered = true;
-                        answer_cursor_query(&input, &handshakes, &answered_nothing_since);
-                        stripped = rest;
-                        bytes = &stripped;
-                    }
-                }
-                // The read that carried the query usually carries the host's
-                // preamble too, and forwarding that is not the host acting on an
-                // answer it has not seen yet. Only a later read acknowledges.
-                if !just_answered {
-                    answered_nothing_since.store(false, Ordering::Relaxed);
-                }
-                if bytes.is_empty() {
-                    continue;
-                }
-                if out.send(bytes.to_vec()).is_err() {
+                if out.send(buf[..n].to_vec()).is_err() {
                     break;
                 }
             }
@@ -919,105 +855,6 @@ fn read_loop(
             // the same thing here, which is that the child is done writing.
             Err(_) => break,
         }
-    }
-}
-
-/// The cursor position report ConPTY asks for before it will run a child.
-///
-/// portable-pty always creates the pseudoconsole with
-/// `PSEUDOCONSOLE_INHERIT_CURSOR`, so conhost emits this query and withholds
-/// every later byte until something answers it. A terminal emulator answers
-/// from its own grid. A daemon has no grid, and a session with no window
-/// attached is the normal case here, so nothing ever replied and every Windows
-/// session produced these four bytes and then hung forever.
-///
-/// The query is not reliably the first thing on the wire. Some hosts lead with
-/// their own preamble, mode sets and an OSC 0 naming the shell, and the query
-/// then turns up in a later read or in the middle of one. So the handshake stays
-/// open until the query is actually seen rather than being given a single read
-/// to appear in, which is why a session could still hang after four bytes had
-/// been answered somewhere else.
-pub(crate) const CONPTY_CURSOR_QUERY: &[u8] = b"\x1b[6n";
-
-/// The read with the handshake query removed, if this read carried it.
-///
-/// Removed rather than forwarded, and searched rather than matched as a prefix:
-/// a host that leads with its own preamble puts the query somewhere in the
-/// middle of a read, and a caller that only looked at the front would forward it
-/// to whichever window attached, leave the host unanswered, and hang the session
-/// after the preamble.
-pub(crate) fn take_cursor_query(read: &[u8]) -> Option<Vec<u8>> {
-    let at = read
-        .windows(CONPTY_CURSOR_QUERY.len())
-        .position(|window| window == CONPTY_CURSOR_QUERY)?;
-    let mut rest = Vec::with_capacity(read.len() - CONPTY_CURSOR_QUERY.len());
-    rest.extend_from_slice(&read[..at]);
-    rest.extend_from_slice(&read[at + CONPTY_CURSOR_QUERY.len()..]);
-    Some(rest)
-}
-
-/// The answer: the cursor is at the origin, because the session starts empty.
-///
-/// Consumed here rather than forwarded, because it is the console host's
-/// handshake and not the child's output. Passing it on would also invite a
-/// second answer from whichever window attached first.
-const CONPTY_CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
-
-/// How long to wait for the host to act on an answer before answering again.
-const HANDSHAKE_RETRY: Duration = Duration::from_millis(250);
-
-/// How many times to repeat the answer before giving up on being heard.
-///
-/// Bounded because a host that has not moved after two seconds is not waiting on
-/// this, and because every repeat that is not needed becomes stray input for the
-/// child. In a healthy session the count is zero: output arrives and the loop
-/// below stops on its first look.
-const HANDSHAKE_ATTEMPTS: u32 = 8;
-
-/// Report the cursor to the console host, and keep reporting it until the host
-/// does something.
-///
-/// One answer is not reliably enough. The query is emitted while the
-/// pseudoconsole is still being set up, and an answer written into the input pipe
-/// at that moment can be discarded, which leaves the host waiting for a report it
-/// already asked for and never asks for again. The session then delivers its
-/// preamble and stops forever, and whether it happens depends on scheduling: on a
-/// loaded machine a few sessions out of a few dozen would hang while the rest ran
-/// normally, which is what a dropped answer looks like from outside.
-///
-/// So the answer is treated as unacknowledged until output moves. Any byte from
-/// the host is the acknowledgement, because everything after the query is
-/// withheld until the report lands.
-fn answer_cursor_query(
-    input: &mpsc::UnboundedSender<Vec<u8>>,
-    handshakes: &Arc<AtomicU64>,
-    unheard: &Arc<AtomicBool>,
-) {
-    let _ = input.send(CONPTY_CURSOR_REPLY.to_vec());
-    handshakes.fetch_add(1, Ordering::Relaxed);
-    unheard.store(true, Ordering::Relaxed);
-
-    let input = input.clone();
-    let handshakes = Arc::clone(handshakes);
-    let unheard = Arc::clone(unheard);
-    if let Err(e) = std::thread::Builder::new()
-        .name("vitrum-pty-handshake".to_string())
-        .spawn(move || {
-            for _ in 0..HANDSHAKE_ATTEMPTS {
-                std::thread::sleep(HANDSHAKE_RETRY);
-                if !unheard.load(Ordering::Relaxed) {
-                    return;
-                }
-                if input.send(CONPTY_CURSOR_REPLY.to_vec()).is_err() {
-                    return;
-                }
-                handshakes.fetch_add(1, Ordering::Relaxed);
-            }
-            tracing::warn!("the pseudoconsole never acted on a cursor report");
-        })
-    {
-        // One answer has already gone out, so this only costs the retries.
-        tracing::warn!(error = %e, "no thread to repeat the pty cursor report");
     }
 }
 

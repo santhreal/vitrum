@@ -295,9 +295,8 @@ pub(crate) async fn settled(
         }
         assert!(
             Instant::now() < deadline,
-            "session {} never settled (head {head}, handshakes {:?}): {:?}",
+            "session {} never settled (head {head}): {:?}",
             id.0,
-            mgr.handshake_count(id),
             String::from_utf8_lossy(&bytes)
         );
         previous = Some(head);

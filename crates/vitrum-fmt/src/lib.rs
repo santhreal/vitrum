@@ -57,6 +57,7 @@
 #![deny(missing_docs)]
 
 pub mod bytes;
+pub mod color;
 pub mod count;
 pub mod duration;
 pub mod exit;
@@ -64,7 +65,6 @@ pub mod git;
 pub mod path;
 pub mod text;
 pub mod time;
-
 #[cfg(test)]
 mod tests;
 
@@ -72,3 +72,4 @@ pub use exit::Termination;
 pub use git::Head;
 pub use text::ELLIPSIS;
 pub use time::{TimeFormat, Timestamp};
+pub use color::{AnsiColor, Attribute, Style};

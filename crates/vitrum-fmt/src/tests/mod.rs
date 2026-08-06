@@ -13,6 +13,7 @@
 //! - [`git_head`]: ref prefixes, branch elision, detached HEAD.
 
 mod absolute_date;
+mod color_tests;
 mod byte_sizes;
 mod counts;
 mod durations;

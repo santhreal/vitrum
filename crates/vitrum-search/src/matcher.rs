@@ -42,8 +42,59 @@ use crate::query::{Pattern, Query};
 pub enum Matcher {
     /// SIMD substring search: literal, case-sensitive, no word boundaries.
     Literal(Box<memmem::Finder<'static>>),
+    /// SIMD ASCII case-folding search: literal, case-insensitive, ASCII pattern, no word boundaries.
+    AsciiCaseFold(Box<AsciiCaseFoldFinder>),
     /// Everything else.
     Regex(Regex),
+}
+
+/// SIMD-accelerated ASCII case-folding substring finder.
+#[derive(Debug)]
+pub struct AsciiCaseFoldFinder {
+    needle: Vec<u8>,
+    first_lower: u8,
+    first_upper: u8,
+}
+
+impl AsciiCaseFoldFinder {
+    pub fn new(needle: &[u8]) -> Self {
+        let first = needle.first().copied().unwrap_or(0);
+        Self {
+            needle: needle.to_vec(),
+            first_lower: first.to_ascii_lowercase(),
+            first_upper: first.to_ascii_uppercase(),
+        }
+    }
+
+    #[inline]
+    pub fn find_at(&self, haystack: &[u8], mut from: usize) -> Option<std::ops::Range<usize>> {
+        if from > haystack.len() || self.needle.is_empty() {
+            return None;
+        }
+        let needle_len = self.needle.len();
+        while from + needle_len <= haystack.len() {
+            let slice = &haystack[from..];
+            let pos = if self.first_lower == self.first_upper {
+                memchr::memchr(self.first_lower, slice)?
+            } else {
+                memchr::memchr2(self.first_lower, self.first_upper, slice)?
+            };
+            let candidate_start = from + pos;
+            if candidate_start + needle_len > haystack.len() {
+                return None;
+            }
+            if haystack[candidate_start..candidate_start + needle_len].eq_ignore_ascii_case(&self.needle) {
+                return Some(candidate_start..candidate_start + needle_len);
+            }
+            from = candidate_start + 1;
+        }
+        None
+    }
+
+    #[inline]
+    pub fn is_match(&self, haystack: &[u8]) -> bool {
+        self.find_at(haystack, 0).is_some()
+    }
 }
 
 impl Matcher {
@@ -61,6 +112,14 @@ impl Matcher {
             return Ok(Matcher::Literal(Box::new(
                 memmem::Finder::new(needle).into_owned(),
             )));
+        }
+        let ascii_casefold_fast_path = matches!(query.pattern, Pattern::Literal(_))
+            && query.case_insensitive
+            && !query.whole_word
+            && query.pattern.text().is_ascii();
+        if ascii_casefold_fast_path {
+            let needle = query.pattern.text().as_bytes();
+            return Ok(Matcher::AsciiCaseFold(Box::new(AsciiCaseFoldFinder::new(needle))));
         }
 
         let body = match &query.pattern {
@@ -103,6 +162,7 @@ impl Matcher {
                 let found = finder.find(&haystack[from..])?;
                 Some(from + found..from + found + finder.needle().len())
             }
+            Matcher::AsciiCaseFold(finder) => finder.find_at(haystack, from),
             // `find_at` rather than slicing so that look-around and `^` see the
             // real start of the line. Searching `&haystack[from..]` would let
             // `^error` match in the middle of a line.
@@ -115,6 +175,7 @@ impl Matcher {
     pub fn is_match(&self, haystack: &[u8]) -> bool {
         match self {
             Matcher::Literal(finder) => finder.find(haystack).is_some(),
+            Matcher::AsciiCaseFold(finder) => finder.is_match(haystack),
             Matcher::Regex(regex) => regex.is_match(haystack),
         }
     }
@@ -122,6 +183,10 @@ impl Matcher {
     /// Is this the SIMD fast path?
     pub fn is_fast_literal(&self) -> bool {
         matches!(self, Matcher::Literal(_))
+    }
+    /// Is this the SIMD ASCII case-folding path?
+    pub fn is_ascii_casefold(&self) -> bool {
+        matches!(self, Matcher::AsciiCaseFold(_))
     }
 }
 
@@ -168,6 +233,24 @@ mod tests {
             !Matcher::compile(&Query::regex("OOM"))
                 .unwrap()
                 .is_fast_literal()
+        );
+    }
+    #[test]
+    fn ascii_casefold_fast_path_is_taken_for_ascii_case_insensitive_literal() {
+        assert!(
+            Matcher::compile(&Query::literal("OOM").case_insensitive(true))
+                .unwrap()
+                .is_ascii_casefold()
+        );
+        assert!(
+            !Matcher::compile(&Query::literal("OOM").case_insensitive(true).whole_word(true))
+                .unwrap()
+                .is_ascii_casefold()
+        );
+        assert!(
+            !Matcher::compile(&Query::regex("OOM").case_insensitive(true))
+                .unwrap()
+                .is_ascii_casefold()
         );
     }
 

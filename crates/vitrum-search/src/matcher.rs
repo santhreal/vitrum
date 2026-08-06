@@ -60,25 +60,20 @@ pub struct AsciiCaseFoldFinder {
 impl AsciiCaseFoldFinder {
     #[inline]
     pub fn find_at(&self, haystack: &[u8], mut from: usize) -> Option<std::ops::Range<usize>> {
-        if from > haystack.len() || self.needle.is_empty() {
-            return None;
-        }
         let needle_len = self.needle.len();
-        while from + needle_len <= haystack.len() {
-            let slice = &haystack[from..];
+        let max_start = haystack.len().checked_sub(needle_len)?;
+        while from <= max_start {
+            let slice = &haystack[from..=max_start];
             let pos = if self.first_lower == self.first_upper {
                 memchr::memchr(self.first_lower, slice)?
             } else {
                 memchr::memchr2(self.first_lower, self.first_upper, slice)?
             };
-            let candidate_start = from + pos;
-            if candidate_start + needle_len > haystack.len() {
-                return None;
+            let start = from + pos;
+            if haystack[start..start + needle_len].eq_ignore_ascii_case(&self.needle) {
+                return Some(start..start + needle_len);
             }
-            if haystack[candidate_start..candidate_start + needle_len].eq_ignore_ascii_case(&self.needle) {
-                return Some(candidate_start..candidate_start + needle_len);
-            }
-            from = candidate_start + 1;
+            from = start + 1;
         }
         None
     }
@@ -111,7 +106,7 @@ impl Matcher {
             && query.pattern.text().is_ascii();
         if ascii_casefold_fast_path {
             let needle = query.pattern.text().as_bytes();
-            let first = needle.first().copied().unwrap_or(0);
+            let first = needle[0];
             return Ok(Matcher::AsciiCaseFold(Box::new(AsciiCaseFoldFinder {
                 needle: needle.to_vec(),
                 first_lower: first.to_ascii_lowercase(),

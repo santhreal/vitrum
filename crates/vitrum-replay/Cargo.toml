@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Seekable session replay over scrollback bytes, with asciicast v2 import and export."
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["asciicast", "replay", "terminal", "vt100", "recording"]
+categories = ["emulators", "command-line-utilities", "encoding"]
 
 [dependencies]
 vitrum-grid = { workspace = true }

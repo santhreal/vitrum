@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Wire contract between the vitrum session server and its clients."
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["terminal", "protocol", "websocket", "ipc", "session"]
+categories = ["network-programming", "encoding", "data-structures"]
 
 [dependencies]
 serde = { workspace = true }

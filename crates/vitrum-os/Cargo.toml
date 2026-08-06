@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Cross-platform desktop integration: notifications, badge, tray, single instance, theme, window state, deep links, and per-OS paths."
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["notifications", "tray", "badge", "single-instance", "desktop"]
+categories = ["os", "gui", "api-bindings"]
 
 [dependencies]
 anyhow = { workspace = true }

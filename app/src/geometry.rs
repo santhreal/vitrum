@@ -153,7 +153,7 @@ pub(crate) fn quantize_ui_scale(raw: f64) -> f64 {
 /// signal that distinguishes the two.
 #[cfg(target_os = "linux")]
 pub(crate) fn density_of(monitor: &MonitorHandle) -> Density {
-    use dioxus::desktop::tao::platform::unix::MonitorHandleExtUnix;
+    use vitrum_dioxus_desktop::tao::platform::unix::MonitorHandleExtUnix;
     use gtk::gdk::prelude::MonitorExt;
 
     let gdk = monitor.gdk_monitor();

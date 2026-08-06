@@ -11,7 +11,7 @@ use super::*;
 /// the entries it hides are the destructive ones at the bottom.
 pub(crate) fn open_menu(
     mut st: Signal<UiState>,
-    window: &dioxus::desktop::DesktopContext,
+    window: &vitrum_dioxus_desktop::DesktopContext,
     (x, y, target): (f64, f64, SessionId),
 ) {
     let items = st.peek().menu_items(target, tick().model);
@@ -26,7 +26,7 @@ pub(crate) fn open_menu(
 }
 
 /// Window size in CSS pixels, for clamping a context menu.
-pub(crate) fn viewport(window: &dioxus::desktop::DesktopContext) -> (f64, f64) {
+pub(crate) fn viewport(window: &vitrum_dioxus_desktop::DesktopContext) -> (f64, f64) {
     let scale = window.scale_factor();
     let size = window.inner_size();
     (size.width as f64 / scale, size.height as f64 / scale)

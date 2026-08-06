@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+description = "Headless list model for many concurrent agent sessions: status precedence, operator disposition, snooze, ordering, and grouping."
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["sidebar", "ordering", "snooze", "session", "headless"]
+categories = ["data-structures", "command-line-interface", "date-and-time"]
 
 [dependencies]
 vitrum-proto = { workspace = true }

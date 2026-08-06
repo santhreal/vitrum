@@ -1,51 +1,32 @@
-# Dioxus Desktop (webview)
+# vitrum-dioxus-desktop
 
-[![Crates.io][crates-badge]][crates-url]
-[![MIT licensed][mit-badge]][mit-url]
-[![Build Status][actions-badge]][actions-url]
-[![Discord chat][discord-badge]][discord-url]
+A fork of [`dioxus-desktop`](https://crates.io/crates/dioxus-desktop) 0.7.10 by
+Jonathan Kelley, carried by [vitrum](https://github.com/santhreal/vitrum) under
+the MIT licence. Everything except the change below is upstream's code.
 
-[crates-badge]: https://img.shields.io/crates/v/dioxus-desktop.svg
-[crates-url]: https://crates.io/crates/dioxus-desktop
-[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/dioxuslabs/dioxus/blob/main/LICENSE-MIT
-[actions-badge]: https://github.com/dioxuslabs/dioxus/actions/workflows/main.yml/badge.svg
-[actions-url]: https://github.com/dioxuslabs/dioxus/actions?query=workflow%3ACI+branch%3Amaster
-[discord-badge]: https://img.shields.io/discord/899851952891002890.svg?logo=discord&style=flat-square
-[discord-url]: https://discord.gg/XgGxMSkvUM
+## What diverges
 
-[Website](https://dioxuslabs.com) |
-[Guides](https://dioxuslabs.com/learn/0.7/) |
-[API Docs](https://docs.rs/dioxus-desktop/latest/dioxus_desktop) |
-[Chat](https://discord.gg/XgGxMSkvUM)
+One change, in `src/webview.rs`. On Linux each new webview is built with
+`with_related_view`, pointed at a webview that is still alive, so every window
+runs inside the first window's `WebKitWebProcess`. `LIVE_WEBKIT_VIEWS` tracks
+which views are still real so the relation target is never a dead widget.
 
-## Overview
+Upstream builds a fresh `WebContext` per webview, and on Linux each one starts
+its own `WebKitNetworkProcess`. Measured on this project: 20 windows ran 20 of
+them at 8.6 MB PSS each, so 171.2 MB went on twenty copies of one cache and
+cookie jar. vitrum's memory target for 20 windows does not survive that.
 
-`dioxus-desktop` provides a webview-based desktop renderer for the Dioxus VirtualDom.
+## Why a fork and not a patch
 
-This requires that webview is installed on the target system. WebView is installed by default on macOS and iOS devices, but might not come preinstalled on Windows or Linux devices. To fix these issues, follow the [instructions in the guide](guide-url).
+`[patch.crates-io]` applies only to a workspace build. Anyone running
+`cargo install vitrum` resolves the registry copy instead, so the published
+client would have silently shipped the per-window process behaviour. A named
+dependency is the only form of this change that survives publication.
 
-[guide-url]: https://dioxuslabs.com/learn/0.7/getting_started
+## When this goes away
 
-## Features
-
-- Simple, one-line launch for desktop apps
-- Dioxus VirtualDom running on a native thread
-- Full HTML/CSS support via `wry` and `tao`
-- Exposed `window` and `Proxy` types from tao for direct window manipulation
-- Helpful hooks for accessing the window, WebView, and running javascript.
-
-## Contributing
-
-- Report issues on our [issue tracker](https://github.com/dioxuslabs/dioxus/issues).
-- Join the discord and ask questions!
-
-## License
-
-This project is licensed under the [MIT license].
-
-[mit license]: https://github.com/dioxuslabs/dioxus/blob/main/LICENSE-MIT
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Dioxus by you shall be licensed as MIT without any additional
-terms or conditions.
+When the shared-process behaviour lands upstream. The fix belongs there: the
+custom protocol is registered per `WebContext`, and ordering that registration
+against a webview id is something only upstream can do. Once upstream can share
+a context safely, vitrum drops this crate and depends on `dioxus-desktop`
+again.

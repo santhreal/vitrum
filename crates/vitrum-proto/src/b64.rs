@@ -97,7 +97,9 @@ pub fn encode(data: &[u8]) -> String {
 /// no panicking path, because this runs on bytes that arrived from a socket.
 pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
     let bytes = text.as_bytes();
-    if !bytes.len().is_multiple_of(4) {
+    // `%`, not `is_multiple_of`: this crate declares rust-version 1.85 and
+    // that method is stable since 1.87.
+    if bytes.len() % 4 != 0 {
         return Err(DecodeError::Length(bytes.len()));
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
@@ -144,7 +146,7 @@ pub mod bytes {
 
     /// # Errors
     /// Propagates whatever the serializer reports.
-    pub fn serialize<S: Serializer>(data: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
         encode(data).serialize(serializer)
     }
 
@@ -167,10 +169,7 @@ pub mod bytes_seq {
 
     /// # Errors
     /// Propagates whatever the serializer reports.
-    pub fn serialize<S: Serializer>(
-        lines: &Vec<Vec<u8>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(lines: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error> {
         lines
             .iter()
             .map(|line| encode(line))

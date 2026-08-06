@@ -109,6 +109,20 @@ def pss_kb(pid):
     return None
 
 
+def cmdline_of(pid):
+    """The full command line of `pid`, space separated, or "" if it is gone.
+
+    `comm` is only the first 15 bytes of the executable name, so every mock
+    agent and every other python on the box reads as `python3`. Telling the
+    workload from the product needs the arguments, not the name.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            return fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
 def rss_kb(pid):
     """VmRSS for `pid` in kB, or None if it is gone.
 
@@ -268,7 +282,7 @@ def cmd_cpu(root, seconds):
     print(f"pss {mb(pss0):.1f} MB -> {mb(pss1):.1f} MB   (drift {mb(pss1 - pss0):+.1f} MB)")
 
 
-def cmd_footprint(root, label):
+def cmd_footprint(root, label, workload_marker=None):
     """One labelled memory total for a whole process tree, PSS or RSS.
 
     `pss` exists for the vitrum client, whose tree the harness knows. This
@@ -280,6 +294,15 @@ def cmd_footprint(root, label):
     One metric for the whole tree, never a mixture. A total of Pss for the
     processes that allowed it and RSS for the rest is not a quantity, and the
     comparison it feeds is the entire point of the run.
+
+    `workload_marker` is a substring of the command line of the processes that
+    are the WORKLOAD rather than the product. The benchmark runs a mock agent
+    per session, and the daemon is that agent's parent, so the tree walk
+    charges every one of them to vitrum. They are the same processes on both
+    sides of the comparison, and adding one constant to both sides of a ratio
+    drags it toward 1: twenty mock agents at 9.5 MB are 190 MB that would turn
+    a true 10x into a reported 4x. So they are measured, reported and
+    subtracted, never silently folded in and never silently dropped.
     """
     table = all_procs()
     pids = tree(root, table)
@@ -304,7 +327,18 @@ def cmd_footprint(root, label):
             missing.append((pid, comm))
             continue
         rows.append((pid, comm, kb))
-    total = sum(kb for _, _, kb in rows)
+    workload_pids = set()
+    if workload_marker:
+        for pid, _, _ in rows:
+            # The root is the product by definition. It is the process the
+            # harness started and the one being measured, and a marker that
+            # happens to appear in its own argv would otherwise subtract the
+            # whole tree and report the product as costing nothing.
+            if pid != root and workload_marker in cmdline_of(pid):
+                workload_pids.add(pid)
+    workload = sum(kb for pid, _, kb in rows if pid in workload_pids)
+    total = sum(kb for pid, _, kb in rows if pid not in workload_pids)
+    combined = total + workload
 
     rows.sort(key=lambda r: -r[2])
     for pid, comm, kb in rows:
@@ -328,10 +362,17 @@ def cmd_footprint(root, label):
         print("  total is an upper bound rather than the cost of the tree")
     for pid, comm in strays(set(pids), table):
         print(f"  WARNING {pid} {comm} looks like ours and is NOT in this tree")
+    if workload_marker:
+        print(f"  workload {len(workload_pids)} process(es), {mb(workload):.1f} MB")
+        print("  charged to the workload, not to the product: the same processes")
+        print("  run on both sides, so leaving them in drags any ratio toward 1")
     print(f"machine {machine()}")
     # Parsed by rig.sh to build the comparison, so the shape is fixed.
-    print(f"footprint {label} metric={metric} processes={len(rows)} total_kb={total}")
-    print(f"{metric} {mb(total):.1f} MB across {len(rows)} process(es)")
+    print(
+        f"footprint {label} metric={metric} processes={len(rows) - len(workload_pids)}"
+        f" total_kb={total} workload_kb={workload} combined_kb={combined}"
+    )
+    print(f"{metric} {mb(total):.1f} MB across {len(rows) - len(workload_pids)} process(es)")
 
 
 def main(argv):
@@ -340,11 +381,11 @@ def main(argv):
     elif len(argv) >= 4 and argv[1] == "cpu":
         cmd_cpu(int(argv[2]), float(argv[3]))
     elif len(argv) >= 4 and argv[1] == "footprint":
-        cmd_footprint(int(argv[2]), argv[3])
+        cmd_footprint(int(argv[2]), argv[3], argv[4] if len(argv) >= 5 else None)
     else:
         sys.exit(
             "usage: measure.py pss <pid> | measure.py cpu <pid> <seconds>"
-            " | measure.py footprint <pid> <label>"
+            " | measure.py footprint <pid> <label> [workload-cmdline-marker]"
         )
 
 

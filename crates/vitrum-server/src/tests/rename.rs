@@ -20,7 +20,9 @@ async fn a_rename_by_one_client_is_seen_by_another() {
     // B learns the session exists through the same broadcast.
     b.until("the session to appear", |s| !s.created().is_empty())
         .await;
-    assert_eq!(b.seen.created()[0].title, "sh");
+    // An unnamed session is called after its command, whichever shell that is.
+    let (shell, _) = crate::tests::client::shell("");
+    assert_eq!(b.seen.created()[0].title, shell);
 
     a.send(ClientMsg::Rename {
         session: id,

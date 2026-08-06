@@ -21,6 +21,43 @@ fn latest_chunk(seen: &crate::tests::client::Seen) -> (u64, Vec<u8>, bool) {
         .expect("a scrollback chunk must have arrived")
 }
 
+/// Ask for the newest page of at most `max_bytes` and return that chunk.
+///
+/// Requesting and reading as one step keeps two pages from being confused for
+/// each other, which matters because a zero-length request is a legitimate way
+/// to ask only where the head is.
+async fn page(
+    c: &mut crate::tests::client::Client,
+    session: SessionId,
+    max_bytes: u32,
+) -> (u64, Vec<u8>, bool) {
+    let before = c.seen.ctl.len();
+    c.send(ClientMsg::Scrollback {
+        session,
+        before_seq: u64::MAX,
+        max_bytes,
+    })
+    .await;
+    c.until("a scrollback chunk", |s| {
+        s.ctl[before..]
+            .iter()
+            .any(|m| matches!(m, ServerMsg::ScrollbackChunk { .. }))
+    })
+    .await;
+    c.seen.ctl[before..]
+        .iter()
+        .find_map(|m| match m {
+            ServerMsg::ScrollbackChunk {
+                from_seq,
+                data,
+                more,
+                ..
+            } => Some((*from_seq, data.clone(), *more)),
+            _ => None,
+        })
+        .expect("the loop above only exits once a chunk has arrived")
+}
+
 /// `u64::MAX` must mean "up to the current head".
 ///
 /// The client has no way to know the head before it asks, so this sentinel is the
@@ -36,19 +73,14 @@ async fn u64_max_means_up_to_the_head() {
     })
     .await;
 
-    c.send(ClientMsg::Scrollback {
-        session: id,
-        before_seq: u64::MAX,
-        max_bytes: 4096,
-    })
-    .await;
-    c.until("the chunk", |s| {
-        s.has(|m| matches!(m, ServerMsg::ScrollbackChunk { .. }))
-    })
-    .await;
-    let (from, data, more) = latest_chunk(&c.seen);
-    assert_eq!(from, 0);
-    assert_eq!(data, b"history\r\n");
+    let (from, data, more) = page(&mut c, id, 4096).await;
+    assert_eq!(from, 0, "the whole history starts at the first byte");
+    // Where the child's line sits is the pseudoconsole's business; that it is
+    // there, whole, is the daemon's.
+    assert!(
+        data.windows(9).any(|w| w == b"history\r\n"),
+        "the page must carry the child's line: {data:?}"
+    );
     assert!(!more, "the whole history fit in one page");
 }
 
@@ -152,23 +184,14 @@ async fn an_evicted_history_reports_the_oldest_retained_offset() {
     })
     .await;
 
-    c.send(ClientMsg::Scrollback {
-        session: id,
-        before_seq: u64::MAX,
-        max_bytes: 4096,
-    })
-    .await;
-    c.until("the chunk", |s| {
-        s.has(|m| matches!(m, ServerMsg::ScrollbackChunk { .. }))
-    })
-    .await;
-
-    let total = payload.len() + 2;
-    let mut expected = payload.as_bytes().to_vec();
-    expected.extend_from_slice(b"\r\n");
-    let (from, data, more) = latest_chunk(&c.seen);
-    assert_eq!(from as usize, total - capacity);
-    assert_eq!(data, expected[total - capacity..]);
+    // The retained window is the last `capacity` bytes of whatever the pty
+    // wrote, and only the pty knows how much that is: a pseudoconsole adds mode
+    // sets and a title of its own, so ask where the head is instead of counting
+    // the script's characters. A zero-length request is clamped to the head.
+    let (from, data, more) = page(&mut c, id, 4096).await;
+    let (head, _, _) = page(&mut c, id, 0).await;
+    assert_eq!(from, head - capacity as u64);
+    assert_eq!(data.len(), capacity, "the ring keeps exactly its capacity");
     assert!(!more, "nothing older than the oldest retained byte exists");
 }
 
@@ -184,20 +207,15 @@ async fn a_small_page_returns_the_newest_slice_and_flags_more() {
     })
     .await;
 
-    c.send(ClientMsg::Scrollback {
-        session: id,
-        before_seq: u64::MAX,
-        max_bytes: 4,
-    })
-    .await;
-    c.until("the chunk", |s| {
-        s.has(|m| matches!(m, ServerMsg::ScrollbackChunk { .. }))
-    })
-    .await;
-    let (from, data, more) = latest_chunk(&c.seen);
-    assert_eq!(from, 8, "\"abcdefghij\\r\\n\" is 12 bytes; the last 4 start at 8");
-    assert_eq!(data, b"ij\r\n");
+    let (from, data, more) = page(&mut c, id, 4).await;
+    let (head, _, _) = page(&mut c, id, 0).await;
+    assert_eq!(from, head - 4, "the newest page ends at the head");
+    assert_eq!(data.len(), 4);
     assert!(more);
+
+    // Those four bytes must be the tail of the history, not any other slice.
+    let (_, whole, _) = page(&mut c, id, 4096).await;
+    assert_eq!(&whole[whole.len() - 4..], &data[..]);
 }
 
 /// Scrollback for an unknown session must be an error, not an empty success.

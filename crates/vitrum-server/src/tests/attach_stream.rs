@@ -9,6 +9,7 @@ use crate::tests::client::{Harness, create};
 /// This is the hot path of the whole product. The frame header must name the
 /// session and the byte offset, and the payload must be verbatim: a client cannot
 /// repair reordered, re-encoded, or misattributed output.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn attach_streams_the_exact_child_bytes() {
     let h = Harness::start(64 * 1024).await;
@@ -24,16 +25,51 @@ async fn attach_streams_the_exact_child_bytes() {
         data: b"go\n".to_vec(),
     })
     .await;
-    c.until("the child's output", |s| {
-        s.bytes(id).ends_with(b"streamed\r\n")
-    })
-    .await;
+    c.until("the child's output", |s| s.carries(id, b"streamed\r\n"))
+        .await;
 
     assert_eq!(
         c.seen.bytes(id),
         b"go\r\nstreamed\r\n",
         "the echoed input then the child's line, verbatim"
     );
+    assert_eq!(
+        c.seen.first_seq(id),
+        Some(0),
+        "the first byte of a session is offset 0"
+    );
+}
+
+/// The same claim on Windows, where the pseudoconsole frames the child's output
+/// with bytes of its own and the whole stream is therefore not the child's alone.
+///
+/// The child's line must still cross the socket exactly once, unaltered, and the
+/// stream must still start at offset zero.
+#[cfg(windows)]
+#[tokio::test]
+async fn attach_streams_the_exact_child_bytes() {
+    let h = Harness::start(64 * 1024).await;
+    let mut c = h.greeted().await;
+    let id = c.create(create(1, "set /p x=ask: && echo streamed")).await;
+
+    c.attach(id, 80, 24).await;
+    c.until("the prompt", |s| s.carries(id, b"ask:")).await;
+
+    c.send(ClientMsg::Input {
+        session: id,
+        data: b"go\r\n".to_vec(),
+    })
+    .await;
+    c.until("the child's output", |s| s.carries(id, b"streamed\r\n"))
+        .await;
+
+    let hits = c
+        .seen
+        .bytes(id)
+        .windows(10)
+        .filter(|w| *w == b"streamed\r\n")
+        .count();
+    assert_eq!(hits, 1, "the child's line must arrive exactly once");
     assert_eq!(
         c.seen.first_seq(id),
         Some(0),
@@ -76,7 +112,10 @@ async fn attach_streams_live_only_while_history_stays_requestable() {
     match c.seen.find(|m| matches!(m, ServerMsg::ScrollbackChunk { .. })) {
         Some(ServerMsg::ScrollbackChunk { data, from_seq, .. }) => {
             assert_eq!(*from_seq, 0);
-            assert_eq!(data, b"already-happened\r\n");
+            assert!(
+                data.windows(18).any(|w| w == b"already-happened\r\n"),
+                "history must carry the child's line: {data:?}"
+            );
         }
         other => panic!("expected a scrollback chunk, got {other:?}"),
     }

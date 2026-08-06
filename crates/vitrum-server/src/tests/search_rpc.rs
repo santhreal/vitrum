@@ -118,7 +118,7 @@ async fn run_to_exit(c: &mut Client, project: u64, script: &str) -> SessionId {
 async fn a_search_reaches_the_daemon_on_every_platform() {
     let h = Harness::start(SMALL_RING).await;
     let mut c = h.greeted().await;
-    run_to_exit(&mut c, 1, "echo needle here").await;
+    let id = run_to_exit(&mut c, 1, "echo needle here").await;
 
     let (hits, truncated, bytes_scanned) = results_of(&mut c, search("needle")).await;
 
@@ -129,8 +129,12 @@ async fn a_search_reaches_the_daemon_on_every_platform() {
     assert_eq!(hits[0].match_start, 0);
     assert_eq!(hits[0].match_end, 6);
     assert_eq!(highlighted(&hits[0]), b"needle");
-    // Both shells write "needle here\r\n", and the sweep reports what it read.
-    assert_eq!(bytes_scanned, 13);
+    // The sweep reports what it read, which is the whole retained ring: on
+    // Windows that also holds the pseudoconsole's own preamble, so ask the
+    // daemon for the head rather than counting the script's bytes.
+    let retained = head_seq(&mut c, id).await;
+    assert_eq!(bytes_scanned, retained);
+    assert!(retained >= 13, "at least the child's line was scanned");
 }
 
 /// A search must find lines across several sessions and place them exactly.
@@ -519,7 +523,6 @@ async fn fill_sessions(c: &mut Client, project: u64, count: usize) -> Vec<Sessio
 /// is the head. Asking beats predicting it: the PTY turns every `\n` into
 /// `\r\n`, so the byte count a script produces is not the byte count a test
 /// could compute from the script.
-#[cfg(not(windows))]
 async fn head_seq(c: &mut Client, session: SessionId) -> u64 {
     chunk_start(c, session, 0).await
 }
@@ -530,7 +533,6 @@ async fn oldest_seq(c: &mut Client, session: SessionId) -> u64 {
     chunk_start(c, session, u32::MAX).await
 }
 
-#[cfg(not(windows))]
 async fn chunk_start(c: &mut Client, session: SessionId, max_bytes: u32) -> u64 {
     let before = c.seen.ctl.len();
     c.send(ClientMsg::Scrollback {

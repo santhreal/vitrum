@@ -464,9 +464,28 @@ fn App() -> Element {
     use_wry_event_handler({
         let window = window.clone();
         move |event, _target| {
-            let WryEvent::WindowEvent { event, .. } = event else {
+            // The window id is checked, and that is not tidiness. Every window
+            // installs one of these handlers and every handler is called for
+            // every window's events, so without the check each window measures
+            // itself whenever any other window is moved, resized or closed.
+            // With twenty windows open that is twenty geometry round trips to
+            // the display server for one drag, nineteen of them answering for
+            // a window that did not move.
+            //
+            // It also narrows the window in which a handler can ask X about a
+            // drawable that is being destroyed. That is NOT known to fix the
+            // open BadDrawable crash on closing one window of several: the
+            // crash still reproduces with this guard in place, so do not read
+            // it as the cure.
+            let WryEvent::WindowEvent {
+                window_id, event, ..
+            } = event
+            else {
                 return;
             };
+            if *window_id != window.id() {
+                return;
+            }
             match event {
                 // A window dragged from the 82 dpi panel onto the 163 dpi one
                 // has to be redrawn at the other panel's scale, or half the

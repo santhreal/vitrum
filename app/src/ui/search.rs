@@ -398,14 +398,14 @@ fn distinct_sessions(hits: &[SearchHit]) -> usize {
 /// An all-whitespace pattern returns `None`. A literal sweep for `" "` would
 /// match nearly every line of every ring, which is 200 MiB of scanning to
 /// produce an answer nobody asked for.
-pub fn request(query: &str, options: Options, sessions: Vec<SessionId>) -> Option<ClientMsg> {
+pub fn request(query: &str, options: Options, sessions: Vec<SessionId>) -> Option<ClientMsg<'static>> {
     let pattern = query.trim();
     if pattern.is_empty() {
         return None;
     }
     Some(ClientMsg::Search {
         sessions,
-        pattern: pattern.to_string(),
+        pattern: pattern.to_string().into(),
         regex: options.regex,
         case_insensitive: options.case_insensitive,
         whole_word: options.whole_word,

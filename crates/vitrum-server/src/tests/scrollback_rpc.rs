@@ -236,10 +236,7 @@ async fn history_is_requestable_while_the_session_runs() {
     let id = c.create(create(1, "read -r x; echo live; read -r y")).await;
 
     c.attach(id, 80, 24).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the live output", |s| s.bytes(id).ends_with(b"live\r\n"))
         .await;

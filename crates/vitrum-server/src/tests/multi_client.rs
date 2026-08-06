@@ -31,7 +31,7 @@ async fn a_session_created_elsewhere_appears_on_every_client() {
     let mut b = h.greeted().await;
     let mut msg = create(1, "read -r x");
     if let ClientMsg::CreateSession { title, .. } = &mut msg {
-        *title = Some("made-by-B".to_string());
+        *title = Some("made-by-B".into());
     }
     let id = b.create(msg).await;
 
@@ -121,10 +121,7 @@ async fn output_frames_never_reach_a_client_that_did_not_attach() {
     let mut b = h.greeted().await;
     let id = b.create(create(1, "read -r x; echo private-to-b")).await;
     b.attach(id, 80, 24).await;
-    b.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    b.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     b.until("b's output", |s| {
         s.bytes(id).ends_with(b"private-to-b\r\n")

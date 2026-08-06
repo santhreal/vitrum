@@ -179,10 +179,7 @@ async fn input_re_arms_the_probe_with_no_output_at_all() {
     })
     .await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"secret\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"secret\n".to_vec().into() })
     .await;
     c.until("the daemon to notice the child went back to work", |s| {
         s.updates()
@@ -215,10 +212,7 @@ async fn an_exit_clears_the_foreground_answer_on_the_wire() {
     })
     .await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"go\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"go\n".to_vec().into() })
     .await;
     c.until("the exit", |s| {
         s.ctl

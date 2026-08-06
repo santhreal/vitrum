@@ -22,10 +22,7 @@ async fn a_rename_by_one_client_is_seen_by_another() {
         .await;
     assert_eq!(b.seen.created()[0].title, "sh");
 
-    a.send(ClientMsg::Rename {
-        session: id,
-        title: "auth refactor".to_string(),
-    })
+    a.send(ClientMsg::Rename { session: id, title: "auth refactor".to_string().into() })
     .await;
 
     b.until("the rename", |s| {
@@ -55,10 +52,7 @@ async fn a_whitespace_only_rename_is_refused() {
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
     let id = c.create(create(1, "read -r x")).await;
-    c.send(ClientMsg::Rename {
-        session: id,
-        title: "keeper".to_string(),
-    })
+    c.send(ClientMsg::Rename { session: id, title: "keeper".to_string().into() })
     .await;
     c.until("the good rename", |s| {
         s.updates().iter().any(|i| i.title == "keeper")
@@ -66,10 +60,7 @@ async fn a_whitespace_only_rename_is_refused() {
     .await;
 
     for blank in ["", "   ", "\t\n "] {
-        c.send(ClientMsg::Rename {
-            session: id,
-            title: blank.to_string(),
-        })
+        c.send(ClientMsg::Rename { session: id, title: blank.to_string().into() })
         .await;
         c.until("the refusal", |s| {
             s.errors().iter().any(|m| m.contains("empty"))
@@ -95,10 +86,7 @@ async fn a_rename_error_names_the_session() {
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
     let id = c.create(create(1, "read -r x")).await;
-    c.send(ClientMsg::Rename {
-        session: id,
-        title: " ".to_string(),
-    })
+    c.send(ClientMsg::Rename { session: id, title: " ".to_string().into() })
     .await;
     c.until("the refusal", |s| !s.errors().is_empty()).await;
     match c.seen.find(|m| matches!(m, ServerMsg::Error { .. })) {
@@ -117,10 +105,7 @@ async fn a_rename_error_names_the_session() {
 async fn renaming_an_unknown_session_errors() {
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
-    c.send(ClientMsg::Rename {
-        session: vitrum_proto::SessionId(404),
-        title: "ghost".to_string(),
-    })
+    c.send(ClientMsg::Rename { session: vitrum_proto::SessionId(404), title: "ghost".to_string().into() })
     .await;
     c.until("the refusal", |s| {
         s.errors().iter().any(|m| m.contains("404"))
@@ -148,20 +133,14 @@ async fn a_rename_disturbs_neither_the_stream_nor_the_child() {
         .await;
     let seq_before = c.seen.first_seq(id);
 
-    c.send(ClientMsg::Rename {
-        session: id,
-        title: "renamed mid-stream".to_string(),
-    })
+    c.send(ClientMsg::Rename { session: id, title: "renamed mid-stream".to_string().into() })
     .await;
     c.until("the rename", |s| {
         s.updates().iter().any(|i| i.title == "renamed mid-stream")
     })
     .await;
 
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"alive\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"alive\n".to_vec().into() })
     .await;
     c.until("the child's reply", |s| {
         s.bytes(id).ends_with(b"after=alive\r\n")

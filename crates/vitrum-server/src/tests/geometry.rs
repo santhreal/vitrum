@@ -34,10 +34,7 @@ async fn two_windows_settle_on_the_smaller_geometry() {
     wide.attach(id, 200, 50).await;
     narrow.attach(id, 100, 30).await;
 
-    wide.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    wide.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     wide.until("the child's report", |s| {
         s.bytes(id).ends_with(b"\r\n") && s.bytes(id).len() > 2
@@ -79,10 +76,7 @@ async fn detaching_the_smaller_window_grows_the_pty_and_notifies() {
         s.updates().iter().any(|i| i.id == id && i.cols == 200)
     })
     .await;
-    wide.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    wide.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     wide.until("the child's report", |s| {
         s.bytes(id).ends_with(b"\r\n") && s.bytes(id).len() > 2
@@ -226,10 +220,7 @@ async fn alternating_resizes_converge_without_thrashing() {
         "the size must be a fixed point, not whoever wrote last"
     );
 
-    wide.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    wide.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     wide.until("the child's report", |s| {
         s.bytes(id).ends_with(b"\r\n") && s.bytes(id).len() > 2
@@ -258,10 +249,7 @@ async fn a_single_window_still_gets_exactly_what_it_asks_for() {
     let id = c.create(create(1, REPORTER)).await;
 
     c.attach(id, 132, 43).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the attach geometry", |s| {
         s.bytes(id).ends_with(b"43 132\r\n")
@@ -274,10 +262,7 @@ async fn a_single_window_still_gets_exactly_what_it_asks_for() {
         rows: 25,
     })
     .await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the resized geometry", |s| {
         s.bytes(id).ends_with(b"25 90\r\n")
@@ -301,10 +286,7 @@ async fn re_attaching_replaces_that_window_s_constraint() {
 
     c.attach(id, 80, 24).await;
     c.attach(id, 160, 48).await;
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"\n".to_vec(),
-    })
+    c.send(ClientMsg::Input { session: id, data: b"\n".to_vec().into() })
     .await;
     c.until("the child's report", |s| {
         s.bytes(id).ends_with(b"\r\n") && s.bytes(id).len() > 2

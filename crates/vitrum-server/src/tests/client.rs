@@ -205,7 +205,7 @@ impl Client {
         }
     }
 
-    pub(crate) async fn send(&mut self, msg: ClientMsg) {
+    pub(crate) async fn send(&mut self, msg: ClientMsg<'_>) {
         let text = serde_json::to_string(&msg).expect("client messages must serialize");
         self.send_raw(Message::Text(text)).await;
     }
@@ -262,7 +262,7 @@ impl Client {
     /// The id comes from the delta rather than a session list because the server
     /// deliberately does not broadcast a list on create: doing so would make
     /// startup traffic quadratic in session count.
-    pub(crate) async fn create(&mut self, msg: ClientMsg) -> SessionId {
+    pub(crate) async fn create(&mut self, msg: ClientMsg<'_>) -> SessionId {
         let before = self.seen.created().len();
         self.send(msg).await;
         self.until("the session to be created", |s| {
@@ -335,17 +335,17 @@ impl Client {
 }
 
 /// A create request running `script` in the platform shell from a real directory.
-pub(crate) fn create(project: u64, script: &str) -> ClientMsg {
+pub(crate) fn create(project: u64, script: &str) -> ClientMsg<'static> {
     create_in(project, std::env::temp_dir(), script)
 }
 
-pub(crate) fn create_in(project: u64, cwd: PathBuf, script: &str) -> ClientMsg {
+pub(crate) fn create_in(project: u64, cwd: PathBuf, script: &str) -> ClientMsg<'static> {
     let (command, args) = shell(script);
     ClientMsg::CreateSession {
         project_id: ProjectId(project),
-        cwd: cwd.to_string_lossy().into_owned(),
-        command,
-        args,
+        cwd: cwd.to_string_lossy().into_owned().into(),
+        command: command.into(),
+        args: args.into_iter().map(Into::into).collect(),
         cols: 80,
         rows: 24,
         title: None,

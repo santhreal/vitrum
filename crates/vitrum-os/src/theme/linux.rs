@@ -9,7 +9,9 @@
 //! thread is parked in a socket read; it costs nothing until the user flips the
 //! switch.
 
+use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::OwnedValue;
@@ -25,6 +27,11 @@ const PATH: &str = "/org/freedesktop/portal/desktop";
 const INTERFACE: &str = "org.freedesktop.portal.Settings";
 const NAMESPACE: &str = "org.freedesktop.appearance";
 const KEY: &str = "color-scheme";
+/// How long a portal read may take before the portal is treated as absent.
+///
+/// Generous next to the milliseconds a running portal needs, and small next to
+/// the 120 second `service_start_timeout` this exists to avoid paying twice.
+pub(crate) const PORTAL_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct Shared {
@@ -61,28 +68,11 @@ impl PortalThemeWatcher {
         Ok(watcher)
     }
 
-    fn proxy(&self) -> Result<Proxy<'_>, Unavailable> {
-        Proxy::new(&self.conn, DESTINATION, PATH, INTERFACE)
-            .map_err(|e| Unavailable::runtime_error(format!("cannot build portal proxy: {e}")))
-    }
-
-    /// The raw `color-scheme` value.
-    ///
-    /// `ReadOne` is the current method; `Read` is deprecated and, because of a
-    /// long-standing xdg-desktop-portal quirk, returns the value wrapped in a
-    /// second variant. Both are handled so this works against portals older
-    /// than version 2.
+    /// The raw `color-scheme` value, bounded so a portal that cannot start
+    /// costs seconds rather than minutes.
     fn read_color_scheme(&self) -> Result<u32, Unavailable> {
-        let proxy = self.proxy()?;
-        match proxy.call::<_, _, OwnedValue>("ReadOne", &(NAMESPACE, KEY)) {
-            Ok(value) => unwrap_u32(&value),
-            Err(one_err) => {
-                let legacy = proxy
-                    .call::<_, _, OwnedValue>("Read", &(NAMESPACE, KEY))
-                    .map_err(|e| map_call_error(&one_err, e))?;
-                unwrap_u32(&legacy)
-            }
-        }
+        let conn = self.conn.clone();
+        within(PORTAL_CALL_TIMEOUT, move || read_color_scheme_on(&conn))
     }
 
     fn start_listener(&self) -> Result<(), Unavailable> {
@@ -182,6 +172,77 @@ fn portal_absent() -> Unavailable {
     Unavailable::service_missing(format!(
         "no xdg-desktop-portal on the session bus ({DESTINATION}); install \
          xdg-desktop-portal and a backend such as xdg-desktop-portal-gtk or -kde"
+    ))
+}
+
+/// Run `job` on its own thread and give up waiting after `timeout`.
+///
+/// A call to an activatable name that never comes up does not fail: the bus
+/// waits out `service_start_timeout`, 120 seconds by default, and a portal
+/// read makes two calls. `preference` runs when the settings sheet opens, so
+/// unbounded that is four minutes of frozen UI on a machine whose portal
+/// cannot start.
+///
+/// A bound rather than the `NoAutoStart` flag, which would cost nothing: an
+/// activatable portal legitimately has no owner until something calls it, so
+/// refusing to start it would report a working desktop as having no portal.
+/// Activation is kept and only the waiting is capped.
+///
+/// The abandoned thread is not leaked. It owns everything it touches, finishes
+/// when the bus finally answers, and drops.
+pub(crate) fn within<T: Send + 'static>(
+    timeout: Duration,
+    job: impl FnOnce() -> Result<T, Unavailable> + Send + 'static,
+) -> Result<T, Unavailable> {
+    let (tx, rx) = sync_channel(1);
+    std::thread::Builder::new()
+        .name("vitrum-theme-read".to_string())
+        .spawn(move || {
+            let _ = tx.send(job());
+        })
+        .map_err(|e| Unavailable::runtime_error(format!("cannot spawn the theme read: {e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(portal_unresponsive()),
+        // The reader panicked. Nothing here can say why, and calling the portal
+        // missing would be a guess.
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(Unavailable::runtime_error("the portal read ended without answering".to_string()))
+        }
+    }
+}
+
+/// The raw `color-scheme` value, on whichever thread is willing to wait.
+///
+/// `ReadOne` is the current method; `Read` is deprecated and, because of a
+/// long-standing xdg-desktop-portal quirk, returns the value wrapped in a
+/// second variant. Both are handled so this works against portals older than
+/// version 2.
+fn read_color_scheme_on(conn: &Connection) -> Result<u32, Unavailable> {
+    let proxy = Proxy::new(conn, DESTINATION, PATH, INTERFACE)
+        .map_err(|e| Unavailable::runtime_error(format!("cannot build portal proxy: {e}")))?;
+    match proxy.call::<_, _, OwnedValue>("ReadOne", &(NAMESPACE, KEY)) {
+        Ok(value) => unwrap_u32(&value),
+        Err(one_err) => {
+            let legacy = proxy
+                .call::<_, _, OwnedValue>("Read", &(NAMESPACE, KEY))
+                .map_err(|e| map_call_error(&one_err, e))?;
+            unwrap_u32(&legacy)
+        }
+    }
+}
+
+/// The bus accepted the name but nothing answered in time.
+///
+/// Reported as missing rather than as a runtime error because the one thing
+/// that reliably produces it is a portal that is registered as activatable and
+/// cannot start, which is the same situation as not having one.
+fn portal_unresponsive() -> Unavailable {
+    Unavailable::service_missing(format!(
+        "xdg-desktop-portal did not answer within {}s ({DESTINATION}); it is \
+         registered on the session bus but not running, so install a backend \
+         such as xdg-desktop-portal-gtk or -kde, or start the portal service",
+        PORTAL_CALL_TIMEOUT.as_secs()
     ))
 }
 

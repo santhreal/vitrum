@@ -99,6 +99,7 @@
 #![deny(missing_docs)]
 
 pub mod asciicast;
+pub mod binary;
 pub mod config;
 pub mod emulator;
 pub mod error;
@@ -115,6 +116,7 @@ pub mod timeline;
 mod tests;
 
 pub use config::{DEFAULT_GROUND_SCAN, DEFAULT_KEYFRAME_STRIDE, ReplayConfig};
+pub use binary::{VbrChunk, VbrHeader, VbrIndexEntry, VbrView, VbrWriter};
 pub use emulator::Emulator;
 pub use error::{CastError, Error, Result};
 pub use keyframe::{Keyframe, KeyframeIndex};

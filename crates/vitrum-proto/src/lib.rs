@@ -27,7 +27,6 @@ pub mod text;
 pub use text::{display_safe, error_text, is_display_safe, MAX_ERROR_CHARS};
 
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::sync::Mutex;
 
 /// Control-plane schema version. Bump only when old clients and servers must
@@ -587,10 +586,6 @@ pub const DEFAULT_SCRATCH_BUF_CAPACITY: usize = 4096;
 /// Default maximum retained capacity per pooled buffer (64 KiB) before shrinking.
 pub const MAX_RETAINED_BUF_CAPACITY: usize = 64 * 1024;
 
-thread_local! {
-    static THREAD_SCRATCH_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(DEFAULT_SCRATCH_BUF_CAPACITY));
-}
-
 /// A pre-allocated scratch buffer pool for zero-allocation IPC serialization and deserialization.
 pub struct SerdeScratchPool {
     pool: Mutex<Vec<Vec<u8>>>,
@@ -656,33 +651,6 @@ impl SerdeScratchPool {
             Ok(buf.clone())
         })
     }
-}
-
-/// Global thread-local scratch buffer helper for zero-allocation inline IPC tasks.
-pub fn with_thread_scratch<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut Vec<u8>) -> R,
-{
-    THREAD_SCRATCH_BUFFER.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        buf.clear();
-        let res = f(&mut buf);
-        if buf.capacity() > MAX_RETAINED_BUF_CAPACITY {
-            buf.shrink_to(MAX_RETAINED_BUF_CAPACITY);
-        }
-        res
-    })
-}
-
-/// Serialize `value` to JSON using the thread-local scratch buffer, calling `f` with the serialized bytes slice.
-pub fn serialize_json_with_thread_scratch<T: Serialize, F, R>(value: &T, f: F) -> Result<R, serde_json::Error>
-where
-    F: FnOnce(&[u8]) -> R,
-{
-    with_thread_scratch(|buf| {
-        serde_json::to_writer(&mut *buf, value)?;
-        Ok(f(buf))
-    })
 }
 
 /// Errors from decoding a data-plane frame.
@@ -1531,10 +1499,6 @@ mod tests {
         let back: ClientMsg = serde_json::from_slice(&serialized_bytes).expect("must deserialize json");
         assert_eq!(back, msg);
 
-        let res = serialize_json_with_thread_scratch(&msg, |bytes| {
-            let back2: ClientMsg = serde_json::from_slice(bytes).expect("must deserialize json from scratch");
-            back2
-        }).expect("scratch serialization succeeded");
-        assert_eq!(res, msg);
+
     }
 }

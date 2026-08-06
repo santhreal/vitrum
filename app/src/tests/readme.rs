@@ -217,3 +217,36 @@ fn nothing_promises_an_installer_that_does_not_exist() {
         );
     }
 }
+
+/// Every image the README shows is in the repository.
+///
+/// The screenshots are the first thing anyone sees, and a moved or renamed file
+/// turns the top of the page into three broken-image icons. Nothing else in the
+/// build reads these paths, so nothing else would notice.
+#[test]
+fn every_screenshot_the_readme_shows_exists() {
+    let readme = include_str!("../../../README.md");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the workspace root");
+
+    let mut shown = 0;
+    for rest in readme.split("](").skip(1) {
+        let target = rest.split(')').next().unwrap_or_default();
+        if !target.starts_with("assets/") {
+            continue;
+        }
+        shown += 1;
+        assert!(
+            root.join(target).is_file(),
+            "the README points at {target}, which is not in the repository"
+        );
+    }
+
+    // The count is asserted too: a rewrite that drops the screenshots would
+    // otherwise pass this test by showing nothing at all.
+    assert!(
+        shown >= 4,
+        "the README shows {shown} local assets; the screenshots and the demo are 4"
+    );
+}

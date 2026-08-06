@@ -152,7 +152,7 @@ impl AnsiColor {
                 out.write_str(FG_256_LUT[idx as usize])
             }
             AnsiColor::Rgb(r, g, b) => {
-                write!(out, "\x1b[38;2;{r};{g};{b}m")
+                write_rgb_fg(r, g, b, out)
             }
         }
     }
@@ -168,7 +168,7 @@ impl AnsiColor {
                 out.write_str(BG_256_LUT[idx as usize])
             }
             AnsiColor::Rgb(r, g, b) => {
-                write!(out, "\x1b[48;2;{r};{g};{b}m")
+                write_rgb_bg(r, g, b, out)
             }
         }
     }
@@ -251,5 +251,46 @@ impl Style {
         let mut out = String::with_capacity(text.len() + 32);
         let _ = self.render(text, &mut out);
         out
+    }
+}
+#[inline]
+fn write_rgb_fg<W: std::fmt::Write>(r: u8, g: u8, b: u8, out: &mut W) -> std::fmt::Result {
+    out.write_str("\x1b[38;2;")?;
+    write_u8_ascii(r, out)?;
+    out.write_char(';')?;
+    write_u8_ascii(g, out)?;
+    out.write_char(';')?;
+    write_u8_ascii(b, out)?;
+    out.write_char('m')
+}
+
+#[inline]
+fn write_rgb_bg<W: std::fmt::Write>(r: u8, g: u8, b: u8, out: &mut W) -> std::fmt::Result {
+    out.write_str("\x1b[48;2;")?;
+    write_u8_ascii(r, out)?;
+    out.write_char(';')?;
+    write_u8_ascii(g, out)?;
+    out.write_char(';')?;
+    write_u8_ascii(b, out)?;
+    out.write_char('m')
+}
+
+#[inline]
+fn write_u8_ascii<W: std::fmt::Write>(mut n: u8, out: &mut W) -> std::fmt::Result {
+    if n >= 100 {
+        let hundred = n / 100;
+        n %= 100;
+        out.write_char((b'0' + hundred) as char)?;
+        let ten = n / 10;
+        let one = n % 10;
+        out.write_char((b'0' + ten) as char)?;
+        out.write_char((b'0' + one) as char)
+    } else if n >= 10 {
+        let ten = n / 10;
+        let one = n % 10;
+        out.write_char((b'0' + ten) as char)?;
+        out.write_char((b'0' + one) as char)
+    } else {
+        out.write_char((b'0' + n) as char)
     }
 }

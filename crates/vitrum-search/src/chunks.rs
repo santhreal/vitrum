@@ -150,7 +150,7 @@ impl<'a> Chunked<'a> {
     ///
     /// An offset exactly at the end of the data has no byte, and returns
     /// `None`; this is what makes a zero-length final line safe.
-    fn locate(&self, offset: u64) -> Option<(usize, usize)> {
+    pub(crate) fn locate(&self, offset: u64) -> Option<(usize, usize)> {
         let mut remaining = offset;
         for (index, chunk) in self.chunks.iter().enumerate() {
             let len = chunk.len() as u64;

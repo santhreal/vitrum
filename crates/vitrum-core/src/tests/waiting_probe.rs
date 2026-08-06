@@ -16,9 +16,9 @@ use std::path::PathBuf;
 use crate::SessionManager;
 #[cfg(target_os = "linux")]
 use crate::SessionSpec;
-use vitrum_proto::ProjectId;
 #[cfg(target_os = "linux")]
 use crate::session::SETTLE_WINDOW;
+#[cfg(target_os = "linux")]
 use crate::tests::helpers::DEADLINE;
 #[cfg(target_os = "linux")]
 use crate::tests::helpers::collect;
@@ -558,9 +558,10 @@ mod captured {
 /// only fork in the whole run is the shell itself. Bash by name rather than
 /// `sh`, because a fractional `-t` is not POSIX; safe here because this test
 /// is Linux-only for unrelated reasons.
+#[cfg(target_os = "linux")]
 fn ticking_spec() -> SessionSpec {
     SessionSpec {
-        project_id: ProjectId(7),
+        project_id: vitrum_proto::ProjectId(7),
         cwd: std::env::temp_dir(),
         command: "bash".to_string(),
         args: vec![

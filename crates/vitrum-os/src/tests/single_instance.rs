@@ -1,8 +1,12 @@
 //! Single-instance handoff: the wire protocol, path limits, and the real
 //! lock-and-socket race on Unix.
 
+// Only the real lock-and-socket race needs these, and that race is Unix-only.
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::mpsc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use vitrum_proto::SessionId;
@@ -14,6 +18,7 @@ use crate::single_instance::{
     check_socket_path, decode_activation, encode_activation, unix_socket_path_limit,
     windows_mutex_name, windows_pipe_name,
 };
+#[cfg(unix)]
 use crate::tests::support::TempDir;
 
 /// Both activations must round-trip through the wire format.

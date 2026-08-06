@@ -2,8 +2,10 @@ use super::*;
 use std::net::TcpListener;
 
 /// A scratch directory that cleans itself up.
+#[cfg(unix)]
 struct Scratch(PathBuf);
 
+#[cfg(unix)]
 impl Scratch {
     fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
@@ -19,6 +21,7 @@ impl Scratch {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -420,6 +423,7 @@ fn two_simultaneous_launches_start_one_daemon() {
 /// directory up from where [`find_daemon`] would look. Found here rather
 /// than by loosening `find_daemon`, because the sibling rule is what the
 /// product wants and `deps/` is a cargo detail.
+#[cfg(unix)]
 fn built_daemon() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;

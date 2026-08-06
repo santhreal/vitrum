@@ -357,18 +357,17 @@ fn scan_one(
         let mut from = 0usize;
         while let Some(range) = matcher.find_at(visible, from) {
             let is_empty = range.start == range.end;
-            state.matches_scratch.push(range.clone());
+            let end = range.end;
+            state.matches_scratch.push(range);
             if !query.all_matches_per_line {
                 break;
             }
-            from = if !is_empty { range.end } else { range.end + 1 };
+            from = if !is_empty { end } else { end + 1 };
             if from > visible.len() {
                 break;
             }
         }
-        let match_count = state.matches_scratch.len();
-        for i in 0..match_count {
-            let range = state.matches_scratch[i].clone();
+        for range in state.matches_scratch.drain(..) {
             let original_range = map.range(range.clone());
             let line_seq = haystack.base_seq + span.offset;
 

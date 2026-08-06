@@ -7,6 +7,7 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Fixed
 
+- **Escape on What's New (and onboarding) now records the sheet as seen.** Closing with the button or the backdrop already did; Escape only cleared the layer, so the notes could return on the next launch.
 - **A second window no longer kills the process.** Opening window two panicked
   with `DuplicateCustomProtocol("vitrum-backdrop")`: every webview is built
   from one shared `WebContext`, a custom scheme belongs to that context rather
@@ -18,6 +19,7 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Changed
 
+- **What's New matches the onboarding sheet's shape:** an intro line under the title and a header Dismiss control, so the notes are framed and closable the same way as the first-run walkthrough.
 - **Dual licensed MIT OR Apache-2.0**, from MIT alone. The Apache half carries
   an explicit patent grant. The vendored forks under `vendor/` and
   `vendor-pty/` keep the MIT license and copyright they arrived with.

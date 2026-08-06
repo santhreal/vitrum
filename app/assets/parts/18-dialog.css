@@ -299,6 +299,17 @@
 
 /* -- What's new: a changelog ------------------------------------------- */
 
+/* The line under the title. Same role as `.rg-onboard__intro`: one sentence
+ * that says why this sheet opened, then the structured changelog below. */
+.rg-whatsnew__intro {
+  margin: 0;
+  color: var(--rg-fg-muted); /* 7.72:1 on the overlay */
+  font-size: var(--rg-text-13);
+  line-height: var(--rg-lead-body);
+}
+
+
+
 /* One release. Releases are told apart by the whitespace the body's gap
  * already puts between them, never by a rule: a hairline per release turns a
  * short changelog into a stack of boxes. */

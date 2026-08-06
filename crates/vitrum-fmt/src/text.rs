@@ -9,6 +9,7 @@
 //! Text is walked as grapheme clusters so that a base character never loses its
 //! combining marks and a ZWJ emoji sequence is never cut apart.
 
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -219,7 +220,7 @@ fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
 /// dropped outright. Runs of spaces are left alone here; [`title`] collapses
 /// them.
 #[must_use]
-pub fn sanitize_line(text: &str) -> String {
+pub fn sanitize_line<'a>(text: &'a str) -> Cow<'a, str> {
     let bytes = text.as_bytes();
 
     // Fast path: SWAR scan for pure printable ASCII input.
@@ -232,7 +233,7 @@ pub fn sanitize_line(text: &str) -> String {
         scan += 8;
     }
     if scan == bytes.len() {
-        return text.to_owned();
+        return Cow::Borrowed(text);
     }
     let mut tail_printable = true;
     for &b in &bytes[scan..] {
@@ -242,11 +243,12 @@ pub fn sanitize_line(text: &str) -> String {
         }
     }
     if tail_printable {
-        return text.to_owned();
+        return Cow::Borrowed(text);
     }
 
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
+    out.push_str(&text[..scan]);
+    let mut chars = text[scan..].chars();
     while let Some(ch) = chars.next() {
         match ch {
             '\u{1b}' => match chars.next() {
@@ -264,7 +266,7 @@ pub fn sanitize_line(text: &str) -> String {
             _ => {}
         }
     }
-    out
+    Cow::Owned(out)
 }
 
 /// Consume a CSI sequence's parameters and intermediates up to its final byte.

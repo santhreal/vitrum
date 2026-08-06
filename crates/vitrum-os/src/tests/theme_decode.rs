@@ -134,3 +134,42 @@ fn a_portal_that_never_starts_is_missing_rather_than_broken() {
     assert!(!absent("org.freedesktop.DBus.Error.AccessDenied", None));
     assert!(!absent("org.freedesktop.DBus.Error.InvalidArgs", None));
 }
+
+/// A portal read gives up rather than blocking the caller for minutes.
+///
+/// The classifier above returns the right answer, but only once the bus has
+/// finished waiting. D-Bus activation of a name that never comes up costs
+/// `service_start_timeout`, 120 seconds by default, twice per read, and
+/// `preference` runs on the thread that opens the settings sheet. The bound is
+/// what makes the right answer arrive in time to matter.
+///
+/// Driven with a job that never finishes on a timeout far below the real one,
+/// so the test is fast and does not need a bus at all. A slow job must return
+/// the missing-service verdict, and a job that answers must have its value
+/// passed through untouched rather than being paid for in latency.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_portal_that_does_not_answer_is_given_up_on() {
+    use crate::capability::UnavailableKind;
+    use crate::theme::linux::{PORTAL_CALL_TIMEOUT, within};
+    use std::time::{Duration, Instant};
+
+    let started = Instant::now();
+    let stalled = within(Duration::from_millis(50), || {
+        std::thread::sleep(Duration::from_secs(120));
+        Ok::<u32, _>(0)
+    });
+    let waited = started.elapsed();
+    let error = stalled.expect_err("a job that never answers cannot produce a value");
+    assert_eq!(
+        error.kind,
+        UnavailableKind::ServiceMissing,
+        "a portal that cannot be reached is missing, not broken: {}",
+        error.detail
+    );
+    assert!(waited < Duration::from_secs(5), "gave up after {waited:?}, which is not a bound");
+
+    // The bound must not cost anything when the portal does answer.
+    let answered = within(PORTAL_CALL_TIMEOUT, || Ok::<u32, _>(1));
+    assert_eq!(answered.map_err(|e| e.detail), Ok(1));
+}

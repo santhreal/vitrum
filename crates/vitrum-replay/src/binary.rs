@@ -232,16 +232,36 @@ impl<'a> VbrView<'a> {
 
     /// Fast zero-copy lookup for the latest keyframe entry at or before target_seq.
     pub fn binary_search_keyframe(&self, target_seq: u64) -> Option<VbrIndexEntry> {
-        let entries = self.keyframe_index();
-        if entries.is_empty() {
+        let count = self.header.keyframe_count as usize;
+        if count == 0 {
             return None;
         }
-
-        match entries.binary_search_by_key(&target_seq, |e| e.seq) {
-            Ok(idx) => Some(entries[idx]),
-            Err(0) => None,
-            Err(idx) => Some(entries[idx - 1]),
+        let start = self.header.index_offset as usize;
+        let end = start + count * VbrIndexEntry::SIZE;
+        if end > self.data.len() {
+            return None;
         }
+        let keyframe_slice = &self.data[start..end];
+
+        let mut low = 0;
+        let mut high = count;
+        let mut best = None;
+
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let offset = mid * VbrIndexEntry::SIZE;
+            if let Ok(entry) = VbrIndexEntry::decode(&keyframe_slice[offset..]) {
+                if entry.seq <= target_seq {
+                    best = Some(entry);
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            } else {
+                break;
+            }
+        }
+        best
     }
 
     /// Reconstruct raw buffer payload from chunks for Replay stream construction.
@@ -342,13 +362,6 @@ impl VbrWriter {
             stream_offset,
             micros,
         });
-    }
-
-    /// Populate keyframes from existing [`KeyframeIndex`].
-    pub fn import_keyframe_index(&mut self, index: &KeyframeIndex) {
-        for frame in index.frames() {
-            self.add_keyframe(frame.seq, frame.seq - self.base_seq, 0);
-        }
     }
 
     /// Serialize into binary `.vbr` format.

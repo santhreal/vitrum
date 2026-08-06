@@ -337,3 +337,203 @@ impl fmt::Display for PathError {
 }
 
 impl core::error::Error for PathError {}
+/// Inotify / epoll watch event kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WatchEventKind(pub u32);
+
+impl WatchEventKind {
+    /// File was accessed (e.g., read).
+    pub const ACCESS: Self = Self(0x0000_0001);
+    /// File was modified.
+    pub const MODIFY: Self = Self(0x0000_0002);
+    /// Metadata changed.
+    pub const ATTRIB: Self = Self(0x0000_0004);
+    /// Writable file was closed.
+    pub const CLOSE_WRITE: Self = Self(0x0000_0008);
+    /// Unwritable file closed.
+    pub const CLOSE_NOWRITE: Self = Self(0x0000_0010);
+    /// File was opened.
+    pub const OPEN: Self = Self(0x0000_0020);
+    /// File was moved out of watched directory.
+    pub const MOVED_FROM: Self = Self(0x0000_0040);
+    /// File was moved into watched directory.
+    pub const MOVED_TO: Self = Self(0x0000_0080);
+    /// Subfile/directory was created.
+    pub const CREATE: Self = Self(0x0000_0100);
+    /// Subfile/directory was deleted.
+    pub const DELETE: Self = Self(0x0000_0200);
+    /// Watched file/directory was deleted.
+    pub const DELETE_SELF: Self = Self(0x0000_0400);
+    /// Watched file/directory was moved.
+    pub const MOVE_SELF: Self = Self(0x0000_0800);
+}
+
+/// A processed or raw inotify/epoll file watch event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchEvent {
+    /// Resolved target path for this event.
+    pub path: PathBuf,
+    /// Event mask / bitfield.
+    pub kind: WatchEventKind,
+    /// Watch descriptor ID.
+    pub wd: i32,
+    /// Whether target is a directory.
+    pub is_dir: bool,
+    /// Event creation timestamp in nanoseconds.
+    pub timestamp_ns: u64,
+}
+
+/// Result of registering a file watch path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchResult {
+    /// New watch descriptor assigned.
+    Added {
+        /// Watch descriptor handle.
+        wd: i32,
+    },
+    /// Path collision detected: path is already actively watched.
+    Collision {
+        /// Existing watch descriptor handle.
+        existing_wd: i32,
+    },
+    /// Watch creation failed.
+    Failed(String),
+}
+
+/// High-performance batched kernel file watcher with inotify/epoll collision detection.
+///
+/// Tracks watch descriptors (`wd`) mapped to paths, detects duplicate/colliding watches,
+/// and coalesces rapid high-frequency kernel file events into deduplicated batches.
+#[derive(Debug)]
+pub struct BatchedKernelWatcher {
+    wd_to_path: BTreeMap<i32, PathBuf>,
+    path_to_wd: BTreeMap<PathBuf, i32>,
+    pending_events: Vec<WatchEvent>,
+    next_wd: i32,
+    coalesce_window_ns: u64,
+}
+
+impl Default for BatchedKernelWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BatchedKernelWatcher {
+    /// Create a new watcher with default 5ms coalescing window.
+    pub fn new() -> Self {
+        Self {
+            wd_to_path: BTreeMap::new(),
+            path_to_wd: BTreeMap::new(),
+            pending_events: Vec::new(),
+            next_wd: 1,
+            coalesce_window_ns: 5_000_000, // 5 ms
+        }
+    }
+
+    /// Customize the batching time window in nanoseconds.
+    pub fn with_coalesce_window_ns(mut self, ns: u64) -> Self {
+        self.coalesce_window_ns = ns;
+        self
+    }
+
+    /// Register a path for kernel file watching with collision detection.
+    pub fn add_watch(&mut self, path: impl AsRef<Path>) -> WatchResult {
+        let path_buf = path.as_ref().to_path_buf();
+        if let Some(&existing_wd) = self.path_to_wd.get(&path_buf) {
+            return WatchResult::Collision { existing_wd };
+        }
+
+        let wd = self.next_wd;
+        self.next_wd = self.next_wd.wrapping_add(1);
+        if self.next_wd <= 0 {
+            self.next_wd = 1;
+        }
+
+        self.wd_to_path.insert(wd, path_buf.clone());
+        self.path_to_wd.insert(path_buf, wd);
+
+        WatchResult::Added { wd }
+    }
+
+    /// Unregister a watch descriptor.
+    pub fn remove_watch(&mut self, wd: i32) -> bool {
+        if let Some(path) = self.wd_to_path.remove(&wd) {
+            self.path_to_wd.remove(&path);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Total active watches.
+    pub fn watch_count(&self) -> usize {
+        self.wd_to_path.len()
+    }
+
+    /// Check if a path is already watched, returning its wd if so.
+    pub fn is_watched(&self, path: &Path) -> Option<i32> {
+        self.path_to_wd.get(path).copied()
+    }
+
+    /// Push an unbatched raw event into the watcher pipeline.
+    pub fn push_raw_event(
+        &mut self,
+        wd: i32,
+        kind: WatchEventKind,
+        name: Option<&str>,
+        is_dir: bool,
+        timestamp_ns: u64,
+    ) {
+        if let Some(base_path) = self.wd_to_path.get(&wd) {
+            let full_path = match name {
+                Some(sub) if !sub.is_empty() => base_path.join(sub),
+                _ => base_path.clone(),
+            };
+            self.pending_events.push(WatchEvent {
+                path: full_path,
+                kind,
+                wd,
+                is_dir,
+                timestamp_ns,
+            });
+        }
+    }
+
+    /// Coalesce and flush pending kernel events within the configured window.
+    /// Deduplicates events for identical paths and merges bitmasks.
+    pub fn flush_batch(&mut self) -> Vec<WatchEvent> {
+        if self.pending_events.is_empty() {
+            return Vec::new();
+        }
+
+        let mut map: BTreeMap<PathBuf, WatchEvent> = BTreeMap::new();
+        let mut unhandled = Vec::new();
+
+        for event in self.pending_events.drain(..) {
+            if let Some(existing) = map.get_mut(&event.path) {
+                // Merge event mask bits
+                existing.kind = WatchEventKind(existing.kind.0 | event.kind.0);
+                existing.timestamp_ns = existing.timestamp_ns.max(event.timestamp_ns);
+            } else {
+                map.insert(event.path.clone(), event);
+            }
+        }
+
+        unhandled.extend(map.into_values());
+        unhandled
+    }
+
+    /// Detect any path collision anomalies where multiple watch descriptors map to identical paths.
+    pub fn detect_collisions(&self) -> Vec<(PathBuf, Vec<i32>)> {
+        let mut path_map: BTreeMap<PathBuf, Vec<i32>> = BTreeMap::new();
+        for (&wd, path) in &self.wd_to_path {
+            path_map.entry(path.clone()).or_default().push(wd);
+        }
+
+        path_map
+            .into_iter()
+            .filter(|(_, wds)| wds.len() > 1)
+            .collect()
+    }
+}

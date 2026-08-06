@@ -268,3 +268,63 @@ fn the_capture_list_covers_every_variable_resolution_reads() {
     // means the loop above tested nothing.
     assert!(checked > 0, "no directory variable was set, so nothing was verified");
 }
+#[test]
+fn batched_kernel_watcher_detects_collisions_and_coalesces_events() {
+    use crate::paths::{BatchedKernelWatcher, WatchEventKind, WatchResult};
+    use std::path::PathBuf;
+
+    let mut watcher = BatchedKernelWatcher::new().with_coalesce_window_ns(10_000_000);
+    let path_a = PathBuf::from("/tmp/vitrum_test/config.json");
+
+    // Add path watch
+    let res1 = watcher.add_watch(&path_a);
+    let wd1 = match res1 {
+        WatchResult::Added { wd } => wd,
+        _ => panic!("Expected Added watch result"),
+    };
+
+    // Attempting to watch same path detects collision
+    let res2 = watcher.add_watch(&path_a);
+    assert_eq!(res2, WatchResult::Collision { existing_wd: wd1 });
+
+    assert_eq!(watcher.watch_count(), 1);
+    assert_eq!(watcher.is_watched(&path_a), Some(wd1));
+
+    // Push high frequency raw events for same file
+    watcher.push_raw_event(
+        wd1,
+        WatchEventKind::MODIFY,
+        None,
+        false,
+        1000,
+    );
+    watcher.push_raw_event(
+        wd1,
+        WatchEventKind::CLOSE_WRITE,
+        None,
+        false,
+        2000,
+    );
+    watcher.push_raw_event(
+        wd1,
+        WatchEventKind::ATTRIB,
+        None,
+        false,
+        3000,
+    );
+
+    // Flush batch should coalesce all events for path_a into 1 combined WatchEvent
+    let batch = watcher.flush_batch();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].path, path_a);
+    let expected_mask = WatchEventKind::MODIFY.0
+        | WatchEventKind::CLOSE_WRITE.0
+        | WatchEventKind::ATTRIB.0;
+    assert_eq!(batch[0].kind.0, expected_mask);
+    assert_eq!(batch[0].timestamp_ns, 3000);
+
+    // Test watch removal
+    assert!(watcher.remove_watch(wd1));
+    assert_eq!(watcher.watch_count(), 0);
+    assert_eq!(watcher.is_watched(&path_a), None);
+}

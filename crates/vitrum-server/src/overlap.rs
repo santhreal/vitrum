@@ -127,11 +127,20 @@ struct Watcher {
     wds: Arc<Mutex<std::collections::HashMap<i32, PathBuf>>>,
 }
 
+/// Distinct degradations retained.
+///
+/// Deduplication alone does not bound this: the "tree too large" note names its
+/// root, so a daemon that outlives a thousand large checkouts would accumulate a
+/// thousand distinct sentences, and the whole list is cloned into every report
+/// sent to every window.
+const MAX_DEGRADED: usize = 16;
+
 /// Everything the reader thread and the query path share.
 #[derive(Default)]
 struct Tracked {
     sessions: Vec<Watched>,
     /// Ways detection is currently incomplete, each a finished sentence.
+    /// Bounded by [`MAX_DEGRADED`] and deduplicated; see [`Tracked::degrade`].
     degraded: Vec<String>,
 }
 
@@ -180,12 +189,42 @@ impl Tracked {
         }
     }
 
+    /// Record a way detection is incomplete, once.
+    fn degrade(&mut self, note: String) {
+        if self.degraded.len() >= MAX_DEGRADED || self.degraded.iter().any(|d| *d == note) {
+            return;
+        }
+        self.degraded.push(note);
+    }
+
     /// Every path two or more live sessions have written inside the window.
     fn collisions(&self, now_ms: u64) -> Vec<Collision> {
+        // A collision needs two sessions, so one session is the whole answer.
+        if self.sessions.len() < 2 {
+            return Vec::new();
+        }
+        // Count first, build second. Building a participant vector for every
+        // tracked path allocated one `Vec` per path per call, up to sessions
+        // times PATHS_PER_SESSION of them on every inotify batch, and threw all
+        // but the contested ones away. Now only a contested path allocates.
+        let mut writers: HashMap<&Path, u32> = HashMap::new();
+        for s in &self.sessions {
+            for (path, w) in &s.writes {
+                if now_ms.saturating_sub(w.last_ms) > WINDOW_MS {
+                    continue;
+                }
+                *writers.entry(path.as_path()).or_insert(0) += 1;
+            }
+        }
         let mut by_path: BTreeMap<&Path, Vec<CollisionParticipant>> = BTreeMap::new();
         for s in &self.sessions {
             for (path, w) in &s.writes {
                 if now_ms.saturating_sub(w.last_ms) > WINDOW_MS {
+                    continue;
+                }
+                // TWO OR MORE. One session writing its own file all day is the
+                // normal case and is not news.
+                if writers.get(path.as_path()).copied().unwrap_or(0) < 2 {
                     continue;
                 }
                 by_path.entry(path).or_default().push(CollisionParticipant {
@@ -199,9 +238,6 @@ impl Tracked {
         }
         by_path
             .into_iter()
-            // TWO OR MORE. One session writing its own file all day is the
-            // normal case and is not news.
-            .filter(|(_, who)| who.len() >= 2)
             .map(|(path, mut who)| {
                 who.sort_by_key(|p| p.session.0);
                 Collision {
@@ -369,13 +405,12 @@ mod platform {
         _service: Arc<OverlapService>,
         _publish: Publish,
     ) -> Watcher {
-        let state = Arc::new(Mutex::new(Tracked {
-            sessions: Vec::new(),
-            degraded: vec![
-                "This build has no file watcher for this platform, so no change is seen."
-                    .to_string(),
-            ],
-        }));
+        let mut tracked = Tracked::default();
+        tracked.degrade(
+            "This build has no file watcher for this platform, so no change is seen."
+                .to_string(),
+        );
+        let state = Arc::new(Mutex::new(tracked));
         Watcher {
             running: Arc::new(AtomicBool::new(false)),
             state,

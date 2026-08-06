@@ -327,3 +327,148 @@ fn a_session_that_appears_after_the_subscription_gets_watched() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// WHY: the "tree too large" note names its root and was pushed on every sync,
+/// so a long-lived daemon accumulated one copy per sync forever, and the whole
+/// list is cloned into every report sent to every window.
+#[test]
+fn a_degradation_is_recorded_once_and_the_list_is_bounded() {
+    let mut t = tracked(vec![]);
+    for _ in 0..50 {
+        t.degrade("/src/repo has too many directories.".to_string());
+    }
+    assert_eq!(t.degraded.len(), 1, "the same degradation was recorded twice");
+
+    for i in 0..MAX_DEGRADED + 20 {
+        t.degrade(format!("/src/repo{i} has too many directories."));
+    }
+    assert_eq!(
+        t.degraded.len(),
+        MAX_DEGRADED,
+        "distinct degradations grew past the bound"
+    );
+}
+
+/// WHY: the age prune only runs between inotify read batches, so a burst of
+/// opens with no closes grew this map unbounded on the watcher thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn pending_opens_are_bounded_and_evict_the_stalest() {
+    use super::platform::remember_open_for_test as remember;
+
+    let mut pending = HashMap::new();
+    let stale = PathBuf::from("/src/repo/stale.rs");
+    remember(&mut pending, stale.clone(), SessionId(1), NOW);
+    for i in 0..super::platform::PENDING_OPENS + 20 {
+        let p = PathBuf::from(format!("/src/repo/f{i}.rs"));
+        remember(&mut pending, p, SessionId(1), NOW + 10 + i as u64);
+    }
+    assert!(
+        pending.len() <= super::platform::PENDING_OPENS,
+        "the pending map grew past its bound: {}",
+        pending.len()
+    );
+    assert!(
+        !pending.contains_key(&stale),
+        "the stalest open survived while newer ones were dropped"
+    );
+}
+
+/// WHY: an inotify watch is a kernel resource held until it is removed or the
+/// instance closes, and the instance lives as long as the subscription. Watches
+/// for a session that ended were never removed, so every session a long-running
+/// daemon hosted leaked one watch per directory of its tree against a per-user
+/// limit the daemon does not own.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_ended_session_releases_its_inotify_watches() {
+    let base = std::env::temp_dir().join(format!("vitrum-prune-{}", std::process::id()));
+    let keep = base.join("keep");
+    let ends = base.join("ends");
+    std::fs::create_dir_all(keep.join("nested")).expect("temp tree");
+    std::fs::create_dir_all(ends.join("a/b")).expect("temp tree");
+
+    let service = OverlapService::new();
+    let publish: Publish = Arc::new(|_| {});
+    service.set_watching(true, &[], &publish, NOW);
+
+    let both = [
+        (SessionId(1), keep.clone(), std::process::id()),
+        (SessionId(2), ends.clone(), std::process::id()),
+    ];
+    service.sync(&both);
+    let watched_both = service.watch_count();
+    assert_eq!(watched_both, 5, "both trees must be watched to start with");
+
+    // Session 2 ends. Its three directories must leave the watch set.
+    service.sync(&both[..1]);
+    assert_eq!(
+        service.watch_count(),
+        2,
+        "the ended session's watches were leaked into the kernel"
+    );
+
+    service.set_watching(false, &both[..1], &publish, NOW);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// WHY: the per-session directory cap counted only the watches one walk added,
+/// so a tree over the cap took another DIRS_PER_SESSION watches on every sync,
+/// and sync runs whenever any session starts or ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_directory_cap_bounds_the_watch_set_not_one_walk() {
+    let root = std::env::temp_dir().join(format!("vitrum-cap-{}", std::process::id()));
+    let over = super::platform::DIRS_PER_SESSION + 200;
+    for i in 0..over {
+        std::fs::create_dir_all(root.join(format!("d{i}"))).expect("temp tree");
+    }
+
+    let service = OverlapService::new();
+    let publish: Publish = Arc::new(|_| {});
+    service.set_watching(true, &[], &publish, NOW);
+    let live = [(SessionId(1), root.clone(), std::process::id())];
+
+    service.sync(&live);
+    service.sync(&live);
+    assert!(
+        service.watch_count() <= super::platform::DIRS_PER_SESSION,
+        "a second sync took the watch set past its cap: {}",
+        service.watch_count()
+    );
+
+    service.set_watching(false, &live, &publish, NOW);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// WHY: the walk skipped any directory it already held a watch for, and it only
+/// descended into directories it had just watched. On every re-sync it
+/// therefore stopped dead at the session root, so a module an agent created
+/// after the client subscribed was never watched and nothing written under it
+/// was ever detected.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_directory_created_after_the_last_sync_gets_watched() {
+    let root = std::env::temp_dir().join(format!("vitrum-late-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("temp tree");
+
+    let service = OverlapService::new();
+    let publish: Publish = Arc::new(|_| {});
+    service.set_watching(true, &[], &publish, NOW);
+    let live = [(SessionId(1), root.clone(), std::process::id())];
+    service.sync(&live);
+    assert_eq!(service.watch_count(), 1, "only the root exists so far");
+
+    // The agent creates a module. Nothing about the session list changed.
+    std::fs::create_dir_all(root.join("newmod/inner")).expect("temp tree");
+    service.sync(&live);
+    assert_eq!(
+        service.watch_count(),
+        3,
+        "directories created after the last sync are not being watched, so \
+         nothing written under them can ever be detected"
+    );
+
+    service.set_watching(false, &live, &publish, NOW);
+    let _ = std::fs::remove_dir_all(&root);
+}

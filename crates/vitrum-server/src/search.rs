@@ -48,6 +48,15 @@ use vitrum_core::SessionManager;
 use vitrum_proto::{SearchHit, ServerMsg, SessionId};
 use vitrum_search::{Haystack, Hit, Matcher, Query, SearchResults, Stripper, Sweep};
 
+/// Hits one sweep may return, whatever the client asks for.
+///
+/// `max_hits` arrives as a `u32` and every hit carries owned text, so a client
+/// asking for four billion has the daemon build the whole match set of every
+/// scrollback in memory before anything is truncated. The shipped window asks
+/// for 500, so this is twenty times the real request and still a ceiling.
+/// Context needs no ceiling here: `vitrum_search::MAX_CONTEXT` owns that one.
+const MAX_HITS: usize = 10_000;
+
 /// Translate the wire request into a query.
 ///
 /// `max_hits_per_session` is left wide open here; the fair share depends on how
@@ -60,6 +69,7 @@ pub(crate) fn query_from_wire(
     context_lines: u16,
     max_hits: u32,
 ) -> Query {
+    let max_hits = (max_hits as usize).min(MAX_HITS);
     let base = if regex {
         Query::regex(pattern)
     } else {
@@ -68,8 +78,8 @@ pub(crate) fn query_from_wire(
     base.case_insensitive(case_insensitive)
         .whole_word(whole_word)
         .context(context_lines as usize)
-        .max_hits(max_hits as usize)
-        .max_hits_per_session(max_hits as usize)
+        .max_hits(max_hits)
+        .max_hits_per_session(max_hits)
 }
 
 /// One session's share of the hit budget.
@@ -446,5 +456,23 @@ mod tests {
         let regex = query_from_wire("a.b", true, false, false, 0, 10);
         let matcher = Matcher::compile(&regex).expect("a valid regex compiles");
         assert!(matcher.find_at(b"axb", 0).is_some());
+    }
+
+    /// WHY: `max_hits` came off the wire unbounded. A client asking for
+    /// `u32::MAX` had the daemon build the entire match set of every
+    /// scrollback in memory before anything was truncated. The shipped window
+    /// asks for 500.
+    #[test]
+    fn a_ravenous_request_is_clamped_to_the_daemon_ceiling() {
+        let mut body = Vec::new();
+        for i in 0..MAX_HITS + 50 {
+            body.extend_from_slice(format!("line {i} error here\n").as_bytes());
+        }
+        let query = query_from_wire("error", false, false, false, 0, u32::MAX);
+        assert_eq!(
+            hits_in(&body, &query).len(),
+            MAX_HITS,
+            "the hit budget a client named was honoured instead of the ceiling"
+        );
     }
 }

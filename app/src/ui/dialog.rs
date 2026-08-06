@@ -341,11 +341,34 @@ pub fn intents(
     out
 }
 
+/// Is this query asking for a directory, rather than naming a command?
+///
+/// The single definition of the rule, because it decides three things that must
+/// agree: whether the list holds directories or commands, whether a typed row
+/// is offered, and what an Enter with nothing to take says. Judging on the
+/// first character alone made `/bin/sh -c "printf hi"` a directory search, so
+/// the list went empty, no row was offered and Enter was silent.
+///
+/// A path stops being a path as soon as it carries an argument: `/usr/bin/env
+/// FOO=1 agent` names a program that happens to live at an absolute path.
+pub fn is_dir_search(query: &str) -> bool {
+    let q = query.trim();
+    looks_like_path(q) && launch::split_command(q).is_some_and(|(_, args)| args.is_empty())
+}
+
 /// The row that runs exactly what was typed, when no other row does.
 ///
 /// The command field used to be free text and this is where that went. It is
 /// the last row rather than the first, because a query is far more often a
 /// filter over things that exist than a command nobody has run here.
+///
+/// A rooted query is a directory only while it is JUST a path. Once it carries
+/// an argument it is a command line, whatever its first character: the launcher
+/// itself offers `/bin/bash` as a row, so a program named by absolute path is
+/// ordinary, and `/bin/sh -c "..."` was being classified as a directory. That
+/// left no row to take, and Enter is guarded on there being one, so typing a
+/// perfectly good command line and pressing Enter did nothing whatsoever and
+/// said only that nothing matched.
 pub fn typed_intent(
     all: &[Intent],
     st: &UiState,
@@ -354,13 +377,16 @@ pub fn typed_intent(
     home: &str,
 ) -> Option<Intent> {
     let q = query.trim();
-    if q.is_empty() || looks_like_path(q) {
+    if q.is_empty() {
         return None;
     }
-    if all.iter().any(|i| i.command == q) {
+    if is_dir_search(q) {
         return None;
     }
     launch::split_command(q)?;
+    if all.iter().any(|i| i.command == q) {
+        return None;
+    }
     let here = launch::tidy_dir(here);
     Some(Intent::new(
         q.to_string(),
@@ -371,6 +397,27 @@ pub fn typed_intent(
         "typed".to_string(),
         None,
     ))
+}
+
+/// Why a query produced no row, for an Enter that has nothing to take.
+///
+/// Enter is guarded on the list being non-empty, which is correct, but a
+/// guarded key that does nothing and says nothing is indistinguishable from a
+/// dead keyboard. Every state that can leave the list empty has a reason the
+/// operator can act on, so it is said out loud.
+pub fn no_row_reason(query: &str) -> String {
+    let q = query.trim();
+    if q.is_empty() {
+        return "Type a command, or pick a row.".to_string();
+    }
+    // Unbalanced quotes and an empty program both land here.
+    if launch::split_command(q).is_none() {
+        return format!("\u{201c}{q}\u{201d} names no program to run.");
+    }
+    if is_dir_search(q) {
+        return format!("\u{201c}{q}\u{201d} is not a directory that exists.");
+    }
+    format!("\u{201c}{q}\u{201d} cannot be launched from here.")
 }
 
 /// Indices into `all` that match `query`, best first, capped at [`ROWS_MAX`].
@@ -1014,7 +1061,7 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
 
     let picks = use_memo(move || {
         let text = query.read().clone();
-        if looks_like_path(&text) {
+        if is_dir_search(&text) {
             let fragment = launch::split_dir_input(&text, &home.read()).1;
             let scanned = entries.read();
             let list: &[String] = match (*scanned).as_ref() {
@@ -1401,9 +1448,13 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                                     hi.set(0);
                                 }
                             }
-                            Key::Enter if count > 0 => {
+                            Key::Enter => {
                                 e.prevent_default();
-                                take(cur);
+                                if count > 0 {
+                                    take(cur);
+                                } else {
+                                    said.set(Some(no_row_reason(&query.read())));
+                                }
                             }
                             _ => {}
                         }

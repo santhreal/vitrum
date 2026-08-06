@@ -3,11 +3,16 @@
 //! wrong bytes.
 
 use crate::SessionManager;
-use crate::tests::helpers::{shell_spec, wait_exit};
+use crate::tests::helpers::{shell_spec, wait_exit, whole_stream};
 
-/// Printable payload plus the CRLF that `echo` produces on both platforms.
+/// Long enough to overflow every ring these tests configure, on a platform that
+/// prepends a pty preamble as well as one that does not.
 const PAYLOAD: &str = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuv";
-const TOTAL: u64 = PAYLOAD.len() as u64 + 2;
+
+/// The script every test in this file runs.
+fn script() -> String {
+    format!("echo {PAYLOAD}")
+}
 
 /// A session that produced more than its capacity must report the correct
 /// `oldest_seq`, i.e. the offset of the oldest byte it still holds.
@@ -19,20 +24,18 @@ const TOTAL: u64 = PAYLOAD.len() as u64 + 2;
 #[tokio::test]
 async fn a_session_over_capacity_reports_the_correct_oldest_seq() {
     let cap = 32;
-    let mgr = SessionManager::new(cap);
-    let id = mgr
-        .spawn(shell_spec(&format!("echo {PAYLOAD}")))
-        .expect("spawn");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    let whole = whole_stream(&script()).await;
+    let total = whole.len() as u64;
+    assert!(total > cap as u64, "the payload did not overflow the ring");
 
-    let mut expected = PAYLOAD.as_bytes().to_vec();
-    expected.extend_from_slice(b"\r\n");
-    assert_eq!(expected.len() as u64, TOTAL);
+    let mgr = SessionManager::new(cap);
+    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
+    assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert_eq!(
         from,
-        TOTAL - cap as u64,
+        total - cap as u64,
         "oldest retained byte is capacity bytes back from the head"
     );
     assert!(
@@ -40,7 +43,7 @@ async fn a_session_over_capacity_reports_the_correct_oldest_seq() {
         "nothing older than the oldest retained byte survives"
     );
     assert_eq!(bytes.len(), cap);
-    assert_eq!(bytes, &expected[expected.len() - cap..]);
+    assert_eq!(bytes, &whole[whole.len() - cap..]);
 }
 
 /// A request bounded above the head must clamp to the head rather than refusing
@@ -50,15 +53,15 @@ async fn a_session_over_capacity_reports_the_correct_oldest_seq() {
 async fn scrollback_clamps_before_seq_to_the_head() {
     let cap = 32;
     let mgr = SessionManager::new(cap);
-    let id = mgr
-        .spawn(shell_spec(&format!("echo {PAYLOAD}")))
-        .expect("spawn");
+    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
     let unbounded = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
-    let at_head = mgr.scrollback(id, TOTAL, 4096).expect("session exists");
+    // An unbounded read reaches the head, so its own answer names it.
+    let head = unbounded.0 + unbounded.1.len() as u64;
+    let at_head = mgr.scrollback(id, head, 4096).expect("session exists");
     let past_head = mgr
-        .scrollback(id, TOTAL + 10_000, 4096)
+        .scrollback(id, head + 10_000, 4096)
         .expect("session exists");
     assert_eq!(unbounded, at_head);
     assert_eq!(unbounded, past_head);
@@ -70,13 +73,13 @@ async fn scrollback_clamps_before_seq_to_the_head() {
 #[tokio::test]
 async fn scrollback_before_the_oldest_byte_is_empty_and_final() {
     let cap = 32;
+    let total = whole_stream(&script()).await.len() as u64;
+
     let mgr = SessionManager::new(cap);
-    let id = mgr
-        .spawn(shell_spec(&format!("echo {PAYLOAD}")))
-        .expect("spawn");
+    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
-    let oldest = TOTAL - cap as u64;
+    let oldest = total - cap as u64;
     let (from, bytes, more) = mgr.scrollback(id, oldest, 4096).expect("session exists");
     assert_eq!(from, oldest);
     assert_eq!(bytes, b"");
@@ -94,18 +97,16 @@ async fn scrollback_before_the_oldest_byte_is_empty_and_final() {
 #[tokio::test]
 async fn scrollback_returns_the_newest_slice_first() {
     let cap = 32;
+    let whole = whole_stream(&script()).await;
+    let total = whole.len() as u64;
+
     let mgr = SessionManager::new(cap);
-    let id = mgr
-        .spawn(shell_spec(&format!("echo {PAYLOAD}")))
-        .expect("spawn");
+    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
-    let mut expected = PAYLOAD.as_bytes().to_vec();
-    expected.extend_from_slice(b"\r\n");
-
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 8).expect("session exists");
-    assert_eq!(from, TOTAL - 8);
-    assert_eq!(bytes, &expected[expected.len() - 8..]);
+    assert_eq!(from, total - 8);
+    assert_eq!(bytes, &whole[whole.len() - 8..]);
     assert!(more, "24 retained bytes are still older than this page");
 }
 
@@ -113,13 +114,13 @@ async fn scrollback_returns_the_newest_slice_first() {
 /// answer coherently, since a zero ring is a legitimate low-memory setting.
 #[tokio::test]
 async fn a_zero_capacity_session_reports_no_history() {
+    let total = whole_stream(&script()).await.len() as u64;
+
     let mgr = SessionManager::new(0);
-    let id = mgr
-        .spawn(shell_spec(&format!("echo {PAYLOAD}")))
-        .expect("spawn");
+    let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
-    assert_eq!(from, TOTAL, "the head is still counted");
+    assert_eq!(from, total, "the head is still counted");
     assert_eq!(bytes, b"");
     assert!(!more);
 }

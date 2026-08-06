@@ -24,7 +24,7 @@ use crate::tests::helpers::DEADLINE;
 use crate::tests::helpers::collect;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::tests::helpers::waiting_settles_on;
-use crate::tests::helpers::{QUIET, probe_now, shell_spec, wait_exit};
+use crate::tests::helpers::{QUIET, blocking_read, probe_now, shell_spec, wait_exit};
 
 /// A spec running `command` with `args` from a directory that exists.
 #[cfg(target_os = "linux")]
@@ -298,7 +298,7 @@ async fn macos_proves_a_spinning_child_is_working() {
 #[tokio::test]
 async fn a_settled_session_is_never_probed_again() {
     let mgr = SessionManager::new(4096);
-    let id = mgr.spawn(shell_spec("read -r answer")).expect("spawn");
+    let id = mgr.spawn(shell_spec(blocking_read())).expect("spawn");
     let settled = probe_now(&mgr, id).await;
     assert!(settled.status.is_live());
     let after_settling = mgr.probe_count(id).expect("probe count");
@@ -348,7 +348,7 @@ async fn output_re_arms_the_probe() {
 #[tokio::test]
 async fn an_exited_session_has_no_foreground_answer() {
     let mgr = SessionManager::new(4096);
-    let id = mgr.spawn(shell_spec("read -r answer")).expect("spawn");
+    let id = mgr.spawn(shell_spec(blocking_read())).expect("spawn");
     let live = probe_now(&mgr, id).await;
     assert!(live.status.is_live(), "the child is still running");
 

@@ -258,14 +258,24 @@ pub(crate) fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
 }
 
-/// The head of `id`'s stream, once it has stopped moving.
+/// Read `id`'s whole retained stream once `done` accepts it and it has stopped
+/// growing. Returns the oldest retained offset and the bytes.
 ///
 /// A terminal state is not the end of the stream. The process is reaped by one
 /// thread and the pty is drained by another, so `wait_exit` can return while the
 /// last coalesced chunk is still on its way into the ring. A test that reads at
 /// that moment compares a full stream against a truncated one and blames the
-/// ring. Two reads that agree mean the writer has finished.
-pub(crate) async fn settled_head(mgr: &SessionManager, id: SessionId) -> u64 {
+/// ring.
+///
+/// Quiet alone is not enough to say the stream is finished, because ConPTY writes
+/// its preamble and then pauses long enough to look finished before the child has
+/// produced a byte. So the caller states what it is waiting for, and quiet is
+/// only the confirmation that nothing further arrived.
+pub(crate) async fn settled(
+    mgr: &SessionManager,
+    id: SessionId,
+    done: impl Fn(u64, &[u8]) -> bool,
+) -> (u64, Vec<u8>) {
     let deadline = Instant::now() + DEADLINE;
     let mut previous = None;
     loop {
@@ -273,21 +283,27 @@ pub(crate) async fn settled_head(mgr: &SessionManager, id: SessionId) -> u64 {
             .scrollback(id, u64::MAX, 1 << 20)
             .expect("session exists");
         let head = from + bytes.len() as u64;
-        if previous == Some(head) {
-            return head;
+        if previous == Some(head) && done(from, &bytes) {
+            return (from, bytes);
         }
         assert!(
             Instant::now() < deadline,
-            "the stream of session {} never stopped growing (head {head})",
-            id.0
+            "session {} never settled (head {head}): {:?}",
+            id.0,
+            String::from_utf8_lossy(&bytes)
         );
         previous = Some(head);
         tokio::time::sleep(QUIET).await;
     }
 }
 
+/// True when `haystack` contains `needle`.
+pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// The whole byte stream one run of `script` produces, from a ring big enough to
-/// keep all of it.
+/// keep all of it. `marker` is the last thing the child writes.
 ///
 /// A test cannot compute this from the command. A Unix pty hands over the
 /// child's bytes and nothing else, but ConPTY opens every session with its own
@@ -299,14 +315,12 @@ pub(crate) async fn settled_head(mgr: &SessionManager, id: SessionId) -> u64 {
 /// manager that evicts nothing. What the capacity tests then assert is that a
 /// small ring holds exactly the tail of what a large one holds, which is the
 /// real contract and is the same sentence on every platform.
-pub(crate) async fn whole_stream(script: &str) -> Vec<u8> {
+pub(crate) async fn whole_stream(script: &str, marker: &[u8]) -> Vec<u8> {
     let mgr = SessionManager::new(1 << 20);
     let id = mgr.spawn(shell_spec(script)).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
-    settled_head(&mgr, id).await;
-    let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 1 << 20).expect("session exists");
+    let (from, bytes) = settled(&mgr, id, |_, b| contains(b, marker)).await;
     assert_eq!(from, 0, "a ring this size evicted something");
-    assert!(!more, "the reference read did not reach the start");
     bytes
 }
 

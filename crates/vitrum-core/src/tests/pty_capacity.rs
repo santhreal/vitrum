@@ -3,7 +3,7 @@
 //! wrong bytes.
 
 use crate::SessionManager;
-use crate::tests::helpers::{settled_head, shell_spec, wait_exit, whole_stream};
+use crate::tests::helpers::{settled, shell_spec, wait_exit, whole_stream};
 
 /// Long enough to overflow every ring these tests configure, on a platform that
 /// prepends a pty preamble as well as one that does not.
@@ -21,7 +21,7 @@ fn script() -> String {
 /// The reference stream is a separate run in a ring that evicts nothing, so what
 /// these tests assert is that a small ring holds exactly the tail of a large one.
 async fn overflowed(cap: usize) -> (SessionManager, vitrum_proto::SessionId, Vec<u8>, u64) {
-    let whole = whole_stream(&script()).await;
+    let whole = whole_stream(&script(), PAYLOAD.as_bytes()).await;
     assert!(
         whole.len() > cap,
         "{} bytes did not overflow a {cap} byte ring",
@@ -30,12 +30,11 @@ async fn overflowed(cap: usize) -> (SessionManager, vitrum_proto::SessionId, Vec
     let mgr = SessionManager::new(cap);
     let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
-    let head = settled_head(&mgr, id).await;
-    assert_eq!(
-        head,
-        whole.len() as u64,
-        "two runs of the same command wrote different amounts"
-    );
+    // The reference length is the expectation this run has to reach, which is a
+    // stated total rather than a guess that the writer has gone quiet.
+    let want = whole.len() as u64;
+    settled(&mgr, id, |from, b| from + b.len() as u64 == want).await;
+    let head = want;
     (mgr, id, whole, head)
 }
 
@@ -118,14 +117,14 @@ async fn scrollback_returns_the_newest_slice_first() {
 /// answer coherently, since a zero ring is a legitimate low-memory setting.
 #[tokio::test]
 async fn a_zero_capacity_session_reports_no_history() {
-    let total = whole_stream(&script()).await.len() as u64;
+    let total = whole_stream(&script(), PAYLOAD.as_bytes()).await.len() as u64;
 
     let mgr = SessionManager::new(0);
     let id = mgr.spawn(shell_spec(&script())).expect("spawn");
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
     // A zero ring keeps nothing, so `from` is the head itself. It still has to
     // stop moving before it can be compared against a completed run.
-    let head = settled_head(&mgr, id).await;
+    let (head, _) = settled(&mgr, id, |from, _| from == total).await;
     assert_eq!(head, total, "the head is still counted");
     let (from, bytes, more) = mgr.scrollback(id, u64::MAX, 4096).expect("session exists");
     assert_eq!(from, total);

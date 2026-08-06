@@ -182,15 +182,8 @@ impl Matcher {
     #[inline]
     pub fn is_possible_match(&self, haystack: &[u8]) -> bool {
         match self {
-            Matcher::Literal(finder) => {
-                let needle = finder.needle();
-                if needle.is_empty() {
-                    true
-                } else {
-                    memchr::memchr(needle[0], haystack).is_some()
-                }
-            }
-            Matcher::Regex(_regex) => true,
+            Matcher::Literal(finder) => memchr::memchr(finder.needle()[0], haystack).is_some(),
+            Matcher::Regex(_) => true,
         }
     }
 

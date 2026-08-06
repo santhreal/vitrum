@@ -308,19 +308,30 @@ fn scan_one(
     let mut draining = false;
     let mut global_cap_reached = false;
 
-    let chunk_possible: Vec<bool> = haystack
-        .chunks
-        .iter()
-        .map(|chunk| matcher.is_possible_match(chunk))
-        .collect();
+    let mut chunk_possible_stack = [true; 16];
+    let chunk_possible_vec: Vec<bool>;
+    let chunk_possible: &[bool] = if haystack.chunks.len() <= 16 {
+        for (i, chunk) in haystack.chunks.iter().enumerate() {
+            chunk_possible_stack[i] = matcher.is_possible_match(chunk);
+        }
+        &chunk_possible_stack[..haystack.chunks.len()]
+    } else {
+        chunk_possible_vec = haystack
+            .chunks
+            .iter()
+            .map(|chunk| matcher.is_possible_match(chunk))
+            .collect();
+        &chunk_possible_vec
+    };
 
     for span in Lines::new(haystack.chunks) {
         results.lines_scanned += 1;
         scanned_to = (span.offset + span.len as u64 + 1).min(total);
-
         // Chunk prefilter: skip line materialization, stripping, and matching for non-matching chunks.
-        let (chunk_idx, _) = view.locate(span.offset).unwrap_or((0, 0));
-        if state.pending.is_empty() && !chunk_possible.get(chunk_idx).copied().unwrap_or(true) {
+        let (chunk_start, _) = view.locate(span.offset).unwrap_or((0, 0));
+        let (chunk_end, _) = view.locate(span.offset + span.len as u64).unwrap_or((chunk_start, 0));
+        let is_possible = (chunk_start..=chunk_end).any(|idx| chunk_possible.get(idx).copied().unwrap_or(true));
+        if state.pending.is_empty() && !is_possible {
             if context_before > 0 {
                 if state.before.len() == context_before {
                     state.before.pop_front();

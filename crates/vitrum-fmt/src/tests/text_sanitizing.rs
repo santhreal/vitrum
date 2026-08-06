@@ -192,3 +192,14 @@ fn a_wide_character_title_is_truncated_by_columns() {
     assert_eq!(odd, "セッシ\u{2026}", "a wide character is dropped, not split");
     assert_eq!(display_width(&odd), 7, "one column left blank rather than split");
 }
+#[test]
+fn simd_swar_sanitizer_edge_cases() {
+    let ascii_long = "abcdefghijklmnopqrstuvwxyz0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    assert_eq!(sanitize_line(ascii_long), ascii_long);
+
+    let swar_with_ansi = "abcdefgh\x1b[31m12345678ijklmnop\x1b[0mQRSTUVWX";
+    assert_eq!(sanitize_line(swar_with_ansi), "abcdefgh12345678ijklmnopQRSTUVWX");
+
+    let mixed_control = "hello\x07world\x1b[1mbold\x1b[m!";
+    assert_eq!(sanitize_line(mixed_control), "helloworldbold!");
+}

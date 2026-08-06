@@ -847,7 +847,7 @@ fn read_loop(
     }
     // Only Windows has a handshake to answer. On Unix this is false from the
     // start and the loop below is byte for byte what it always was.
-    let mut handshake = cfg!(windows);
+    let mut awaiting_handshake = cfg!(windows);
     #[cfg(not(windows))]
     let _ = &input;
     let mut buf = vec![0u8; READ_CHUNK];
@@ -856,11 +856,13 @@ fn read_loop(
             Ok(0) => break,
             Ok(n) => {
                 let mut bytes = &buf[..n];
-                if handshake {
-                    handshake = false;
-                    if let Some(rest) = bytes.strip_prefix(CONPTY_CURSOR_QUERY) {
+                let stripped;
+                if awaiting_handshake {
+                    if let Some(rest) = take_cursor_query(bytes) {
+                        awaiting_handshake = false;
                         let _ = input.send(CONPTY_CURSOR_REPLY.to_vec());
-                        bytes = rest;
+                        stripped = rest;
+                        bytes = &stripped;
                     }
                 }
                 if bytes.is_empty() {
@@ -886,7 +888,31 @@ fn read_loop(
 /// from its own grid. A daemon has no grid, and a session with no window
 /// attached is the normal case here, so nothing ever replied and every Windows
 /// session produced these four bytes and then hung forever.
-const CONPTY_CURSOR_QUERY: &[u8] = b"\x1b[6n";
+///
+/// The query is not reliably the first thing on the wire. Some hosts lead with
+/// their own preamble, mode sets and an OSC 0 naming the shell, and the query
+/// then turns up in a later read or in the middle of one. So the handshake stays
+/// open until the query is actually seen rather than being given a single read
+/// to appear in, which is why a session could still hang after four bytes had
+/// been answered somewhere else.
+pub(crate) const CONPTY_CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
+/// The read with the handshake query removed, if this read carried it.
+///
+/// Removed rather than forwarded, and searched rather than matched as a prefix:
+/// a host that leads with its own preamble puts the query somewhere in the
+/// middle of a read, and a caller that only looked at the front would forward it
+/// to whichever window attached, leave the host unanswered, and hang the session
+/// after the preamble.
+pub(crate) fn take_cursor_query(read: &[u8]) -> Option<Vec<u8>> {
+    let at = read
+        .windows(CONPTY_CURSOR_QUERY.len())
+        .position(|window| window == CONPTY_CURSOR_QUERY)?;
+    let mut rest = Vec::with_capacity(read.len() - CONPTY_CURSOR_QUERY.len());
+    rest.extend_from_slice(&read[..at]);
+    rest.extend_from_slice(&read[at + CONPTY_CURSOR_QUERY.len()..]);
+    Some(rest)
+}
 
 /// The answer: the cursor is at the origin, because the session starts empty.
 ///

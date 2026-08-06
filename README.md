@@ -316,6 +316,56 @@ A few keys worth knowing; the full list is **F1**.
 
 ---
 
+## Translucency and backdrops
+
+**Settings › Appearance.** Two opacity controls, and a backdrop image.
+
+| | |
+|---|---|
+| Window opacity | the whole window, chrome included |
+| Terminal opacity | the grid alone, so the shell can stay solid |
+| Backdrop | an image drawn inside the window, with fit, blur and dim |
+
+Both default to fully opaque and emit no CSS at all, so an install that never
+opens this tab composites nothing.
+
+The backdrop is drawn **inside** the window, so it looks the same on every
+platform and needs nothing from your desktop. Point it at an absolute path to
+a PNG, JPEG, GIF or WEBP. The file is checked by signature and not by
+extension, so anything that is not really an image is refused. SVG is refused
+too: it is a scripted document, and it would render inside the application
+page.
+
+### Blur belongs to your compositor
+
+No application can blur what is behind its own window. The compositor owns
+that, and on Wayland there is deliberately no protocol for an application to
+ask. So vitrum makes the window see-through and your compositor frosts it.
+
+Turn the window opacity down, then add one rule:
+
+```sh
+# Hyprland, in hyprland.conf
+windowrule = opacity 1.0 override, class:^(vitrum)$
+blur = yes                      # under decoration { }
+```
+
+```sh
+# picom, in picom.conf
+blur-background-exclude = [ "class_g != 'vitrum'" ];
+```
+
+KWin frosts translucent windows through **System Settings › Desktop Effects ›
+Blur**, with no per-application rule needed.
+
+Without a compositor running, a see-through window has nothing to blend with
+and will look wrong. Use the backdrop image instead: it does not depend on one.
+
+Native frosting that needs no configuration, using Mica and Acrylic on Windows
+and `NSVisualEffectView` on macOS, is not in this release.
+
+---
+
 ## Telling the sidebar what an agent is doing
 
 Five statuses can appear on a row. Three of them, Working, Ready and Failed,

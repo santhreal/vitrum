@@ -42,6 +42,11 @@ below are stated rather than discovered.
 - **Recent commands and a chosen icon per saved command.** The launcher offers
   what you ran and where you ran it, which ranked history cannot express
   because it holds one directory per command.
+- **Translucency and backdrops.** Independent window and terminal opacity, and
+  a backdrop image inside the window with fit, blur and dim. Both opacities
+  default to fully opaque and emit no CSS at all, so an install that never
+  opens Appearance composites nothing. The seven named terminal palettes were
+  already there; this is the surface behind them.
 
 ### Known gaps
 
@@ -54,6 +59,11 @@ below are stated rather than discovered.
   confident "nothing is colliding".
 - **Only Linux is exercised end to end.** macOS and Windows compile and the
   platform code exists; neither is tested.
+- **Blur is your compositor's job.** vitrum makes the window see-through;
+  Hyprland, KWin and picom frost it, and README carries the rule for each. No
+  application can blur what is behind its own window, and Wayland has no
+  protocol to ask. Native frosting that needs no configuration, Mica and
+  Acrylic on Windows and `NSVisualEffectView` on macOS, is not in this release.
 - **No GPU terminal renderer.** Cells are drawn as DOM. `vitrum-grid` carries a
   wgpu renderer, but nothing in the window can reach it until Dioxus Native
   lands; today the crate reaches you only through `vitrum-replay`.

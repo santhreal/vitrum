@@ -151,27 +151,152 @@ impl Recording {
     }
 }
 
-/// Parse an asciicast v2 recording.
-///
-/// # Errors
-///
-/// [`CastError`], naming the 1-based line that was wrong and what was wrong with it.
+/// A zero-allocation reference to a parsed event line in an asciicast stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventRef<'a> {
+    /// Output event ("o"). `micros` is timestamp, `raw_data` is string body.
+    Output {
+        /// 1-based line number.
+        line: usize,
+        /// Timestamp in microseconds.
+        micros: u64,
+        /// Raw JSON string body (borrowed without allocation).
+        raw_data: &'a str,
+    },
+    /// Marker event ("m").
+    Marker {
+        /// 1-based line number.
+        line: usize,
+        /// Timestamp in microseconds.
+        micros: u64,
+        /// Raw label string body.
+        raw_label: &'a str,
+    },
+    /// Terminal resize event ("r").
+    Resize {
+        /// Timestamp in microseconds.
+        micros: u64,
+        /// Columns.
+        cols: u16,
+        /// Rows.
+        rows: u16,
+    },
+    /// User input event ("i").
+    Input {
+        /// Timestamp in microseconds.
+        micros: u64,
+    },
+    /// Skipped or custom event code.
+    Skipped {
+        /// 1-based line number.
+        line: usize,
+        /// Code byte if single char.
+        code: Option<u8>,
+    },
+}
+
+/// Zero-allocation streaming event reader over an asciicast v2 text recording.
+#[derive(Debug, Clone)]
+pub struct StreamingReader<'a> {
+    lines: core::str::Lines<'a>,
+    line_number: usize,
+    previous_micros: u64,
+    header: Header,
+}
+
+impl<'a> StreamingReader<'a> {
+    /// Create a new streaming reader over asciicast recording text.
+    pub fn new(text: &'a str) -> Result<Self, CastError> {
+        let mut lines = text.lines();
+        let Some(head) = lines.next() else {
+            return Err(CastError::Empty);
+        };
+        let header: Header = serde_json::from_str(head).map_err(|error| CastError::HeaderSyntax {
+            message: error.to_string(),
+        })?;
+        if header.version != Header::VERSION {
+            return Err(CastError::Version {
+                found: header.version,
+            });
+        }
+        if header.width == 0 || header.height == 0 {
+            return Err(CastError::MissingGeometry);
+        }
+
+        Ok(Self {
+            lines,
+            line_number: 1,
+            previous_micros: 0,
+            header,
+        })
+    }
+
+    /// Access the parsed header.
+    #[must_use]
+    pub const fn header(&self) -> &Header {
+        &self.header
+    }
+}
+
+impl<'a> Iterator for StreamingReader<'a> {
+    type Item = Result<EventRef<'a>, CastError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let line = self.lines.next()?;
+            self.line_number += 1;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let (micros, code_byte, data_body) = match parse_event_ref(line, self.line_number) {
+                Ok(val) => val,
+                Err(err) => return Some(Err(err)),
+            };
+
+            if micros < self.previous_micros {
+                return Some(Err(CastError::EventTimeOrder {
+                    line: self.line_number,
+                    micros,
+                    previous: self.previous_micros,
+                }));
+            }
+            self.previous_micros = micros;
+
+            match code_byte {
+                b'o' => return Some(Ok(EventRef::Output { line: self.line_number, micros, raw_data: data_body })),
+                b'm' => return Some(Ok(EventRef::Marker { line: self.line_number, micros, raw_label: data_body })),
+                b'r' => {
+                    if !data_body.contains('\\') {
+                        if let Some((cols, rows)) = parse_geometry(data_body.as_bytes()) {
+                            return Some(Ok(EventRef::Resize { micros, cols, rows }));
+                        }
+                    }
+                    let mut buf = Vec::new();
+                    if decode(data_body, self.line_number, &mut buf).is_ok() {
+                        if let Some((cols, rows)) = parse_geometry(&buf) {
+                            return Some(Ok(EventRef::Resize { micros, cols, rows }));
+                        }
+                    }
+                    return Some(Err(CastError::EventData {
+                        line: self.line_number,
+                        reason: "a resize event's data is not \"COLSxROWS\"",
+                    }));
+                }
+                b'i' => return Some(Ok(EventRef::Input { micros })),
+                _ => return Some(Ok(EventRef::Skipped {
+                    line: self.line_number,
+                    code: Some(code_byte),
+                })),
+            }
+        }
+    }
+}
+
+/// Parse an asciicast v2 recording using zero-allocation streaming event reader.
 pub fn read(text: &str) -> Result<Recording, CastError> {
-    let mut lines = text.lines();
-    let Some(head) = lines.next() else {
-        return Err(CastError::Empty);
-    };
-    let header: Header = serde_json::from_str(head).map_err(|error| CastError::HeaderSyntax {
-        message: error.to_string(),
-    })?;
-    if header.version != Header::VERSION {
-        return Err(CastError::Version {
-            found: header.version,
-        });
-    }
-    if header.width == 0 || header.height == 0 {
-        return Err(CastError::MissingGeometry);
-    }
+    let reader = StreamingReader::new(text)?;
+    let header = reader.header().clone();
 
     let mut recording = Recording {
         header,
@@ -182,68 +307,59 @@ pub fn read(text: &str) -> Result<Recording, CastError> {
         inputs: 0,
         skipped: 0,
     };
-    let mut previous_micros = 0u64;
 
-    for (index, line) in lines.enumerate() {
-        // Line 1 was the header, so the first event line is line 2.
-        let number = index + 2;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event = parse_event(line, number)?;
-        if event.micros < previous_micros {
-            return Err(CastError::EventTimeOrder {
-                line: number,
-                micros: event.micros,
-                previous: previous_micros,
-            });
-        }
-        previous_micros = event.micros;
+    let mut decode_buf = Vec::new();
 
-        match event.code {
-            b'o' => {
-                recording.bytes.extend_from_slice(&event.data);
+    for event in reader {
+        let event = event?;
+        match event {
+            EventRef::Output { line, micros, raw_data } => {
+                if !raw_data.contains('\\') {
+                    recording.bytes.extend_from_slice(raw_data.as_bytes());
+                } else {
+                    decode_buf.clear();
+                    decode(raw_data, line, &mut decode_buf)?;
+                    recording.bytes.extend_from_slice(&decode_buf);
+                }
                 recording.stamps.push(ChunkStamp {
                     end_seq: recording.bytes.len() as u64,
-                    micros: event.micros,
+                    micros,
                 });
             }
-            b'm' => recording.markers.push(Marker {
-                seq: recording.bytes.len() as u64,
-                label: String::from_utf8_lossy(&event.data).into_owned(),
-                hint: None,
-            }),
-            b'r' => match parse_geometry(&event.data) {
-                Some((cols, rows)) => recording.resizes.push(Resize {
-                    seq: recording.bytes.len() as u64,
-                    micros: event.micros,
-                    cols,
-                    rows,
-                }),
-                None => {
-                    return Err(CastError::EventData {
-                        line: number,
-                        reason: "a resize event's data is not \"COLSxROWS\"",
+            EventRef::Marker { line, raw_label, .. } => {
+                if !raw_label.contains('\\') {
+                    recording.markers.push(Marker {
+                        seq: recording.bytes.len() as u64,
+                        label: raw_label.to_string(),
+                        hint: None,
+                    });
+                } else {
+                    decode_buf.clear();
+                    decode(raw_label, line, &mut decode_buf)?;
+                    recording.markers.push(Marker {
+                        seq: recording.bytes.len() as u64,
+                        label: String::from_utf8_lossy(&decode_buf).into_owned(),
+                        hint: None,
                     });
                 }
-            },
-            b'i' => recording.inputs += 1,
-            _ => recording.skipped += 1,
+            }
+            EventRef::Resize { micros, cols, rows } => {
+                recording.resizes.push(Resize {
+                    seq: recording.bytes.len() as u64,
+                    micros,
+                    cols,
+                    rows,
+                });
+            }
+            EventRef::Input { .. } => recording.inputs += 1,
+            EventRef::Skipped { .. } => recording.skipped += 1,
         }
     }
 
     Ok(recording)
 }
 
-/// One parsed event line.
-struct RawEvent {
-    micros: u64,
-    code: u8,
-    data: Vec<u8>,
-}
-
-/// `[number, "code", "data"]`, scanned by hand. See the module header.
-fn parse_event(line: &str, number: usize) -> Result<RawEvent, CastError> {
+fn parse_event_ref<'a>(line: &'a str, number: usize) -> Result<(u64, u8, &'a str), CastError> {
     let bytes = line.as_bytes();
     let mut at = 0usize;
 
@@ -253,7 +369,6 @@ fn parse_event(line: &str, number: usize) -> Result<RawEvent, CastError> {
     }
     at += 1;
 
-    // A JSON number contains no comma, so the first comma ends the time field.
     let time_start = at;
     while at < bytes.len() && bytes[at] != b',' {
         at += 1;
@@ -266,10 +381,15 @@ fn parse_event(line: &str, number: usize) -> Result<RawEvent, CastError> {
     at += 1;
 
     let code_body = string_body(line, &mut at, number)?;
-    let mut code_bytes = Vec::new();
-    decode(code_body, number, &mut code_bytes)?;
-    let [code] = code_bytes[..] else {
-        return Err(CastError::EventCode { line: number });
+    let code = if code_body.len() == 1 && !code_body.starts_with('\\') {
+        code_body.as_bytes()[0]
+    } else {
+        let mut code_bytes = Vec::new();
+        decode(code_body, number, &mut code_bytes)?;
+        let [code] = code_bytes[..] else {
+            return Err(CastError::EventCode { line: number });
+        };
+        code
     };
 
     skip_space(bytes, &mut at);
@@ -279,8 +399,6 @@ fn parse_event(line: &str, number: usize) -> Result<RawEvent, CastError> {
     at += 1;
 
     let data_body = string_body(line, &mut at, number)?;
-    let mut data = Vec::new();
-    decode(data_body, number, &mut data)?;
 
     skip_space(bytes, &mut at);
     if bytes.get(at) != Some(&b']') {
@@ -292,8 +410,9 @@ fn parse_event(line: &str, number: usize) -> Result<RawEvent, CastError> {
         return Err(CastError::EventShape { line: number });
     }
 
-    Ok(RawEvent { micros, code, data })
+    Ok((micros, code, data_body))
 }
+
 
 /// The text between the next pair of quotes, escapes left intact.
 ///

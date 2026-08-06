@@ -8,16 +8,19 @@
 
 /// The install blocks name the binaries this build actually produces.
 ///
-/// The crate is `vitrum-app` and for a long time so was the executable,
+/// The crate and the executable were both `vitrum-app` for a long time,
 /// while `--help`, every error message and the README all said `vitrum`.
 /// Anybody following the instructions installed a file that did not exist.
+/// Both are `vitrum` now, and the package name is what produces the binary,
+/// so this checks the package name rather than a `[[bin]]` that no longer
+/// needs to exist.
 #[test]
 fn the_install_blocks_name_the_real_binaries() {
     let readme = include_str!("../../../README.md");
     let manifest = include_str!("../../Cargo.toml");
     assert!(
         manifest.contains("name = \"vitrum\""),
-        "the app crate no longer builds a binary called `vitrum`"
+        "the client package is no longer named `vitrum`, so its binary is not `vitrum`"
     );
     // Read from the blocks themselves rather than matched as literal
     // lines. The old form asserted the exact text of two commands, which

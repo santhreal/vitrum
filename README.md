@@ -133,6 +133,23 @@ Run it in place to check the build before installing anything:
 `vitrum` and `vitrum-server` must end up in the same directory, because `vitrum`
 looks for the daemon beside itself first and then on `PATH`.
 
+### From crates.io
+
+```sh
+cargo install vitrum vitrum-server
+```
+
+Both names in one command, because installing only `vitrum` gives you a client
+with no daemon to talk to. Cargo puts them both in `~/.cargo/bin`, which
+satisfies the beside-itself rule above.
+
+This builds a webview client from source, so it needs the same system
+development packages as a repository build: see [Build](#build). It gives you
+no launcher entry and no icon. The platform blocks below do, and they are the
+better choice on a desktop.
+
+### From a repository build
+
 Each block below is one paste. Run it from the repository root after building.
 Each one puts the binaries on your `PATH`, adds a launcher entry and a `vu`
 shortcut for `vitrum update`, and prints what it did.

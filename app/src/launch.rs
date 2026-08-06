@@ -1285,7 +1285,7 @@ pub enum DaemonBinary {
 /// Locate the daemon: beside this executable first, then `PATH`.
 ///
 /// Beside first, and that order is load-bearing. A development tree has
-/// `target/debug/vitrum-app` next to `target/debug/vitrum-server`, and a
+/// `target/debug/vitrum` next to `target/debug/vitrum-server`, and a
 /// packaged install puts both in the same directory; in both cases the sibling
 /// is the build that matches this client. A `PATH` hit could be a different
 /// version entirely, so it is the fallback rather than the first answer.

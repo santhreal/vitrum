@@ -31,7 +31,7 @@ fn a_command_with_no_icon_gets_the_shape_it_implies() {
         ("claude --permission-mode plan", "spark"),
         ("/usr/bin/bash -l", "terminal"),
         ("git status", "branch"),
-        ("cargo test -p vitrum-app", "wrench"),
+        ("cargo test -p vitrum", "wrench"),
         ("pytest", "flask"),
         ("docker compose up", "container"),
         ("C:\\tools\\codex.exe", "hexagon"),

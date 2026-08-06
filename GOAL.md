@@ -359,7 +359,7 @@ Recorded so nobody spends the afternoon again:
   looks.** `state.rs` says it outright: a `Signal<UiState>` belongs to exactly
   one VirtualDom, so each window holds a WHOLE `UiState` and its own socket.
   Twenty copies of the session list reads like a twenty-fold waste and is the
-  obvious thing to go after in `vitrum-app`'s 118 MB. Do the arithmetic first:
+  obvious thing to go after in the client's 118 MB. Do the arithmetic first:
   `SessionInfo` is a handful of short strings, so twenty sessions is single-
   digit kilobytes and twenty windows of it is about 120 KB. It is four orders
   of magnitude away from the 77 MB. The host's 5.9 MB per window is the
@@ -804,7 +804,7 @@ Two things that have already produced false conclusions here:
     too, so the stale `20 90` from the earlier resize satisfied that, and the
     assertion ran before the restored size ever arrived. It now waits for the
     content it is about, `50 200`.
-  - `vitrum-app::launch::no_autostart_leaves_a_dead_port_alone` ASSUMED its
+  - `vitrum::launch::no_autostart_leaves_a_dead_port_alone` ASSUMED its
     precondition. It needs a port with nothing listening, and no number can be
     reserved in that state: the instant the probe socket closes, the port is
     available to everything. Two attempts at a "safe" range failed because the

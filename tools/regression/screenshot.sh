@@ -82,8 +82,8 @@ shift 4
 
 W=${GEOM%x*}
 H=${GEOM#*x}
-BIN="${VITRUM_APP:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)/target/debug/vitrum-app}"
-[ -x "$BIN" ] || { echo "no vitrum-app at $BIN; set VITRUM_APP" >&2; exit 2; }
+BIN="${VITRUM_APP:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)/target/debug/vitrum}"
+[ -x "$BIN" ] || { echo "no vitrum at $BIN; set VITRUM_APP" >&2; exit 2; }
 
 LOG="${TMPDIR:-/tmp}/vitrum-shot-$DNUM"
 mkdir -p "$LOG"

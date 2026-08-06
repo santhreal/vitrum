@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/screenshots/hero.png" alt="Three sessions in one vitrum window: a finished git log, a cargo run and a shell, with the sidebar showing what each one is doing." width="960" />
+  <img src="assets/logo/vitrum.svg" alt="vitrum" width="72" />
 </p>
+
+<h1 align="center">vitrum</h1>
 
 <p align="center">
   <a href="https://crates.io/crates/vitrum"><img src="https://img.shields.io/crates/v/vitrum?style=flat-square&color=7aa2f7&label=crates.io&labelColor=0a0a0a" alt="vitrum on crates.io" /></a>&nbsp;
@@ -17,6 +19,10 @@
   <strong><a href="#first-run">First run</a></strong> ·
   <strong><a href="CONTRIBUTING.md">Contributing</a></strong> ·
   <strong><a href="SECURITY.md">Security</a></strong>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/hero.png" alt="vitrum managing several coding-agent sessions at once: a live veyyon pane and a sidebar of sessions across multiple project folders." width="960" />
 </p>
 
 # A terminal for running many coding agents at once

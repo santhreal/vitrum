@@ -161,43 +161,53 @@ impl DamageSpan {
     }
 }
 
-/// Per-row damage bookkeeping with bitmask column tracking. `start >= end` means "clean".
+/// Per-row damage bookkeeping with bitmask column tracking.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct RowDamage {
-    start: u16,
-    end: u16,
     mask: [u64; 32],
 }
 
 impl RowDamage {
     const CLEAN: Self = Self {
-        start: u16::MAX,
-        end: 0,
         mask: [0u64; 32],
     };
 
-    const fn is_clean(self) -> bool {
-        self.start >= self.end
+    fn full(cols: u16) -> Self {
+        let mut rd = Self::CLEAN;
+        rd.extend(0, cols);
+        rd
     }
 
-    const fn len(self) -> usize {
-        if self.is_clean() {
-            0
-        } else {
-            (self.end - self.start) as usize
+    fn is_clean(&self) -> bool {
+        self.mask == [0u64; 32]
+    }
+
+    fn bounds(&self) -> Option<(u16, u16)> {
+        let mut first = None;
+        let mut last = None;
+        for i in 0..32 {
+            if self.mask[i] != 0 {
+                if first.is_none() {
+                    first = Some(i);
+                }
+                last = Some(i);
+            }
+        }
+        let f = first?;
+        let l = last?;
+        let start = (f * 64 + self.mask[f].trailing_zeros() as usize) as u16;
+        let end = (l * 64 + 64 - self.mask[l].leading_zeros() as usize) as u16;
+        Some((start, end))
+    }
+
+    fn len(&self) -> usize {
+        match self.bounds() {
+            Some((start, end)) => (end - start) as usize,
+            None => 0,
         }
     }
 
     fn extend(&mut self, start: u16, end: u16) {
-        if start >= end {
-            return;
-        }
-        if self.start > start {
-            self.start = start;
-        }
-        if self.end < end {
-            self.end = end;
-        }
         let col_start = start as usize;
         let col_end = end as usize;
         for c in col_start..col_end {
@@ -278,23 +288,7 @@ impl CellGrid {
             cols,
             rows,
             cells: vec![Cell::blank(default_style); len],
-            damage: vec![
-                RowDamage {
-                    start: 0,
-                    end: cols,
-                    mask: {
-                        let mut m = [0u64; 32];
-                        let end_word = (cols as usize + 63) / 64;
-                        let mut i = 0;
-                        while i < end_word && i < 32 {
-                            m[i] = u64::MAX;
-                            i += 1;
-                        }
-                        m
-                    },
-                };
-                rows as usize
-            ],
+            damage: vec![RowDamage::full(cols); rows as usize],
             default_style,
             row_slots: (0..rows as usize).collect(),
         })
@@ -704,23 +698,7 @@ impl CellGrid {
         self.rows = rows;
         self.row_slots = (0..rows as usize).collect();
         self.damage.clear();
-        self.damage.resize(
-            rows as usize,
-            RowDamage {
-                start: 0,
-                end: cols,
-                mask: {
-                    let mut m = [0u64; 32];
-                    let end_word = (cols as usize + 63) / 64;
-                    let mut i = 0;
-                    while i < end_word && i < 32 {
-                        m[i] = u64::MAX;
-                        i += 1;
-                    }
-                    m
-                },
-            },
-        );
+        self.damage.resize(rows as usize, RowDamage::full(cols));
         Ok(())
     }
 
@@ -729,11 +707,13 @@ impl CellGrid {
         self.damage
             .iter()
             .enumerate()
-            .filter(|(_, d)| !d.is_clean())
-            .map(|(row, d)| DamageSpan {
-                row: row as u16,
-                start: d.start,
-                end: d.end,
+            .filter_map(|(row, d)| {
+                let (start, end) = d.bounds()?;
+                Some(DamageSpan {
+                    row: row as u16,
+                    start,
+                    end,
+                })
             })
     }
 
@@ -762,20 +742,7 @@ impl CellGrid {
     /// Mark every cell damaged. Used when something outside the grid (a resize,
     /// a glyph atlas reset) invalidated the renderer's copy.
     pub fn mark_all_damaged(&mut self) {
-        self.damage.fill(RowDamage {
-            start: 0,
-            end: self.cols,
-            mask: {
-                let mut m = [0u64; 32];
-                let end_word = (self.cols as usize + 63) / 64;
-                let mut i = 0;
-                while i < end_word && i < 32 {
-                    m[i] = u64::MAX;
-                    i += 1;
-                }
-                m
-            },
-        });
+        self.damage.fill(RowDamage::full(self.cols));
     }
 
     /// Store `cell` at flat index `idx`, recording damage only on a real change.

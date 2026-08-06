@@ -61,7 +61,13 @@ async fn a_mismatched_protocol_is_refused_and_the_socket_closes() {
 async fn a_refused_client_cannot_create_sessions() {
     let h = Harness::start(4096).await;
     let mut c = h.client().await;
-    c.send(ClientMsg::Hello { protocol: 2 }).await;
+    // Derived, not a literal: this was `2`, which stopped being a mismatch the
+    // day PROTOCOL_VERSION became 2, and the test then asserted that a VALID
+    // client is refused.
+    c.send(ClientMsg::Hello {
+        protocol: PROTOCOL_VERSION + 1,
+    })
+    .await;
     c.until("the refusal", |s| !s.ctl.is_empty()).await;
     c.until_closed().await;
     assert!(

@@ -365,3 +365,15 @@ fn no_empty_spans_are_ever_yielded() {
         assert!(span.start < span.end);
     }
 }
+#[test]
+fn bitmask_damage_bookkeeping_tracks_dirty_columns() {
+    let mut grid = CellGrid::new(100, 1, Style::DEFAULT).unwrap();
+    grid.clear_damage();
+    grid.write_char(10, 0, 'X', Style::DEFAULT).unwrap();
+    grid.write_char(70, 0, 'Y', Style::DEFAULT).unwrap();
+
+    let all = spans(&grid);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].start, 10);
+    assert_eq!(all[0].end, 71);
+}

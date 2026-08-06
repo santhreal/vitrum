@@ -96,3 +96,41 @@ fn the_theme_tokens_are_stable() {
     assert_eq!(Theme::Dark.as_str(), "dark");
     assert_eq!(Theme::Dark.to_string(), "dark");
 }
+
+/// An absent portal must be reported as a missing service, including when the
+/// bus discovers it is absent by failing to start it.
+///
+/// WHY: CI has a session bus and no portal. D-Bus treats the destination as
+/// activatable, tries to start it, and answers `TimedOut` after
+/// `service_start_timeout`, which defaults to 120 seconds. That was classified
+/// as a runtime error, so a machine with no portal reported "the portal is
+/// broken" instead of "there is no portal", after waiting four minutes to say
+/// it. The exact message below is the one the failing run produced.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_portal_that_never_starts_is_missing_rather_than_broken() {
+    use crate::theme::linux::names_an_absent_service as absent;
+
+    let activation_timeout = "Failed to activate service 'org.freedesktop.portal.Desktop': \
+                              timed out (service_start_timeout=120000ms)";
+    assert!(
+        absent("org.freedesktop.DBus.Error.TimedOut", Some(activation_timeout)),
+        "an activation timeout is the service being absent"
+    );
+    assert!(absent("org.freedesktop.DBus.Error.NoReply", Some(activation_timeout)));
+    assert!(absent("org.freedesktop.DBus.Error.ServiceUnknown", None));
+    assert!(absent("org.freedesktop.DBus.Error.NameHasNoOwner", None));
+    assert!(absent("org.freedesktop.DBus.Error.ServiceStartFailed", None));
+    assert!(absent("org.freedesktop.DBus.Error.Spawn.ExecFailed", None));
+
+    // A portal that exists and hung is a runtime error, and must stay one:
+    // telling the operator to install a portal they already have is worse than
+    // saying nothing. The distinction is whether the bus was activating.
+    assert!(
+        !absent("org.freedesktop.DBus.Error.TimedOut", Some("Message recipient disconnected")),
+        "a timeout that does not name activation is a live portal hanging"
+    );
+    assert!(!absent("org.freedesktop.DBus.Error.TimedOut", None));
+    assert!(!absent("org.freedesktop.DBus.Error.AccessDenied", None));
+    assert!(!absent("org.freedesktop.DBus.Error.InvalidArgs", None));
+}

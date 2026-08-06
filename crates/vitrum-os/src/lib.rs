@@ -51,7 +51,10 @@ pub mod window_state;
 
 pub use badge::WindowHandle;
 pub use capability::{CapabilityReport, Feature, Support, Unavailable, UnavailableKind};
-pub use paths::{AppPaths, PathEnv, PathError, Platform};
+pub use paths::{
+    AppPaths, BatchedKernelWatcher, PathEnv, PathError, Platform, WatchEvent, WatchEventKind,
+    WatchResult,
+};
 
 #[cfg(test)]
 mod tests;

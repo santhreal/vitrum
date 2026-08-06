@@ -353,7 +353,19 @@ fn scan_one(
             (bytes, Map::Identity)
         };
 
-        matcher.collect_matches(visible, &mut state.matches_scratch, query.all_matches_per_line);
+        state.matches_scratch.clear();
+        let mut from = 0usize;
+        while let Some(range) = matcher.find_at(visible, from) {
+            let is_empty = range.start == range.end;
+            state.matches_scratch.push(range.clone());
+            if !query.all_matches_per_line {
+                break;
+            }
+            from = if !is_empty { range.end } else { range.end + 1 };
+            if from > visible.len() {
+                break;
+            }
+        }
         let match_count = state.matches_scratch.len();
         for i in 0..match_count {
             let range = state.matches_scratch[i].clone();

@@ -1585,29 +1585,6 @@ impl WindowState {
     /// the cursor because its status changed; the parked band sorts by soonest
     /// wake, which is the only useful question about a parked row; the drained
     /// band sorts by when the work ended.
-    fn tree_uncached<'a>(&self, daemon: &'a DaemonState, clock: Clock) -> Vec<SidebarGroup<'a>> {
-        let Some(ws) = daemon.workspaces.get(self.workspace) else {
-            return Vec::new();
-        };
-        let query = self.filter.trim().to_lowercase();
-        let mut rows: Vec<&SessionView> = Vec::with_capacity(daemon.sessions.len());
-        rows.extend(
-            self.admitted(daemon, clock)
-                .filter(|row| matches_filter(&row.info, &query)),
-        );
-
-        let mut out = match ws.grouping {
-            Grouping::Directory => self.bucket_by_directory(daemon, rows, clock),
-            Grouping::Named => self.bucket_by_folder(daemon, ws, rows, clock),
-        };
-        if !query.is_empty() {
-            out.retain(|g| !g.is_empty());
-        }
-        if ws.grouping == Grouping::Directory {
-            self.pin_current_bucket(&mut out);
-        }
-        out
-    }
 
     pub fn tree<'a>(&self, daemon: &'a DaemonState, clock: Clock) -> Vec<SidebarGroup<'a>> {
         let ws_info = daemon.workspaces.get(self.workspace).map(|w| (w.grouping, w.folders().len(), w.sections));
@@ -1682,7 +1659,29 @@ impl WindowState {
             }
         }
 
-        let out = self.tree_uncached(daemon, clock);
+        let out = {
+            let Some(ws) = daemon.workspaces.get(self.workspace) else {
+                return Vec::new();
+            };
+            let query = self.filter.trim().to_lowercase();
+            let mut rows: Vec<&SessionView> = Vec::with_capacity(daemon.sessions.len());
+            rows.extend(
+                self.admitted(daemon, clock)
+                    .filter(|row| matches_filter(&row.info, &query)),
+            );
+
+            let mut out = match ws.grouping {
+                Grouping::Directory => self.bucket_by_directory(daemon, rows, clock),
+                Grouping::Named => self.bucket_by_folder(daemon, ws, rows, clock),
+            };
+            if !query.is_empty() {
+                out.retain(|g| !g.is_empty());
+            }
+            if ws.grouping == Grouping::Directory {
+                self.pin_current_bucket(&mut out);
+            }
+            out
+        };
 
         if let Ok(mut borrow) = self.tree_memo.try_borrow_mut() {
             let mut cached_groups = Vec::with_capacity(out.len());

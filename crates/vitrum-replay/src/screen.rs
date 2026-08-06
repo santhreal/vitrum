@@ -419,6 +419,52 @@ impl Screen {
     pub const fn on_alt_screen(&self) -> bool {
         self.on_alt
     }
+    /// Inactive screen buffer.
+    #[must_use]
+    pub const fn inactive(&self) -> Option<&CellGrid> {
+        self.inactive.as_ref()
+    }
+    /// Saved cursor.
+    #[must_use]
+    pub const fn saved(&self) -> SavedCursor {
+        self.saved
+    }
+
+    /// Saved primary cursor.
+    #[must_use]
+    pub const fn saved_primary(&self) -> SavedCursor {
+        self.saved_primary
+    }
+    /// Apply non-grid state from KeyframeDelta.
+    pub fn apply_non_grid_state_from_delta(&mut self, delta: &crate::keyframe::KeyframeDelta) {
+        self.inactive = delta.inactive.clone();
+        self.on_alt = delta.on_alt;
+        self.pen = delta.pen;
+        self.cursor = delta.cursor;
+        self.saved = delta.saved;
+        self.saved_primary = delta.saved_primary;
+        self.region = delta.region;
+        self.modes = delta.modes;
+        self.tabs = delta.tabs.clone();
+        self.charsets = delta.charsets;
+        self.title = delta.title.clone();
+        self.palette = delta.palette;
+    }
+    /// Copy all non-grid state attributes from `src`.
+    pub fn apply_non_grid_state(&mut self, src: &Self) {
+        self.inactive = src.inactive.clone();
+        self.on_alt = src.on_alt;
+        self.pen = src.pen;
+        self.cursor = src.cursor;
+        self.saved = src.saved;
+        self.saved_primary = src.saved_primary;
+        self.region = src.region;
+        self.modes = src.modes;
+        self.tabs = src.tabs.clone();
+        self.charsets = src.charsets;
+        self.title = src.title.clone();
+        self.palette = src.palette;
+    }
 
     /// One row's text, with trailing blanks kept.
     ///
@@ -1017,7 +1063,9 @@ impl Screen {
         };
     }
 
-    fn cell_at(&self, col: u16, row: u16) -> Cell {
+    /// Return the cell at `(col, row)` or a default blank cell.
+    #[must_use]
+    pub fn cell_at(&self, col: u16, row: u16) -> Cell {
         self.grid
             .cell(col, row)
             .unwrap_or_else(|| Cell::blank(self.palette.default_style()))

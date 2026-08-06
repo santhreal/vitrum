@@ -35,3 +35,16 @@ fn test_attributes_and_styles() {
     assert!(output.contains("\x1b[32m"));
     assert!(output.ends_with("\x1b[0m"));
 }
+
+#[test]
+fn test_256_color_lookup_all_entries() {
+    for idx in 0..=255 {
+        let fg = Style::new().fg(AnsiColor::Fixed(idx));
+        let expected_fg = format!("\x1b[38;5;{idx}mtest\x1b[0m");
+        assert_eq!(fg.paint("test"), expected_fg);
+
+        let bg = Style::new().bg(AnsiColor::Fixed(idx));
+        let expected_bg = format!("\x1b[48;5;{idx}mtest\x1b[0m");
+        assert_eq!(bg.paint("test"), expected_bg);
+    }
+}

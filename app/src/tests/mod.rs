@@ -2220,3 +2220,34 @@ fn bridge_reads_frame_headers_little_endian() {
 fn default_shell_is_never_empty() {
     assert!(!launch::default_shell().is_empty());
 }
+#[test]
+fn zero_copy_binary_buffer_packing_and_unpacking() {
+    let payload = b"hello zero copy backfill";
+    let seq = 42u64;
+    let payload_type = ZeroCopyBinaryBuffer::TYPE_BACKFILL;
+
+    let frame = ZeroCopyBinaryBuffer::pack_frame(seq, payload_type, payload);
+    assert_eq!(frame.len(), 17 + payload.len());
+
+    let unpacked = ZeroCopyBinaryBuffer::unpack_frame(&frame).expect("valid frame unpacks");
+    assert_eq!(unpacked.seq, seq);
+    assert_eq!(unpacked.payload_type, payload_type);
+    assert_eq!(unpacked.payload, payload);
+
+    let slice = ZeroCopyBinaryBuffer::zero_copy_slice(&frame, 17, 5);
+    assert_eq!(slice, Some(&b"hello"[..]));
+}
+
+#[test]
+fn shared_array_buffer_protocol_ring() {
+    let mut ring = SharedArrayBufferProtocol::new(1024);
+    let offset = ring.push_frame(100, ZeroCopyBinaryBuffer::TYPE_IPC, b"chunk data").expect("pushes frame");
+
+    let read_buf = ring.read_frame_at(offset).expect("reads frame");
+    assert_eq!(read_buf.seq, 100);
+    assert_eq!(read_buf.payload_type, ZeroCopyBinaryBuffer::TYPE_IPC);
+    assert_eq!(read_buf.payload, b"chunk data");
+
+    ring.clear();
+    assert_eq!(ring.write_head, 0);
+}

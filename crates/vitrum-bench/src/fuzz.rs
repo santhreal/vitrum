@@ -154,8 +154,12 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
             },
             Err(e) => {
                 report.failures.push(format!(
-                    "case {case}: the daemon stopped accepting connections after {} cases: {e:#}",
+                    "case {case}: the daemon stopped accepting connections after {} cases: {e:#}                      [repro: fuzz-{case:04}-connect.bin]",
                     case
+                ));
+                report.artifacts.push((
+                    format!("fuzz-{case:04}-connect.bin"),
+                    payload.into_bytes(),
                 ));
                 break;
             }
@@ -173,17 +177,21 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
             Ok((sessions, d)) => {
                 oracle_latency.record(d);
                 if !sessions.iter().any(|s| s.id == live) {
+                    let name = format!("fuzz-{case:04}-forgot-session.bin");
                     report.failures.push(format!(
-                        "case {case} ({outcome}) made the daemon forget a live session: {payload:.400}"
+                        "case {case} ({outcome}) made the daemon forget a live session: {payload:.400}                          [repro: {name}]"
                     ));
+                    report.artifacts.push((name, payload.as_bytes().to_vec()));
                     interesting.push(json!({ "case": case, "payload": payload }));
                 }
             }
             Err(e) => {
+                let name = format!("fuzz-{case:04}-oracle-wedge.bin");
                 report.failures.push(format!(
-                    "case {case} ({outcome}) left the daemon unable to answer: {e:#}; payload: {payload:.400}"
+                    "case {case} ({outcome}) left the daemon unable to answer: {e:#}; payload: {payload:.400}                      [repro: {name}]"
                 ));
                 interesting.push(json!({ "case": case, "payload": payload }));
+                report.artifacts.push((name, payload.into_bytes()));
                 // A wedged daemon fails every later case for the same reason,
                 // so stop rather than filling the report with echoes.
                 break;

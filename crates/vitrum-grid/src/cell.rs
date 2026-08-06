@@ -348,6 +348,17 @@ impl CharWidth {
     }
 }
 
+static ASCII_WIDTHS: [CharWidth; 128] = {
+    let mut table = [CharWidth::Narrow; 128];
+    let mut i = 0;
+    while i < 32 {
+        table[i] = CharWidth::Control;
+        i += 1;
+    }
+    table[127] = CharWidth::Control;
+    table
+};
+
 /// Classify `ch` by the number of grid columns it claims.
 ///
 /// Uses the East Asian Width property with ambiguous characters treated as
@@ -355,10 +366,15 @@ impl CharWidth {
 /// locale.
 #[must_use]
 pub fn char_width(ch: char) -> CharWidth {
-    match UnicodeWidthChar::width(ch) {
-        None => CharWidth::Control,
-        Some(0) => CharWidth::ZeroWidth,
-        Some(1) => CharWidth::Narrow,
-        Some(_) => CharWidth::Wide,
+    let val = ch as u32;
+    if val < 128 {
+        ASCII_WIDTHS[val as usize]
+    } else {
+        match UnicodeWidthChar::width(ch) {
+            None => CharWidth::Control,
+            Some(0) => CharWidth::ZeroWidth,
+            Some(1) => CharWidth::Narrow,
+            Some(_) => CharWidth::Wide,
+        }
     }
 }

@@ -265,13 +265,9 @@ fn an_unsubscribed_service_says_nobody_looked() {
 }
 
 /// `reconcile` under test, without the inotify half.
-#[cfg(target_os = "linux")]
 fn platform_reconcile(t: &mut Tracked, live: &[(SessionId, PathBuf, u32)]) {
-    super::platform::reconcile_for_test(t, live);
+    super::reconcile(t, live);
 }
-
-#[cfg(not(target_os = "linux"))]
-fn platform_reconcile(_t: &mut Tracked, _live: &[(SessionId, PathBuf, u32)]) {}
 
 /// A session that starts AFTER the subscription must still be watched.
 ///

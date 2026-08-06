@@ -104,6 +104,25 @@ struct Watched {
     unattributed: u64,
 }
 
+#[cfg(any(target_os = "linux", test))]
+impl Watched {
+    /// A session that was not being watched a moment ago.
+    fn new(id: SessionId, root: PathBuf, pid: u32) -> Self {
+        Self {
+            id,
+            root,
+            pid,
+            writes: HashMap::new(),
+            unattributed: 0,
+        }
+    }
+
+    /// The pid changes when the session respawns its child.
+    fn set_pid(&mut self, pid: u32) {
+        self.pid = pid;
+    }
+}
+
 /// The live watcher: the sessions, and on Linux an inotify fd and its watch
 /// descriptors. The two inotify fields are `cfg`-gated because a watch
 /// descriptor is an inotify concept: carrying them everywhere obliged every
@@ -386,6 +405,26 @@ pub fn live_sessions(manager: &SessionManager) -> Vec<(SessionId, PathBuf, u32)>
             Some((s.id, root, pid))
         })
         .collect()
+}
+
+/// Put `live` into `t`, keeping what is already known about surviving
+/// sessions and dropping what is known about ended ones.
+///
+/// This is bookkeeping over `Tracked` and touches no kernel interface, so it
+/// lives beside the state it edits rather than inside the Linux watcher. Its
+/// tests then run everywhere instead of describing one platform.
+/// Gated with the `pid` field it maintains: only the Linux watcher drives a
+/// reconcile in production, but the rule itself is portable and is proven on
+/// every platform's test build rather than on one.
+#[cfg(any(target_os = "linux", test))]
+fn reconcile(t: &mut Tracked, live: &[(SessionId, PathBuf, u32)]) {
+    t.sessions.retain(|s| live.iter().any(|(id, _, _)| *id == s.id));
+    for (id, root, pid) in live {
+        match t.sessions.iter_mut().find(|s| s.id == *id) {
+            Some(s) => s.set_pid(*pid),
+            None => t.sessions.push(Watched::new(*id, root.clone(), *pid)),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -809,18 +809,38 @@ impl SessionManager {
     }
 }
 
-/// Blocking PTY read loop, then reap the child.
+/// Blocking PTY read loop, feeding raw bytes to the coalescer.
 ///
-/// Reaping here rather than in a separate task is what guarantees every byte is
-/// published before the session reports `Exited`: this thread stops reading,
-/// hands over the exit code, and only then drops `out`, so the coalescer drains
-/// what is left before it observes the exit.
+/// The child is reaped on its own thread, which publishes the exit code as
+/// soon as the process is gone rather than when this loop ends. Those are the
+/// same moment on Unix, where the master reports EOF once the child's last
+/// descriptor closes. They are not on Windows: the pseudoconsole keeps the
+/// read side open for as long as the session holds its master, so this loop
+/// only ends when the session is closed. Waiting for it before reporting the
+/// exit is what left every Windows session running forever.
+///
+/// Output still precedes the exit. The coalescer drains this channel after the
+/// code arrives and only finishes once it has gone quiet, so the ordering is
+/// enforced where the bytes are published instead of by which thread stops
+/// first.
 fn read_loop(
     mut reader: Box<dyn Read + Send>,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
     out: mpsc::UnboundedSender<Vec<u8>>,
     exit: oneshot::Sender<Option<i32>>,
 ) {
+    if let Err(e) = std::thread::Builder::new()
+        .name("vitrum-pty-wait".to_string())
+        .spawn(move || {
+            let mut child = child;
+            let _ = exit.send(reap(&mut *child));
+            drop(child);
+        })
+    {
+        // The closure was dropped with the child inside it, so nothing will
+        // ever answer and the session cannot report an exit code.
+        tracing::warn!(error = %e, "no thread to reap the pty child");
+    }
     let mut buf = vec![0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
@@ -836,7 +856,11 @@ fn read_loop(
             Err(_) => break,
         }
     }
-    let code = match child.wait() {
+}
+
+/// Wait for a PTY child and turn its status into a reportable exit code.
+fn reap(child: &mut (dyn portable_pty::Child + Send + Sync)) -> Option<i32> {
+    match child.wait() {
         // A signalled child has no exit code to report. portable-pty
         // synthesises 1 for it, which would be indistinguishable from a real
         // `exit 1`, so the signal name is what decides.
@@ -848,8 +872,7 @@ fn read_loop(
             tracing::warn!(error = %e, "waiting on pty child");
             None
         }
-    };
-    let _ = exit.send(code);
+    }
 }
 
 /// Blocking PTY write loop. Ends when the session drops its queue.
@@ -878,8 +901,14 @@ async fn coalesce_loop(
     // classified, and re-armed only by activity from then on.
     let mut settle_at = Some(Instant::now() + SETTLE_WINDOW);
 
+    let mut exit = exit;
+    // Set the moment the child is reaped, which on Windows is long before the
+    // byte channel closes.
+    let mut code: Option<Option<i32>> = None;
+
     loop {
-        let Some(first) = next_read(&session, &mut raw, &mut settle_at).await else {
+        let Some(first) = next_read(&session, &mut raw, &mut settle_at, &mut exit, &mut code).await
+        else {
             break;
         };
         buf.clear();
@@ -916,8 +945,12 @@ async fn coalesce_loop(
             "malformed agent hint sequences were dropped"
         );
     }
-    // The reader thread has stopped and every byte it produced is published.
-    let code = exit.await.unwrap_or(None);
+    // Everything the reader produced is published. Either the exit was already
+    // seen and drained past, or the channel closed first and it is due now.
+    let code = match code {
+        Some(code) => code,
+        None => exit.await.unwrap_or(None),
+    };
     session.finish(code);
 }
 
@@ -934,12 +967,26 @@ async fn next_read(
     session: &Session,
     raw: &mut mpsc::UnboundedReceiver<Vec<u8>>,
     settle_at: &mut Option<Instant>,
+    exit: &mut oneshot::Receiver<Option<i32>>,
+    code: &mut Option<Option<i32>>,
 ) -> Option<Vec<u8>> {
     loop {
+        // Once the child is gone there is nothing left to classify, only the
+        // bytes it already wrote. Quiet is what ends the session, because the
+        // channel closing cannot be waited for: on Windows the pseudoconsole
+        // outlives the child and the reader stays parked until the session is
+        // closed.
+        if code.is_some() {
+            return match timeout_at(Instant::now() + FLUSH_WINDOW, raw.recv()).await {
+                Ok(chunk) => chunk,
+                Err(_) => None,
+            };
+        }
         match *settle_at {
             None => {
                 tokio::select! {
                     chunk = raw.recv() => return chunk,
+                    reaped = &mut *exit => *code = Some(reaped.unwrap_or(None)),
                     () = session.activity.notified() => {
                         *settle_at = Some(Instant::now() + SETTLE_WINDOW);
                     }
@@ -954,6 +1001,7 @@ async fn next_read(
                             *settle_at = None;
                         }
                     },
+                    reaped = &mut *exit => *code = Some(reaped.unwrap_or(None)),
                     () = session.activity.notified() => {
                         *settle_at = Some(Instant::now() + SETTLE_WINDOW);
                     }

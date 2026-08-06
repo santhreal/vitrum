@@ -9,6 +9,7 @@
 //! Text is walked as grapheme clusters so that a base character never loses its
 //! combining marks and a ZWJ emoji sequence is never cut apart.
 
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -166,6 +167,18 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
     out
 }
 
+/// True when every byte in `chunk` is printable ASCII (`0x20..=0x7E`).
+///
+/// Packed subtract/add sets the high bit of any byte outside that range, so one
+/// mask test rejects controls, DEL, and any non-ASCII UTF-8 lead/continuation.
+#[inline(always)]
+fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
+    let w = u64::from_ne_bytes(*chunk);
+    let sub = w.wrapping_sub(0x2020_2020_2020_2020);
+    let chk = sub.wrapping_add(0x2121_2121_2121_2121);
+    ((sub | chk) & 0x8080_8080_8080_8080) == 0
+}
+
 /// Strip escape sequences and control characters so a single-line label stays a
 /// single line of text.
 ///
@@ -188,10 +201,43 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
 /// dropping it would run them together. Every other C0 and C1 control is
 /// dropped outright. Runs of spaces are left alone here; [`title`] collapses
 /// them.
+///
+/// Returns [`Cow::Borrowed`] when the whole input is already printable ASCII, so
+/// callers that only need a `&str` (and owned sinks via [`Cow::into_owned`])
+/// avoid allocating on the common clean-title path. Otherwise scans with an
+/// 8-byte SWAR probe, copies the proven-clean prefix, and finishes with the
+/// char-level escape/control state machine from the first dirty byte.
 #[must_use]
-pub fn sanitize_line(text: &str) -> String {
+pub fn sanitize_line(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
+
+    // Borrow when every byte is printable ASCII; otherwise `scan` is the first
+    // 8-byte boundary that still looked clean and the slow path resumes there.
+    let mut scan = 0;
+    while scan + 8 <= bytes.len() {
+        let chunk: &[u8; 8] = bytes[scan..scan + 8].try_into().unwrap();
+        if !is_all_printable_ascii_8(chunk) {
+            break;
+        }
+        scan += 8;
+    }
+    if scan == bytes.len() {
+        return Cow::Borrowed(text);
+    }
+    let mut tail_printable = true;
+    for &b in &bytes[scan..] {
+        if !(0x20..=0x7E).contains(&b) {
+            tail_printable = false;
+            break;
+        }
+    }
+    if tail_printable {
+        return Cow::Borrowed(text);
+    }
+
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
+    out.push_str(&text[..scan]);
+    let mut chars = text[scan..].chars();
     while let Some(ch) = chars.next() {
         match ch {
             '\u{1b}' => match chars.next() {
@@ -209,7 +255,7 @@ pub fn sanitize_line(text: &str) -> String {
             _ => {}
         }
     }
-    out
+    Cow::Owned(out)
 }
 
 /// Consume a CSI sequence's parameters and intermediates up to its final byte.

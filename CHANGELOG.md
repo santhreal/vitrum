@@ -68,6 +68,24 @@ below are stated rather than discovered.
   wgpu renderer, but nothing in the window can reach it until Dioxus Native
   lands; today the crate reaches you only through `vitrum-replay`.
 
+### Performance
+
+- **Terminal history no longer crosses the wire as a JSON integer array.**
+  `ScrollbackChunk` carries arbitrary PTY bytes, and serde's default for those
+  is an array of decimal integers, measured at 3.5 bytes of JSON per payload
+  byte on real output. It paid that twice, once from the daemon and again
+  across the bridge into the webview. The size was the smaller half:
+  `JSON.parse` had to build a JavaScript array before anything could copy it
+  into the grid, and JavaScriptCore boxes every element, so a 2 MiB backfill
+  allocated 46 MiB of resident memory for that intermediate alone in the
+  process every window shares. History is base64 now: 1.33 bytes per payload
+  byte, decoded about ten times faster, with nothing allocated beyond the
+  buffer the grid receives.
+- **The control-plane protocol version is 2.** A client and server that
+  disagree already refuse each other with a message naming both versions. If
+  an older daemon is still running after an upgrade, stop it and let the new
+  client start its own.
+
 ### Hardening
 
 Found by running a daemon and feeding it hostile input, not by reading it.

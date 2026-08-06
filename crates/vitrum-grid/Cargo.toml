@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "GPU terminal cell-grid renderer for the vitrum native (Blitz) path."
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["terminal", "wgpu", "renderer", "glyph-atlas", "gpu"]
+categories = ["rendering", "gui", "graphics"]
 
 [dependencies]
 # Pinned to the version Blitz uses so the renderer can share a `wgpu::Device`

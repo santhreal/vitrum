@@ -51,14 +51,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 
-use dioxus::desktop::tao::dpi::{PhysicalPosition, PhysicalSize};
-use dioxus::desktop::tao::event::{Event as WryEvent, WindowEvent};
-use dioxus::desktop::tao::event_loop::EventLoopBuilder;
-use dioxus::desktop::tao::monitor::MonitorHandle;
-use dioxus::desktop::tao::window::{Window, WindowBuilder};
-use dioxus::desktop::{Config, DesktopContext, WindowCloseBehaviour, use_wry_event_handler};
 use dioxus::document::Eval;
 use dioxus::prelude::*;
+use vitrum_dioxus_desktop::tao::dpi::{PhysicalPosition, PhysicalSize};
+use vitrum_dioxus_desktop::tao::event::{Event as WryEvent, WindowEvent};
+use vitrum_dioxus_desktop::tao::event_loop::EventLoopBuilder;
+use vitrum_dioxus_desktop::tao::monitor::MonitorHandle;
+use vitrum_dioxus_desktop::tao::window::{Window, WindowBuilder};
+use vitrum_dioxus_desktop::{Config, DesktopContext, WindowCloseBehaviour, use_wry_event_handler};
 use vitrum_fmt::TimeFormat;
 use vitrum_os::AppPaths;
 use vitrum_os::deeplink::DeepLink;
@@ -252,14 +252,22 @@ fn main() {
 
     let config = window_config(opts, &state, scale, os_scale).with_event_loop(event_loop);
 
-    LaunchBuilder::desktop()
-        .with_cfg(config)
-        .with_context(opts)
-        .with_context(WindowSeed {
-            ordinal,
-            link: activation.link(),
-        })
-        .launch(App);
+    let seed = WindowSeed {
+        ordinal,
+        link: activation.link(),
+    };
+
+    // `LaunchBuilder::desktop()` would go through the dioxus facade, which
+    // resolves the registry renderer. This is the same call one level down,
+    // against the fork.
+    vitrum_dioxus_desktop::launch::launch(
+        App,
+        vec![
+            Box::new(move || Box::new(opts) as Box<dyn std::any::Any>),
+            Box::new(move || Box::new(seed) as Box<dyn std::any::Any>),
+        ],
+        vec![Box::new(config)],
+    );
 }
 
 /// Apply this platform's frameless-window configuration.
@@ -281,7 +289,7 @@ fn decorate(window: WindowBuilder) -> WindowBuilder {
 /// them; [`ui::titlebar::MACOS_TRAFFIC_LIGHT_INSET`] reserves their space.
 #[cfg(target_os = "macos")]
 fn decorate(window: WindowBuilder) -> WindowBuilder {
-    use dioxus::desktop::tao::platform::macos::WindowBuilderExtMacOS;
+    use vitrum_dioxus_desktop::tao::platform::macos::WindowBuilderExtMacOS;
     window
         .with_titlebar_transparent(true)
         .with_title_hidden(true)
@@ -350,7 +358,7 @@ fn tick() -> Tick {
 fn App() -> Element {
     let opts: Options = use_context();
     let seed: WindowSeed = use_context();
-    let window = dioxus::desktop::use_window();
+    let window = vitrum_dioxus_desktop::use_window();
 
     // Physical size, applied to the document as page zoom rather than as a
     // root font-size. Zoom is the stronger of the two because it scales every
@@ -558,7 +566,7 @@ fn App() -> Element {
     // the one the operator sees.
     #[cfg(target_os = "windows")]
     use_hook(|| {
-        use dioxus::desktop::wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use vitrum_dioxus_desktop::wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(handle) = window.window_handle()
             && let RawWindowHandle::Win32(win32) = handle.as_raw()
         {

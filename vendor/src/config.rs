@@ -237,7 +237,7 @@ impl Config {
     /// ```rust
     /// # use wry::http::response::Response as HTTPResponse;
     /// # use std::borrow::Cow;
-    /// # use dioxus_desktop::Config;
+    /// # use vitrum_dioxus_desktop::Config;
     /// #
     /// # fn main() {
     /// let cfg = Config::new()

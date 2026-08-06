@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+description = "Deterministic display strings: relative times, elapsed durations, byte sizes, elided paths, and column-accurate truncation."
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["formatting", "humanize", "duration", "unicode-width", "truncate"]
+categories = ["value-formatting", "text-processing", "internationalization"]
 
 [dependencies]
 unicode-segmentation = "1.13"

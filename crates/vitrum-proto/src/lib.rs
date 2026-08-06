@@ -616,6 +616,40 @@ pub fn decode_output(frame: &[u8]) -> Result<(SessionId, u64, &[u8]), FrameError
 mod tests {
     use super::*;
 
+    /// The workspace version and the internal dependency versions must agree.
+    ///
+    /// `[workspace.dependencies]` gives each internal crate both a path and a
+    /// literal `version`, because `cargo package` refuses a path dependency
+    /// without one. Cargo has no `version.workspace = true` there, so the
+    /// literal is a second copy of a number that already exists ten lines
+    /// above it. Bump one and not the other and every crate publishes with a
+    /// requirement no published crate satisfies: the upload succeeds and
+    /// nothing can depend on the result.
+    #[test]
+    fn every_internal_dependency_requires_the_version_being_published() {
+        let manifest = include_str!("../../../Cargo.toml");
+        let declared = manifest
+            .split("[workspace.package]")
+            .nth(1)
+            .and_then(|rest| rest.lines().find_map(|l| l.strip_prefix("version = ")))
+            .map(|v| v.trim().trim_matches('"'))
+            .expect("the workspace declares a version");
+
+        let mut checked = 0;
+        for line in manifest.lines() {
+            let Some((name, rest)) = line.split_once(" = { path = \"crates/") else {
+                continue;
+            };
+            let want = format!("version = \"{declared}\"");
+            assert!(
+                rest.contains(&want),
+                "{name} is published as {declared} but requires {rest}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 7, "the set of internal dependencies changed");
+    }
+
     /// A frame must survive the round trip byte for byte.
     ///
     /// This is the contract the whole data plane rests on: the terminal renders

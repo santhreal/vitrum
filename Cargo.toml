@@ -10,6 +10,7 @@ members = [
     "crates/vitrum-os",
     "crates/vitrum-search",
     "app",
+    "vendor",
 ]
 resolver = "3"
 
@@ -21,13 +22,25 @@ authors = ["santhreal"]
 repository = "https://github.com/santhreal/vitrum"
 
 [workspace.dependencies]
-vitrum-proto = { path = "crates/vitrum-proto" }
-vitrum-core = { path = "crates/vitrum-core" }
-vitrum-grid = { path = "crates/vitrum-grid" }
-vitrum-model = { path = "crates/vitrum-model" }
-vitrum-fmt = { path = "crates/vitrum-fmt" }
-vitrum-os = { path = "crates/vitrum-os" }
-vitrum-search = { path = "crates/vitrum-search" }
+# Each internal dependency carries BOTH a path and a version. The path is what
+# the workspace builds against; the version is what `cargo package` writes into
+# the published manifest, and without it packaging refuses the crate outright.
+#
+# The literal must track `workspace.package.version` above. Cargo has no
+# `version.workspace = true` here, so a release that bumps one and not the
+# other publishes crates that cannot resolve each other. A test in
+# `crates/vitrum-proto` asserts the two agree.
+vitrum-proto = { path = "crates/vitrum-proto", version = "0.1.0" }
+vitrum-core = { path = "crates/vitrum-core", version = "0.1.0" }
+vitrum-grid = { path = "crates/vitrum-grid", version = "0.1.0" }
+vitrum-model = { path = "crates/vitrum-model", version = "0.1.0" }
+vitrum-fmt = { path = "crates/vitrum-fmt", version = "0.1.0" }
+vitrum-os = { path = "crates/vitrum-os", version = "0.1.0" }
+vitrum-search = { path = "crates/vitrum-search", version = "0.1.0" }
+
+# The forked webview renderer, a named dependency and not a `[patch]`. See
+# `vendor/README.md`; the version tracks the upstream release it forks.
+vitrum-dioxus-desktop = { path = "vendor", version = "0.7.10" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -50,41 +63,6 @@ semver = "1"
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
-
-# NOT PATCHED, and the reason is worth keeping.
-#
-# Upstream `dioxus-desktop` builds a fresh `WebContext` per webview, and on
-# Linux each one starts its own `WebKitNetworkProcess`. Measured here: 20
-# windows ran 20 of them at 8.6 MB PSS each, so 171.2 MB goes on twenty copies
-# of one cache and cookie jar. That is the entire gap between the measured
-# 1138.2 MB and this product's stated 1 GB target for 20 windows.
-#
-# Sharing one leaked WebContext was tried and REVERTED. Two independent
-# blockers, both confirmed by reading dioxus-desktop 0.7.10 rather than guessed:
-#
-# 1. It panics on the second window with `DuplicateCustomProtocol("dioxus")`.
-#    wry registers custom protocols per WebContext, so one context accepts the
-#    handler exactly once.
-#
-# 2. Registering the protocol only ONCE is not a fix, and this is the decisive
-#    one. `protocol.rs::module_loader` inlines `edit_state.wry_queue`'s
-#    `edits_path` and `required_server_key` into the index.html it serves, so
-#    every webview's page is wired to ITS OWN edit stream. A single shared
-#    handler would hand window 2 a document pointing at window 1's queue, and
-#    `__events` would dispatch window 2's DOM events into window 1's VirtualDom.
-#    That is cross-window corruption, far worse than the memory it saves.
-#
-# Routing by `WebViewId` cannot rescue it locally either: `desktop_handler`
-# receives the id, but the index request is the FIRST thing a new webview asks
-# for, and the id is not known to the caller until `build()` has returned. The
-# fix belongs upstream, where the registration and the id can be ordered.
-#
-# Measured consequence: 55.1 MB per window, of which 9.1 MB is this. Fifteen
-# windows fit in 1 GB; twenty are 1263.9 MB. Even with this recovered, twenty
-# would be ~1090 MB, so it is necessary and NOT sufficient. See GOAL.md.
-
-[patch.crates-io]
-dioxus-desktop = { path = "vendor" }
 
 [profile.release]
 opt-level = 3

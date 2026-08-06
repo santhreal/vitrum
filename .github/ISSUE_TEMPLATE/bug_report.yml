@@ -1,0 +1,121 @@
+name: Bug report
+description: vitrum did something other than what it says it does
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        If this is a security problem, close this form and use
+        [private reporting](https://github.com/santhreal/vitrum/security/advisories/new)
+        instead. Everything else belongs here.
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched the existing issues, open and closed, for this behaviour.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: One or two sentences. What the window, the sidebar or the session actually did.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Exact steps
+      description: >-
+        Numbered, from a fresh start. Name the command you launched in the
+        session, the chord you pressed, and how many windows and sessions were
+        open. A report that cannot be replayed is a report nobody can fix.
+      placeholder: |
+        1. Start vitrum with no daemon running
+        2. Launch `cargo test` in ~/src/foo
+        3. Press ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: vitrum --version
+      description: Paste the output. A rebuild of main reports the version of the tag it was cut from, so say if you built from a branch.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - Release archive from the README paste
+        - cargo install vitrum vitrum-server
+        - Built from a source tag
+        - Built from a git checkout
+        - vitrum update, from an earlier install
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: Ubuntu 24.04, macOS 15.3, Windows 11 23H2
+    validations:
+      required: true
+
+  - type: input
+    id: desktop
+    attributes:
+      label: "Linux: desktop or compositor, and Wayland or X11"
+      description: >-
+        Say which, and paste `echo $XDG_SESSION_TYPE`. The client renders in the
+        system WebKitGTK view, and a translucent window needs a compositor to
+        blend against; on a bare window manager the alpha channel is blended
+        with nothing. Wrong colours, a black window, or missing decorations are
+        usually this. Write "not Linux" on macOS or Windows.
+      placeholder: GNOME 46, wayland
+    validations:
+      required: true
+
+  - type: input
+    id: webkit
+    attributes:
+      label: "Linux: WebKitGTK version"
+      description: >-
+        `pkg-config --modversion webkit2gtk-4.1`, or your package manager's
+        version for `libwebkit2gtk-4.1`. It is the only system dependency, so
+        it is the first thing to rule out. Write "not Linux" elsewhere.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon and client logs
+      description: >-
+        Reproduce with `VITRUM_LOG=debug`. The daemon writes to `daemon.log` in
+        your state directory when the client starts it; if you run it yourself
+        or under systemd, take its output there. Paste the lines around the
+        failure, not the whole file, and strip anything private your agents
+        printed.
+      render: text
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: Screenshots, a stack trace, the commit you think broke it, your guess at the fix.

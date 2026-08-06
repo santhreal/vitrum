@@ -1,10 +1,10 @@
-//// The WHOLE sidebar, rendered.
-////
-//// The panel is the product. It had 1,926 tests and not one of them built it:
-//// they asserted CSS substrings, pure-function returns and source text, so a
-//// green suite sat beside a screenshot of a project header with no sessions
-//// under it. Everything here starts from a `UiState` with real sessions in it
-//// and looks at the HTML that would reach the webview.
+//! The WHOLE sidebar, rendered.
+//!
+//! The panel is the product. It had 1,926 tests and not one of them built it:
+//! they asserted CSS substrings, pure-function returns and source text, so a
+//! green suite sat beside a screenshot of a project header with no sessions
+//! under it. Everything here starts from a `UiState` with real sessions in it
+//! and looks at the HTML that would reach the webview.
 
 use super::*;
 use crate::testkit::{HOUR, NOW, project, row};

@@ -1,12 +1,12 @@
-//// Render smoke tests.
-////
-//// Everything in `search.rs`'s own test module exercises pure functions and
-//// stylesheet text. Nothing there has ever built the markup, so a panic in the
-//// RSX, a bad `key`, or a highlight that is computed correctly and then
-//// dropped on the floor by the markup would all pass 25 green tests.
-////
-//// These render the real component through `dioxus-ssr` and assert on the HTML
-//// that comes out.
+//! Render smoke tests.
+//!
+//! Everything in `search.rs`'s own test module exercises pure functions and
+//! stylesheet text. Nothing there has ever built the markup, so a panic in the
+//! RSX, a bad `key`, or a highlight that is computed correctly and then
+//! dropped on the floor by the markup would all pass 25 green tests.
+//!
+//! These render the real component through `dioxus-ssr` and assert on the HTML
+//! that comes out.
 
 use super::{Answer, Options, Search};
 use dioxus::prelude::*;

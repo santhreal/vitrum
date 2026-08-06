@@ -404,8 +404,16 @@ impl GridRenderer {
     #[must_use]
     pub const fn grid_size_for(&self, width: u32, height: u32) -> (u16, u16) {
         let m = self.fonts.metrics();
-        let cols = if m.width == 0 { 1 } else { width / m.width };
-        let rows = if m.height == 0 { 1 } else { height / m.height };
+        // A zero metric means the font reported no cell, which divides into
+        // nothing; `unwrap_or` is not const, so the fallback is a match.
+        let cols = match width.checked_div(m.width) {
+            Some(cols) => cols,
+            None => 1,
+        };
+        let rows = match height.checked_div(m.height) {
+            Some(rows) => rows,
+            None => 1,
+        };
         // A viewport smaller than one cell still gets a 1x1 grid rather than a
         // zero-sized one the grid type would refuse.
         (

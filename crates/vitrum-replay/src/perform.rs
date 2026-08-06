@@ -82,7 +82,7 @@ impl Perform for Screen {
             0x07 => {}
             0x08 => self.backspace(),
             0x09 => self.tab_forward(1),
-            0x0a | 0x0b | 0x0c => self.line_feed(),
+            0x0a..=0x0c => self.line_feed(),
             0x0d => self.carriage_return(),
             // SO and SI: shift G1 or G0 in.
             0x0e => self.charsets_mut().shifted = true,

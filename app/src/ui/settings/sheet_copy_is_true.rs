@@ -1,11 +1,11 @@
-//// Captions in this sheet against what the product actually does.
-////
-//// Its own module because it is a coherence suite, not a settings-logic one:
-//// every test here reads the shipped source of the files that implement the
-//// behaviour and asserts that a sentence shown to an operator is true of the
-//// code beside it. Source scanning rather than a runtime assertion because
-//// neither behaviour has a hook a unit test can reach: one is a wheel event in
-//// a webview, the other is a D-Bus click on a live desktop.
+//! Captions in this sheet against what the product actually does.
+//!
+//! Its own module because it is a coherence suite, not a settings-logic one:
+//! every test here reads the shipped source of the files that implement the
+//! behaviour and asserts that a sentence shown to an operator is true of the
+//! code beside it. Source scanning rather than a runtime assertion because
+//! neither behaviour has a hook a unit test can reach: one is a wheel event in
+//! a webview, the other is a D-Bus click on a live desktop.
 
 use super::{Notification, SessionId};
 

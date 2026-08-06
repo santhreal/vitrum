@@ -279,13 +279,12 @@ async fn history_is_requestable_while_the_session_runs() {
         "history holds the echoed newline and the line, while the child still runs"
     );
     assert!(!more);
-    assert_eq!(
+    assert!(
         h.manager
             .info(id)
             .expect("still registered")
             .status
-            .is_live(),
-        true
+            .is_live()
     );
     h.manager.close(id).expect("close");
 }

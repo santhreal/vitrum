@@ -533,7 +533,7 @@ fn underline_combines_with_the_glyph_underneath() {
 /// disabled precisely so the cell's own alpha is what lands in the texture.
 #[test]
 fn cell_alpha_is_written_through_to_the_target() {
-    let translucent = Rgba::rgba(0x40, 0x80, 0xc0, 0x55);
+    let translucent = Rgba::new(0x40, 0x80, 0xc0, 0x55);
     let mut renderer = renderer();
     let target = target_for(&renderer, 1, 1);
     let mut g = grid(1, 1, Style::new(Rgba::WHITE, translucent));

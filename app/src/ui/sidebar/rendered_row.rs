@@ -1,13 +1,13 @@
-//// The session row, RENDERED.
-////
-//// Every other guard in this file reads `sidebar.rs` as text or calls a pure
-//// function. Both pass while the markup that reaches the operator is wrong,
-//// and that is not hypothetical: this product shipped a status dot with four
-//// colour modifiers and no box, a "Show" button on every notification that
-//// could not be clicked, and a whole search result path the client discarded.
-//// Each was correct code with one missing link, and a green suite the whole
-//// time. A test that builds the component and looks at the HTML is the only
-//// kind that can see that class of defect.
+//! The session row, RENDERED.
+//!
+//! Every other guard in this file reads `sidebar.rs` as text or calls a pure
+//! function. Both pass while the markup that reaches the operator is wrong,
+//! and that is not hypothetical: this product shipped a status dot with four
+//! colour modifiers and no box, a "Show" button on every notification that
+//! could not be clicked, and a whole search result path the client discarded.
+//! Each was correct code with one missing link, and a green suite the whole
+//! time. A test that builds the component and looks at the HTML is the only
+//! kind that can see that class of defect.
 
 use super::*;
 use crate::testkit::{NOW, row};

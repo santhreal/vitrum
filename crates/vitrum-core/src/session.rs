@@ -977,10 +977,11 @@ async fn next_read(
         // outlives the child and the reader stays parked until the session is
         // closed.
         if code.is_some() {
-            return match timeout_at(Instant::now() + FLUSH_WINDOW, raw.recv()).await {
-                Ok(chunk) => chunk,
-                Err(_) => None,
-            };
+            // A timeout and a closed channel mean the same thing here: no more
+            // bytes are coming.
+            return timeout_at(Instant::now() + FLUSH_WINDOW, raw.recv())
+                .await
+                .unwrap_or_default();
         }
         match *settle_at {
             None => {

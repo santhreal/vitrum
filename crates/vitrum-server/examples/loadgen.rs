@@ -213,8 +213,8 @@ fn report(
     let reads = after.reads - before.reads;
     let read_bytes = after.read_bytes - before.read_bytes;
     println!("read syscalls   {reads}");
-    if reads > 0 {
-        println!("bytes / read    {}", read_bytes / reads);
+    if let Some(per_read) = read_bytes.checked_div(reads) {
+        println!("bytes / read    {per_read}");
     }
     if ingested > 0 {
         let mib = ingested as f64 / (1024.0 * 1024.0);

@@ -1,11 +1,11 @@
-//// The whole path, over a real socket.
-////
-//// Every other test here exercises one step with the others stubbed out. This
-//// one runs `install` exactly as the terminal command and the window button
-//// run it: an HTTP fetch of an archive, an HTTP fetch of the sums, a checksum
-//// pass, an unpack, and the rename that replaces the running program. The
-//// pieces were each correct in isolation while the whole was wired wrong more
-//// than once, which is the only reason to pay for a socket in a unit test.
+//! The whole path, over a real socket.
+//!
+//! Every other test here exercises one step with the others stubbed out. This
+//! one runs `install` exactly as the terminal command and the window button
+//! run it: an HTTP fetch of an archive, an HTTP fetch of the sums, a checksum
+//! pass, an unpack, and the rename that replaces the running program. The
+//! pieces were each correct in isolation while the whole was wired wrong more
+//! than once, which is the only reason to pay for a socket in a unit test.
 
 use super::*;
 use std::io::{BufRead, BufReader, Write};

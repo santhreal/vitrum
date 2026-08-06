@@ -85,7 +85,7 @@ pub fn head(head: Head<'_>, budget: usize) -> String {
                 return format!("detached @ {short}");
             }
             let terse = format!("@{short}");
-            if width + 1 <= budget {
+            if width < budget {
                 return terse;
             }
             text::truncate_end(&terse, budget)

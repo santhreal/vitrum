@@ -1,8 +1,8 @@
-//// Command lines that are not command lines.
-////
-//// Everything here was found by feeding hostile strings to `split_command` and
-//// looking at what came back, not by imagining what might. Each one produced a
-//// value the rest of the program would have accepted and could never have run.
+//! Command lines that are not command lines.
+//!
+//! Everything here was found by feeding hostile strings to `split_command` and
+//! looking at what came back, not by imagining what might. Each one produced a
+//! value the rest of the program would have accepted and could never have run.
 
 use super::*;
 

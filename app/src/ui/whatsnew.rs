@@ -114,12 +114,11 @@ pub fn parse_changelog(text: &str) -> Vec<Release> {
         // A wrapped bullet: indented, non-empty, and following one. Joined
         // with a space, because the line breaks in the file are hard wrapping
         // for an editor and mean nothing to a rendered sentence.
-        if line.starts_with(' ') && !line.trim().is_empty() {
-            if let Some(entry) = release.groups.last_mut().and_then(|g| g.entries.last_mut()) {
+        if line.starts_with(' ') && !line.trim().is_empty()
+            && let Some(entry) = release.groups.last_mut().and_then(|g| g.entries.last_mut()) {
                 entry.push(' ');
                 entry.push_str(&clean(line.trim()));
             }
-        }
     }
 
     releases

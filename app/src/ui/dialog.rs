@@ -91,6 +91,10 @@ pub const ROWS_MAX: usize = 9;
 /// Directory completions offered while the query is a path.
 const DIR_MAX: usize = launch::COMPLETE_MAX;
 
+/// The class a directory completion row carries, unhighlighted and highlighted.
+const DIROPT: &str = "rg-launch__diropt";
+const DIROPT_ON: &str = "rg-launch__diropt rg-launch__diropt--on";
+
 /// Commands drawn out of [`launch::command_suggestions`] before ranking.
 ///
 /// The whole history plus the agents plus the shell. Truncating here would
@@ -1113,6 +1117,12 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
     // on every row it is noise.
     let here_now = launch::tidy_dir(&here.read());
 
+    // Which completion row is highlighted, asked once per row instead of twice.
+    // The clamp is what keeps a stale highlight from naming a row that a newer,
+    // shorter list no longer has.
+    let dir_selected =
+        move |i: usize| i == dir_hi().min(dir_picks.read().len().saturating_sub(1));
+
     rsx! {
         div {
             class: "rg-layer rg-layer--dim",
@@ -1220,14 +1230,10 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                             aria_label: "Directories",
                             for (i, full) in dir_picks.read().iter().enumerate() {
                                 li {
-                                    class: if i == dir_hi().min(dir_picks.read().len() - 1) {
-                                        "rg-launch__diropt rg-launch__diropt--on"
-                                    } else {
-                                        "rg-launch__diropt"
-                                    },
+                                    class: if dir_selected(i) { DIROPT_ON } else { DIROPT },
                                     key: "{full}",
                                     role: "option",
-                                    aria_selected: i == dir_hi().min(dir_picks.read().len() - 1),
+                                    aria_selected: dir_selected(i),
                                     title: "{full}",
                                     // Kept off mousedown so the field never
                                     // loses focus: a blur would move the caret
@@ -1360,13 +1366,12 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
                                 ));
                                 return;
                             }
-                            if m.ctrl() && !m.alt() {
-                                if let Some(n) = digit_of(&code) {
+                            if m.ctrl() && !m.alt()
+                                && let Some(n) = digit_of(&code) {
                                     e.prevent_default();
                                     take(n - 1);
                                     return;
                                 }
-                            }
                         }
                         match e.key() {
                             Key::ArrowDown if count > 0 => {

@@ -81,8 +81,11 @@ fn an_out_of_range_request_clamps_instead_of_panicking() {
     assert_eq!(stream.to_vec(200..300), b"", "entirely after it");
     assert_eq!(stream.to_vec(0..103), b"abc", "clipped at the start");
     assert_eq!(stream.to_vec(103..500), b"def", "clipped at the end");
-    // An inverted range is empty, not a wrap-around read.
-    assert_eq!(stream.to_vec(104..102), b"");
+    // An inverted range is empty, not a wrap-around read. The ends are bound
+    // first because a literal backwards range is a lint, and here it is the
+    // point of the test: a scrubber that swaps its ends must read nothing.
+    let (start, end) = (104, 102);
+    assert_eq!(stream.to_vec(start..end), b"");
 }
 
 /// Both ends of the retained window are seekable, and nothing outside is.

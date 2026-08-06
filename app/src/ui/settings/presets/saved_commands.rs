@@ -1,12 +1,12 @@
-//// The saved-command editor, which is the only writer of `launch.json`'s
-//// preset list.
-////
-//// Every test here defends one invariant the new-session dialog is entitled to
-//// assume, because it consumes this list and cannot re-validate it: labels are
-//// unique and non-empty, ids are unique, a stored shortcut is one the matcher
-//// can match, and a stored working directory is either a real string or
-//// absent. A refused edit leaves the list byte-identical, so a validation
-//// failure can never be a partial write.
+//! The saved-command editor, which is the only writer of `launch.json`'s
+//! preset list.
+//!
+//! Every test here defends one invariant the new-session dialog is entitled to
+//! assume, because it consumes this list and cannot re-validate it: labels are
+//! unique and non-empty, ids are unique, a stored shortcut is one the matcher
+//! can match, and a stored working directory is either a real string or
+//! absent. A refused edit leaves the list byte-identical, so a validation
+//! failure can never be a partial write.
 
 use super::*;
 use crate::launch::{

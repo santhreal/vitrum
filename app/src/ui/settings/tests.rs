@@ -941,17 +941,7 @@ fn the_bridge_exposes_the_entry_points_this_module_calls() {
 fn every_settings_tab_is_reachable_and_named() {
     // Exhaustive on purpose: a new variant fails to compile here.
     fn declared(tab: SettingsTab) -> SettingsTab {
-        match tab {
-            SettingsTab::Appearance => SettingsTab::Appearance,
-            SettingsTab::Sidebar => SettingsTab::Sidebar,
-            SettingsTab::Workspaces => SettingsTab::Workspaces,
-            SettingsTab::Presets => SettingsTab::Presets,
-            SettingsTab::Terminal => SettingsTab::Terminal,
-            SettingsTab::Notifications => SettingsTab::Notifications,
-            SettingsTab::Keyboard => SettingsTab::Keyboard,
-            SettingsTab::Advanced => SettingsTab::Advanced,
-            SettingsTab::About => SettingsTab::About,
-        }
+        tab
     }
     let every = [
         SettingsTab::Appearance,

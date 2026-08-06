@@ -158,8 +158,8 @@ async fn a_session_outlives_the_client_that_created_it() {
     let h = Harness::start(64 * 1024).await;
     let id = {
         let mut first = h.greeted().await;
-        let id = first.create(create(1, "read -r x; echo survived")).await;
-        id
+        
+        first.create(create(1, "read -r x; echo survived")).await
         // `first` drops here: the GUI has quit.
     };
 

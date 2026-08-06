@@ -1,18 +1,18 @@
-//// One test per control: it changes something observable, and it survives the
-//// file.
-////
-//// Both halves matter and neither implies the other. A control that mutates
-//// `Settings` but changes no derivation is a switch that does nothing; a
-//// control that changes a derivation but is dropped by the serialiser is a
-//// switch that does nothing after a restart, which is the same defect
-//// arriving late. So every test here asserts a DERIVED value before and after,
-//// then pushes the whole document through the exact encode/parse pair
-//// `save_prefs` and `load_prefs` use and asserts the derived value again.
-////
-//// Controls whose observable effect lives in another module are marked and
-//// tested for the round trip only; the rendering half is asserted where the
-//// markup is. Those are named in the module docs as well, so the gap is
-//// visible without reading the tests.
+//! One test per control: it changes something observable, and it survives the
+//! file.
+//!
+//! Both halves matter and neither implies the other. A control that mutates
+//! `Settings` but changes no derivation is a switch that does nothing; a
+//! control that changes a derivation but is dropped by the serialiser is a
+//! switch that does nothing after a restart, which is the same defect
+//! arriving late. So every test here asserts a DERIVED value before and after,
+//! then pushes the whole document through the exact encode/parse pair
+//! `save_prefs` and `load_prefs` use and asserts the derived value again.
+//!
+//! Controls whose observable effect lives in another module are marked and
+//! tested for the round trip only; the rendering half is asserted where the
+//! markup is. Those are named in the module docs as well, so the gap is
+//! visible without reading the tests.
 
 use super::*;
 use crate::state::OPACITY_MAX_PCT;

@@ -153,7 +153,7 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
              {css}\
              <script>window.__vitrum_renderer={:?};window.__vitrum_keymap={};</script>\
              <script type=\"text/plain\" id=\"rg-vendor-xterm\">{XTERM_JS}</script>\
-             {webgl}\
+             <script type=\"text/plain\" id=\"rg-vendor-webgl\">{ADDON_WEBGL_JS}</script>\
              <script type=\"text/plain\" id=\"rg-vendor-fit\">{ADDON_FIT_JS}</script>",
             opts.renderer.as_str(),
             // The table the OPERATOR has, not the compile-time default: their
@@ -189,9 +189,8 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
             // COMPILED unless the operator actually selects WebGL, which is
             // where the 5.0 MB per window above was spent. Text is cheap;
             // parsing is not.
-            webgl = format!(
-                "<script type=\"text/plain\" id=\"rg-vendor-webgl\">{ADDON_WEBGL_JS}</script>"
-            )
+            // The tag is written into the literal above rather than built as
+            // an argument, so the 100 KB is copied once instead of twice.
         )
     })
     .as_str()

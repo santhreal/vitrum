@@ -114,15 +114,7 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
     // One real session, so cases that name a live id exercise the paths that
     // touch a session rather than only the "no such session" branch.
     let (live, _) = oracle
-        .create_session(
-            "fuzz-oracle",
-            "/tmp",
-            "/bin/sh",
-            &["-c".to_string(), "sleep 600".to_string()],
-            80,
-            24,
-            spec.oracle_timeout,
-        )
+        .create_session("fuzz-oracle", "sleep 600", 80, 24, spec.oracle_timeout)
         .await?;
 
     let mut oracle_latency = Latencies::new();
@@ -173,8 +165,8 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
         oracle.drain_ready().await?;
         match oracle
             .round_trip(&ClientMsg::List, spec.oracle_timeout, |m| match m {
-                ServerMsg::Sessions { sessions } => Ok(sessions),
-                other => Err(other),
+                ServerMsg::Sessions { sessions } => Some(sessions),
+                _ => None,
             })
             .await
         {
@@ -301,7 +293,7 @@ fn generate(rng: &mut Rng, live: SessionId) -> String {
                 "pattern": rng.pick(&patterns),
                 "regex": true,
                 "caseInsensitive": true,
-                "wholeWord": rng.next() % 2 == 0,
+                "wholeWord": rng.next().is_multiple_of(2),
                 "contextLines": u16::MAX,
                 "maxHits": u32::MAX,
             })

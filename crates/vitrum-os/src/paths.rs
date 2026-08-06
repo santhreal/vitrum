@@ -140,8 +140,29 @@ impl PathEnv {
 
     /// A variable that must hold an absolute path, per the XDG requirement that
     /// relative values be ignored.
-    fn absolute(&self, key: &str) -> Option<&str> {
-        self.get(key).filter(|v| Path::new(v).is_absolute())
+    ///
+    /// `platform` decides what absolute means, and `Path::is_absolute` cannot be
+    /// asked: it answers for the host. On Windows it calls `/xdg/cfg` relative,
+    /// so resolving a Linux layout from a Windows box silently ignored every XDG
+    /// variable and fell back to the home directory. Resolution is documented as
+    /// a pure function of a platform and an environment, and a host-dependent
+    /// answer inside it is the one thing that cannot be.
+    fn absolute(&self, platform: Platform, key: &str) -> Option<&str> {
+        self.get(key).filter(|v| is_absolute_on(platform, v))
+    }
+}
+
+/// Whether `value` is an absolute path under `platform`'s rules.
+pub(crate) fn is_absolute_on(platform: Platform, value: &str) -> bool {
+    match platform {
+        Platform::Linux | Platform::MacOs => value.starts_with('/'),
+        // A drive-qualified path, or a UNC or device path. A bare `\path` is
+        // rooted but not absolute: it resolves against the current drive.
+        Platform::Windows => {
+            let bytes = value.as_bytes();
+            let drive = matches!(bytes, [d, b':', b'\\' | b'/', ..] if d.is_ascii_alphabetic());
+            drive || value.starts_with("\\\\") || value.starts_with("//")
+        }
     }
 }
 
@@ -184,7 +205,7 @@ impl AppPaths {
         let home = Path::new(home);
 
         let base = |var: &str, default: &str| -> PathBuf {
-            match env.absolute(var) {
+            match env.absolute(Platform::Linux, var) {
                 Some(v) => Path::new(v).join(APP_NAME),
                 None => home.join(default).join(APP_NAME),
             }
@@ -198,7 +219,7 @@ impl AppPaths {
         // would put a socket in a world-writable directory; nesting under the
         // already per-user cache directory keeps the ownership guarantee that
         // makes the single-instance lock meaningful.
-        let runtime_dir = match env.absolute("XDG_RUNTIME_DIR") {
+        let runtime_dir = match env.absolute(Platform::Linux, "XDG_RUNTIME_DIR") {
             Some(v) => Path::new(v).join(APP_NAME),
             None => cache_dir.join("run"),
         };
@@ -216,7 +237,7 @@ impl AppPaths {
         let cache_dir = home.join("Library/Caches").join(BUNDLE_ID);
         // $TMPDIR on macOS is a per-user directory under /var/folders that the
         // system prunes, which is exactly the runtime-dir contract.
-        let runtime_dir = match env.absolute("TMPDIR") {
+        let runtime_dir = match env.absolute(Platform::MacOs, "TMPDIR") {
             Some(v) => Path::new(v).join(BUNDLE_ID),
             None => support.join("run"),
         };

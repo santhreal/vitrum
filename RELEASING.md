@@ -20,6 +20,22 @@ cargo test  --release --workspace     # zero failures
 cargo clippy --release --workspace    # advisory; fix real bugs, ignore style
 ```
 
+Then the two platforms you are not sitting at. CI builds them with
+`-D warnings`, so a test helper that is only called on Linux fails the build
+there while passing here. Checking never links, so both run locally:
+
+```sh
+RUSTFLAGS="-D warnings" cargo check --profile release \
+  --target x86_64-pc-windows-gnu --workspace --all-targets
+RUSTFLAGS="-D warnings" cargo check --profile release \
+  --target aarch64-apple-darwin --all-targets \
+  -p vitrum-core -p vitrum-os -p vitrum-server -p vitrum-proto \
+  -p vitrum-fmt -p vitrum-grid -p vitrum-model -p vitrum-replay
+```
+
+macOS omits the `vitrum` binary because `objc2`'s build script wants the Apple
+SDK. That one is still first compiled by CI.
+
 Then check by hand, because no test can:
 
 1. **`CHANGELOG.md` describes this version**, including its gaps. A release

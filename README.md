@@ -594,6 +594,30 @@ cargo build --release --workspace
 Both profiles compile. Release is what a tag is cut against, and it is the
 profile every measurement in this file was taken on.
 
+CI builds Linux, macOS and Windows with `RUSTFLAGS: -D warnings`, which turns
+an unused import or an ungated test helper into a failed build on a platform
+you are not sitting at. You can catch that here before pushing, because
+checking never links:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+RUSTFLAGS="-D warnings" cargo check --profile release \
+  --target x86_64-pc-windows-gnu --workspace --all-targets
+```
+
+That covers the whole workspace. macOS needs the Apple SDK for `objc2`'s build
+script, so only the crates that do not depend on it can be checked:
+
+```sh
+rustup target add aarch64-apple-darwin
+RUSTFLAGS="-D warnings" cargo check --profile release \
+  --target aarch64-apple-darwin --all-targets \
+  -p vitrum-core -p vitrum-os -p vitrum-server -p vitrum-proto \
+  -p vitrum-fmt -p vitrum-grid -p vitrum-model -p vitrum-replay
+```
+
+The `vitrum` binary itself is still first compiled for macOS by CI.
+
 `CHANGELOG.md` is what changed per release; `RELEASING.md` is how a release is
 cut. `SPEC.md` is an internal requirements ledger, not user documentation: read
 it for what is still owed.

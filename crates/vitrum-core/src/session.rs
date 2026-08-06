@@ -444,6 +444,9 @@ impl SessionManager {
         let (status_tx, _) = watch::channel(SessionStatus::Starting);
         let (observations_tx, _) = watch::channel(0u64);
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        // The reader answers the pseudoconsole's startup query on Windows, so
+        // it needs a way back into the pty.
+        let handshake_tx = input_tx.clone();
 
         let info = SessionInfo {
             id,
@@ -496,7 +499,7 @@ impl SessionManager {
         // shutdown wait on a read that only ends when the child exits.
         std::thread::Builder::new()
             .name(format!("vitrum-pty-read-{}", id.0))
-            .spawn(move || read_loop(reader, child, raw_tx, exit_tx))
+            .spawn(move || read_loop(reader, child, raw_tx, exit_tx, handshake_tx))
             .context("starting the pty reader thread")?;
 
         std::thread::Builder::new()
@@ -828,6 +831,7 @@ fn read_loop(
     child: Box<dyn portable_pty::Child + Send + Sync>,
     out: mpsc::UnboundedSender<Vec<u8>>,
     exit: oneshot::Sender<Option<i32>>,
+    input: mpsc::UnboundedSender<Vec<u8>>,
 ) {
     if let Err(e) = std::thread::Builder::new()
         .name("vitrum-pty-wait".to_string())
@@ -841,12 +845,28 @@ fn read_loop(
         // ever answer and the session cannot report an exit code.
         tracing::warn!(error = %e, "no thread to reap the pty child");
     }
+    // Only Windows has a handshake to answer. On Unix this is false from the
+    // start and the loop below is byte for byte what it always was.
+    let mut handshake = cfg!(windows);
+    #[cfg(not(windows))]
+    let _ = &input;
     let mut buf = vec![0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if out.send(buf[..n].to_vec()).is_err() {
+                let mut bytes = &buf[..n];
+                if handshake {
+                    handshake = false;
+                    if let Some(rest) = bytes.strip_prefix(CONPTY_CURSOR_QUERY) {
+                        let _ = input.send(CONPTY_CURSOR_REPLY.to_vec());
+                        bytes = rest;
+                    }
+                }
+                if bytes.is_empty() {
+                    continue;
+                }
+                if out.send(bytes.to_vec()).is_err() {
                     break;
                 }
             }
@@ -857,6 +877,23 @@ fn read_loop(
         }
     }
 }
+
+/// The cursor position report ConPTY asks for before it will run a child.
+///
+/// portable-pty always creates the pseudoconsole with
+/// `PSEUDOCONSOLE_INHERIT_CURSOR`, so conhost emits this query and withholds
+/// every later byte until something answers it. A terminal emulator answers
+/// from its own grid. A daemon has no grid, and a session with no window
+/// attached is the normal case here, so nothing ever replied and every Windows
+/// session produced these four bytes and then hung forever.
+const CONPTY_CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
+/// The answer: the cursor is at the origin, because the session starts empty.
+///
+/// Consumed here rather than forwarded, because it is the console host's
+/// handshake and not the child's output. Passing it on would also invite a
+/// second answer from whichever window attached first.
+const CONPTY_CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
 
 /// Wait for a PTY child and turn its status into a reportable exit code.
 fn reap(child: &mut (dyn portable_pty::Child + Send + Sync)) -> Option<i32> {

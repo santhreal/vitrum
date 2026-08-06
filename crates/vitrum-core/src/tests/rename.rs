@@ -16,7 +16,11 @@ use crate::tests::helpers::{shell_spec, wait_exit};
 async fn a_rename_replaces_the_generated_title() {
     let mgr = SessionManager::new(1024);
     let id = mgr.spawn(shell_spec("read -r x")).expect("spawn");
-    assert_eq!(mgr.info(id).expect("info").title, "sh");
+    assert_eq!(
+        mgr.info(id).expect("info").title,
+        crate::tests::helpers::shell("").0,
+        "the generated title is the command's basename, which is the shell here"
+    );
     mgr.rename(id, "auth refactor").expect("rename");
     assert_eq!(mgr.info(id).expect("info").title, "auth refactor");
     mgr.close(id).expect("close");

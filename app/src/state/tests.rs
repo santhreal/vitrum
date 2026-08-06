@@ -4531,3 +4531,34 @@ fn an_update_never_moves_a_row_that_stayed_in_the_inbox() {
         "a row moved in the inbox because its activity or its badge changed"
     );
 }
+#[test]
+fn fine_grained_selectors_and_memoized_tree() {
+    let mut st = UiState::default();
+    let initial_rev = st.state_revision();
+
+    assert_eq!(st.select_sessions().len(), 0);
+    assert_eq!(st.select_workspace_id(), DEFAULT_WORKSPACE);
+    assert_eq!(st.select_filter_query(), "");
+    assert!(!st.has_changed_since(initial_rev));
+
+    // Bumping revisions
+    st.daemon.sessions_revision = st.daemon.sessions_revision.wrapping_add(1);
+    assert!(st.has_changed_since(initial_rev));
+    assert_ne!(st.state_revision(), initial_rev);
+
+    // Initial tree computation populates memo
+    let c = Clock::utc(NOW);
+    let tree1 = st.tree(c);
+    assert!(st.window.tree_memo.borrow().is_some());
+
+    // Subsequent tree call with unchanged state revision returns cached tree
+    let tree2 = st.tree(c);
+    assert_eq!(tree1.len(), tree2.len());
+
+    // Changing window filter invalidates tree memo key
+    st.window.filter = "test".to_string();
+    st.window.filter_revision = st.window.filter_revision.wrapping_add(1);
+    let tree3 = st.tree(c);
+    assert_eq!(st.select_filter_query(), "test");
+    assert_eq!(tree3.len(), 0);
+}

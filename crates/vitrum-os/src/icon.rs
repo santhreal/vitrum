@@ -10,11 +10,11 @@
 //! can be asserted pixel by pixel from a Linux test run.
 
 /// Glyph cell width in the bitmap font.
-pub const GLYPH_WIDTH: usize = 5;
+pub(crate) const GLYPH_WIDTH: usize = 5;
 /// Glyph cell height in the bitmap font.
-pub const GLYPH_HEIGHT: usize = 7;
+pub(crate) const GLYPH_HEIGHT: usize = 7;
 /// Blank columns between two glyphs.
-pub const GLYPH_GAP: usize = 1;
+pub(crate) const GLYPH_GAP: usize = 1;
 
 /// Rows of a glyph, most significant of the low five bits leftmost.
 type Glyph = [u8; GLYPH_HEIGHT];
@@ -59,26 +59,37 @@ pub fn glyph(c: char) -> Option<Glyph> {
 /// An 8-bit-per-channel colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgba {
+    /// Red at full scale, never premultiplied by `a`.
     pub r: u8,
+    /// Green at full scale, never premultiplied by `a`.
     pub g: u8,
+    /// Blue at full scale, never premultiplied by `a`.
     pub b: u8,
+    /// Opacity, `0` fully transparent and `0xFF` opaque. Straight alpha,
+    /// because the tray and taskbar APIs on all three platforms take the
+    /// colour channels unscaled and would darken a blended edge twice if
+    /// this were premultiplied.
     pub a: u8,
 }
 
 impl Rgba {
+    /// Fully transparent, the background every glyph is composited onto.
     pub const TRANSPARENT: Self = Self { r: 0, g: 0, b: 0, a: 0 };
     /// Attention red. Reads as urgent at 16 pixels against both a light and a
     /// dark taskbar.
     pub const ATTENTION: Self = Self { r: 0xD1, g: 0x3F, b: 0x3F, a: 0xFF };
     /// Idle grey.
     pub const IDLE: Self = Self { r: 0x6E, g: 0x76, b: 0x81, a: 0xFF };
+    /// Glyph strokes, drawn over the coloured plate.
     pub const WHITE: Self = Self { r: 0xFF, g: 0xFF, b: 0xFF, a: 0xFF };
 }
 
 /// A rasterised icon in straight (non-premultiplied) RGBA.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconImage {
+    /// Columns. With `height` this fixes the required length of `rgba`.
     pub width: u32,
+    /// Rows. With `width` this fixes the required length of `rgba`.
     pub height: u32,
     /// `width * height * 4` bytes, row-major from the top-left.
     pub rgba: Vec<u8>,
@@ -187,7 +198,7 @@ impl IconImage {
 /// Two glyphs is the honest maximum at 16 pixels: three 5-pixel glyphs plus
 /// gaps is 17 pixels wide and would be clipped, so anything past nine becomes
 /// `9+`. Rendering `12` as an unreadable smear is worse than rendering `9+`.
-pub fn count_text(count: u32) -> String {
+pub(crate) fn count_text(count: u32) -> String {
     match count {
         0 => String::new(),
         1..=9 => count.to_string(),
@@ -199,7 +210,7 @@ pub fn count_text(count: u32) -> String {
 ///
 /// `None` at zero because every platform's "no badge" state is the absence of
 /// an image, not a picture of nothing.
-pub fn render_count_icon(size: u32, count: u32) -> Option<IconImage> {
+pub(crate) fn render_count_icon(size: u32, count: u32) -> Option<IconImage> {
     if count == 0 || size < GLYPH_HEIGHT as u32 {
         return None;
     }
@@ -210,7 +221,7 @@ pub fn render_count_icon(size: u32, count: u32) -> Option<IconImage> {
 }
 
 /// The tray icon with nothing pending: a grey disc carrying a prompt glyph.
-pub fn render_idle_icon(size: u32) -> IconImage {
+pub(crate) fn render_idle_icon(size: u32) -> IconImage {
     let mut img = IconImage::blank(size);
     img.fill_disc(Rgba::IDLE);
     img.draw_text(">_", (size / 16).max(1), Rgba::WHITE);
@@ -218,6 +229,6 @@ pub fn render_idle_icon(size: u32) -> IconImage {
 }
 
 /// The tray icon for a given attention count.
-pub fn render_tray_icon(size: u32, count: u32) -> IconImage {
+pub(crate) fn render_tray_icon(size: u32, count: u32) -> IconImage {
     render_count_icon(size, count).unwrap_or_else(|| render_idle_icon(size))
 }

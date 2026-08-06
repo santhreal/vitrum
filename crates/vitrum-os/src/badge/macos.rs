@@ -12,7 +12,7 @@ use objc2_foundation::NSString;
 use crate::badge::{Badge, dock_badge_label};
 use crate::capability::{Support, Unavailable};
 
-pub struct DockBadge;
+pub(crate) struct DockBadge;
 
 impl DockBadge {
     pub fn connect() -> Result<Self, Unavailable> {

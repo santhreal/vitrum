@@ -36,7 +36,7 @@ pub enum TrayCommand {
 
 /// One row of the tray menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrayMenuItem {
+pub(crate) struct TrayMenuItem {
     /// Stable identifier, used by the backends to route clicks. Never
     /// localised.
     pub id: &'static str,
@@ -48,26 +48,26 @@ pub struct TrayMenuItem {
 
 /// A row or a divider.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TrayEntry {
+pub(crate) enum TrayEntry {
     Item(TrayMenuItem),
     Separator,
 }
 
 /// Menu id for the show/hide row.
-pub const ID_TOGGLE_WINDOW: &str = "toggle-window";
+pub(crate) const ID_TOGGLE_WINDOW: &str = "toggle-window";
 /// Menu id for the new session row.
-pub const ID_NEW_SESSION: &str = "new-session";
+pub(crate) const ID_NEW_SESSION: &str = "new-session";
 /// Menu id for the disabled attention summary row.
-pub const ID_ATTENTION: &str = "attention";
+pub(crate) const ID_ATTENTION: &str = "attention";
 /// Menu id for the quit row.
-pub const ID_QUIT: &str = "quit";
+pub(crate) const ID_QUIT: &str = "quit";
 
 /// Build the menu for a given window visibility and attention count.
 ///
 /// The attention row is present only when there is something to report, and is
 /// disabled: it is a status line, not a button. A permanently visible
 /// "0 sessions need attention" row would be noise in a menu this short.
-pub fn tray_menu(window_visible: bool, count: u32) -> Vec<TrayEntry> {
+pub(crate) fn tray_menu(window_visible: bool, count: u32) -> Vec<TrayEntry> {
     let mut entries = Vec::with_capacity(6);
     if count > 0 {
         entries.push(TrayEntry::Item(TrayMenuItem {
@@ -111,7 +111,7 @@ pub fn command_for_id(id: &str) -> Option<TrayCommand> {
 }
 
 /// "3 sessions need attention", correctly singular at one.
-pub fn attention_summary(count: u32) -> String {
+pub(crate) fn attention_summary(count: u32) -> String {
     match count {
         1 => "1 session needs attention".to_string(),
         n => format!("{n} sessions need attention"),
@@ -119,7 +119,7 @@ pub fn attention_summary(count: u32) -> String {
 }
 
 /// Hover text for the tray icon.
-pub fn tray_tooltip(count: u32) -> String {
+pub(crate) fn tray_tooltip(count: u32) -> String {
     match count {
         0 => APP_DISPLAY_NAME.to_string(),
         n => format!("{APP_DISPLAY_NAME}: {}", attention_summary(n)),
@@ -130,7 +130,7 @@ pub fn tray_tooltip(count: u32) -> String {
 ///
 /// 22 is the freedesktop tray size and the macOS menu bar height; the Windows
 /// notification area is 16.
-pub const fn tray_icon_size() -> u32 {
+pub(crate) const fn tray_icon_size() -> u32 {
     if cfg!(target_os = "windows") { 16 } else { 22 }
 }
 

@@ -47,7 +47,7 @@ fn current_user() -> String {
     std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string())
 }
 
-pub struct WindowsGuard {
+pub(crate) struct WindowsGuard {
     /// Held for the process lifetime; closing it frees the name.
     mutex: HANDLE,
     pipe_name: String,

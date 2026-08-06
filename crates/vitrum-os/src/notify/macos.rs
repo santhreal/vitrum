@@ -103,7 +103,7 @@ fn session_from_response(response: &UNNotificationResponse) -> Option<vitrum_pro
     }
 }
 
-pub struct MacNotifier {
+pub(crate) struct MacNotifier {
     center: Retained<UNUserNotificationCenter>,
     handler: HandlerSlot,
     /// Held for the lifetime of the notifier: `setDelegate:` is a weak

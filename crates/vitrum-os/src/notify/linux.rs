@@ -58,6 +58,12 @@ struct Shared {
     handler: Mutex<Option<ActivationHandler>>,
 }
 
+/// freedesktop notification backend, speaking
+/// `org.freedesktop.Notifications` over the D-Bus session bus.
+///
+/// Holds one connection for the life of the process. The signal listener
+/// thread is started by the first subscription rather than at connect, so a
+/// process that never registers an activation handler never spawns it.
 pub struct DbusNotifier {
     conn: Connection,
     shared: Arc<Shared>,

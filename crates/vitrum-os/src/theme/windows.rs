@@ -88,7 +88,7 @@ fn open_error(status: WIN32_ERROR) -> Unavailable {
     ))
 }
 
-pub struct RegistryThemeWatcher {
+pub(crate) struct RegistryThemeWatcher {
     handler: Arc<Mutex<Option<ThemeHandler>>>,
     listener_started: AtomicBool,
 }

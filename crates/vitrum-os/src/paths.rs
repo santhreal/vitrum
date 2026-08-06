@@ -34,8 +34,13 @@ use crate::branding::{APP_NAME, BUNDLE_ID, ORG_NAME};
 /// platforms is reachable, and therefore testable, from any one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Platform {
+    /// XDG base directories, also applied to the other desktop Unixes.
     Linux,
+    /// `~/Library/Application Support`, `~/Library/Caches` and friends, keyed
+    /// by bundle identifier rather than by application name.
     MacOs,
+    /// `%APPDATA%` and `%LOCALAPPDATA%`, keyed by organisation then
+    /// application, as the Windows convention expects.
     Windows,
 }
 
@@ -59,6 +64,7 @@ impl Platform {
         }
     }
 
+    /// Stable machine token, used in reports and tests.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Linux => "linux",
@@ -293,7 +299,7 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 /// [`home_dir`] as a pure function, for a specific platform and environment.
-pub fn home_dir_from(platform: Platform, env: &PathEnv) -> Option<PathBuf> {
+pub(crate) fn home_dir_from(platform: Platform, env: &PathEnv) -> Option<PathBuf> {
     match platform {
         Platform::Linux | Platform::MacOs => env.get("HOME").map(PathBuf::from),
         Platform::Windows => {
@@ -311,7 +317,12 @@ pub fn home_dir_from(platform: Platform, env: &PathEnv) -> Option<PathBuf> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathError {
     /// A variable with no defensible default was unset or empty.
-    MissingEnv { platform: Platform, var: &'static str },
+    MissingEnv {
+        /// Which platform's convention was being applied when the lookup failed.
+        platform: Platform,
+        /// Name of the variable, without the leading `$` or `%`.
+        var: &'static str,
+    },
 }
 
 impl fmt::Display for PathError {

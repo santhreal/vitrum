@@ -503,7 +503,7 @@ pub async fn pump_events(
         match rx.recv().await {
             Ok(event) => {
                 // Already JSON: the hub serialized it once for every window.
-                if out.send(Message::Text(Arc::unwrap_or_clone(event))).await.is_err() {
+                if out.send(Message::Text(event.as_ref().into())).await.is_err() {
                     return;
                 }
             }

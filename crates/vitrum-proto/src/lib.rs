@@ -592,24 +592,51 @@ impl core::error::Error for FrameError {}
 /// and lets the server detect a gap rather than silently splicing.
 pub fn encode_output(session: SessionId, seq: u64, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(OUTPUT_HEADER_LEN + payload.len());
+    encode_output_into(&mut out, session, seq, payload);
+    out
+}
+
+/// Append a frame to `out` instead of allocating a fresh one.
+///
+/// The output pump encodes one frame per PTY read, so a per-frame `Vec` is an
+/// allocation on the hottest path in the daemon. A pump that keeps one buffer
+/// and clears it per frame pays none.
+pub fn encode_output_into(out: &mut Vec<u8>, session: SessionId, seq: u64, payload: &[u8]) {
+    out.reserve(OUTPUT_HEADER_LEN + payload.len());
     out.push(FRAME_KIND_OUTPUT);
     out.extend_from_slice(&session.0.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(payload);
-    out
 }
 
 /// Decode a frame produced by [`encode_output`], borrowing the payload.
+///
+/// Total: every rejected shape has a named error and there is no panicking
+/// path, because the bytes arrive from a socket.
 pub fn decode_output(frame: &[u8]) -> Result<(SessionId, u64, &[u8]), FrameError> {
     if frame.len() < OUTPUT_HEADER_LEN {
         return Err(FrameError::TooShort { len: frame.len() });
     }
-    if frame[0] != FRAME_KIND_OUTPUT {
-        return Err(FrameError::UnknownKind(frame[0]));
+    let Some((&kind, rest)) = frame.split_first() else {
+        return Err(FrameError::TooShort { len: frame.len() });
+    };
+    if kind != FRAME_KIND_OUTPUT {
+        return Err(FrameError::UnknownKind(kind));
     }
-    let session = u64::from_le_bytes(frame[1..9].try_into().expect("9-1 == 8"));
-    let seq = u64::from_le_bytes(frame[9..17].try_into().expect("17-9 == 8"));
-    Ok((SessionId(session), seq, &frame[OUTPUT_HEADER_LEN..]))
+    // Fixed-size chunks rather than `try_into().expect(..)`: the length check
+    // above already proves these succeed, and a proof the compiler checks is
+    // worth more here than one in a panic message.
+    let Some((session, rest)) = rest.split_first_chunk::<8>() else {
+        return Err(FrameError::TooShort { len: frame.len() });
+    };
+    let Some((seq, payload)) = rest.split_first_chunk::<8>() else {
+        return Err(FrameError::TooShort { len: frame.len() });
+    };
+    Ok((
+        SessionId(u64::from_le_bytes(*session)),
+        u64::from_le_bytes(*seq),
+        payload,
+    ))
 }
 
 #[cfg(test)]
@@ -757,6 +784,35 @@ mod tests {
         let (session, seq, got) = decode_output(&frame).expect("empty payload is valid");
         assert_eq!((session, seq), (SessionId(3), 12));
         assert!(got.is_empty());
+    }
+
+    /// WHY: `encode_output_into` exists so the output pump can keep one buffer
+    /// instead of allocating a `Vec` per PTY read. A second encoder is a second
+    /// place the wire format can drift, and it must also append rather than
+    /// overwrite, or a reused buffer silently corrupts the previous frame.
+    #[test]
+    fn the_reusable_encoder_writes_the_same_bytes_and_appends() {
+        let payload = b"\x1b[31mred\x1b[0m \xe2\x9c\x93\x00\xff";
+        let expected = encode_output(SessionId(7), 4096, payload);
+
+        let mut buffer = Vec::new();
+        encode_output_into(&mut buffer, SessionId(7), 4096, payload);
+        assert_eq!(buffer, expected, "the two encoders must agree byte for byte");
+
+        // A second frame appended to the same buffer must leave the first
+        // intact and sit immediately after it.
+        let second = encode_output(SessionId(8), 0, b"more");
+        encode_output_into(&mut buffer, SessionId(8), 0, b"more");
+        assert_eq!(&buffer[..expected.len()], &expected[..]);
+        assert_eq!(&buffer[expected.len()..], &second[..]);
+
+        // And the reused buffer still decodes, once cleared, exactly as before.
+        buffer.clear();
+        encode_output_into(&mut buffer, SessionId(2), u64::MAX, b"");
+        assert_eq!(
+            decode_output(&buffer),
+            Ok((SessionId(2), u64::MAX, &b""[..]))
+        );
     }
 
     /// A truncated frame must be rejected rather than read out of bounds.

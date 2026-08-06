@@ -15,6 +15,8 @@
 //! locale-derived, so the same session reads identically on every machine that
 //! attaches to it.
 
+use std::fmt::{self, Write as _};
+
 /// The correct noun form for `n`, without the number.
 #[must_use]
 pub fn plural<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
@@ -24,16 +26,16 @@ pub fn plural<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
 /// `n` followed by the correct noun form: `1 session`, `2 sessions`.
 #[must_use]
 pub fn count(n: u64, singular: &str, plural_form: &str) -> String {
-    format!("{} {}", grouped(n), plural(n, singular, plural_form))
+    format!("{} {}", Grouped(n), plural(n, singular, plural_form))
 }
 
 /// [`count`] for regular nouns, where the plural is the singular plus `s`.
 #[must_use]
 pub fn count_s(n: u64, singular: &str) -> String {
     if n == 1 {
-        format!("{} {singular}", grouped(n))
+        format!("{} {singular}", Grouped(n))
     } else {
-        format!("{} {singular}s", grouped(n))
+        format!("{} {singular}s", Grouped(n))
     }
 }
 
@@ -49,17 +51,41 @@ pub fn count_or_none(n: u64, singular: &str, plural_form: &str) -> String {
     }
 }
 
+/// A number that renders grouped in threes: `0`, `999`, `1,000`, `12,480`.
+///
+/// A [`Display`](fmt::Display) rather than a function returning a `String`, so
+/// splicing a count into a sentence costs the sentence's buffer and nothing
+/// else. The digits go into a stack array, so this allocates nothing at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Grouped(pub u64);
+
+impl fmt::Display for Grouped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // 20 digits is the widest `u64`.
+        let mut digits = [0u8; 20];
+        let mut at = digits.len();
+        let mut value = self.0;
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        let digits = &digits[at..];
+        for (index, digit) in digits.iter().enumerate() {
+            if index > 0 && (digits.len() - index).is_multiple_of(3) {
+                f.write_char(',')?;
+            }
+            f.write_char(char::from(*digit))?;
+        }
+        Ok(())
+    }
+}
+
 /// Decimal digits grouped in threes: `0`, `999`, `1,000`, `12,480`.
 #[must_use]
 pub fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let bytes = digits.as_bytes();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, byte) in bytes.iter().enumerate() {
-        if index > 0 && (bytes.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(char::from(*byte));
-    }
-    out
+    Grouped(n).to_string()
 }

@@ -77,12 +77,15 @@ pub fn head(head: Head<'_>, budget: usize) -> String {
         Head::Branch(name) => branch(name, budget),
         Head::Detached(commit) => {
             let short = short_commit(commit);
-            let full = format!("detached @ {short}");
-            if text::fits(&full, budget) {
-                return full;
+            // Measure once and choose, rather than build `detached @ ...` and
+            // throw it away whenever the cell is narrow. `detached @ ` is 11
+            // ASCII columns and `@` is one.
+            let width = text::display_width(short);
+            if width + 11 <= budget {
+                return format!("detached @ {short}");
             }
             let terse = format!("@{short}");
-            if text::fits(&terse, budget) {
+            if width + 1 <= budget {
                 return terse;
             }
             text::truncate_end(&terse, budget)

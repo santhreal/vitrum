@@ -19,6 +19,8 @@
 //! how long it is: a 100,000 character command produced a 200,991 character
 //! error, measured, which is not a banner but a denial of the banner.
 
+use std::fmt::Write as _;
+
 /// Strip everything that could forge structure, keep everything else.
 ///
 /// Deliberately narrow. Control characters and the bidi formatting range go;
@@ -26,7 +28,11 @@
 /// `café` is an ordinary branch and a sanitiser that mangles it is its own
 /// defect.
 pub fn display_safe(s: &str) -> String {
-    s.chars().filter(|c| is_display_safe(*c)).collect()
+    // Sized up front: the filtered iterator reports a lower bound of zero, so
+    // `collect` would grow a long message through a chain of reallocations.
+    let mut out = String::with_capacity(s.len());
+    out.extend(s.chars().filter(|c| is_display_safe(*c)));
+    out
 }
 
 /// Whether one character is safe to place in a rendered line.
@@ -62,10 +68,20 @@ pub fn error_text(s: &str) -> String {
     let head = MAX_ERROR_CHARS / 3;
     let tail = MAX_ERROR_CHARS - head;
     let dropped = total - head - tail;
-    let mut out: String = safe.chars().take(head).collect();
-    out.push_str(&format!(" … {dropped} more characters … "));
-    out.extend(safe.chars().skip(total - tail));
+    // Both ends are copied as whole slices and the marker is written in place,
+    // so a 200 000 character error costs one buffer instead of three.
+    let head_end = char_offset(&safe, head);
+    let tail_start = char_offset(&safe, total - tail);
+    let mut out = String::with_capacity(head_end + 40 + (safe.len() - tail_start));
+    out.push_str(&safe[..head_end]);
+    write!(out, " … {dropped} more characters … ").expect("writing to a String cannot fail");
+    out.push_str(&safe[tail_start..]);
     out
+}
+
+/// Byte offset of character number `chars`, or the end of the string.
+fn char_offset(s: &str, chars: usize) -> usize {
+    s.char_indices().nth(chars).map_or(s.len(), |(at, _)| at)
 }
 
 #[cfg(test)]

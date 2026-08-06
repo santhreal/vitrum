@@ -412,3 +412,65 @@ pub(crate) fn step_rows(
         selector: format!("#{}", ui::sidebar::row_id(id)),
     });
 }
+/// Frame-aligned microtask debouncer for keyboard events.
+///
+/// Prevents main-thread UI layout thrashing during rapid key repeat by coalescing
+/// sub-frame repeat events within a ~16ms (60 FPS) frame window into frame-aligned execution batches.
+#[derive(Debug, Clone)]
+pub struct FrameKeyDebouncer {
+    pub frame_budget_ms: u64,
+    pub last_processed_ms: u64,
+    pub pending_action: Option<KeyAction>,
+    pub coalesced_count: u32,
+}
+
+impl FrameKeyDebouncer {
+    pub const DEFAULT_FRAME_BUDGET_MS: u64 = 16;
+
+    pub fn new(frame_budget_ms: u64) -> Self {
+        Self {
+            frame_budget_ms,
+            last_processed_ms: 0,
+            pending_action: None,
+            coalesced_count: 0,
+        }
+    }
+
+    /// Evaluates whether an incoming key action should be processed immediately
+    /// or debounced within the current frame window.
+    pub fn process(&mut self, action: KeyAction, timestamp_ms: u64) -> Option<DebouncedKeyAction> {
+        let elapsed = timestamp_ms.saturating_sub(self.last_processed_ms);
+        if elapsed < self.frame_budget_ms && self.pending_action == Some(action) {
+            self.coalesced_count += 1;
+            None
+        } else {
+            let previous_coalesced = self.coalesced_count;
+            self.last_processed_ms = timestamp_ms;
+            self.pending_action = Some(action);
+            self.coalesced_count = 1;
+            Some(DebouncedKeyAction {
+                action,
+                coalesced_repeat_count: previous_coalesced.max(1),
+            })
+        }
+    }
+
+    pub fn flush(&mut self) -> Option<DebouncedKeyAction> {
+        if let Some(action) = self.pending_action.take() {
+            let count = self.coalesced_count;
+            self.coalesced_count = 0;
+            Some(DebouncedKeyAction {
+                action,
+                coalesced_repeat_count: count.max(1),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebouncedKeyAction {
+    pub action: KeyAction,
+    pub coalesced_repeat_count: u32,
+}

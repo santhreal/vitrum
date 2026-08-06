@@ -235,6 +235,69 @@ pub struct Help {
 }
 
 /// One binding.
+/// Packed bitfield representation of a key chord for zero-allocation matching.
+///
+/// Layout:
+/// - Bit 0: Ctrl modifier
+/// - Bit 1: Alt modifier
+/// - Bit 2: Shift modifier
+/// - Bit 3: Meta modifier
+/// - Bits 4..8: Scope discriminator
+/// - Bits 8..32: Key char/code hash
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PackedKeyChord(pub u32);
+
+impl PackedKeyChord {
+    pub const MOD_CTRL: u32 = 1 << 0;
+    pub const MOD_ALT: u32 = 1 << 1;
+    pub const MOD_SHIFT: u32 = 1 << 2;
+    pub const MOD_META: u32 = 1 << 3;
+
+    pub const fn pack(ctrl: bool, alt: bool, shift: bool, meta: bool, scope_id: u8, key_code: u32) -> Self {
+        let mut bits = 0u32;
+        if ctrl { bits |= Self::MOD_CTRL; }
+        if alt { bits |= Self::MOD_ALT; }
+        if shift { bits |= Self::MOD_SHIFT; }
+        if meta { bits |= Self::MOD_META; }
+        bits |= ((scope_id as u32) & 0x0F) << 4;
+        bits |= (key_code & 0x00FF_FFFF) << 8;
+        Self(bits)
+    }
+
+    pub fn from_str_fast(s: &str) -> Self {
+        let mut ctrl = false;
+        let mut alt = false;
+        let mut shift = false;
+        let mut meta = false;
+        let mut key_part = s;
+
+        let parts: Vec<&str> = s.split('+').collect();
+        if parts.len() > 1 {
+            for part in &parts[..parts.len() - 1] {
+                match part.to_lowercase().as_str() {
+                    "ctrl" | "control" => ctrl = true,
+                    "alt" => alt = true,
+                    "shift" => shift = true,
+                    "meta" | "cmd" | "super" => meta = true,
+                    _ => {}
+                }
+            }
+            key_part = parts.last().copied().unwrap_or(s);
+        }
+
+        let key_hash = key_part.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+        Self::pack(ctrl, alt, shift, meta, 0, key_hash)
+    }
+
+    pub const fn matches(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    pub const fn ctrl(&self) -> bool { (self.0 & Self::MOD_CTRL) != 0 }
+    pub const fn alt(&self) -> bool { (self.0 & Self::MOD_ALT) != 0 }
+    pub const fn shift(&self) -> bool { (self.0 & Self::MOD_SHIFT) != 0 }
+    pub const fn meta(&self) -> bool { (self.0 & Self::MOD_META) != 0 }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chord {
     pub action: KeyAction,
@@ -281,6 +344,12 @@ impl Chord {
             .iter()
             .find_map(|c| (c.action == self.action).then_some(c.help?.what))
             .unwrap_or("claimed by the shell")
+    }
+    /// Returns a zero-allocation packed representation of this chord.
+    pub fn packed(&self) -> PackedKeyChord {
+        let key_hash = self.key.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+        let shift_flag = self.shift == Shift::On;
+        PackedKeyChord::pack(self.ctrl, self.alt, shift_flag, false, self.scope as u8, key_hash)
     }
 }
 

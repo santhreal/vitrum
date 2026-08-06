@@ -65,6 +65,78 @@ impl fmt::Display for DecodeError {
 }
 
 impl std::error::Error for DecodeError {}
+/// Errors when encoding into a pre-allocated slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodeError {
+    BufferTooSmall { required: usize, provided: usize },
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EncodeError::BufferTooSmall { required, provided } => {
+                write!(f, "buffer too small: required {required} bytes, provided {provided}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+/// Encode `data` into a pre-allocated byte slice without heap allocation.
+pub fn encode_into_slice(data: &[u8], out: &mut [u8]) -> Result<usize, EncodeError> {
+    let required = data.len().div_ceil(3) * 4;
+    if out.len() < required {
+        return Err(EncodeError::BufferTooSmall {
+            required,
+            provided: out.len(),
+        });
+    }
+    let chunks = data.chunks_exact(3);
+    let remainder = chunks.remainder();
+    let mut out_idx = 0;
+    for chunk in chunks {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(chunk[1]);
+        let b2 = u32::from(chunk[2]);
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out[out_idx] = ALPHABET[(n >> 18) as usize & 63];
+        out[out_idx + 1] = ALPHABET[(n >> 12) as usize & 63];
+        out[out_idx + 2] = ALPHABET[(n >> 6) as usize & 63];
+        out[out_idx + 3] = ALPHABET[n as usize & 63];
+        out_idx += 4;
+    }
+    if !remainder.is_empty() {
+        let b0 = u32::from(remainder[0]);
+        let b1 = u32::from(remainder.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(remainder.get(2).copied().unwrap_or(0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out[out_idx] = ALPHABET[(n >> 18) as usize & 63];
+        out[out_idx + 1] = ALPHABET[(n >> 12) as usize & 63];
+        out[out_idx + 2] = if remainder.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63]
+        } else {
+            b'='
+        };
+        out[out_idx + 3] = if remainder.len() > 2 {
+            ALPHABET[n as usize & 63]
+        } else {
+            b'='
+        };
+        out_idx += 4;
+    }
+    Ok(out_idx)
+}
+
+/// Optimized Base64 encoder using zero-copy byte operations.
+#[must_use]
+pub fn encode_fast(data: &[u8]) -> String {
+    let len = data.len().div_ceil(3) * 4;
+    let mut buf = vec![0u8; len];
+    let _ = encode_into_slice(data, &mut buf);
+    // SAFETY: ALPHABET bytes and '=' are all valid ASCII (thus valid UTF-8).
+    unsafe { String::from_utf8_unchecked(buf) }
+}
 
 /// Encode `data`. Output length is exactly `data.len().div_ceil(3) * 4`.
 #[must_use]
@@ -137,6 +209,57 @@ pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
         }
     }
     Ok(out)
+}
+/// Zero-copy decode into a pre-allocated destination slice.
+pub fn decode_into_slice(text: &str, out: &mut [u8]) -> Result<usize, DecodeError> {
+    let bytes = text.as_bytes();
+    if bytes.len() % 4 != 0 {
+        return Err(DecodeError::Length(bytes.len()));
+    }
+    let mut out_idx = 0;
+    for (index, quad) in bytes.chunks_exact(4).enumerate() {
+        let is_last = (index + 1) * 4 == bytes.len();
+        let mut symbols = [0u32; 4];
+        let mut padding = 0usize;
+        for (position, &byte) in quad.iter().enumerate() {
+            if byte == b'=' {
+                if !is_last || position < 2 {
+                    return Err(DecodeError::Padding);
+                }
+                padding += 1;
+            } else {
+                if padding > 0 {
+                    return Err(DecodeError::Padding);
+                }
+                let value = DECODE[byte as usize];
+                if value < 0 {
+                    return Err(DecodeError::Symbol(byte));
+                }
+                symbols[position] = value as u32;
+            }
+        }
+        let n = (symbols[0] << 18) | (symbols[1] << 12) | (symbols[2] << 6) | symbols[3];
+        if out_idx >= out.len() {
+            return Err(DecodeError::Length(out.len()));
+        }
+        out[out_idx] = (n >> 16) as u8;
+        out_idx += 1;
+        if padding < 2 {
+            if out_idx >= out.len() {
+                return Err(DecodeError::Length(out.len()));
+            }
+            out[out_idx] = (n >> 8) as u8;
+            out_idx += 1;
+        }
+        if padding < 1 {
+            if out_idx >= out.len() {
+                return Err(DecodeError::Length(out.len()));
+            }
+            out[out_idx] = n as u8;
+            out_idx += 1;
+        }
+    }
+    Ok(out_idx)
 }
 
 /// `#[serde(with = "crate::b64::bytes")]` for a `Vec<u8>` field that must ride
@@ -273,5 +396,22 @@ mod tests {
             array_len > base64_len * 2,
             "the integer array was {array_len} bytes against {base64_len}"
         );
+    }
+    #[test]
+    fn fast_and_slice_encoding_matches_standard_encode() {
+        let payload = b"Hello Vitrum Fast SIMD/Slice Framing Encoder!";
+        let std_encoded = encode(payload);
+        let fast_encoded = encode_fast(payload);
+        assert_eq!(std_encoded, fast_encoded);
+
+        let mut slice_buf = vec![0u8; std_encoded.len()];
+        let len = encode_into_slice(payload, &mut slice_buf).expect("must encode");
+        assert_eq!(len, std_encoded.len());
+        assert_eq!(std::str::from_utf8(&slice_buf).unwrap(), std_encoded);
+
+        let mut decoded_buf = vec![0u8; payload.len()];
+        let dec_len = decode_into_slice(&fast_encoded, &mut decoded_buf).expect("must decode");
+        assert_eq!(dec_len, payload.len());
+        assert_eq!(&decoded_buf[..dec_len], payload);
     }
 }

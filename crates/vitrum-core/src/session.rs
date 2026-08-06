@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
+use dashmap::DashMap;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use vitrum_model::hint::HintDeclaration;
 use vitrum_proto::{Attention, SessionId, SessionInfo, SessionStatus, display_safe};
@@ -354,7 +355,7 @@ pub struct SessionManager {
     scrollback_bytes: usize,
     next_id: AtomicU64,
     next_viewer: AtomicU64,
-    sessions: RwLock<BTreeMap<SessionId, Arc<Session>>>,
+    sessions: DashMap<SessionId, Arc<Session>>,
 }
 
 impl SessionManager {
@@ -365,7 +366,7 @@ impl SessionManager {
             scrollback_bytes: scrollback_bytes_per_session,
             next_id: AtomicU64::new(1),
             next_viewer: AtomicU64::new(1),
-            sessions: RwLock::new(BTreeMap::new()),
+            sessions: DashMap::new(),
         }
     }
 
@@ -506,19 +507,19 @@ impl SessionManager {
 
         handle.spawn(coalesce_loop(Arc::clone(&session), raw_rx, exit_rx));
 
-        self.sessions
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, Arc::clone(&session));
+        self.sessions.insert(id, Arc::clone(&session));
         Ok(id)
     }
 
     /// Every known session, ordered by id so the sidebar is stable.
     pub fn list(&self) -> Vec<SessionInfo> {
-        read_lock(&self.sessions)
-            .values()
-            .map(|s| s.snapshot())
-            .collect()
+        let mut list: Vec<SessionInfo> = self
+            .sessions
+            .iter()
+            .map(|s| s.value().snapshot())
+            .collect();
+        list.sort_by_key(|s| s.id);
+        list
     }
 
     /// Snapshot of one session, or `None` once it has been closed.
@@ -788,9 +789,8 @@ impl SessionManager {
     pub fn close(&self, id: SessionId) -> anyhow::Result<()> {
         let s = self
             .sessions
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
             .remove(&id)
+            .map(|(_, s)| s)
             .ok_or_else(|| anyhow!("no session {}", id.0))?;
         // An already-exited child gives ESRCH here, which is not a failure to
         // close: the session is gone either way.
@@ -801,7 +801,7 @@ impl SessionManager {
     }
 
     pub(crate) fn get(&self, id: SessionId) -> Option<Arc<Session>> {
-        read_lock(&self.sessions).get(&id).map(Arc::clone)
+        self.sessions.get(&id).map(|s| Arc::clone(s.value()))
     }
 
     fn require(&self, id: SessionId) -> anyhow::Result<Arc<Session>> {

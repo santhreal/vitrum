@@ -345,6 +345,7 @@ fn a_wide_head_paints_both_columns_and_the_tail_paints_nothing() {
         bg: head_bg,
         attrs: Attrs::NONE,
         slot: CellSlot::WideHead,
+        _pad: [0, 0],
     })
     .unwrap();
     g.set_cell(1, 0, Cell {
@@ -353,6 +354,7 @@ fn a_wide_head_paints_both_columns_and_the_tail_paints_nothing() {
         bg: tail_bg,
         attrs: Attrs::NONE,
         slot: CellSlot::WideTail,
+        _pad: [0, 0],
     })
     .unwrap();
     g.set_cell(2, 0, Cell::blank(Style::new(Rgba::WHITE, after_bg)))

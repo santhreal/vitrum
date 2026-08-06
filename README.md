@@ -183,7 +183,7 @@ to.
 The pastes above install the command. These add a launcher entry, an icon, and a
 `vu` shortcut for `vitrum update`. Run from a repository checkout.
 
-### Linux
+#### Linux
 
 ```sh
 bin=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release
@@ -225,7 +225,7 @@ usually do not run. Log out and back in if they did.
 `vu` is the only alias, and it is a convenience rather than the interface:
 `vitrum update` is the command, and it works whether or not the alias exists.
 
-### macOS
+#### macOS
 
 ```sh
 bin=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release
@@ -266,7 +266,7 @@ not contain `~/.local/bin`.
 
 The bundle is unsigned. The first launch needs right-click then Open, once.
 
-### Windows (PowerShell)
+#### Windows (PowerShell)
 
 ```powershell
 $bin = "$env:LOCALAPPDATA\Programs\vitrum"

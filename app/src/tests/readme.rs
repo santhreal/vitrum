@@ -6,50 +6,63 @@
 //// re-reads, so the few claims in it that a machine can check are checked
 //// here, against the code rather than against a copy of the prose.
 
-/// The install blocks name the binaries this build actually produces.
+/// Each platform's paste fetches the archive that the release workflow builds.
 ///
-/// The crate and the executable were both `vitrum-app` for a long time,
-/// while `--help`, every error message and the README all said `vitrum`.
-/// Anybody following the instructions installed a file that did not exist.
-/// Both are `vitrum` now, and the package name is what produces the binary,
-/// so this checks the package name rather than a `[[bin]]` that no longer
-/// needs to exist.
+/// The install path used to be `cargo build` plus `install -m755`, and the
+/// test asserted exactly that. Now the first thing the README offers is a
+/// download, which puts three files that can disagree in one line: the
+/// release matrix names the targets, `update.rs` names the archive, and the
+/// paste names both. A typo in any of them is a 404 for whoever pastes it,
+/// so the paste is checked against the other two rather than against prose.
 #[test]
 fn the_install_blocks_name_the_real_binaries() {
     let readme = include_str!("../../../README.md");
     let manifest = include_str!("../../Cargo.toml");
+    let release = include_str!("../../../.github/workflows/release.yml");
     assert!(
         manifest.contains("name = \"vitrum\""),
         "the client package is no longer named `vitrum`, so its binary is not `vitrum`"
     );
-    // Read from the blocks themselves rather than matched as literal
-    // lines. The old form asserted the exact text of two commands, which
-    // meant every rewording failed a test that was not about wording; what
-    // has to hold is that each platform's block puts BOTH binaries in
-    // place, however it spells the copy.
     for (platform, block) in install_blocks(readme) {
-        let copies = block
+        let fetch = block
             .lines()
-            .find(|l| l.contains("install -m755") || l.contains("Copy-Item"))
-            .unwrap_or_else(|| panic!("the {platform} block copies nothing into place"));
-        for binary in ["vitrum", "vitrum-server"] {
-            assert!(
-                copies.contains(binary),
-                "the {platform} block does not install {binary}: {copies}"
-            );
-        }
-        // The client looks for the daemon beside itself first, so a block
-        // that put them in different directories would install a pair that
-        // only works by accident of PATH ordering.
+            .find(|l| l.contains("releases/download"))
+            .unwrap_or_else(|| panic!("the {platform} block downloads nothing"));
+        // The same shape `update::archive_name` builds and the release
+        // workflow uploads. A paste asking for a name nothing publishes is
+        // indistinguishable from a broken release.
         assert!(
-            copies.matches("$bin").count() >= 2 || copies.matches("$rel").count() >= 2,
-            "the {platform} block takes the binaries from different places: {copies}"
+            fetch.contains("/vitrum-$v-") && fetch.contains(".tar.gz"),
+            "the {platform} block does not ask for a `vitrum-<version>-<target>.tar.gz`: {fetch}"
+        );
+        let target = fetch
+            .split("/vitrum-$v-")
+            .nth(1)
+            .and_then(|rest| rest.split(".tar.gz").next())
+            .expect("the archive name was just checked");
+        // macOS resolves its architecture at paste time, so the literal in
+        // the README is a suffix of two matrix entries rather than one.
+        let suffix = target.rsplit(')').next().unwrap_or(target);
+        assert!(
+            release.contains(suffix),
+            "the {platform} block downloads `{suffix}`, which the release workflow does not build"
+        );
+        // Both binaries come out of the one archive, so what has to hold is
+        // that the paste unpacks it somewhere on PATH and then runs the
+        // client, rather than leaving a tarball in the operator's lap.
+        assert!(
+            block.contains("tar xz") || block.contains("tar xzf"),
+            "the {platform} block never unpacks the archive"
         );
         assert!(
-            block.contains("vitrum update"),
-            "the {platform} block never tells the operator how to update"
+            block.contains("vitrum") && !block.contains("vitrum-app"),
+            "the {platform} block does not end up running `vitrum`"
         );
     }
+    assert!(
+        readme.contains("vitrum update"),
+        "the README never tells the operator how to update"
+    );
     assert!(
         !readme.contains("vitrum-app"),
         "the README still refers to `vitrum-app`, which is not a binary"
@@ -189,20 +202,15 @@ fn the_readme_admits_that_losing_the_daemon_loses_the_sessions() {
     );
 }
 
-/// The README does not promise an installer or a download.
+/// The README promises no package and no piped script.
 ///
-/// This release is build-from-source on purpose. A README that implies a
-/// package or a hosted binary sends people looking for something that is
-/// not there, and the first thing they find is a 404.
+/// Release archives exist, so a download is no longer a false claim. A
+/// package in someone else's index still is, and `curl | sh` is worse than a
+/// false claim: it teaches the operator to run whatever the host serves.
 #[test]
 fn nothing_promises_an_installer_that_does_not_exist() {
     let readme = include_str!("../../../README.md");
-    for absent in [
-        "curl -sSf",
-        "brew install",
-        "apt install vitrum",
-        "releases/download",
-    ] {
+    for absent in ["brew install", "apt install vitrum", "| sh", "| bash"] {
         assert!(
             !readme.contains(absent),
             "the README advertises `{absent}`, which this release does not ship"

@@ -62,36 +62,40 @@ fn fleet() -> Vec<SessionView> {
         .collect();
 
     // 7 is blocked asking for approval, and it is the only one.
-    rows[6].info.attention.waiting = Some(true);
-    rows[6].info.hint = Some(AgentHint {
+    let info = rows[6].info_mut();
+    info.attention.waiting = Some(true);
+    info.hint = Some(AgentHint {
         state: HintState::Approval,
         label: Some("git push --force origin main".to_string()),
         received_at_ms: NOW - 30_000,
     });
 
     // 12 crashed a minute ago and nobody has looked.
-    rows[11].info.status = SessionStatus::Exited { code: Some(101) };
-    rows[11].info.attention.failed = true;
-    rows[11].info.attention.waiting = None;
-    rows[11].info.last_activity_ms = NOW - 60_000;
-    rows[11].info.unread = true;
+    let info = rows[11].info_mut();
+    info.status = SessionStatus::Exited { code: Some(101) };
+    info.attention.failed = true;
+    info.attention.waiting = None;
+    info.last_activity_ms = NOW - 60_000;
+    info.unread = true;
 
     // 3 finished cleanly and was read; drained history.
-    rows[2].info.status = SessionStatus::Exited { code: Some(0) };
-    rows[2].info.attention.waiting = None;
-    rows[2].info.last_activity_ms = NOW - 4 * HOUR;
+    let info = rows[2].info_mut();
+    info.status = SessionStatus::Exited { code: Some(0) };
+    info.attention.waiting = None;
+    info.last_activity_ms = NOW - 4 * HOUR;
     rows[2].last_visited_ms = Some(NOW - 3 * HOUR);
 
     // 15 is parked until the morning.
-    rows[14].info.last_activity_ms = NOW - 2 * HOUR;
+    rows[14].info_mut().last_activity_ms = NOW - 2 * HOUR;
     rows[14].snooze = Some(Snooze {
         snoozed_at_ms: NOW - 2 * HOUR,
         wake_at_ms: NOW + 10 * HOUR,
     });
 
     // 19 is at its prompt, unhinted: the kernel says the next move is ours.
-    rows[18].info.attention.waiting = Some(true);
-    rows[18].info.unread = true;
+    let info = rows[18].info_mut();
+    info.attention.waiting = Some(true);
+    info.unread = true;
 
     rows
 }
@@ -149,8 +153,9 @@ fn the_observed_states_need_no_agent_cooperation() {
 #[test]
 fn a_platform_without_the_probe_degrades_to_marked_inference() {
     let mut row = fleet()[18].clone();
-    row.info.attention.waiting = None;
-    row.info.attention.idle_ms = 45_000;
+    let info = row.info_mut();
+    info.attention.waiting = None;
+    info.attention.idle_ms = 45_000;
 
     assert_eq!(row.status(), SidebarStatus::Ready);
     assert_eq!(row.resolve_status().source, StatusSource::Idle);
@@ -319,12 +324,13 @@ fn a_parked_row_raises_its_hand_and_cannot_be_parked_while_blocked() {
     let index = rows.iter().position(|row| row.id() == SessionId(15)).unwrap();
     assert!(rows[index].can_snooze());
 
-    rows[index].info.hint = Some(AgentHint {
+    let info = rows[index].info_mut();
+    info.hint = Some(AgentHint {
         state: HintState::Approval,
         label: Some("delete 4 files".to_string()),
         received_at_ms: NOW - HOUR,
     });
-    rows[index].info.attention.waiting = Some(true);
+    info.attention.waiting = Some(true);
 
     assert!(rows[index].raised_hand());
     assert!(!rows[index].effective_snoozed(clock()));
@@ -414,7 +420,7 @@ fn an_opted_in_harness_upgrades_a_row_mid_stream() {
     assert_eq!(parser.accepted(), 1);
     assert_eq!(parser.rejected(), 0);
 
-    rows[index].info.hint = Some(declarations.remove(0).into_hint(NOW));
+    rows[index].info_mut().hint = Some(declarations.remove(0).into_hint(NOW));
     assert_eq!(rows[index].status(), SidebarStatus::Approval);
     assert_eq!(rows[index].hint_label(), Some("rm -rf target"));
     assert_eq!(rows[index].resolve_status().source, StatusSource::Hint);

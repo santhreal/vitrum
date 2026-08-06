@@ -11,8 +11,12 @@
 //! - concurrent renames converge, and every connection ends on the same title
 //! - a close is seen by every attached connection, exactly once
 //! - no connection is left holding a session the registry has forgotten
+//!
+//! When an invariant fails, the exact per-connection views are dumped under
+//! `repro/` next to the report. A concurrency bug that only leaves a prose
+//! failure line cannot be replayed; the snapshot can.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use anyhow::bail;
@@ -192,7 +196,14 @@ pub async fn run(spec: &RaceSpec) -> anyhow::Result<Report> {
             spec.renames * spec.connections * ordered.len()
         ));
     } else {
+        let n = disagreements.len();
         report.failures.extend(disagreements);
+        report.failures.push(format!(
+            "title disagreement snapshot [repro: race-title-views.json] ({n} sessions)"
+        ));
+        report
+            .artifacts
+            .push(("race-title-views.json".into(), title_views_json(&titles)));
     }
 
     // Phase four: one connection closes everything, and no other connection may
@@ -233,9 +244,18 @@ pub async fn run(spec: &RaceSpec) -> anyhow::Result<Report> {
             .map(|s| s.id.0)
             .collect();
         if !stale.is_empty() {
+            let name = format!("race-stale-conn-{}.json", i + 1);
             report.failures.push(format!(
-                "connection {} still lists closed sessions {stale:?}",
+                "connection {} still lists closed sessions {stale:?} [repro: {name}]",
                 i + 1
+            ));
+            let view: BTreeMap<String, String> = sessions
+                .iter()
+                .map(|s| (s.id.0.to_string(), s.title.clone()))
+                .collect();
+            report.artifacts.push((
+                name,
+                serde_json::to_vec_pretty(&view).unwrap_or_default(),
             ));
         }
     }
@@ -259,4 +279,74 @@ pub async fn run(spec: &RaceSpec) -> anyhow::Result<Report> {
         }
     }
     Ok(report)
+}
+
+/// Stable JSON of every connection's `(session → title)` map.
+///
+/// Keys are session ids as decimal strings so the file sorts and diffs cleanly;
+/// connection order matches the workload's connection index.
+fn title_views_json(titles: &[HashMap<SessionId, String>]) -> Vec<u8> {
+    let views: Vec<BTreeMap<String, String>> = titles
+        .iter()
+        .map(|m| {
+            m.iter()
+                .map(|(id, title)| (id.0.to_string(), title.clone()))
+                .collect()
+        })
+        .collect();
+    serde_json::to_vec_pretty(&views).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod a_race_failure_carries_its_views {
+    use super::*;
+
+    /// The repro file is the whole point of capturing a disagreement: without
+    /// the exact titles each connection saw, the failure is an anecdote.
+    #[test]
+    fn title_views_serialise_in_connection_order() {
+        let mut a = HashMap::new();
+        a.insert(SessionId(2), "c0-r1".into());
+        a.insert(SessionId(1), "c0-r0".into());
+        let mut b = HashMap::new();
+        b.insert(SessionId(1), "c1-r9".into());
+        b.insert(SessionId(2), "c1-r9".into());
+        let bytes = title_views_json(&[a, b]);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            v,
+            json!([
+                {"1": "c0-r0", "2": "c0-r1"},
+                {"1": "c1-r9", "2": "c1-r9"},
+            ])
+        );
+    }
+
+    /// A synthetic disagreement writes the snapshot next to the report, so a
+    /// harness that only prints the failure line still leaves a file to open.
+    #[test]
+    fn a_disagreement_artifact_lands_under_repro() {
+        let mut report = Report::new("race", "ws://test", json!({}));
+        report
+            .failures
+            .push("session 1 has 2 different views [repro: race-title-views.json]".into());
+        let mut left = HashMap::new();
+        left.insert(SessionId(1), "a".into());
+        let mut right = HashMap::new();
+        right.insert(SessionId(1), "b".into());
+        report
+            .artifacts
+            .push(("race-title-views.json".into(), title_views_json(&[left, right])));
+        let dir = std::env::temp_dir().join(format!("vitrum-race-repro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = report.write(&dir).expect("write");
+        let bytes = std::fs::read(out.join("repro/race-title-views.json")).expect("repro");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            json!([{"1": "a"}, {"1": "b"}])
+        );
+        let md = std::fs::read_to_string(out.join("report.md")).expect("md");
+        assert!(md.contains("race-title-views.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

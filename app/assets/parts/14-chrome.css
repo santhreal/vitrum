@@ -247,6 +247,62 @@
 }
 
 /* ------------------------------------------------------------------ */
+/* Quiet update-available chip                                         */
+/* ------------------------------------------------------------------ */
+
+/* Accent outline, not a failure hue and not a full-width banner. The
+ * product already teaches "a capsule in the titlebar means something
+ * needs a look"; this reuses that shape for a voluntary action. Height
+ * matches the connection mark and the `?` so the row does not jump when
+ * the chip appears. */
+.rg-update {
+  display: inline-flex;
+  align-items: center;
+  height: var(--rg-control-h);
+  border-radius: var(--rg-radius-full);
+  box-shadow: inset 0 0 0 1px var(--rg-accent);
+  color: var(--rg-accent);
+  overflow: hidden;
+}
+
+.rg-update__open,
+.rg-update__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: var(--rg-lead-micro);
+}
+
+.rg-update__open {
+  padding: 0 var(--rg-space-2);
+}
+
+.rg-update__dismiss {
+  width: var(--rg-control-h);
+  padding: 0;
+  opacity: 0.75;
+}
+
+.rg-update__open:hover,
+.rg-update__dismiss:hover {
+  background-color: var(--rg-row-hover);
+  opacity: 1;
+}
+
+.rg-update__open:focus-visible,
+.rg-update__dismiss:focus-visible {
+  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
+  outline-offset: calc(-1 * var(--rg-focus-offset));
+}
+
+/* ------------------------------------------------------------------ */
 /* Window controls                                                     */
 /* ------------------------------------------------------------------ */
 

@@ -1536,6 +1536,8 @@ pub struct SettingsSheetProps {
     /// Dial a different daemon. Owned by the shell, which holds the bridge.
     pub on_reconnect: EventHandler<String>,
     pub on_dismiss: EventHandler<()>,
+    /// Quiet update check shared with the titlebar chip.
+    pub update_offer: Signal<Option<crate::update::Available>>,
 }
 
 #[component]
@@ -1593,7 +1595,12 @@ pub fn SettingsSheet(props: SettingsSheetProps) -> Element {
                                     on_reconnect: props.on_reconnect,
                                 }
                             },
-                            SettingsTab::About => rsx! { AboutPanel { state: props.state } },
+                            SettingsTab::About => rsx! {
+                                AboutPanel {
+                                    state: props.state,
+                                    offer: props.update_offer,
+                                }
+                            },
                         }
                     }
                 }

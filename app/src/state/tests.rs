@@ -3227,6 +3227,29 @@ fn an_unreadable_seen_version_shows_the_notes_again() {
     assert_eq!(s.last_seen_version(), None);
 }
 
+/// Dismissing an update must pin that exact version and leave a later one
+/// visible. A single "not now" that silenced every future release would hide
+/// the chip permanently.
+#[test]
+fn ignoring_an_update_is_exact_to_the_version() {
+    let mut s = Settings::default();
+    let dismissed = semver::Version::parse("0.2.0").unwrap();
+    let later = semver::Version::parse("0.2.1").unwrap();
+    s.ignore_update(&dismissed);
+    assert!(s.update_is_ignored(&dismissed));
+    assert!(!s.update_is_ignored(&later));
+}
+
+/// An older profile without `ignoredUpdate` must still load, with nothing
+/// dismissed. The field is additive.
+#[test]
+fn an_older_profile_has_dismissed_no_update() {
+    let older = r#"{"showBranch":false,"textScalePct":120}"#;
+    let s: Settings = serde_json::from_str(older).expect("an older profile must still load");
+    assert!(s.ignored_update.is_empty());
+}
+
+
 /// Fixture mode is not a live connection. The first-run sheet reads this to
 /// decide whether to tell you to start the daemon, and `--fixture` opened no
 /// socket at all.

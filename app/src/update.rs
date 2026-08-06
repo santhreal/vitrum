@@ -82,6 +82,46 @@ pub enum Status {
     NoReleases,
 }
 
+/// Whether a quiet titlebar check should surface this status.
+///
+/// Only a ready newer release becomes chrome, and only when the operator has
+/// not already dismissed that exact version. Every other answer is silence:
+/// up to date is not news, a missing asset is a sentence for the About tab,
+/// and a network error must not invent a badge.
+pub fn chrome_offer(status: &Status, ignored: &str) -> Option<Available> {
+    match status {
+        Status::Ready(available) if available.version.to_string() != ignored.trim() => {
+            Some(available.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Ask what is available for the titlebar chip and the About tab seed.
+///
+/// Same answer as [`check`], except `VITRUM_UPDATE_OFFER=<semver>` forces a
+/// ready status for demos and screenshots without a network round trip. The
+/// override is ignored when empty so an exported blank value cannot silence
+/// a real check by accident.
+pub fn quiet_check() -> Result<Status> {
+    if let Ok(raw) = std::env::var("VITRUM_UPDATE_OFFER") {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            let version = Version::parse(raw)
+                .context("VITRUM_UPDATE_OFFER must be a semver version")?;
+            return Ok(Status::Ready(Available {
+                version: version.clone(),
+                tag: format!("v{version}"),
+                asset_url: Some(format!(
+                    "https://example.invalid/vitrum-{version}-{TARGET}.tar.gz"
+                )),
+                sums_url: Some("https://example.invalid/SHA256SUMS".into()),
+            }));
+        }
+    }
+    check()
+}
+
 /// Ask GitHub what the newest release is.
 ///
 /// Network errors propagate. This is called from a terminal command that must
@@ -544,5 +584,8 @@ mod what_an_update_actually_leaves_running;
 /// Documented in `assets/logo/README.md`; enforced here, because a rule that
 /// lives only in a document is a rule that survives exactly until somebody
 /// wants a splash of brand in the titlebar.
+#[cfg(test)]
+mod chrome_offer;
+
 #[cfg(test)]
 mod where_the_mark_may_appear;

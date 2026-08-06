@@ -301,6 +301,11 @@ pub struct Settings {
     /// to the release notes. A string and not a `Version` so a profile
     /// written by a build with a different scheme still loads.
     pub seen_version: String,
+    /// Newest release the operator dismissed from the titlebar chip, as a
+    /// version string. Empty means nothing has been dismissed. Matching the
+    /// quiet check's answer against this is what keeps a "not now" from
+    /// coming back every launch, without hiding a later release.
+    pub ignored_update: String,
 }
 
 impl Default for Settings {
@@ -323,6 +328,7 @@ impl Default for Settings {
             policy: DispositionPolicy::default(),
             onboarded: false,
             seen_version: String::new(),
+            ignored_update: String::new(),
         }
     }
 }
@@ -369,6 +375,16 @@ impl Settings {
     /// Record that the notes for `current` have been read.
     pub fn mark_seen(&mut self, current: &semver::Version) {
         self.seen_version = current.to_string();
+    }
+
+    /// Record that the operator dismissed an available update of this version.
+    pub fn ignore_update(&mut self, version: &semver::Version) {
+        self.ignored_update = version.to_string();
+    }
+
+    /// Whether the quiet chrome should still mention this version.
+    pub fn update_is_ignored(&self, version: &semver::Version) -> bool {
+        self.ignored_update.trim() == version.to_string()
     }
 }
 

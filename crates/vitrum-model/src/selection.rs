@@ -75,21 +75,21 @@ impl Selection {
     /// The anchor is left where it was, so shift-clicking again from the same
     /// anchor narrows or widens the same range.
     pub fn extend_to(&mut self, visible: &[SessionId], session: SessionId) {
-        let Some(range) = self.range_between(visible, session) else {
+        let Some((low, high)) = self.range_indices(visible, session) else {
             self.select_one(session);
             return;
         };
-        self.selected = range;
+        self.selected = visible[low..=high].iter().copied().collect();
         self.lead = Some(session);
     }
 
     /// Ctrl-shift-click: union the anchored range into the existing selection.
     pub fn extend_to_additive(&mut self, visible: &[SessionId], session: SessionId) {
-        let Some(range) = self.range_between(visible, session) else {
+        let Some((low, high)) = self.range_indices(visible, session) else {
             self.toggle(session);
             return;
         };
-        self.selected.extend(range);
+        self.selected.extend(visible[low..=high].iter().copied());
         self.lead = Some(session);
     }
 
@@ -161,16 +161,16 @@ impl Selection {
             .collect()
     }
 
-    fn range_between(
+    fn range_indices(
         &self,
         visible: &[SessionId],
         session: SessionId,
-    ) -> Option<BTreeSet<SessionId>> {
+    ) -> Option<(usize, usize)> {
         let anchor = self.anchor?;
         let from = visible.iter().position(|other| *other == anchor)?;
         let to = visible.iter().position(|other| *other == session)?;
         let (low, high) = if from <= to { (from, to) } else { (to, from) };
-        Some(visible[low..=high].iter().copied().collect())
+        Some((low, high))
     }
 }
 

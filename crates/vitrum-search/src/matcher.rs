@@ -56,16 +56,8 @@ pub struct AsciiCaseFoldFinder {
     first_upper: u8,
 }
 
-impl AsciiCaseFoldFinder {
-    pub fn new(needle: &[u8]) -> Self {
-        let first = needle.first().copied().unwrap_or(0);
-        Self {
-            needle: needle.to_vec(),
-            first_lower: first.to_ascii_lowercase(),
-            first_upper: first.to_ascii_uppercase(),
-        }
-    }
 
+impl AsciiCaseFoldFinder {
     #[inline]
     pub fn find_at(&self, haystack: &[u8], mut from: usize) -> Option<std::ops::Range<usize>> {
         if from > haystack.len() || self.needle.is_empty() {
@@ -119,7 +111,12 @@ impl Matcher {
             && query.pattern.text().is_ascii();
         if ascii_casefold_fast_path {
             let needle = query.pattern.text().as_bytes();
-            return Ok(Matcher::AsciiCaseFold(Box::new(AsciiCaseFoldFinder::new(needle))));
+            let first = needle.first().copied().unwrap_or(0);
+            return Ok(Matcher::AsciiCaseFold(Box::new(AsciiCaseFoldFinder {
+                needle: needle.to_vec(),
+                first_lower: first.to_ascii_lowercase(),
+                first_upper: first.to_ascii_uppercase(),
+            })));
         }
 
         let body = match &query.pattern {

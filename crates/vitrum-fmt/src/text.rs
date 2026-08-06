@@ -9,6 +9,7 @@
 //! Text is walked as grapheme clusters so that a base character never loses its
 //! combining marks and a ZWJ emoji sequence is never cut apart.
 
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -39,10 +40,109 @@ pub fn cluster_width(cluster: &str) -> usize {
         _ => UnicodeWidthStr::width(cluster),
     }
 }
+/// SWAR (SIMD Within A Register) check to determine if a string contains any
+/// control characters, C1 controls, or ANSI escape sequences (`0x00..=0x1F`, `0x7F`, `0x80..=0x9F`, `ESC`).
+#[must_use]
+pub fn is_clean_swar(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut chunks = bytes.chunks_exact(8);
+
+    for chunk in &mut chunks {
+        let val = u64::from_le_bytes(chunk.try_into().unwrap());
+        if has_byte_below_32(val) || (val & 0x8080_8080_8080_8080) != 0 || has_byte_equal(val, 0x7f) {
+            return false;
+        }
+    }
+
+    for &byte in chunks.remainder() {
+        if byte < 0x20 || byte == 0x7f || byte >= 0x80 {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// SWAR check if string contains only printable ASCII (bytes 0x20..=0x7E).
+#[must_use]
+pub fn is_printable_ascii_swar(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut chunks = bytes.chunks_exact(8);
+
+    for chunk in &mut chunks {
+        let val = u64::from_le_bytes(chunk.try_into().unwrap());
+        if has_byte_below_32(val) || (val & 0x8080_8080_8080_8080) != 0 || has_byte_equal(val, 0x7f) {
+            return false;
+        }
+    }
+
+    for &byte in chunks.remainder() {
+        if !(0x20..=0x7e).contains(&byte) {
+            return false;
+        }
+    }
+
+    true
+}
+
+#[inline]
+fn has_byte_below_32(v: u64) -> bool {
+    let sub = v.wrapping_sub(0x2020_2020_2020_2020);
+    (sub & !v & 0x8080_8080_8080_8080) != 0
+}
+
+#[inline]
+fn has_byte_equal(v: u64, b: u8) -> bool {
+    let mask = u64::from_ne_bytes([b; 8]);
+    let xor = v ^ mask;
+    (xor.wrapping_sub(0x0101_0101_0101_0101) & !xor & 0x8080_8080_8080_8080) != 0
+}
+
+/// Zero-allocation `Cow<'a, str>` sanitizer for ANSI escape sequences and control characters.
+///
+/// Returns [`Cow::Borrowed`] if `text` contains no control characters or escapes.
+/// Otherwise returns [`Cow::Owned`] with stripped escape sequences and converted controls.
+#[must_use]
+pub fn sanitize_cow<'a>(text: &'a str) -> Cow<'a, str> {
+    if is_clean_swar(text) {
+        return Cow::Borrowed(text);
+    }
+
+    let sanitized = sanitize_line(text);
+    if sanitized == text {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(sanitized)
+    }
+}
+
+/// Fast-path ASCII truncation using `Cow` borrowing.
+///
+/// If `text` is pure printable ASCII and fits within `budget`, returns `Cow::Borrowed(text)` without allocating.
+/// Otherwise truncates and appends [`ELLIPSIS`], returning `Cow::Owned`.
+#[must_use]
+pub fn truncate_ascii_cow<'a>(text: &'a str, budget: usize) -> Cow<'a, str> {
+    if text.len() <= budget {
+        return Cow::Borrowed(text);
+    }
+    if budget == 0 {
+        return Cow::Borrowed("");
+    }
+
+    let keep = budget - 1;
+    let head = text[..keep].trim_end();
+    let mut out = String::with_capacity(head.len() + ELLIPSIS.len_utf8());
+    out.push_str(head);
+    out.push(ELLIPSIS);
+    Cow::Owned(out)
+}
 
 /// Columns occupied by a string when printed to a terminal.
 #[must_use]
 pub fn display_width(text: &str) -> usize {
+    if is_printable_ascii_swar(text) {
+        return text.len();
+    }
     text.graphemes(true).map(cluster_width).sum()
 }
 
@@ -52,6 +152,9 @@ pub fn display_width(text: &str) -> usize {
 /// against a 24 column cell segments 25 clusters rather than the whole thing.
 #[must_use]
 pub fn fits(text: &str, budget: usize) -> bool {
+    if is_printable_ascii_swar(text) {
+        return text.len() <= budget;
+    }
     let mut used = 0usize;
     for cluster in text.graphemes(true) {
         used += cluster_width(cluster);
@@ -76,6 +179,9 @@ pub fn fits(text: &str, budget: usize) -> bool {
 /// zero-width column renders nothing at all.
 #[must_use]
 pub fn truncate_end(text: &str, budget: usize) -> String {
+    if is_printable_ascii_swar(text) {
+        return truncate_ascii_cow(text, budget).into_owned();
+    }
     if fits(text, budget) {
         return text.to_owned();
     }

@@ -46,6 +46,17 @@ fn the_linux_desktop_entry_is_exactly_this() {
          StartupNotify=true\n\
          StartupWMClass=vitrum\n"
     );
+    // The directory argument is a `PathBuf` rendered to a string, so it carries
+    // the host's separator. Normalising it pins the segment sequence, which is
+    // the thing under test, exactly as `assert_path` does for the rest.
+    let post_install: Vec<Vec<String>> = post_install
+        .into_iter()
+        .map(|argv| {
+            argv.into_iter()
+                .map(|arg| arg.replace(std::path::MAIN_SEPARATOR, "/"))
+                .collect()
+        })
+        .collect();
     assert_eq!(
         post_install,
         vec![

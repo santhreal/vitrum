@@ -4,8 +4,32 @@
 //! and it keeps one expectation string correct on every host, which is the
 //! whole point of resolution being a pure function.
 
-use crate::paths::{AppPaths, PathEnv, PathError, Platform};
+use crate::paths::{AppPaths, PathEnv, PathError, Platform, is_absolute_on};
 use crate::tests::support::assert_path;
+
+/// What counts as absolute is the target platform's rule, never the host's.
+///
+/// `Path::is_absolute` answers for the box the tests run on, so a Windows runner
+/// called `/xdg/cfg` relative and every Linux resolution there quietly ignored
+/// its XDG variables and fell back to the home directory. Resolution is a pure
+/// function of a platform and an environment or it is not testable at all.
+#[test]
+fn absoluteness_follows_the_target_platform_not_the_host() {
+    assert!(is_absolute_on(Platform::Linux, "/xdg/cfg"));
+    assert!(is_absolute_on(Platform::MacOs, "/var/folders/q7/T/"));
+    assert!(!is_absolute_on(Platform::Linux, "relative/cfg"));
+    assert!(!is_absolute_on(Platform::Linux, "C:/Users/ada"));
+
+    // Windows needs a drive or a share. A bare `\path` is rooted but resolves
+    // against whichever drive is current, so it is not somewhere to put state.
+    assert!(is_absolute_on(Platform::Windows, "C:/Users/ada"));
+    assert!(is_absolute_on(Platform::Windows, r"C:\Users\ada"));
+    assert!(is_absolute_on(Platform::Windows, r"\\server\share"));
+    assert!(!is_absolute_on(Platform::Windows, r"\Users\ada"));
+    assert!(!is_absolute_on(Platform::Windows, "/Users/ada"));
+    assert!(!is_absolute_on(Platform::Windows, "C:"));
+    assert!(!is_absolute_on(Platform::Windows, "Users/ada"));
+}
 
 fn linux_env() -> PathEnv {
     PathEnv::from_pairs([("HOME", "/home/ada")])

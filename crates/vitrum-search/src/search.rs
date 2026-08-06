@@ -174,11 +174,13 @@ impl<'a> Sweep<'a> {
         // only wants to know *whether* a pattern occurs sets the cap to zero and
         // reads `truncated`.
         let empty = query.max_hits == 0 || query.max_hits_per_session == 0;
+        let hit_cap = if query.max_hits == usize::MAX { 64 } else { query.max_hits.min(4096) };
         Self {
             state: ScanState::new(query),
             matcher,
             query,
             results: SearchResults {
+                hits: Vec::with_capacity(hit_cap),
                 truncated: empty,
                 ..SearchResults::default()
             },
@@ -259,17 +261,21 @@ struct ScanState {
     session: Option<u64>,
     /// Hits taken from `session` so far, across every haystack it was split into.
     session_hits: usize,
+    /// Pre-allocated scratch buffer for collecting match ranges without dynamic allocation.
+    matches_scratch: Vec<std::ops::Range<usize>>,
 }
 
 impl ScanState {
     fn new(query: &Query) -> Self {
+        let pending_cap = if query.max_hits == usize::MAX { 64 } else { query.max_hits.min(64) };
         Self {
-            join: Vec::new(),
+            join: Vec::with_capacity(2048),
             stripper: Stripper::new(),
             before: VecDeque::with_capacity(query.effective_context_before()),
-            pending: Vec::new(),
+            pending: Vec::with_capacity(pending_cap),
             session: None,
             session_hits: 0,
+            matches_scratch: Vec::with_capacity(8),
         }
     }
 }
@@ -347,32 +353,33 @@ fn scan_one(
             (bytes, Map::Identity)
         };
 
-        let mut from = 0usize;
-        while let Some(range) = matcher.find_at(visible, from) {
+        matcher.collect_matches(visible, &mut state.matches_scratch, query.all_matches_per_line);
+        let match_count = state.matches_scratch.len();
+        for i in 0..match_count {
+            let range = state.matches_scratch[i].clone();
             let original_range = map.range(range.clone());
             let line_seq = haystack.base_seq + span.offset;
 
-            let before = state
-                .before
-                .iter()
-                .map(|&context| ContextLine {
+            let mut before = Vec::with_capacity(state.before.len());
+            for &context in &state.before {
+                before.push(ContextLine {
                     seq: haystack.base_seq + context.offset,
                     index: context.index,
                     bytes: copy_of(&view, context),
-                })
-                .collect();
+                });
+            }
 
             results.hits.push(Hit {
                 session: haystack.session,
                 line_seq,
                 match_seq: line_seq + original_range.start as u64,
                 original_range,
-                visible_range: range.clone(),
+                visible_range: range,
                 line_index: span.index,
                 line: bytes.to_vec(),
                 visible: visible.to_vec(),
                 before,
-                after: Vec::new(),
+                after: Vec::with_capacity(context_after),
             });
             state.session_hits += 1;
             if context_after > 0 {
@@ -388,18 +395,6 @@ fn scan_one(
             if state.session_hits >= query.max_hits_per_session {
                 results.truncated = true;
                 draining = true;
-                break;
-            }
-            if !query.all_matches_per_line {
-                break;
-            }
-            // A zero-width match would otherwise pin `from` in place forever.
-            from = if range.end > range.start {
-                range.end
-            } else {
-                range.end + 1
-            };
-            if from > visible.len() {
                 break;
             }
         }

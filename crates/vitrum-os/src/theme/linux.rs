@@ -46,6 +46,16 @@ impl PortalThemeWatcher {
             shared: Arc::new(Shared::default()),
             listener_started: Mutex::new(false),
         };
+        // Ask the bus whether the portal could ever answer before calling it.
+        //
+        // Without this, a machine with a session bus and no portal installed
+        // does not fail fast: D-Bus treats the destination as activatable,
+        // tries to start it, and returns TimedOut after
+        // `service_start_timeout`, which defaults to 120 seconds. Both `Read`
+        // and `ReadOne` are attempted, so probing a machine with no portal cost
+        // four minutes and then reported a runtime error rather than a missing
+        // service.
+        portal_reachable(&watcher.conn)?;
         // Prove the portal answers before claiming the feature works.
         watcher.read_color_scheme()?;
         Ok(watcher)
@@ -141,17 +151,71 @@ fn unwrap_u32(value: &OwnedValue) -> Result<u32, Unavailable> {
     )))
 }
 
+/// Whether the portal name could answer at all: owned now, or startable.
+///
+/// An activatable name legitimately has no owner until something calls it, so
+/// `NameHasOwner` alone would report an installed-but-idle portal as missing.
+/// Neither owned nor activatable is the definitive answer, and it costs one
+/// round trip instead of two activation timeouts.
+fn portal_reachable(conn: &Connection) -> Result<(), Unavailable> {
+    let bus = Proxy::new(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
+        .map_err(|e| Unavailable::runtime_error(format!("cannot build the bus proxy: {e}")))?;
+    // A bus that cannot answer these is not something to diagnose from here.
+    // Fall through and let the real call produce the error, rather than
+    // refusing over a failed probe.
+    let Ok(owned) = bus.call::<_, _, bool>("NameHasOwner", &(DESTINATION,)) else {
+        return Ok(());
+    };
+    if owned {
+        return Ok(());
+    }
+    let Ok(activatable) = bus.call::<_, _, Vec<String>>("ListActivatableNames", &()) else {
+        return Ok(());
+    };
+    if activatable.iter().any(|name| name == DESTINATION) {
+        return Ok(());
+    }
+    Err(portal_absent())
+}
+
+fn portal_absent() -> Unavailable {
+    Unavailable::service_missing(format!(
+        "no xdg-desktop-portal on the session bus ({DESTINATION}); install \
+         xdg-desktop-portal and a backend such as xdg-desktop-portal-gtk or -kde"
+    ))
+}
+
+/// Whether a D-Bus error name and message mean the portal is absent rather
+/// than present and failing.
+///
+/// Split out from [`map_call_error`] because a `zbus::Error::MethodError`
+/// carries a `Message` that cannot be constructed in a test, and the decision
+/// this makes is the part worth defending.
+pub(crate) fn names_an_absent_service(name: &str, detail: Option<&str>) -> bool {
+    match name {
+        "org.freedesktop.DBus.Error.ServiceUnknown"
+        | "org.freedesktop.DBus.Error.NameHasNoOwner"
+        | "org.freedesktop.DBus.Error.ServiceStartFailed" => true,
+        // The bus accepted the name as activatable, tried to start it, and
+        // nothing came up. That is the service being absent, not the service
+        // failing a call, and it is what a machine with no portal installed
+        // actually reports after `service_start_timeout`. A timeout that does
+        // NOT name activation is a portal that exists and hung, which is a
+        // runtime error and must stay one.
+        "org.freedesktop.DBus.Error.TimedOut" | "org.freedesktop.DBus.Error.NoReply" => {
+            detail.is_some_and(|text| text.contains("activate service"))
+        }
+        other => other.starts_with("org.freedesktop.DBus.Error.Spawn."),
+    }
+}
+
 fn map_call_error(read_one: &zbus::Error, read: zbus::Error) -> Unavailable {
     let missing = |e: &zbus::Error| {
-        matches!(e, zbus::Error::MethodError(name, _, _)
-            if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
-                || name.as_str() == "org.freedesktop.DBus.Error.NameHasNoOwner")
+        matches!(e, zbus::Error::MethodError(name, detail, _)
+            if names_an_absent_service(name.as_str(), detail.as_deref()))
     };
     if missing(read_one) || missing(&read) {
-        return Unavailable::service_missing(format!(
-            "no xdg-desktop-portal on the session bus ({DESTINATION}); install \
-             xdg-desktop-portal and a backend such as xdg-desktop-portal-gtk or -kde"
-        ));
+        return portal_absent();
     }
     Unavailable::runtime_error(format!(
         "portal Settings unreadable: ReadOne failed with {read_one}, Read failed with {read}"

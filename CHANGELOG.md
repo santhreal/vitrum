@@ -85,6 +85,13 @@ below are stated rather than discovered.
   disagree already refuse each other with a message naming both versions. If
   an older daemon is still running after an upgrade, stop it and let the new
   client start its own.
+- **Settings opens immediately on a Linux desktop with no working portal.**
+  Reading the system theme goes to `org.freedesktop.portal.Settings`. If that
+  name is registered on the session bus but nothing can start it, D-Bus does
+  not answer: it waits out `service_start_timeout`, 120 seconds by default, and
+  a read makes two calls. That ran on the thread drawing the sheet, so opening
+  Settings froze for four minutes. The read is now bounded at five seconds and
+  a portal that does not answer is reported as missing, which is what it is.
 
 ### Hardening
 

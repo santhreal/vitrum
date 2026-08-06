@@ -154,6 +154,22 @@ fn a_repeated_lookup_reuses_the_cached_entry() {
     assert_eq!(atlas.resident(), 1, "no second slot may be allocated");
     assert_eq!(atlas.generation(), 0, "no reset may have happened");
 }
+#[test]
+fn direct_ascii_atlas_array_fast_path_works() {
+    let gpu_ctx = gpu();
+    let mut atlas = GlyphAtlas::new(gpu_ctx.device(), 512);
+
+    let k_ascii = GlyphKey { ch: 'A', style: FontStyle::Regular };
+    assert_eq!(atlas.get(k_ascii), None);
+
+    let entry = atlas.insert_glyph(gpu_ctx.queue(), k_ascii, &solid(10, 10)).unwrap();
+    assert_eq!(atlas.get(k_ascii), Some(entry));
+
+    let k_non_ascii = GlyphKey { ch: '€', style: FontStyle::Regular };
+    assert_eq!(atlas.get(k_non_ascii), None);
+    let entry_non = atlas.insert_glyph(gpu_ctx.queue(), k_non_ascii, &solid(10, 10)).unwrap();
+    assert_eq!(atlas.get(k_non_ascii), Some(entry_non));
+}
 
 /// The same character in different styles must occupy different slots.
 ///

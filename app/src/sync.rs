@@ -252,15 +252,28 @@ pub(crate) fn on_bridge_event(
                 msg,
                 vitrum_proto::ServerMsg::SessionCreated(_) | vitrum_proto::ServerMsg::Exited { .. }
             );
-            // Snapshotted only when at least one notification switch is on.
-            // With all three off the operator pays nothing, which matters at
-            // twenty sessions where the clone is the whole cost of the feature.
-            let before = {
-                let read = st.peek();
-                let want = &read.daemon.settings.notifications;
-                (want.finished || want.needs_approval || want.failed)
-                    .then(|| read.daemon.sessions.clone())
-            };
+            // Snapshotted only when at least one notification switch is on
+            // AND the message can actually move a session. A transition is a
+            // difference between two session lists, so a scrollback chunk, a
+            // search answer or a collision report can never produce one, and
+            // cloning twenty `SessionView`s (four strings and a vector each)
+            // to diff a list against itself was the whole cost of the feature
+            // on the busiest messages the daemon sends.
+            let moves_sessions = matches!(
+                msg,
+                vitrum_proto::ServerMsg::Sessions { .. }
+                    | vitrum_proto::ServerMsg::SessionCreated(_)
+                    | vitrum_proto::ServerMsg::SessionUpdated(_)
+                    | vitrum_proto::ServerMsg::Exited { .. }
+            );
+            let before = moves_sessions
+                .then(|| {
+                    let read = st.peek();
+                    let want = &read.daemon.settings.notifications;
+                    (want.finished || want.needs_approval || want.failed)
+                        .then(|| read.daemon.sessions.clone())
+                })
+                .flatten();
             let now = tick();
             let reaction = st.write().apply(msg, now.now_ms);
             if let Some(before) = before {

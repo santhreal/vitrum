@@ -3693,60 +3693,6 @@ fn a_missing_file_is_silent_and_a_broken_one_is_not() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A hand-edited or half-written file must be repaired, not trusted and
-/// not thrown away. Every one of these has a defined answer, and refusing
-/// the whole document over one bad field loses the operator's filing.
-#[test]
-fn a_damaged_workspace_set_is_repaired_rather_than_trusted() {
-    let mut set = WorkspaceSet::default();
-    let b = set.create("B").unwrap();
-    let folder = set.create_folder(b, "F").unwrap();
-    let info = info(10);
-    set.assign(&info, b).unwrap();
-    set.assign_folder(&info, Some(folder)).unwrap();
-
-    // The workspace holding that session disappears, as a truncated write
-    // or a hand edit can do.
-    set.list.retain(|w| w.id != b);
-    set.intake = b;
-    set.normalize();
-
-    assert_eq!(ws_ids(&set), vec![DEFAULT_WORKSPACE]);
-    assert_eq!(
-        set.intake(),
-        DEFAULT_WORKSPACE,
-        "intake must name something real"
-    );
-    assert_eq!(
-        set.workspace_of(&info),
-        DEFAULT_WORKSPACE,
-        "a session filed into a workspace that is gone falls back to intake"
-    );
-    assert!(
-        set.next_workspace > b.0,
-        "ids must not be reissued over the hole the delete left"
-    );
-    assert!(set.next_folder > folder.0);
-
-    // Every workspace gone at once: rebuild rather than render nothing.
-    set.list.clear();
-    set.normalize();
-    assert_eq!(set.len(), 1);
-    assert_eq!(ws_ids(&set), vec![DEFAULT_WORKSPACE]);
-}
-
-/// A duplicated workspace id would give one workspace two entries in the
-/// switcher and make `get` non-deterministic.
-#[test]
-fn normalize_drops_duplicate_and_zero_ids() {
-    let mut set = WorkspaceSet::default();
-    let dup = set.list[0].clone();
-    set.list.push(dup);
-    set.list.push(Workspace::new(WorkspaceId(0), "zero".into()));
-    set.normalize();
-    assert_eq!(ws_ids(&set), vec![DEFAULT_WORKSPACE]);
-}
-
 // ---- The `SessionUpdated` budget ------------------------------------
 //
 // The objective states one number for this path: a single

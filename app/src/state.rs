@@ -246,1069 +246,22 @@ pub enum Reaction {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Workspaces: the top-level partition
+// Workspaces and settings
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Identifier for a workspace.
-///
-/// Starts at one. Zero is never minted, so a zero read out of a corrupt file
-/// or an uninitialised field is detectable rather than silently valid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkspaceId(pub u64);
-
-/// Identifier for a user-created folder.
-///
-/// Unique across every workspace, not per workspace. Folder ids key this
-/// window's collapse and section state, and per-workspace numbering would make
-/// folder 1 of workspace A share its expanded/collapsed bit with folder 1 of
-/// workspace B.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct FolderId(pub u64);
-
-/// The workspace an install starts with, and the one a restore falls back to.
-pub const DEFAULT_WORKSPACE: WorkspaceId = WorkspaceId(1);
-
-/// Drawn for a workspace whose name is empty.
-///
-/// The first workspace is not one the operator picked, it is the one that had
-/// to exist. Seeding it with a name states a decision nobody made, so it is
-/// created nameless and shows the bare noun until it is renamed.
-pub const UNNAMED_WORKSPACE_LABEL: &str = "Workspace";
-
-/// A session identity that survives a daemon restart being wrong about ids.
-///
-/// Workspace membership is persisted to disk, so it outlives the daemon that
-/// minted the ids in it. A daemon that restarts and hands out `SessionId(3)`
-/// to a completely different session would inherit the old session's
-/// workspace, which files a row somewhere the operator never put it. Pairing
-/// the id with the creation stamp the daemon already reports makes that
-/// impossible: the pair is unique for as long as the placement is worth
-/// keeping, and a mismatched pair simply reads as "not placed yet".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionKey {
-    pub id: SessionId,
-    pub created_at_ms: u64,
-}
-
-impl SessionKey {
-    pub fn of(info: &SessionInfo) -> Self {
-        SessionKey {
-            id: info.id,
-            created_at_ms: info.created_at_ms,
-        }
-    }
-}
-
-/// How one workspace buckets its sessions in the sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Grouping {
-    /// By the directory the session runs in.
-    ///
-    /// A session whose cwd sits under a project root the daemon knows buckets
-    /// under that project, keeping the daemon's own name for it. Everything
-    /// else buckets by its literal cwd, one bucket per distinct directory,
-    /// rather than collapsing into one anonymous lump.
-    #[default]
-    Directory,
-    /// By the folders the user made in this workspace, in the order they put
-    /// them in. Sessions in no folder land in one Unfiled bucket.
-    Named,
-}
-
-impl Grouping {
-    pub fn label(self) -> &'static str {
-        match self {
-            Grouping::Directory => "Filesystem directory",
-            Grouping::Named => "Named folders",
-        }
-    }
-}
-
-/// Which disposition bands this workspace shows.
-///
-/// Keyed on [`Disposition`] rather than [`Section`] because the operator's
-/// four names are the four dispositions: `Woke` is a band member rather than a
-/// band, and someone who wants woken rows out of the way should not have to
-/// hide the entire inbox to get it.
-///
-/// There is deliberately no guard against turning all four off. The settings
-/// modal that set them is one click from the sidebar header in every state,
-/// including the empty one, so an all-off sidebar is recoverable by the same
-/// gesture that caused it; a refusal here would instead be a checkbox that
-/// silently does nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SectionVisibility {
-    pub active: bool,
-    pub woke: bool,
-    pub snoozed: bool,
-    pub settled: bool,
-}
-
-impl Default for SectionVisibility {
-    fn default() -> Self {
-        SectionVisibility {
-            active: true,
-            woke: true,
-            snoozed: true,
-            settled: true,
-        }
-    }
-}
-
-impl SectionVisibility {
-    /// Does a row with this disposition appear at all?
-    pub fn shows(&self, disposition: Disposition) -> bool {
-        match disposition {
-            Disposition::Active => self.active,
-            Disposition::Woke => self.woke,
-            Disposition::Snoozed => self.snoozed,
-            Disposition::Settled => self.settled,
-        }
-    }
-
-    pub fn set(&mut self, disposition: Disposition, on: bool) {
-        match disposition {
-            Disposition::Active => self.active = on,
-            Disposition::Woke => self.woke = on,
-            Disposition::Snoozed => self.snoozed = on,
-            Disposition::Settled => self.settled = on,
-        }
-    }
-
-    /// How many of the four are off, for a settings summary line.
-    pub fn hidden_count(&self) -> usize {
-        [self.active, self.woke, self.snoozed, self.settled]
-            .into_iter()
-            .filter(|on| !on)
-            .count()
-    }
-}
-
-/// One user-created folder inside a workspace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Folder {
-    pub id: FolderId,
-    pub name: String,
-}
-
-/// A completely separate top-level context.
-///
-/// Not a project and not a tab strip. Creating one gives a blank sidebar; the
-/// operator then moves sessions into it. Switching a window to it swaps the
-/// entire sidebar, and the window's tab strip with it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Workspace {
-    pub id: WorkspaceId,
-    pub name: String,
-    pub grouping: Grouping,
-    pub sections: SectionVisibility,
-    folders: Vec<Folder>,
-    #[serde(with = "session_map", default)]
-    folder_of: BTreeMap<SessionKey, FolderId>,
-}
-
-impl Workspace {
-    fn new(id: WorkspaceId, name: String) -> Self {
-        Workspace {
-            id,
-            name,
-            grouping: Grouping::default(),
-            sections: SectionVisibility::default(),
-            folders: Vec::new(),
-            folder_of: BTreeMap::new(),
-        }
-    }
-
-    /// The word to draw for this workspace.
-    ///
-    /// The workspace an install starts with has no name, because nobody chose
-    /// one for it. Rather than seed a decision the operator never made, it
-    /// draws the bare noun until they rename it.
-    pub fn display_name(&self) -> &str {
-        if self.name.is_empty() {
-            UNNAMED_WORKSPACE_LABEL
-        } else {
-            &self.name
-        }
-    }
-
-    /// This workspace's folders, in display order.
-    pub fn folders(&self) -> &[Folder] {
-        &self.folders
-    }
-
-    /// Which folder a session sits in, or `None` for Unfiled.
-    pub fn folder_of(&self, info: &SessionInfo) -> Option<FolderId> {
-        self.folder_of.get(&SessionKey::of(info)).copied()
-    }
-}
-
-/// Why a workspace or folder operation was refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkspaceError {
-    /// No workspace with that id.
-    Unknown,
-    /// No folder with that id in the named workspace.
-    UnknownFolder,
-    /// A name that is empty once trimmed. An unnamed workspace is
-    /// unreachable: the switcher has nothing to draw and nothing to click.
-    BlankName,
-    /// Refused: the workspace still holds sessions.
-    ///
-    /// The guard exists because deleting a workspace with rows in it either
-    /// destroys the operator's filing silently or moves rows somewhere they
-    /// never asked for. Both are worse than saying no and making them empty it.
-    NotEmpty { sessions: usize },
-    /// Refused: it is the only workspace left, and zero workspaces has no
-    /// coherent sidebar.
-    LastWorkspace,
-    /// A reorder target past the end of the list.
-    OutOfRange,
-}
-
-impl fmt::Display for WorkspaceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WorkspaceError::Unknown => f.write_str("no such workspace"),
-            WorkspaceError::UnknownFolder => f.write_str("no such folder"),
-            WorkspaceError::BlankName => f.write_str("a name is required"),
-            WorkspaceError::NotEmpty { sessions } => write!(
-                f,
-                "still holds {sessions} session{}; move them out first",
-                if *sessions == 1 { "" } else { "s" }
-            ),
-            WorkspaceError::LastWorkspace => f.write_str("the last workspace cannot be deleted"),
-            WorkspaceError::OutOfRange => f.write_str("position is past the end of the list"),
-        }
-    }
-}
-
-impl core::error::Error for WorkspaceError {}
-
-/// Every workspace, their folders, and which workspace each session is in.
-///
-/// Daemon-scoped: one per connection, shared by every window. Two windows may
-/// look at different workspaces, but they cannot disagree about which
-/// workspace a session is IN, because a session belongs to exactly one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceSet {
-    /// Workspaces in display order. Never empty.
-    list: Vec<Workspace>,
-    #[serde(with = "session_map", default)]
-    home: BTreeMap<SessionKey, WorkspaceId>,
-    /// Where a session the client has never seen before is filed.
-    intake: WorkspaceId,
-    next_workspace: u64,
-    next_folder: u64,
-}
-
-impl Default for WorkspaceSet {
-    fn default() -> Self {
-        WorkspaceSet {
-            list: vec![Workspace::new(DEFAULT_WORKSPACE, String::new())],
-            home: BTreeMap::new(),
-            intake: DEFAULT_WORKSPACE,
-            next_workspace: DEFAULT_WORKSPACE.0 + 1,
-            next_folder: 1,
-        }
-    }
-}
-
-impl WorkspaceSet {
-    /// Workspaces in display order.
-    pub fn iter(&self) -> impl Iterator<Item = &Workspace> {
-        self.list.iter()
-    }
-
-    pub fn len(&self) -> usize {
-        self.list.len()
-    }
-
-    pub fn get(&self, id: WorkspaceId) -> Option<&Workspace> {
-        self.list.iter().find(|w| w.id == id)
-    }
-
-    pub fn get_mut(&mut self, id: WorkspaceId) -> Option<&mut Workspace> {
-        self.list.iter_mut().find(|w| w.id == id)
-    }
-
-    pub fn contains(&self, id: WorkspaceId) -> bool {
-        self.list.iter().any(|w| w.id == id)
-    }
-
-    /// The first workspace in display order. The fallback for a window whose
-    /// workspace was deleted underneath it.
-    pub fn first(&self) -> WorkspaceId {
-        self.list.first().map(|w| w.id).unwrap_or(DEFAULT_WORKSPACE)
-    }
-
-    pub fn position(&self, id: WorkspaceId) -> Option<usize> {
-        self.list.iter().position(|w| w.id == id)
-    }
-
-    /// A name for the next workspace that is not already taken.
-    ///
-    /// The model owns this because uniqueness is a fact about the set, and a
-    /// caller counting its own clicks cannot know it. Doing it at the call
-    /// site produced "Workspace 17": a counter appended to a name that already
-    /// had a counter in it, because the UI numbered its button presses instead
-    /// of asking what existed.
-    ///
-    /// Numbering starts at 2, so the first workspace an operator makes beside
-    /// the built-in one is "Workspace 2" and never "Workspace 1" sitting next
-    /// to the nameless one that already draws as "Workspace".
-    pub fn suggested_name(&self) -> String {
-        let taken: BTreeSet<&str> = self.list.iter().map(|w| w.display_name()).collect();
-        (2..)
-            .map(|n| format!("Workspace {n}"))
-            .find(|name| !taken.contains(name.as_str()))
-            .unwrap_or_else(|| UNNAMED_WORKSPACE_LABEL.to_string())
-    }
-
-    /// Add an empty workspace at the end of the list.
-    pub fn create(&mut self, name: &str) -> Result<WorkspaceId, WorkspaceError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(WorkspaceError::BlankName);
-        }
-        let id = WorkspaceId(self.next_workspace);
-        self.next_workspace += 1;
-        self.list.push(Workspace::new(id, name.to_string()));
-        Ok(id)
-    }
-
-    pub fn rename(&mut self, id: WorkspaceId, name: &str) -> Result<(), WorkspaceError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(WorkspaceError::BlankName);
-        }
-        let ws = self.get_mut(id).ok_or(WorkspaceError::Unknown)?;
-        ws.name = name.to_string();
-        Ok(())
-    }
-
-    /// Remove a workspace, refusing while it still holds sessions.
-    pub fn delete(&mut self, id: WorkspaceId) -> Result<(), WorkspaceError> {
-        let at = self.position(id).ok_or(WorkspaceError::Unknown)?;
-        if self.list.len() == 1 {
-            return Err(WorkspaceError::LastWorkspace);
-        }
-        let sessions = self.home.values().filter(|w| **w == id).count();
-        if sessions > 0 {
-            return Err(WorkspaceError::NotEmpty { sessions });
-        }
-        self.list.remove(at);
-        // Intake must always name a workspace that exists, or the next session
-        // the daemon reports has nowhere to land.
-        if self.intake == id {
-            self.intake = self.first();
-        }
-        Ok(())
-    }
-
-    /// Move a workspace to position `to` in the display order.
-    pub fn move_to(&mut self, id: WorkspaceId, to: usize) -> Result<(), WorkspaceError> {
-        let from = self.position(id).ok_or(WorkspaceError::Unknown)?;
-        if to >= self.list.len() {
-            return Err(WorkspaceError::OutOfRange);
-        }
-        let ws = self.list.remove(from);
-        self.list.insert(to, ws);
-        Ok(())
-    }
-
-    /// Which workspace this session is in.
-    ///
-    /// Falls back to [`WorkspaceSet::intake`] for a session no one has filed
-    /// yet, which is the state between the daemon reporting it and
-    /// [`WorkspaceSet::adopt`] running over the snapshot.
-    pub fn workspace_of(&self, info: &SessionInfo) -> WorkspaceId {
-        self.home
-            .get(&SessionKey::of(info))
-            .copied()
-            .filter(|id| self.contains(*id))
-            .unwrap_or(self.intake)
-    }
-
-    /// File a session into a workspace.
-    pub fn assign(&mut self, info: &SessionInfo, to: WorkspaceId) -> Result<(), WorkspaceError> {
-        if !self.contains(to) {
-            return Err(WorkspaceError::Unknown);
-        }
-        let key = SessionKey::of(info);
-        // A session that leaves a workspace leaves its folders too. Folder ids
-        // are unique across the set, so a stale entry would otherwise keep the
-        // row filed under a folder its new workspace does not own.
-        for ws in &mut self.list {
-            ws.folder_of.remove(&key);
-        }
-        self.home.insert(key, to);
-        Ok(())
-    }
-
-    /// Where a session nobody has filed lands.
-    pub fn intake(&self) -> WorkspaceId {
-        self.intake
-    }
-
-    /// Point intake at a workspace.
-    ///
-    /// A window does this when it switches workspace, so a session launched
-    /// next appears in the workspace the operator is looking at rather than in
-    /// whichever one happens to be first. With two windows the last one to
-    /// switch wins, which is the same "most recent intent" rule every other
-    /// last-write-wins field in this file uses.
-    pub fn set_intake(&mut self, id: WorkspaceId) -> Result<(), WorkspaceError> {
-        if !self.contains(id) {
-            return Err(WorkspaceError::Unknown);
-        }
-        self.intake = id;
-        Ok(())
-    }
-
-    /// Give every session that has no placement the intake workspace.
-    ///
-    /// Called on each daemon snapshot. Without it, unplaced sessions would
-    /// follow intake around: switching a window to a new workspace would drag
-    /// every unfiled session with it, which is the opposite of a blank sidebar.
-    pub fn adopt<'a>(&mut self, sessions: impl IntoIterator<Item = &'a SessionInfo>) {
-        let intake = self.intake;
-        for info in sessions {
-            self.home.entry(SessionKey::of(info)).or_insert(intake);
-        }
-    }
-
-    /// Drop placements for sessions the daemon no longer lists.
-    pub fn retain_sessions(&mut self, live: &BTreeSet<SessionKey>) {
-        self.home.retain(|key, _| live.contains(key));
-        for ws in &mut self.list {
-            ws.folder_of.retain(|key, _| live.contains(key));
-        }
-    }
-
-    /// How many sessions are filed into this workspace.
-    pub fn session_count(&self, id: WorkspaceId) -> usize {
-        self.home.values().filter(|w| **w == id).count()
-    }
-
-    /// Add a folder to a workspace, at the end of its folder list.
-    pub fn create_folder(
-        &mut self,
-        workspace: WorkspaceId,
-        name: &str,
-    ) -> Result<FolderId, WorkspaceError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(WorkspaceError::BlankName);
-        }
-        if !self.contains(workspace) {
-            return Err(WorkspaceError::Unknown);
-        }
-        let id = FolderId(self.next_folder);
-        self.next_folder += 1;
-        let ws = self.get_mut(workspace).ok_or(WorkspaceError::Unknown)?;
-        ws.folders.push(Folder {
-            id,
-            name: name.to_string(),
-        });
-        Ok(id)
-    }
-
-    pub fn rename_folder(
-        &mut self,
-        workspace: WorkspaceId,
-        folder: FolderId,
-        name: &str,
-    ) -> Result<(), WorkspaceError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(WorkspaceError::BlankName);
-        }
-        let ws = self.get_mut(workspace).ok_or(WorkspaceError::Unknown)?;
-        let f = ws
-            .folders
-            .iter_mut()
-            .find(|f| f.id == folder)
-            .ok_or(WorkspaceError::UnknownFolder)?;
-        f.name = name.to_string();
-        Ok(())
-    }
-
-    /// Remove a folder. Its sessions become Unfiled rather than disappearing,
-    /// so there is no guard: nothing can be lost.
-    pub fn delete_folder(
-        &mut self,
-        workspace: WorkspaceId,
-        folder: FolderId,
-    ) -> Result<(), WorkspaceError> {
-        let ws = self.get_mut(workspace).ok_or(WorkspaceError::Unknown)?;
-        let at = ws
-            .folders
-            .iter()
-            .position(|f| f.id == folder)
-            .ok_or(WorkspaceError::UnknownFolder)?;
-        ws.folders.remove(at);
-        ws.folder_of.retain(|_, f| *f != folder);
-        Ok(())
-    }
-
-    pub fn move_folder(
-        &mut self,
-        workspace: WorkspaceId,
-        folder: FolderId,
-        to: usize,
-    ) -> Result<(), WorkspaceError> {
-        let ws = self.get_mut(workspace).ok_or(WorkspaceError::Unknown)?;
-        let from = ws
-            .folders
-            .iter()
-            .position(|f| f.id == folder)
-            .ok_or(WorkspaceError::UnknownFolder)?;
-        if to >= ws.folders.len() {
-            return Err(WorkspaceError::OutOfRange);
-        }
-        let f = ws.folders.remove(from);
-        ws.folders.insert(to, f);
-        Ok(())
-    }
-
-    /// File a session into a folder of the workspace it already lives in, or
-    /// out of every folder when `folder` is `None`.
-    pub fn assign_folder(
-        &mut self,
-        info: &SessionInfo,
-        folder: Option<FolderId>,
-    ) -> Result<(), WorkspaceError> {
-        let home = self.workspace_of(info);
-        let key = SessionKey::of(info);
-        let ws = self.get_mut(home).ok_or(WorkspaceError::Unknown)?;
-        match folder {
-            Some(id) => {
-                if !ws.folders.iter().any(|f| f.id == id) {
-                    return Err(WorkspaceError::UnknownFolder);
-                }
-                ws.folder_of.insert(key, id);
-            }
-            None => {
-                ws.folder_of.remove(&key);
-            }
-        }
-        Ok(())
-    }
-
-    /// Repair a set read back from disk.
-    ///
-    /// A hand-edited or half-written file can name a workspace twice, hold
-    /// zero workspaces, point intake at nothing, or file a session into a
-    /// workspace that is gone. Every one of those has a defined repair, and
-    /// applying them is strictly better than either trusting the file or
-    /// throwing the operator's filing away over one bad field.
-    pub fn normalize(&mut self) {
-        let mut seen: BTreeSet<WorkspaceId> = BTreeSet::new();
-        self.list.retain(|w| w.id.0 != 0 && seen.insert(w.id));
-        if self.list.is_empty() {
-            *self = WorkspaceSet::default();
-            return;
-        }
-        let live: BTreeSet<WorkspaceId> = self.list.iter().map(|w| w.id).collect();
-        if !live.contains(&self.intake) {
-            self.intake = self.list[0].id;
-        }
-        self.home.retain(|_, id| live.contains(id));
-        let highest = self.list.iter().map(|w| w.id.0).max().unwrap_or(0);
-        self.next_workspace = self.next_workspace.max(highest + 1);
-
-        let mut highest_folder = 0;
-        for ws in &mut self.list {
-            let mut seen_folders: BTreeSet<FolderId> = BTreeSet::new();
-            ws.folders
-                .retain(|f| f.id.0 != 0 && seen_folders.insert(f.id));
-            highest_folder =
-                highest_folder.max(seen_folders.iter().map(|f| f.0).max().unwrap_or(0));
-            ws.folder_of.retain(|_, f| seen_folders.contains(f));
-        }
-        self.next_folder = self.next_folder.max(highest_folder + 1);
-
-        // A session filed into a folder of a workspace it does not live in is
-        // the one inconsistency `assign` cannot produce and a file can.
-        let placements: Vec<(SessionKey, WorkspaceId)> =
-            self.home.iter().map(|(k, v)| (*k, *v)).collect();
-        for ws in &mut self.list {
-            let id = ws.id;
-            ws.folder_of.retain(|key, _| {
-                placements
-                    .iter()
-                    .find(|(k, _)| k == key)
-                    .is_none_or(|(_, home)| *home == id)
-            });
-        }
-    }
-}
-
-/// `BTreeMap<SessionKey, V>` as a list of pairs.
-///
-/// JSON object keys must be strings and [`SessionKey`] is a struct, so the
-/// derive cannot round-trip these maps. A list of pairs is the honest wire
-/// form; encoding the key as `"3:1772580600000"` would work too and would put
-/// a second parser in the file for no gain.
-mod session_map {
-    use super::SessionKey;
-    use serde::de::Deserialize;
-    use serde::ser::{Serialize, SerializeSeq};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S, V>(map: &BTreeMap<SessionKey, V>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-        V: Serialize,
-    {
-        let mut seq = s.serialize_seq(Some(map.len()))?;
-        for pair in map {
-            seq.serialize_element(&pair)?;
-        }
-        seq.end()
-    }
-
-    pub fn deserialize<'de, D, V>(d: D) -> Result<BTreeMap<SessionKey, V>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-        V: Deserialize<'de>,
-    {
-        let pairs: Vec<(SessionKey, V)> = Vec::deserialize(d)?;
-        Ok(pairs.into_iter().collect())
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Settings
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// How tall a sidebar row is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Density {
-    #[default]
-    Comfortable,
-    Compact,
-}
-
-/// Which palette to paint, before the OS gets a say.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ThemePref {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
-
-/// Which xterm.js renderer the terminal uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TermRenderer {
-    /// The DOM renderer, and the default.
-    ///
-    /// Measured, not assumed: under WebKitGTK the WebGL path costs a steady
-    /// 0.244% idle CPU and roughly 80 MB more resident, because the compositor
-    /// keeps the GL layer awake with nothing on screen changing. It is also
-    /// marginally SLOWER on the corpus, 71 MB/s against 73 MB/s, for a
-    /// workload that peaks near 0.4 MB/s. Idle cost is the number this product
-    /// is sold on, so the default is the one that is idle.
-    #[default]
-    Dom,
-    /// The GPU renderer. Offered because a machine with a cheap compositor may
-    /// genuinely prefer it, and disclosed with its idle cost in the settings
-    /// row rather than presented as the fast option.
-    Webgl,
-}
-
-/// How a backdrop image is fitted to the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BackdropFit {
-    /// Fill the window, cropping the overflow. The default, because a
-    /// wallpaper picked for a screen is nearly always meant to fill it.
-    #[default]
-    Cover,
-    /// Fit the whole image, letterboxing the remainder.
-    Contain,
-    /// Repeat at native size. The one that suits a small texture.
-    Tile,
-    /// Native size, centred, no repeat.
-    Center,
-}
-
-impl BackdropFit {
-    /// The `background-size` and `background-repeat` pair for this fit.
-    #[must_use]
-    pub fn css(self) -> (&'static str, &'static str) {
-        match self {
-            BackdropFit::Cover => ("cover", "no-repeat"),
-            BackdropFit::Contain => ("contain", "no-repeat"),
-            BackdropFit::Tile => ("auto", "repeat"),
-            BackdropFit::Center => ("auto", "no-repeat"),
-        }
-    }
-}
-
-/// Below this the window is too faint to read or to aim at.
-///
-/// A floor and not a suggestion. Opacity is the one appearance setting that
-/// can hide the control that would undo it: at 0 the operator has an invisible
-/// window, no settings modal to find, and no reason to suspect the config file.
-pub const OPACITY_MIN_PCT: u8 = 20;
-/// Fully opaque, and the default.
-pub const OPACITY_MAX_PCT: u8 = 100;
-/// The widest blur worth offering. Past this the image is a flat colour and
-/// the GPU is doing the work of producing one.
-pub const BACKDROP_BLUR_MAX_PX: u8 = 64;
-
-/// Window translucency and the backdrop image behind the interface.
-///
-/// Separate from [`ThemePref`] because they answer different questions. A
-/// theme is which palette to paint; this is how much of the desktop shows
-/// through it, and an operator who rices their desktop wants the second
-/// without giving up the first.
-///
-/// Chrome and terminal carry their own opacity. The common arrangement is an
-/// opaque shell with a translucent grid, so the wallpaper reads behind the
-/// text and the sidebar stays legible; one shared number cannot express it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct AppearancePrefs {
-    /// Opacity of the window chrome, percent.
-    pub opacity_pct: u8,
-    /// Opacity of the terminal grid, percent, independent of the chrome.
-    pub terminal_opacity_pct: u8,
-    /// Absolute path to a backdrop image. Empty means none.
-    pub backdrop: String,
-    pub backdrop_fit: BackdropFit,
-    /// Gaussian blur over the backdrop, in CSS pixels.
-    pub backdrop_blur_px: u8,
-    /// A scrim between the backdrop and the interface, percent. This is what
-    /// keeps text readable over a bright photograph, so it is offered beside
-    /// the image rather than left for the operator to solve with opacity.
-    pub backdrop_dim_pct: u8,
-}
-
-impl Default for AppearancePrefs {
-    fn default() -> Self {
-        AppearancePrefs {
-            opacity_pct: OPACITY_MAX_PCT,
-            terminal_opacity_pct: OPACITY_MAX_PCT,
-            backdrop: String::new(),
-            backdrop_fit: BackdropFit::default(),
-            backdrop_blur_px: 0,
-            backdrop_dim_pct: 0,
-        }
-    }
-}
-
-impl AppearancePrefs {
-    /// True when anything here needs the window itself to be see-through.
-    ///
-    /// A backdrop image does NOT: it is painted inside the window, so it needs
-    /// no help from the compositor. Only an opacity below 100 does, and the
-    /// distinction matters because a transparent window is the part that
-    /// depends on the desktop having a compositor at all.
-    #[must_use]
-    pub fn needs_transparent_window(&self) -> bool {
-        self.opacity_pct < OPACITY_MAX_PCT || self.terminal_opacity_pct < OPACITY_MAX_PCT
-    }
-
-    /// Clamp every value into the range the interface can survive.
-    ///
-    /// Applied on load, not just at the controls. The sliders cannot produce
-    /// an out-of-range value; a hand-edited `ui.json` is the path that
-    /// actually produces an unusable window, and it does not go through them.
-    pub fn clamp(&mut self) {
-        self.opacity_pct = self.opacity_pct.clamp(OPACITY_MIN_PCT, OPACITY_MAX_PCT);
-        self.terminal_opacity_pct = self
-            .terminal_opacity_pct
-            .clamp(OPACITY_MIN_PCT, OPACITY_MAX_PCT);
-        self.backdrop_blur_px = self.backdrop_blur_px.min(BACKDROP_BLUR_MAX_PX);
-        self.backdrop_dim_pct = self.backdrop_dim_pct.min(100);
-    }
-}
-
-/// Terminal preferences.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct TerminalPrefs {
-    pub renderer: TermRenderer,
-    /// Lines of scrollback the terminal keeps in the webview. Server-side
-    /// history is unaffected and is where deep scrollback actually lives.
-    ///
-    /// 1000 matches what `bootstrap.js` mounts with, and is the number the
-    /// 174.7 MB resident figure was measured at. The two have to agree or the
-    /// first write from the settings modal silently multiplies the terminal's
-    /// buffer without the operator touching the control.
-    pub scrollback_lines: u32,
-    /// CSS font stack, verbatim. Empty means "whatever `--rg-font-mono`
-    /// resolves to", which is the one place the default stack is written down;
-    /// copying it here would go stale the first time the stylesheet is retuned.
-    pub font_family: String,
-    pub font_size_px: u16,
-    /// Colour palette for the grid.
-    ///
-    /// Independent of [`Settings::theme`] on purpose. The chrome's light/dark
-    /// choice is about the room the operator is sitting in; the grid's palette
-    /// is about the colours their prompt and their agent's ANSI output were
-    /// tuned for, and those two answers are routinely different.
-    pub palette: crate::termpalette::TermPalette,
-}
-
-impl Default for TerminalPrefs {
-    fn default() -> Self {
-        TerminalPrefs {
-            renderer: TermRenderer::default(),
-            scrollback_lines: 1_000,
-            font_family: String::new(),
-            font_size_px: 13,
-            palette: crate::termpalette::TermPalette::default(),
-        }
-    }
-}
-
-/// Which events raise an OS notification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NotifyPrefs {
-    /// A session's child exited.
-    pub finished: bool,
-    /// A session is blocked on the operator.
-    pub needs_approval: bool,
-    /// A session exited non-zero.
-    pub failed: bool,
-    /// Skip the notification when the session is the one on screen. Watching
-    /// something finish and then being told it finished is noise.
-    pub skip_focused_session: bool,
-}
-
-impl Default for NotifyPrefs {
-    fn default() -> Self {
-        NotifyPrefs {
-            finished: false,
-            needs_approval: true,
-            failed: true,
-            skip_focused_session: true,
-        }
-    }
-}
-
-/// Rebound shortcuts.
-///
-/// Keyed by the action's wire name and valued by a chord string, both plain
-/// text, so this file never has to agree with `keymap.rs` about a Rust type.
-/// `keymap` parses and validates; an override it cannot parse is ignored and
-/// the default binding stands, which is the only behaviour that cannot lock a
-/// user out of their own keyboard.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct KeyboardPrefs {
-    pub overrides: BTreeMap<String, String>,
-    /// Bindings the operator wrote: a chord, and an ordered list of steps to
-    /// perform when it fires. Consulted before the built-in table, so a
-    /// custom binding on a built-in chord shadows it.
-    pub custom: crate::keymap::CustomBindings,
-}
-
-/// Smallest and largest UI text scale, in percent.
-pub const TEXT_SCALE_MIN_PCT: u16 = 80;
-/// Largest UI text scale, in percent.
-pub const TEXT_SCALE_MAX_PCT: u16 = 200;
-
-/// Application-global preferences.
-///
-/// Global, not per workspace: these are statements about how this operator
-/// reads a list, and an operator who wants branches hidden wants them hidden
-/// everywhere. The two genuinely context-dependent settings — how a workspace
-/// buckets its rows and which bands it shows — live on [`Workspace`] instead,
-/// because "this workspace is my review queue, show me settled work" is a fact
-/// about the workspace and not about the person.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Settings {
-    /// Draw `rg-session__branch` on rows that have a branch.
-    pub show_branch: bool,
-    /// Draw `rg-session__time`.
-    pub show_time: bool,
-    /// Draw `rg-pill__word`. Off leaves the icon, which is what the collapsed
-    /// sidebar already renders, so the narrow layout is reachable at any width.
-    pub show_status_word: bool,
-    /// Force every sidebar row to the slim variant.
-    ///
-    /// Distinct from [`Density::Compact`], which shrinks both variants: this
-    /// collapses the card rows to slim ones outright. At twenty agents
-    /// "make the list dense" is a real thing to want, and it is a different
-    /// want from "make everything smaller". Off by default, so nobody who
-    /// never opens the settings sees a different sidebar.
-    pub always_slim: bool,
-    /// Require a confirmation before terminating a live child.
-    pub confirm_terminate: bool,
-    /// Force the reduced-motion path regardless of what the OS reports.
-    pub reduce_motion: bool,
-    pub density: Density,
-    pub theme: ThemePref,
-    /// UI text scale in percent, clamped to
-    /// [`TEXT_SCALE_MIN_PCT`]..=[`TEXT_SCALE_MAX_PCT`] by
-    /// [`Settings::set_text_scale`]. Separate from the terminal's own font
-    /// size: an operator who wants a big terminal and a dense sidebar is the
-    /// normal case, not an exotic one.
-    pub text_scale_pct: u16,
-    pub terminal: TerminalPrefs,
-    pub appearance: AppearancePrefs,
-    pub notifications: NotifyPrefs,
-    pub keyboard: KeyboardPrefs,
-    /// Daemon URL override. Empty means "use whatever the command line said",
-    /// which keeps `--server` authoritative for the case it exists for.
-    pub daemon_url: String,
-    /// Auto-settle tuning. A setting because it is the one disposition rule
-    /// with a number in it that an operator has an opinion about.
-    pub policy: DispositionPolicy,
-    /// Whether the operator has been past the first-run sheet. False on a
-    /// fresh profile, and the only thing that opens onboarding.
-    pub onboarded: bool,
-    /// The version whose changelog was last shown, as it was written. Empty
-    /// means never, which is first run and belongs to onboarding rather than
-    /// to the release notes. A string and not a `Version` so a profile
-    /// written by a build with a different scheme still loads.
-    pub seen_version: String,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            show_branch: true,
-            show_time: true,
-            show_status_word: true,
-            always_slim: false,
-            confirm_terminate: true,
-            reduce_motion: false,
-            density: Density::default(),
-            theme: ThemePref::default(),
-            text_scale_pct: 100,
-            terminal: TerminalPrefs::default(),
-            appearance: AppearancePrefs::default(),
-            notifications: NotifyPrefs::default(),
-            keyboard: KeyboardPrefs::default(),
-            daemon_url: String::new(),
-            policy: DispositionPolicy::default(),
-            onboarded: false,
-            seen_version: String::new(),
-        }
-    }
-}
-
-impl Settings {
-    /// Clamp and store a text scale.
-    ///
-    /// Clamped rather than validated at the control, because a scale read back
-    /// from a hand-edited file is the case that actually produces an
-    /// unreadable window, and that path does not go through a slider.
-    pub fn set_text_scale(&mut self, pct: u16) {
-        self.text_scale_pct = pct.clamp(TEXT_SCALE_MIN_PCT, TEXT_SCALE_MAX_PCT);
-    }
-
-    /// The daemon URL to dial, given whatever the command line asked for.
-    pub fn resolved_daemon_url<'a>(&'a self, cli: &'a str) -> &'a str {
-        if self.daemon_url.trim().is_empty() {
-            cli
-        } else {
-            self.daemon_url.trim()
-        }
-    }
-
-    /// The version whose release notes this profile has already seen, if any.
-    ///
-    /// Unparseable text reads as "never seen", which shows the notes once more
-    /// rather than swallowing them. Showing a sheet twice is a smaller failure
-    /// than never showing it.
-    pub fn last_seen_version(&self) -> Option<semver::Version> {
-        semver::Version::parse(self.seen_version.trim()).ok()
-    }
-
-    /// Record that the first-run sheet is done with, whichever control closed
-    /// it, and that this version's notes count as read.
-    ///
-    /// Both at once: an operator who has just been walked through the app does
-    /// not then want the release notes for the version they installed a minute
-    /// ago.
-    pub fn finish_onboarding(&mut self, current: &semver::Version) {
-        self.onboarded = true;
-        self.seen_version = current.to_string();
-    }
-
-    /// Record that the notes for `current` have been read.
-    pub fn mark_seen(&mut self, current: &semver::Version) {
-        self.seen_version = current.to_string();
-    }
-}
-
-/// Which page of the settings modal is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SettingsTab {
-    /// Theme, density, text scale.
-    #[default]
-    Appearance,
-    /// What a sidebar row shows.
-    Sidebar,
-    /// The workspace list, and the selected workspace's grouping, bands and
-    /// folders. One tab and not three: they are all facets of one object, and
-    /// splitting them makes the operator hop between pages to answer one
-    /// question.
-    Workspaces,
-    /// Saved commands: label, command, arguments, default working directory.
-    Presets,
-    Terminal,
-    Notifications,
-    Keyboard,
-    /// Daemon URL and diagnostics.
-    Advanced,
-    /// Which version this is, and getting a newer one.
-    ///
-    /// Last because it is the tab an operator opens twice a year, and first
-    /// in importance only when something is wrong, which is when they will
-    /// look for it by name rather than by position.
-    About,
-}
-
-impl SettingsTab {
-    pub const ALL: [SettingsTab; 9] = [
-        SettingsTab::Appearance,
-        SettingsTab::Sidebar,
-        SettingsTab::Workspaces,
-        SettingsTab::Presets,
-        SettingsTab::Terminal,
-        SettingsTab::Notifications,
-        SettingsTab::Keyboard,
-        SettingsTab::Advanced,
-        SettingsTab::About,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SettingsTab::Appearance => "Appearance",
-            SettingsTab::Sidebar => "Sidebar",
-            SettingsTab::Workspaces => "Workspaces",
-            SettingsTab::Presets => "Presets",
-            SettingsTab::Terminal => "Terminal",
-            SettingsTab::Notifications => "Notifications",
-            SettingsTab::Keyboard => "Keyboard",
-            SettingsTab::Advanced => "Advanced",
-            SettingsTab::About => "About",
-        }
-    }
-}
+/// The operator-authored half of the model: the workspace partition and the
+/// folders inside it. Re-exported so `state::WorkspaceId` stays the one path
+/// every caller spells.
+mod workspace;
+/// Preferences, and the pages of the settings modal.
+mod settings;
+
+// Glob, not a hand-maintained list: the split is an internal carve and every
+// one of these names is spelled `state::Thing` at its call sites. A list would
+// have to be edited every time either module grows a type, and would warn as
+// unused for the ones only their own module names today.
+pub use settings::*;
+pub use workspace::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Daemon state
@@ -1465,16 +418,12 @@ impl FoldedProjects {
         self.from
             .extend(projects.iter().map(|p| (p.id, p.root.clone())));
         self.groups.clear();
-        self.groups.extend(folded.groups().iter().map(|group| {
-            FoldedGroup {
+        self.groups
+            .extend(folded.groups().iter().map(|group| FoldedGroup {
                 key: group.key.clone(),
                 id: group.id,
-                lead: projects
-                    .iter()
-                    .position(|p| core::ptr::eq(p, group.lead))
-                    .expect("a folded group's lead is one of the projects it was folded from"),
-            }
-        }));
+                lead: group.lead_at,
+            }));
         self.index.clear();
         self.index.extend(
             projects
@@ -1747,14 +696,14 @@ impl DaemonState {
                 // The placement goes with the row. Leaving it behind would
                 // keep the workspace counting a session nobody can see, which
                 // is exactly the state the delete guard refuses to allow.
+                //
+                // One targeted removal, not a rebuild: this used to collect a
+                // `BTreeSet` of every surviving key and re-`retain` every
+                // placement map against it, which is a tree node per live
+                // session plus a full walk of `home` and of every workspace's
+                // `folder_of`, to delete one entry.
                 if let Some(key) = key {
-                    let mut live: BTreeSet<SessionKey> = self
-                        .sessions
-                        .iter()
-                        .map(|row| SessionKey::of(&row.info))
-                        .collect();
-                    live.remove(&key);
-                    self.workspaces.retain_sessions(&live);
+                    self.workspaces.forget_session(key);
                 }
                 Broadcast::SessionsChanged
             }
@@ -1781,7 +730,10 @@ impl DaemonState {
                 data,
                 more,
             } => Broadcast::Scrollback {
-                resume_seq: from_seq + data.len() as u64,
+                // The daemon owns `from_seq` and a `u64` add is a panic in a
+                // debug build. A saturating end offset is wrong by nothing any
+                // real stream can reach and cannot take the window down.
+                resume_seq: from_seq.saturating_add(data.len() as u64),
                 session,
                 from_seq,
                 bytes: data,
@@ -1924,13 +876,18 @@ impl DaemonState {
         if !self.workspaces.contains(to) {
             return Err(WorkspaceError::Unknown);
         }
-        let infos: Vec<SessionInfo> = ids
+        // Keys, not clones. A `SessionKey` is two `u64`s and `Copy`; the
+        // previous form cloned a whole `SessionInfo` per id (four strings and
+        // an argument vector) purely so the assign loop could borrow `self`
+        // mutably, which is up to twenty allocations for a bulk move that
+        // changes one map entry each.
+        let keys: Vec<SessionKey> = ids
             .iter()
-            .filter_map(|id| self.session(*id).cloned())
+            .filter_map(|id| self.session(*id).map(SessionKey::of))
             .collect();
-        let moved = infos.len();
-        for info in &infos {
-            self.workspaces.assign(info, to)?;
+        let moved = keys.len();
+        for key in keys {
+            self.workspaces.assign_key(key, to)?;
         }
         Ok(moved)
     }
@@ -1942,13 +899,14 @@ impl DaemonState {
         ids: &[SessionId],
         folder: Option<FolderId>,
     ) -> Result<usize, WorkspaceError> {
-        let infos: Vec<SessionInfo> = ids
+        // Keys, not clones, for the reason on `move_to_workspace`.
+        let keys: Vec<SessionKey> = ids
             .iter()
-            .filter_map(|id| self.session(*id).cloned())
+            .filter_map(|id| self.session(*id).map(SessionKey::of))
             .collect();
         let mut moved = 0;
-        for info in &infos {
-            self.workspaces.assign_folder(info, folder)?;
+        for key in keys {
+            self.workspaces.assign_folder_key(key, folder)?;
             moved += 1;
         }
         Ok(moved)
@@ -2986,12 +1944,24 @@ impl WindowState {
         clock: Clock,
         direction: Direction,
     ) -> Option<SessionId> {
-        let visible = self.visible_ids(daemon, clock);
+        // The predicate is answered from a set built in one pass over the tree
+        // the visible list already came from. It used to call
+        // `DaemonState::row`, which is a linear scan of the whole session
+        // list, once per candidate `adjacent_matching` walked: O(visible x
+        // sessions) comparisons to re-find rows the tree was holding pointers
+        // to, and the whole point of the key is that it works at twenty rows.
         let policy = daemon.policy();
+        let tree = self.tree(daemon, clock);
+        let mut visible = Vec::with_capacity(tree.iter().map(SidebarGroup::len).sum());
+        let mut wanted: BTreeSet<SessionId> = BTreeSet::new();
+        for row in self.visible_rows_of(&tree) {
+            if inbox::wants_operator(row, clock, policy) {
+                wanted.insert(row.id());
+            }
+            visible.push(row.id());
+        }
         adjacent_matching(&visible, self.focused, direction, Wrap::Around, |id| {
-            daemon
-                .row(id)
-                .is_some_and(|row| inbox::wants_operator(row, clock, policy))
+            wanted.contains(&id)
         })
     }
 
@@ -3194,27 +2164,32 @@ impl WindowState {
     /// one that exited. Parked strips are pruned too, or switching back to a
     /// workspace would restore tabs for sessions that no longer exist.
     pub fn prune(&mut self, daemon: &mut DaemonState, now_ms: u64) {
-        let mine: BTreeSet<SessionId> = daemon
+        // One sorted vector, not a `BTreeSet` and then a flattened copy of it.
+        // The set cost a tree node per session and `retain_visible` needs a
+        // slice anyway, so the copy was pure overhead on a path that runs on
+        // every session change in every window.
+        let mut mine: Vec<SessionId> = daemon
             .sessions
             .iter()
             .filter(|row| daemon.workspaces.workspace_of(&row.info) == self.workspace)
             .map(|row| row.id())
             .collect();
+        mine.sort_unstable();
+        let holds = |id: &SessionId| mine.binary_search(id).is_ok();
         if let Some(f) = self.focused
-            && !mine.contains(&f)
+            && !holds(&f)
         {
             // Pick the neighbour before the tab vanishes, so focus lands next
             // to where the user was rather than at the start of the strip.
             let next = self.neighbour_of(f);
-            self.focused = next.filter(|n| mine.contains(n));
+            self.focused = next.filter(holds);
         }
-        self.tabs.retain(|id| mine.contains(id));
-        self.tab_mru.retain(|id| mine.contains(id));
+        self.tabs.retain(holds);
+        self.tab_mru.retain(holds);
         // A selection holding closed sessions makes a bulk action operate on
         // rows that no longer exist, and puts a count in a menu label that
         // does not match what the operator can see.
-        let mine_ids: Vec<SessionId> = mine.iter().copied().collect();
-        self.selection.retain_visible(&mine_ids);
+        self.selection.retain_visible(&mine);
         if self.focused.is_none() {
             self.focused = self.tabs.first().copied();
         }
@@ -3222,16 +2197,26 @@ impl WindowState {
             self.touch(f);
             daemon.visit(f, now_ms);
         }
-        for (workspace, strip) in &mut self.parked {
-            let theirs: BTreeSet<SessionId> = daemon
-                .sessions
-                .iter()
-                .filter(|row| daemon.workspaces.workspace_of(&row.info) == *workspace)
-                .map(|row| row.id())
-                .collect();
-            strip.tabs.retain(|id| theirs.contains(id));
-            strip.tab_mru.retain(|id| theirs.contains(id));
-            strip.focused = strip.focused.filter(|id| theirs.contains(id));
+        // One pass over the session list for every parked strip together. This
+        // used to re-scan every session and build a fresh `BTreeSet` per
+        // parked workspace, which is O(parked x sessions) placement lookups
+        // and a set allocation each, to prune strips holding at most
+        // [`MAX_TABS`] entries.
+        if !self.parked.is_empty() {
+            let mut by_workspace: BTreeMap<WorkspaceId, Vec<SessionId>> = BTreeMap::new();
+            for row in &daemon.sessions {
+                by_workspace
+                    .entry(daemon.workspaces.workspace_of(&row.info))
+                    .or_default()
+                    .push(row.id());
+            }
+            for (workspace, strip) in &mut self.parked {
+                let theirs: &[SessionId] =
+                    by_workspace.get(workspace).map_or(&[], Vec::as_slice);
+                strip.tabs.retain(|id| theirs.contains(id));
+                strip.tab_mru.retain(|id| theirs.contains(id));
+                strip.focused = strip.focused.filter(|id| theirs.contains(id));
+            }
         }
         self.parked.retain(|w, _| daemon.workspaces.contains(*w));
     }
@@ -3321,7 +2306,15 @@ impl WindowState {
     /// you close nineteen sessions meaning to close one.
     fn bulk_menu(&self, daemon: &DaemonState, ids: &[SessionId], clock: Clock) -> Vec<MenuItem> {
         let policy = daemon.policy();
-        let facts = SelectionFacts::collect(&self.selection, &daemon.sessions, clock, policy);
+        // Facts over the rows this menu will actually act on, not over the
+        // whole selection. `menu_targets` drops selected rows the tree is not
+        // currently showing (a collapsed bucket, a closed band, the preview
+        // cut), so counting the selection made every label promise more than
+        // the action delivers, and made the refusal counts below subtract a
+        // larger number from a smaller one, which is a panic.
+        let mut targets = Selection::new();
+        targets.select_all(ids);
+        let facts = SelectionFacts::collect(&targets, &daemon.sessions, clock, policy);
         let ready = daemon.server_ready();
         let mut out = Vec::with_capacity(8);
         for item in vitrum_model::context_menu(facts) {
@@ -4010,7 +3003,14 @@ pub fn parse_ui_state(text: &str) -> UiStateLoad {
     // unknown-field errors that say nothing useful.
     match value.get("version").and_then(serde_json::Value::as_u64) {
         Some(v) if v == UI_STATE_VERSION as u64 => {}
-        Some(v) => return UiStateLoad::Unsupported { version: v as u32 },
+        // Saturating, not truncating: `4294967297 as u32` is 1, so a file
+        // claiming that version reported "version 1, this build understands 1"
+        // and told the operator nothing.
+        Some(v) => {
+            return UiStateLoad::Unsupported {
+                version: u32::try_from(v).unwrap_or(u32::MAX),
+            };
+        }
         None => {
             return UiStateLoad::Corrupt {
                 detail: "no version field".to_string(),
@@ -4459,3 +3459,7 @@ mod tests;
 /// and that the two kinds are distinguishable at all.
 #[cfg(test)]
 mod flash_lifetime;
+
+/// What the model does when the daemon or `ui.json` hands it nonsense.
+#[cfg(test)]
+mod hardening;

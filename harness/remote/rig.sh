@@ -999,7 +999,7 @@ measure_t3() {
 
   echo "settling T3 Code for ${SETTLE}s"
   sleep "$SETTLE"
-  python3 "$STAGE/measure.py" footprint "$T3_PID" t3-code
+  python3 "$STAGE/measure.py" footprint "$T3_PID" t3-code "$MOCK_URL"
 }
 
 cmd_bench() {
@@ -1032,12 +1032,12 @@ cmd_bench() {
   echo
   echo "vitrum client tree, whole tree, $sessions session(s)"
   local vitrum_client vitrum_daemon
-  vitrum_client="$(python3 "$STAGE/measure.py" footprint "$APP_PID" vitrum-client)" \
+  vitrum_client="$(python3 "$STAGE/measure.py" footprint "$APP_PID" vitrum-client "$MOCK_URL")" \
     || die "could not measure the vitrum client tree"
   printf '%s\n' "$vitrum_client"
   echo
-  echo "vitrum daemon tree, including every agentsim it spawned"
-  vitrum_daemon="$(python3 "$STAGE/measure.py" footprint "$DAEMON_PID" vitrum-daemon)" \
+  echo "vitrum daemon tree, with the agentsims it spawned charged to the workload"
+  vitrum_daemon="$(python3 "$STAGE/measure.py" footprint "$DAEMON_PID" vitrum-daemon "$MOCK_URL")" \
     || die "could not measure the vitrum daemon tree"
   printf '%s\n' "$vitrum_daemon"
   report_tree "$APP_PID"
@@ -1052,6 +1052,12 @@ cmd_bench() {
   # tree is the one that can contain a process the kernel will not roll up.
   [ "$v_metric" = "$(footprint_field "$vitrum_daemon" metric)" ] \
     || die "the client tree measured $v_metric and the daemon tree did not; the two cannot be added"
+
+  # The mock agents are the same processes on both sides, so they are reported
+  # once, on their own, and are in neither product total.
+  local w_kb w_procs
+  w_kb=$(( $(footprint_field "$vitrum_client" workload_kb) + $(footprint_field "$vitrum_daemon" workload_kb) ))
+  w_procs=$sessions
 
   local t3_bin t3_out="" t3_metric="" t3_kb="" t3_procs=""
   t3_bin="$(find_t3 || true)"
@@ -1079,7 +1085,8 @@ cmd_bench() {
     fi
   fi
 
-  bench_report "$sessions" "$v_metric" "$v_kb" "$v_procs" "$t3_metric" "$t3_kb" "$t3_procs"
+  bench_report "$sessions" "$v_metric" "$v_kb" "$v_procs" \
+    "$t3_metric" "$t3_kb" "$t3_procs" "$w_kb" "$w_procs"
 }
 
 # The comparison, with every condition it depends on beside it. A bare ratio is
@@ -1087,7 +1094,7 @@ cmd_bench() {
 # or RSS the numbers are all change the answer.
 bench_report() {
   local sessions="$1" v_metric="$2" v_kb="$3" v_procs="$4"
-  local t_metric="$5" t_kb="$6" t_procs="$7"
+  local t_metric="$5" t_kb="$6" t_procs="$7" w_kb="${8:-0}" w_procs="${9:-0}"
 
   echo
   echo "comparison"
@@ -1095,6 +1102,8 @@ bench_report() {
   echo "  sessions    $sessions, each running agentsim.py against the mock"
   echo "  workload    $BENCH_TURNS turns, $BENCH_TOKENS tokens per response at ${BENCH_TPS}/s, seed $BENCH_SEED"
   echo "  metric      $(echo "$v_metric" | tr '[:lower:]' '[:upper:]'), summed across the whole process tree"
+  printf '  mock agents %s MB across %s process(es), EXCLUDED from both products\n' \
+    "$(awk -v kb="$w_kb" 'BEGIN { printf "%.1f", kb / 1024 }')" "$w_procs"
   printf '  vitrum      %s MB across %s process(es), client and daemon together\n' \
     "$(awk -v kb="$v_kb" 'BEGIN { printf "%.1f", kb / 1024 }')" "$v_procs"
 

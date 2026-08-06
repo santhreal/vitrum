@@ -62,11 +62,13 @@ harness/run.sh              what you run, on your machine
 harness/remote/rig.sh       what runs on the measurement host
 harness/remote/measure.py   PSS and CPU for a process tree, from /proc
 harness/remote/sessions.py  a WebSocket client that creates sessions
+harness/remote/mockllm.py   a streaming OpenAI/Anthropic server, no model
+harness/remote/agentsim.py  an agent TUI that drives one session
 harness/out/                reports, captures and remote logs land here
 ```
 
 `run.sh` compiles nothing and launches nothing. It finds your release build,
-copies two files and four scripts to the measurement host, runs `rig.sh` there
+copies two files and five scripts to the measurement host, runs `rig.sh` there
 over ssh, and copies the results back. If there is no release build it prints
 the `cargo build` line and stops, because a harness that quietly rebuilds is a
 harness that can report a binary you did not mean to test.
@@ -233,6 +235,50 @@ a real regression gets waved through. Ruling it out costs one line, so the line
 is always printed. For scale, the development desktop sat at load 13 to 28
 while this was being built and `perfhost` sat at 0.04, which is most of the
 argument for measuring there rather than here.
+
+## Comparing against T3 Code
+
+```
+harness/run.sh bench 20
+```
+
+This puts vitrum and T3 Code under one identical workload and reports what each
+costs in memory. Twenty sessions, each running a mock agent that talks to a mock
+LLM: no network, no API key, no model, and a seed, so the same command produces
+the same bytes on every run. A benchmark whose input varies measures nothing.
+
+Two pieces do the pretending:
+
+- `harness/remote/mockllm.py` serves OpenAI and Anthropic streaming endpoints
+  and paces tokens against a monotonic deadline, so `--tokens-per-second` means
+  what it says under load. `GET /stats` reports what it actually served, which
+  is how you check that both halves of the comparison got the same work.
+- `harness/remote/agentsim.py` is an agent TUI and nothing more: alternate
+  screen, a status line, wrapping, a spinner, cursor addressing, and hint OSC
+  sequences. It exercises a terminal the way a coding agent does.
+
+The mock agents are excluded from both products. They are the same twenty
+processes whichever app is hosting them, and vitrum's daemon happens to be their
+parent, so a plain tree walk charges 190 MB of Python to vitrum and nothing to
+T3 Code. Adding a constant to both sides of a ratio also drags it toward 1. They
+are measured, printed on their own line, and subtracted from each side.
+
+T3 Code is never installed by this harness and none of its source is in this
+tree. If it is not on the box, the run reports vitrum's number alone and says
+there is no ratio, rather than inventing one. Point `HARNESS_T3` at the binary
+if it lives somewhere the search does not look.
+
+Measured on `axiomserver`, 32 threads, load 0.76, twenty sessions, PSS:
+
+| | processes | PSS |
+|---|---|---|
+| vitrum client | 3 | 845.8 MB |
+| vitrum daemon | 1 | 45.1 MB |
+| mock agents (excluded) | 20 | 190.2 MB |
+
+Most of the client figure is one WebKit web process at 679 MB. It is one
+process for twenty windows rather than twenty, which is the whole reason for the
+vendored dioxus-desktop fork, and it is also the number to attack next.
 
 ## Screenshots
 
@@ -457,13 +503,18 @@ fetched. Set `HARNESS_KEEP_REMOTE=1` to keep it.
 |---|---|---|
 | `HARNESS_ENDPOINT` | unset | one ssh destination, skipping the search |
 | `HARNESS_ENDPOINTS` | the four defaults | the ordered list to search |
-| `HARNESS_BIN_DIR` | your release build | where `vitrum-app` and `vitrum-server` come from |
+| `HARNESS_BIN_DIR` | your release build | where `vitrum` and `vitrum-server` come from |
 | `HARNESS_SCREEN` | `1920x1080` | the virtual screen size |
 | `HARNESS_SETTLE` | `45` | seconds to settle before measuring |
 | `HARNESS_STARTUP` | `8` | seconds between the window mapping and a capture |
 | `HARNESS_SESSION_CMD` | `/bin/bash` | what each session runs |
 | `HARNESS_SESSION_ARGS` | `-i` | its arguments |
 | `HARNESS_KEEP_REMOTE` | `0` | leave the run directory on the host |
+| `HARNESS_T3` | unset | T3 Code's binary, when the search cannot find it |
+| `HARNESS_BENCH_TURNS` | `40` | turns each mock agent takes |
+| `HARNESS_BENCH_TOKENS` | `200` | tokens in each mock response |
+| `HARNESS_BENCH_TPS` | `30` | tokens per second the mock streams at |
+| `HARNESS_BENCH_SEED` | `1` | the seed both halves run under |
 
 ## What has been exercised, and what has not
 
@@ -495,6 +546,15 @@ Verified against `perfhost`, and the probe additionally against
   7 and a five-window run dies. It still does not prove each window is showing
   a DIFFERENT session, which needs the client's own state; that remains
   unverified and is named below rather than implied.
+- `bench 20` end to end on `axiomserver`: mock served 140 requests and 28000
+  tokens, twenty mock agents ran, and the split reported 845.8 MB of client,
+  45.1 MB of daemon and 190.2 MB of excluded workload. The exclusion is not
+  taken on trust: with a marker that also matched the tree root, the run
+  reported the product as 0.1 MB, which is how the root guard in `cmd_footprint`
+  came to exist.
+- No ratio has ever been produced, because T3 Code is installed on neither
+  measurement host and this harness will not install it. Both halves of the
+  comparison are exercised; only the second product is missing.
 - Preflight's TOOL-missing branch, which every earlier test had left
   unexercised because the only host available was missing libraries, not
   tools. Run against a curated `PATH` with `xdotool` and `import` hidden, the

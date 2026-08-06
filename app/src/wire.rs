@@ -256,7 +256,6 @@ pub enum BridgeCmd {
         /// build one transient JavaScript number per history byte before
         /// anything can copy it into the grid. Base64 is 4/3 and decodes
         /// straight into a `Uint8Array`.
-        #[serde(with = "vitrum_proto::b64::bytes")]
         bytes: Vec<u8>,
         jump_seq: Option<String>,
         keep_view: bool,
@@ -656,7 +655,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&cmd).unwrap(),
-            r#"{"cmd":"backfill","session":5,"fromSeq":"18446744073709551611","resumeSeq":"18446744073709551614","bytes":"AQL/","jumpSeq":"18446744073709551612","keepView":true,"more":true}"#
+            r#"{"cmd":"backfill","session":5,"fromSeq":"18446744073709551611","resumeSeq":"18446744073709551614","bytes":[1,2,255],"jumpSeq":"18446744073709551612","keepView":true,"more":true}"#
         );
         // The common case: an attach, which asks for neither.
         let plain = BridgeCmd::Backfill {
@@ -670,7 +669,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&plain).unwrap(),
-            r#"{"cmd":"backfill","session":5,"fromSeq":"0","resumeSeq":"3","bytes":"","jumpSeq":null,"keepView":false,"more":false}"#
+            r#"{"cmd":"backfill","session":5,"fromSeq":"0","resumeSeq":"3","bytes":[],"jumpSeq":null,"keepView":false,"more":false}"#
         );
     }
 

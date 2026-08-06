@@ -189,6 +189,47 @@ pub mod bytes_seq {
             .collect()
     }
 }
+/// `#[serde(with = "crate::b64::bytes_cow")]` for a `Cow<'a, [u8]>` field.
+pub mod bytes_cow {
+    use super::*;
+
+    /// # Errors
+    /// Propagates whatever the serializer reports.
+    pub fn serialize<S: Serializer>(data: &std::borrow::Cow<'_, [u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+        bytes::serialize(data.as_ref(), serializer)
+    }
+
+    /// # Errors
+    /// Fails when the field is not a string, or not valid base64.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<std::borrow::Cow<'de, [u8]>, D::Error> {
+        let text = <&str>::deserialize(deserializer)?;
+        decode(text).map(std::borrow::Cow::Owned).map_err(serde::de::Error::custom)
+    }
+}
+
+/// `#[serde(with = "crate::b64::bytes_seq_cow")]` for a `Vec<Cow<'a, [u8]>>` field.
+pub mod bytes_seq_cow {
+    use super::*;
+
+    /// # Errors
+    /// Propagates whatever the serializer reports.
+    pub fn serialize<S: Serializer>(lines: &[std::borrow::Cow<'_, [u8]>], serializer: S) -> Result<S::Ok, S::Error> {
+        let strings: Vec<String> = lines.iter().map(|line| encode(line.as_ref())).collect();
+        strings.serialize(serializer)
+    }
+
+    /// # Errors
+    /// Fails when the field is not an array of strings, or any element is not valid base64.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<std::borrow::Cow<'de, [u8]>>, D::Error> {
+        Vec::<&str>::deserialize(deserializer)?
+            .iter()
+            .map(|text| decode(text).map(std::borrow::Cow::Owned).map_err(serde::de::Error::custom))
+            .collect()
+        
+    }
+}
 
 #[cfg(test)]
 mod tests {

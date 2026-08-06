@@ -51,10 +51,88 @@ pub struct Keyframe {
 }
 
 impl Keyframe {
+    /// Create a new keyframe with seq position and screen snapshot.
+    #[must_use]
+    pub const fn new(seq: u64, screen: Screen) -> Self {
+        Self { seq, screen }
+    }
+
     /// The snapshot.
     #[must_use]
     pub const fn screen(&self) -> &Screen {
         &self.screen
+    }
+}
+/// Compact diff of VT terminal state between a baseline keyframe and a target keyframe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyframeDelta {
+    /// Target keyframe sequence number.
+    pub seq: u64,
+    /// Base keyframe sequence number.
+    pub base_seq: u64,
+    /// Target cursor state.
+    pub cursor: crate::screen::Cursor,
+    /// Vector of (column, row, cell) diffs compared to baseline.
+    pub cell_diffs: Vec<(u16, u16, vitrum_grid::Cell)>,
+}
+
+/// Storage strategy for keyframes in index: anchor keyframe or compact delta.
+#[derive(Clone, Debug)]
+pub enum KeyframeStorage {
+    /// Full anchor keyframe holding complete [`Screen`] state.
+    Anchor(Keyframe),
+    /// Compact delta encoding relative to an anchor keyframe.
+    Delta(KeyframeDelta),
+}
+
+impl KeyframeStorage {
+    /// Sequence number for this keyframe entry.
+    #[must_use]
+    pub fn seq(&self) -> u64 {
+        match self {
+            Self::Anchor(k) => k.seq,
+            Self::Delta(d) => d.seq,
+        }
+    }
+}
+
+impl Keyframe {
+    /// Compute delta snapshot relative to a base keyframe.
+    #[must_use]
+    pub fn compute_delta(&self, base: &Keyframe) -> KeyframeDelta {
+        let cols = self.screen.cols();
+        let rows = self.screen.rows();
+        let mut cell_diffs = Vec::new();
+
+        for r in 0..rows {
+            for c in 0..cols {
+                let cell_self = self.screen.grid().cell(c, r);
+                let cell_base = base.screen.grid().cell(c, r);
+                if cell_self != cell_base {
+                    if let Some(cell) = cell_self {
+                        cell_diffs.push((c, r, cell.clone()));
+                    }
+                }
+            }
+        }
+
+        KeyframeDelta {
+            seq: self.seq,
+            base_seq: base.seq,
+            cursor: self.screen.cursor(),
+            cell_diffs,
+        }
+    }
+
+    /// Reconstruct full Screen from base Screen and delta.
+    #[must_use]
+    pub fn apply_delta(base_screen: &Screen, delta: &KeyframeDelta) -> Screen {
+        let mut screen = base_screen.clone();
+        *screen.cursor_mut() = delta.cursor;
+        for &(c, r, ref cell) in &delta.cell_diffs {
+            let _ = screen.grid_mut().set_cell(c, r, cell.clone());
+        }
+        screen
     }
 }
 
@@ -167,6 +245,40 @@ impl KeyframeIndex {
     pub fn heap_bytes(&self) -> usize {
         let frames: usize = self.frames.iter().map(|frame| frame.screen.heap_bytes()).sum();
         frames + self.frames.capacity() * core::mem::size_of::<Keyframe>()
+    }
+    /// Build delta-encoded keyframes storage table with periodic anchor intervals.
+    pub fn build_delta_encoded_storage(&self, anchor_interval: usize) -> Vec<KeyframeStorage> {
+        let anchor_interval = anchor_interval.max(1);
+        let mut storage = Vec::with_capacity(self.frames.len());
+        let mut last_anchor: Option<Keyframe> = None;
+
+        for (i, frame) in self.frames.iter().enumerate() {
+            if i % anchor_interval == 0 || last_anchor.is_none() {
+                storage.push(KeyframeStorage::Anchor(frame.clone()));
+                last_anchor = Some(frame.clone());
+            } else {
+                let anchor = last_anchor.as_ref().unwrap();
+                let delta = frame.compute_delta(anchor);
+                storage.push(KeyframeStorage::Delta(delta));
+            }
+        }
+        storage
+    }
+
+    /// Calculate heap bytes required when keyframe index is delta-encoded with anchor_interval.
+    #[must_use]
+    pub fn delta_encoded_heap_bytes(&self, anchor_interval: usize) -> usize {
+        let storage = self.build_delta_encoded_storage(anchor_interval);
+        let mut bytes = storage.capacity() * core::mem::size_of::<KeyframeStorage>();
+        for entry in storage {
+            match entry {
+                KeyframeStorage::Anchor(k) => bytes += k.screen.heap_bytes(),
+                KeyframeStorage::Delta(d) => {
+                    bytes += d.cell_diffs.capacity() * core::mem::size_of::<(u16, u16, vitrum_grid::Cell)>();
+                }
+            }
+        }
+        bytes
     }
 }
 

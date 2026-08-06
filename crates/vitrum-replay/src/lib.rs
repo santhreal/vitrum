@@ -117,7 +117,7 @@ mod tests;
 pub use config::{DEFAULT_GROUND_SCAN, DEFAULT_KEYFRAME_STRIDE, ReplayConfig};
 pub use emulator::Emulator;
 pub use error::{CastError, Error, Result};
-pub use keyframe::{Keyframe, KeyframeIndex};
+pub use keyframe::{Keyframe, KeyframeDelta, KeyframeIndex, KeyframeStorage};
 pub use palette::Palette;
 pub use replay::Replay;
 pub use screen::{Charset, Charsets, Cursor, Modes, SavedCursor, Screen, ScrollRegion, TabStops};

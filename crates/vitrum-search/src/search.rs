@@ -121,29 +121,14 @@ impl<'a> ParallelSearch<'a> {
         if haystacks.is_empty() {
             return SearchResults::default();
         }
-        if haystacks.len() == 1 {
-            let mut sweep = Sweep::with_matcher(self.matcher.get(), self.query);
-            sweep.push(&haystacks[0]);
-            return sweep.finish();
-        }
-
         let mut ordered_indices: Vec<usize> = (0..haystacks.len()).collect();
         ordered_indices.sort_by_key(|&index| (haystacks[index].session, haystacks[index].base_seq));
 
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
-            .min(ordered_indices.len());
-
-        if num_threads <= 1 {
-            let mut sweep = Sweep::with_matcher(self.matcher.get(), self.query);
-            for index in ordered_indices {
-                if !sweep.push(&haystacks[index]) {
-                    break;
-                }
-            }
-            return sweep.finish();
-        }
+            .min(ordered_indices.len())
+            .max(1);
 
         let chunk_size = (ordered_indices.len() + num_threads - 1) / num_threads;
         let matcher_ref = self.matcher.get();

@@ -52,6 +52,13 @@ windows open and nothing running in them:
 Reproduce it with the numbers in `harness/`. Expect a lower idle figure with
 hardware rendering and a higher one while agents are actually printing.
 
+Cold start, measured separately on the same host with a single window: the web
+process exists **0.20 s** after exec, and the window is painted and back to
+doing no work at **1.31 s** (1.26, 1.31, and 1.36 on three runs). Idle after
+that is 4 CPU ticks per 30 seconds across the client and the web process
+together, which is the noise floor of the measurement rather than a number
+worth quoting.
+
 **Saved commands with your own shortcuts.** Nobody runs a bare `claude`. Save
 the invocation you actually use, with the directory it belongs in, and bind a key
 to it. The key works from anywhere in the app, not just inside a dialog.

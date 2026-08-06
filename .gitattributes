@@ -1,0 +1,26 @@
+# Line endings are normalised on the way in and checked out as LF everywhere.
+# The repo is built on Linux, macOS, and Windows, and a file that arrives with
+# CRLF shows up as a whole-file diff on the next platform that touches it.
+* text=auto eol=lf
+
+# Shell scripts are run by CI on Linux and macOS. A CRLF here makes the shebang
+# line unparseable and the script fails with a message that names no cause.
+*.sh text eol=lf
+
+# PowerShell is the one exception. Windows hosts expect CRLF in these.
+*.ps1 text eol=crlf
+
+# Binary assets. Marking them stops git from trying to diff or merge them, and
+# keeps `git diff` readable when one changes.
+*.png binary
+*.gif binary
+*.mp4 binary
+*.ico binary
+
+# SVG is XML and stays text, so a logo tweak is reviewable.
+*.svg text eol=lf
+
+# The two vendored forks are upstream's code, not ours. Excluding them from the
+# language statistics keeps the repo's reported composition about vitrum.
+vendor/** linguist-vendored
+vendor-pty/** linguist-vendored

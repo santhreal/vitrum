@@ -1,0 +1,39 @@
+vitrum
+Copyright 2026 santhreal
+
+This product is dual licensed under the MIT license and the Apache License,
+Version 2.0, at your option. See LICENSE, LICENSE-MIT, and LICENSE-APACHE for
+the full texts. You do not have to satisfy both.
+
+================================================================================
+Bundled third-party work
+================================================================================
+
+Two forks of other people's crates ship inside this repository. They are
+upstream's code, carried here under upstream's own copyright and license, and
+nothing in this repository relicenses them.
+
+1. vendor/  (crate: vitrum-dioxus-desktop)
+
+   A fork of the `dioxus-desktop` crate by Jonathan Kelley.
+   Upstream: https://crates.io/crates/dioxus-desktop
+   Copyright (c) 2021 Jonathan Kelley
+   MIT license, full text at: vendor/LICENSE
+   Divergence from upstream is declared in vendor/UPSTREAM.toml and explained
+   in vendor/README.md.
+
+2. vendor-pty/  (crate: vitrum-portable-pty)
+
+   A fork of the `portable-pty` crate by Wez Furlong.
+   Upstream: https://crates.io/crates/portable-pty
+   Copyright (c) 2018 Wez Furlong
+   MIT license, full text at: vendor-pty/LICENSE.md
+   The single divergence is explained in vendor-pty/README.md.
+
+================================================================================
+Other dependencies
+================================================================================
+
+vitrum also depends on third-party crates from the Rust ecosystem that are not
+bundled here. They are resolved by Cargo and each retains its own copyright and
+license; see Cargo.toml and Cargo.lock for the full graph.

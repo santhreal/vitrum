@@ -188,6 +188,27 @@ impl ActiveKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKey {
+    Active(ActiveKey),
+    Snoozed(SnoozedKey),
+    Settled(SettledKey),
+}
+
+impl RowKey {
+    pub fn cmp_key(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (RowKey::Active(a), RowKey::Active(b)) => a.cmp_key(b),
+            (RowKey::Active(_), _) => Ordering::Less,
+            (_, RowKey::Active(_)) => Ordering::Greater,
+            (RowKey::Snoozed(a), RowKey::Snoozed(b)) => a.cmp_key(b),
+            (RowKey::Snoozed(_), _) => Ordering::Less,
+            (_, RowKey::Snoozed(_)) => Ordering::Greater,
+            (RowKey::Settled(a), RowKey::Settled(b)) => a.cmp_key(b),
+        }
+    }
+}
+
 /// Order two inbox rows under `order`.
 pub fn compare_active(left: &SessionView, right: &SessionView, order: ActiveOrder) -> Ordering {
     match order {
@@ -261,39 +282,32 @@ pub fn arrange(
     }
 
     let len = rows.len();
-    let mut active: Vec<(ActiveKey, usize)> = Vec::with_capacity(len);
-    let mut snoozed: Vec<(SnoozedKey, usize)> = Vec::with_capacity(len);
-    let mut settled: Vec<(SettledKey, usize)> = Vec::with_capacity(len);
-
-    // Precomputed sort keys & single-pass bucket partitioning
+    let mut entries: Vec<(RowKey, usize)> = Vec::with_capacity(len);
     for (idx, row) in rows.iter().enumerate() {
-        match row.section(clock, policy) {
-            Section::Active => active.push((ActiveKey::of(row, order), idx)),
-            Section::Snoozed => snoozed.push((SnoozedKey::of(row), idx)),
-            Section::Settled => settled.push((SettledKey::of(row), idx)),
+        let key = match row.section(clock, policy) {
+            Section::Active => RowKey::Active(ActiveKey::of(row, order)),
+            Section::Snoozed => RowKey::Snoozed(SnoozedKey::of(row)),
+            Section::Settled => RowKey::Settled(SettledKey::of(row)),
+        };
+        entries.push((key, idx));
+    }
+
+    entries.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
+
+    let active_end = entries.partition_point(|(k, _)| matches!(k, RowKey::Active(_)));
+    let snoozed_end = entries.partition_point(|(k, _)| matches!(k, RowKey::Active(_) | RowKey::Snoozed(_)));
+    let mut dest = vec![0; len];
+    for (sorted_pos, (_, orig_idx)) in entries.iter().enumerate() {
+        dest[*orig_idx] = sorted_pos;
+    }
+
+    for i in 0..len {
+        while dest[i] != i {
+            let target = dest[i];
+            dest.swap(i, target);
+            rows.swap(i, target);
         }
     }
-
-    // Sort each bucket using precomputed sort keys
-    active.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
-    snoozed.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
-    settled.sort_unstable_by(|(a, _), (b, _)| a.cmp_key(b));
-
-    let active_end = active.len();
-    let snoozed_end = active_end + snoozed.len();
-
-    let mut reordered = Vec::with_capacity(len);
-    for (_, idx) in active {
-        reordered.push(rows[idx].clone());
-    }
-    for (_, idx) in snoozed {
-        reordered.push(rows[idx].clone());
-    }
-    for (_, idx) in settled {
-        reordered.push(rows[idx].clone());
-    }
-
-    rows.clone_from_slice(&reordered);
 
     SectionSplit {
         active_end,

@@ -112,7 +112,7 @@ jobs:
           test -s NOTES.md || { echo "CHANGELOG.md has no section for $tag"; exit 1; }
           cat NOTES.md
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: NOTES.md

@@ -25,7 +25,10 @@ import struct
 import sys
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-PROTOCOL_VERSION = 1
+# Must equal `vitrum_proto::PROTOCOL_VERSION`. The daemon refuses any other
+# number outright, so a bump that misses this file makes every measurement run
+# fail at the handshake. `harness_protocol.rs` asserts the two agree.
+PROTOCOL_VERSION = 2
 
 
 class Ws:

@@ -835,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn simd_prefilter_skips_non_matching_lines_correctly() {
+    fn chunk_prefilter_skips_non_matching_lines_correctly() {
         let chunk1 = b"line 1: quiet\nline 2: quiet\nline 3: TARGET match\nline 4: quiet\n";
         let chunk2 = b"line 5: no match\nline 6: no match\n";
         let query = Query::literal("TARGET").context(0);
@@ -849,5 +849,24 @@ mod tests {
         let results = sweep.finish();
         assert_eq!(results.len(), 1);
         assert_eq!(results.hits[0].visible_lossy(), "line 3: TARGET match");
+    }
+
+    #[test]
+    fn chunk_prefilter_handles_ascii_casefold_literals() {
+        let chunk1 = b"line 1: quiet\nline 2: target hit\n";
+        let chunk2 = b"line 3: still quiet\n";
+        let query = Query::literal("TARGET").case_insensitive(true).context(0);
+        let matcher = Matcher::compile(&query).expect("compile");
+        assert!(matcher.is_ascii_casefold());
+
+        let mut sweep = Sweep::with_matcher(&matcher, &query);
+        assert!(sweep.push(&Haystack {
+            session: 1,
+            base_seq: 0,
+            chunks: &[chunk1, chunk2],
+        }));
+        let results = sweep.finish();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.hits[0].visible_lossy(), "line 2: target hit");
     }
 }

@@ -178,11 +178,22 @@ impl Matcher {
             Matcher::Regex(regex) => regex.is_match(haystack),
         }
     }
-    /// SIMD prefilter: check if `haystack` could contain a match.
+    /// Cheap first-byte prefilter before stripping / full match evaluation.
+    ///
+    /// Literals use `memchr` on the needle's first byte. ASCII case-insensitive
+    /// literals use `memchr2` on that byte's lower and upper forms. Regex always
+    /// returns `true` (no cheap reject).
     #[inline]
     pub fn is_possible_match(&self, haystack: &[u8]) -> bool {
         match self {
             Matcher::Literal(finder) => memchr::memchr(finder.needle()[0], haystack).is_some(),
+            Matcher::AsciiCaseFold(finder) => {
+                if finder.first_lower == finder.first_upper {
+                    memchr::memchr(finder.first_lower, haystack).is_some()
+                } else {
+                    memchr::memchr2(finder.first_lower, finder.first_upper, haystack).is_some()
+                }
+            }
             Matcher::Regex(_) => true,
         }
     }
@@ -242,6 +253,32 @@ mod tests {
                 .is_fast_literal()
         );
     }
+    /// Locks out the chunk prefilter ignoring AsciiCaseFold needles, which
+    /// would force every ignore-case literal through strip+match.
+    #[test]
+    fn is_possible_match_covers_literal_and_ascii_casefold() {
+        let lit = Matcher::compile(&Query::literal("TARGET")).unwrap();
+        assert!(lit.is_possible_match(b"xx TARGETyy"));
+        // No uppercase T — case-sensitive prefilter must reject.
+        assert!(!lit.is_possible_match(b"xx targetyy"));
+        assert!(!lit.is_possible_match(b"zzzz"));
+
+        let fold = Matcher::compile(&Query::literal("TARGET").case_insensitive(true)).unwrap();
+        assert!(fold.is_ascii_casefold());
+        assert!(fold.is_possible_match(b"xx targetyy"));
+        assert!(fold.is_possible_match(b"xx TARGETyy"));
+        // No T/t at all — memchr2 must reject.
+        assert!(!fold.is_possible_match(b"zzzz"));
+
+        let digit = Matcher::compile(&Query::literal("404").case_insensitive(true)).unwrap();
+        assert!(digit.is_ascii_casefold());
+        assert!(digit.is_possible_match(b"http 404"));
+        assert!(!digit.is_possible_match(b"http 500"));
+
+        let regex = Matcher::compile(&Query::regex("a+")).unwrap();
+        assert!(regex.is_possible_match(b"zzzz"));
+    }
+
     /// Locks out the ASCII casefold arm being skipped for ignore-case ASCII
     /// literals, and being taken for whole-word, regex, or non-ASCII needles.
     #[test]

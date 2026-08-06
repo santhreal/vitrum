@@ -249,3 +249,30 @@ fn the_elision_marker_is_one_real_ellipsis_character() {
         assert_eq!(cut.matches(ELLIPSIS).count(), 1, "exactly one marker");
     }
 }
+#[test]
+fn buffer_pool_and_into_formatters_test() {
+    use crate::text::{BufferPool, pad_end_into, sanitize_line_into, title_into, truncate_end_into, truncate_middle_into};
+
+    BufferPool::with_buf(|buf| {
+        truncate_end_into("hello world", 8, buf);
+        assert_eq!(buf, "hello w\u{2026}");
+    });
+    BufferPool::with_buf(|buf| {
+        truncate_middle_into("crates/vitrum-fmt", 10, buf);
+        assert_eq!(buf, "crate\u{2026}-fmt");
+    });
+    BufferPool::with_buf(|buf| {
+        sanitize_line_into("hello\x1b[31mworld", buf);
+        assert_eq!(buf, "helloworld");
+    });
+
+    BufferPool::with_buf(|buf| {
+        title_into("  my  title\t", 10, buf);
+        assert_eq!(buf, "my title");
+    });
+
+    BufferPool::with_buf(|buf| {
+        pad_end_into("hi", 5, buf);
+        assert_eq!(buf, "hi   ");
+    });
+}

@@ -89,6 +89,64 @@ pub fn row_id(id: SessionId) -> String {
     format!("rg-row-{}", id.0)
 }
 
+/// Virtualization window calculation for sidebar session rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VirtualSlice {
+    pub start_index: usize,
+    pub end_index: usize,
+    pub top_spacer_px: f64,
+    pub bottom_spacer_px: f64,
+    pub total_items: usize,
+    pub visible_count: usize,
+}
+
+impl VirtualSlice {
+    pub fn full(total_items: usize) -> Self {
+        Self {
+            start_index: 0,
+            end_index: total_items,
+            top_spacer_px: 0.0,
+            bottom_spacer_px: 0.0,
+            total_items,
+            visible_count: total_items,
+        }
+    }
+
+    /// Computes an overscanned virtual window over `total_items`.
+    pub fn compute(
+        total_items: usize,
+        scroll_top: f64,
+        viewport_height: f64,
+        item_height: f64,
+        overscan_count: usize,
+    ) -> Self {
+        if total_items == 0 {
+            return Self::full(0);
+        }
+        let safe_item_height = if item_height <= 0.0 { 32.0 } else { item_height };
+        let safe_viewport = if viewport_height <= 0.0 { 800.0 } else { viewport_height };
+        let safe_scroll = scroll_top.max(0.0);
+
+        let first_visible = (safe_scroll / safe_item_height).floor() as usize;
+        let visible_count = (safe_viewport / safe_item_height).ceil() as usize;
+
+        let start_index = first_visible.saturating_sub(overscan_count).min(total_items);
+        let end_index = (first_visible + visible_count + overscan_count).min(total_items);
+        let start_index = start_index.min(end_index);
+
+        let top_spacer_px = (start_index as f64) * safe_item_height;
+        let bottom_spacer_px = ((total_items.saturating_sub(end_index)) as f64) * safe_item_height;
+
+        Self {
+            start_index,
+            end_index,
+            top_spacer_px,
+            bottom_spacer_px,
+            total_items,
+            visible_count: end_index - start_index,
+        }
+    }
+}
 #[derive(Props, Clone, PartialEq)]
 pub struct SidebarProps {
     pub state: Signal<UiState>,
@@ -143,6 +201,12 @@ pub struct SidebarProps {
     /// rendered itself dead and could never be reached. A landing-order
     /// scaffold that outlives the landing is indistinguishable from a stub.
     pub on_settings: EventHandler<()>,
+    #[props(default)]
+    pub scroll_top: Option<f64>,
+    #[props(default)]
+    pub viewport_height: Option<f64>,
+    #[props(default)]
+    pub overscan: Option<usize>,
 }
 
 #[allow(non_snake_case)]
@@ -584,20 +648,43 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                 span { class: "rg-project__section-count", "{group.bands.active.len()}" }
                                             }
                                         }
-                                        for s in group.bands.active.iter() {
-                                            SessionRow {
-                                                key: "{s.id().0}",
-                                                row: (*s).clone(),
-                                                section: Section::Active,
-                                                fields,
-                                                active: st.window.focused == Some(s.id()),
-                                                picked: st.window.selection.contains(s.id()),
-                                                clock: props.clock,
-                                                home: Rc::clone(&home),
-                                                contested: st.daemon.collisions.for_session(s.id()),
-                                                on_select: props.on_select,
-                                                on_close: props.on_close_session,
-                                                on_menu: props.on_menu,
+                                        {
+                                            let active_rows = &group.bands.active;
+                                            let h = if draws_card(Section::Active, fields.always_slim) { 56.0 } else { 28.0 };
+                                            let slice = if props.scroll_top.is_some() || props.viewport_height.is_some() || active_rows.len() > 30 {
+                                                VirtualSlice::compute(active_rows.len(), props.scroll_top.unwrap_or(0.0), props.viewport_height.unwrap_or(800.0), h, props.overscan.unwrap_or(5))
+                                            } else {
+                                                VirtualSlice::full(active_rows.len())
+                                            };
+                                            rsx! {
+                                                if slice.top_spacer_px > 0.0 {
+                                                    div {
+                                                        class: "rg-virtual-spacer",
+                                                        style: "height: {slice.top_spacer_px}px",
+                                                    }
+                                                }
+                                                for s in active_rows[slice.start_index..slice.end_index].iter() {
+                                                    SessionRow {
+                                                        key: "{s.id().0}",
+                                                        row: (*s).clone(),
+                                                        section: Section::Active,
+                                                        fields,
+                                                        active: st.window.focused == Some(s.id()),
+                                                        picked: st.window.selection.contains(s.id()),
+                                                        clock: props.clock,
+                                                        home: Rc::clone(&home),
+                                                        contested: st.daemon.collisions.for_session(s.id()),
+                                                        on_select: props.on_select,
+                                                        on_close: props.on_close_session,
+                                                        on_menu: props.on_menu,
+                                                    }
+                                                }
+                                                if slice.bottom_spacer_px > 0.0 {
+                                                    div {
+                                                        class: "rg-virtual-spacer",
+                                                        style: "height: {slice.bottom_spacer_px}px",
+                                                    }
+                                                }
                                             }
                                         }
                                         if !group.bands.hidden.is_empty() {
@@ -640,20 +727,42 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                             span { class: "rg-project__section-count", "{rows.len()}" }
                                                         }
                                                         if open {
-                                                            for s in rows.iter().take(shown) {
-                                                                SessionRow {
-                                                                    key: "{s.id().0}",
-                                                                    row: (*s).clone(),
-                                                                    section,
-                                                                    fields,
-                                                                    active: st.window.focused == Some(s.id()),
-                                                                    picked: st.window.selection.contains(s.id()),
-                                                                    clock: props.clock,
-                                                                    home: Rc::clone(&home),
-                                                                    contested: st.daemon.collisions.for_session(s.id()),
-                                                                    on_select: props.on_select,
-                                                                    on_close: props.on_close_session,
-                                                                    on_menu: props.on_menu,
+                                                            {
+                                                                let sliced_rows = &rows[..shown];
+                                                                let slice = if props.scroll_top.is_some() || props.viewport_height.is_some() || sliced_rows.len() > 30 {
+                                                                    VirtualSlice::compute(sliced_rows.len(), props.scroll_top.unwrap_or(0.0), props.viewport_height.unwrap_or(800.0), 28.0, props.overscan.unwrap_or(5))
+                                                                } else {
+                                                                    VirtualSlice::full(sliced_rows.len())
+                                                                };
+                                                                rsx! {
+                                                                    if slice.top_spacer_px > 0.0 {
+                                                                        div {
+                                                                            class: "rg-virtual-spacer",
+                                                                            style: "height: {slice.top_spacer_px}px",
+                                                                        }
+                                                                    }
+                                                                    for s in sliced_rows[slice.start_index..slice.end_index].iter() {
+                                                                        SessionRow {
+                                                                            key: "{s.id().0}",
+                                                                            row: (*s).clone(),
+                                                                            section,
+                                                                            fields,
+                                                                            active: st.window.focused == Some(s.id()),
+                                                                            picked: st.window.selection.contains(s.id()),
+                                                                            clock: props.clock,
+                                                                            home: Rc::clone(&home),
+                                                                            contested: st.daemon.collisions.for_session(s.id()),
+                                                                            on_select: props.on_select,
+                                                                            on_close: props.on_close_session,
+                                                                            on_menu: props.on_menu,
+                                                                        }
+                                                                    }
+                                                                    if slice.bottom_spacer_px > 0.0 {
+                                                                        div {
+                                                                            class: "rg-virtual-spacer",
+                                                                            style: "height: {slice.bottom_spacer_px}px",
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                             // Inside the band it

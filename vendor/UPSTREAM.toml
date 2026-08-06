@@ -1,0 +1,55 @@
+# Where this fork came from and exactly how it differs.
+#
+# `tools/upstream/check.sh` reads this file, downloads the pristine crate named
+# below, and fails if the real divergence is not the divergence listed here. So
+# this is not a description of the fork, it is the definition of it: adding a
+# change to `vendor/src` without adding it here breaks the check, which is the
+# point. A fork nobody can diff is a fork nobody can ever un-fork.
+
+[upstream]
+crate = "dioxus-desktop"
+version = "0.7.10"
+
+# Only `src/` is compared. The rest is ours on purpose: `Cargo.toml` is
+# rewritten for the rename and to switch doctests off, `README.md` documents the
+# fork, and `LICENSE` is upstream's MIT carried explicitly because the packaged
+# crate omits it.
+compare = "src"
+
+# Every file in `vendor/src` that differs from upstream. The check fails on a
+# file that diverges and is not here, and on a file that is here and no longer
+# diverges. The second half matters most: it is what tells you a divergence has
+# become dead and can be dropped on the next absorption.
+
+[[divergence]]
+file = "src/webview.rs"
+reason = """
+The reason the fork exists. On Linux each new webview is built with
+`with_related_view` pointed at a live webview, so every window runs inside the
+first window's WebKitWebProcess instead of starting its own network process.
+Measured at 8.6 MB PSS per avoided process, so 171.2 MB across twenty windows.
+`LIVE_WEBKIT_VIEWS` tracks which views are still real so the relation target is
+never a dead widget.
+"""
+upstreamable = true
+
+[[divergence]]
+file = "src/app.rs"
+reason = """
+A warning fix, not a behaviour change. Upstream imports `Duration` at module
+scope and also inside a function that re-imports it, so in this crate's
+configuration the outer import is unused. CI builds with `-D warnings`, which
+makes an unused import a build failure. The outer import is dropped and its one
+use is fully qualified.
+"""
+upstreamable = true
+
+[[divergence]]
+file = "src/config.rs"
+reason = """
+One doc comment says `use vitrum_dioxus_desktop::Config` rather than
+`use dioxus_desktop::Config`, because that is the crate's name here. Inert:
+`[lib] doctest = false` means it never runs. Kept anyway so the rendered docs
+are not wrong, and it is one line.
+"""
+upstreamable = false

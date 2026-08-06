@@ -17,7 +17,14 @@ use crate::{OutputChunk, SessionManager, SessionSpec};
 
 /// Upper bound on any single wait. Only reached when something is broken, so it
 /// is generous: a passing test never waits anywhere near this long.
-pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
+///
+/// It has to be generous enough for the slowest way of starting a child, which
+/// is a ConPTY session on a two core runner with a dozen other sessions being
+/// spawned beside it. That suite has finished in under three seconds and has also
+/// taken twenty, with the difference being how long a shell waits to be
+/// scheduled, so a ten second bound was measuring the runner rather than the
+/// product.
+pub(crate) const DEADLINE: Duration = Duration::from_secs(90);
 
 /// Window used by negative assertions ("nothing should arrive"). Deliberately
 /// short because it is a bound on absence, not a wait for a result.

@@ -40,6 +40,9 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Added
 
+- **A quiet titlebar chip when a newer release is available.** It appears after
+  a background check, opens Settings → About with Install already seeded, and
+  can be dismissed for that exact version so it does not nag on every launch.
 - `install.sh` and `install.ps1`: the release install as a file you can read,
   with the archive verified against the release `SHA256SUMS` and no install on
   a mismatch. Nothing is piped into a shell.

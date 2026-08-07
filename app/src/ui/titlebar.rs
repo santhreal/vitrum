@@ -203,6 +203,17 @@ pub struct TitleBarProps {
     pub on_close: EventHandler<()>,
     pub on_shortcuts: EventHandler<()>,
     pub on_retry: EventHandler<()>,
+    /// Version string for the quiet update chip. `None` means nothing to say.
+    ///
+    /// A plain value rather than the offer signal so a change in the parent
+    /// always reaches this frame: the titlebar's props compare equal across
+    /// signal writes that do not change any other field, and a skipped
+    /// re-render would leave a ready update invisible.
+    pub update_version: Option<String>,
+    /// Open Settings → About so Install does not need a second Check.
+    pub on_update: EventHandler<()>,
+    /// Persist a dismissal for this exact version and hide the chip.
+    pub on_dismiss_update: EventHandler<()>,
 }
 
 #[component]
@@ -216,6 +227,7 @@ pub fn TitleBar(props: TitleBarProps) -> Element {
     } else {
         MACOS_TRAFFIC_LIGHT_INSET
     };
+    let update_version = props.update_version.clone();
 
     rsx! {
         div {
@@ -250,6 +262,32 @@ pub fn TitleBar(props: TitleBarProps) -> Element {
             }
 
             div { class: "rg-titlebar__actions",
+                // A quiet chip, not a modal. The About tab owns Install; this
+                // only says a newer release exists and gets out of the way
+                // when dismissed. Sitting before the connection mark keeps
+                // the window-control corner free of a moving target.
+                if let Some(version) = update_version {
+                    div { class: "rg-update",
+                        button {
+                            class: "rg-update__open",
+                            r#type: "button",
+                            title: "Open Settings → About to install vitrum {version}",
+                            aria_label: "Update available: vitrum {version}",
+                            onmousedown: move |e| e.stop_propagation(),
+                            onclick: move |_| props.on_update.call(()),
+                            "Update {version}"
+                        }
+                        button {
+                            class: "rg-update__dismiss",
+                            r#type: "button",
+                            title: "Dismiss until a later release",
+                            aria_label: "Dismiss update {version}",
+                            onmousedown: move |e| e.stop_propagation(),
+                            onclick: move |_| props.on_dismiss_update.call(()),
+                            "×"
+                        }
+                    }
+                }
                 // The whole connection banner, folded to this. It is a
                 // non-interactive marker while the socket is healthy and grows
                 // a word and a Retry the moment it is not.
@@ -562,4 +600,49 @@ mod tests {
         assert_eq!(link.word, "Fixture data");
         assert_eq!(link.class, "rg-conn--fixture");
     }
+
+    /// The quiet update chip must name the version it offers. A bare "Update"
+    /// next to the connection mark is a rumour; the version is the fact.
+    #[test]
+    fn the_update_chip_names_the_version() {
+        use dioxus::prelude::*;
+        #[derive(Props, Clone, PartialEq)]
+        struct HarnessProps {
+            version: Option<String>,
+        }
+        #[component]
+        fn Harness(props: HarnessProps) -> Element {
+            let state = use_signal(UiState::default);
+            rsx! {
+                TitleBar {
+                    state,
+                    server: "ws://127.0.0.1:1",
+                    switcher: rsx! { span {} },
+                    on_drag: move |()| {},
+                    on_toggle_maximize: move |()| {},
+                    on_minimize: move |()| {},
+                    on_close: move |()| {},
+                    on_shortcuts: move |()| {},
+                    on_retry: move |()| {},
+                    update_version: props.version,
+                    on_update: move |()| {},
+                    on_dismiss_update: move |()| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new_with_props(
+            Harness,
+            HarnessProps {
+                version: Some("9.9.9".into()),
+            },
+        );
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("Update 9.9.9"),
+            "chip missing from {html}"
+        );
+        assert!(html.contains("rg-update"), "chip class missing from {html}");
+    }
+
 }

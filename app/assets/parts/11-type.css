@@ -353,6 +353,8 @@
  * off-grid boxes in the product. Every one of these is a centred flex box
  * with its own height, so a 16px box moves no geometry. */
 .rg-titlebar__action,
+.rg-update__open,
+.rg-update__dismiss,
 .rg-window-control,
 .rg-sidebar__action,
 .rg-sidebar__search-icon,

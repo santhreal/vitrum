@@ -24,7 +24,7 @@ fn every_linux_build_job_installs_the_system_webview() {
             || text.contains("cargo test")
             || text.contains("build-release-asset.sh")
             || text.contains("cargo publish");
-        if !builds {
+        if !builds || !runs_on_linux(&text) {
             continue;
         }
         assert!(
@@ -38,6 +38,30 @@ fn every_linux_build_job_installs_the_system_webview() {
              .github/system-webview.sh so it is changed in one place"
         );
     }
+}
+
+/// Whether a workflow runs anything on Linux.
+///
+/// A workflow that builds only on macOS and Windows has nothing to link
+/// WebKitGTK into, and requiring the install script there would be requiring an
+/// apt call on a mac. `vitrum` is the label of the self-hosted Linux runner, so
+/// it names a Linux job exactly as `ubuntu-latest` does; miss it and the guard
+/// above stops covering the workflow every pull request actually runs.
+fn runs_on_linux(text: &str) -> bool {
+    text.contains("ubuntu-latest")
+        || text.contains("'vitrum'")
+        || text.contains("runner.os == 'Linux'")
+}
+
+/// The three ways a workflow says Linux, and the one way it says it does not.
+#[test]
+fn a_workflow_is_linux_when_it_names_a_linux_runner() {
+    assert!(runs_on_linux("runs-on: ubuntu-latest"));
+    // No `ubuntu-latest` in this one, or it would pass on the first clause and
+    // prove nothing about the label.
+    assert!(runs_on_linux("runs-on: ${{ inputs.fast && 'vitrum' || 'macos-latest' }}"));
+    assert!(runs_on_linux("if: runner.os == 'Linux'"));
+    assert!(!runs_on_linux("os: [macos-latest, windows-latest]"));
 }
 
 /// Every job carries a timeout.

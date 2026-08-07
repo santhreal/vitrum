@@ -19,6 +19,8 @@
 //! the product.
 
 mod probe;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod scan;
 mod scrollback;
 mod session;

@@ -21,6 +21,11 @@ use crate::tests::client::{Harness, create};
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_blocked_session_is_pushed_to_a_passive_client() {
+    // This kernel will not say what a process is doing, so the daemon has no
+    // observation to send and there is nothing to wait for.
+    if !vitrum_core::test_support::kernel_reports_other_processes() {
+        return;
+    }
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
     let id = c.create(create(1, "read -r x")).await;
@@ -42,6 +47,11 @@ async fn a_blocked_session_is_pushed_to_a_passive_client() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn every_window_learns_what_the_daemon_observed() {
+    // This kernel will not say what a process is doing, so the daemon has no
+    // observation to send and there is nothing to wait for.
+    if !vitrum_core::test_support::kernel_reports_other_processes() {
+        return;
+    }
     let h = Harness::start(4096).await;
     let mut creator = h.greeted().await;
     let mut bystander = h.greeted().await;
@@ -137,6 +147,11 @@ async fn a_hint_does_not_arrive_as_a_bell() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_settled_session_goes_completely_quiet() {
+    // This kernel will not say what a process is doing, so the daemon has no
+    // observation to send and there is nothing to wait for.
+    if !vitrum_core::test_support::kernel_reports_other_processes() {
+        return;
+    }
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
     let id = c.create(create(1, "read -r x")).await;
@@ -165,6 +180,11 @@ async fn a_settled_session_goes_completely_quiet() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn input_re_arms_the_probe_with_no_output_at_all() {
+    // This kernel will not say what a process is doing, so the daemon has no
+    // observation to send and there is nothing to wait for.
+    if !vitrum_core::test_support::kernel_reports_other_processes() {
+        return;
+    }
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
     // `stty -echo` means the child prints nothing when the operator types, and
@@ -205,6 +225,11 @@ async fn input_re_arms_the_probe_with_no_output_at_all() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_exit_clears_the_foreground_answer_on_the_wire() {
+    // This kernel will not say what a process is doing, so the daemon has no
+    // observation to send and there is nothing to wait for.
+    if !vitrum_core::test_support::kernel_reports_other_processes() {
+        return;
+    }
     let h = Harness::start(4096).await;
     let mut c = h.greeted().await;
     let id = c.create(create(1, "read -r x")).await;

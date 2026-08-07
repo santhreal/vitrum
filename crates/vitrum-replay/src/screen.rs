@@ -1029,7 +1029,13 @@ impl PartialEq for Screen {
     /// header for why damage spans are excluded.
     fn eq(&self, other: &Self) -> bool {
         fn same_grid(a: &CellGrid, b: &CellGrid) -> bool {
-            a.cols() == b.cols() && a.rows() == b.rows() && a.cells() == b.cells()
+            // Row by row rather than buffer against buffer. The grid scrolls by
+            // rotating an index rather than moving cells, so two screens showing
+            // the same thing can hold it in a different physical order, and
+            // comparing the raw buffers would call them different.
+            a.cols() == b.cols()
+                && a.rows() == b.rows()
+                && (0..a.rows()).all(|r| a.row(r) == b.row(r))
         }
         fn same_inactive(a: &Option<CellGrid>, b: &Option<CellGrid>) -> bool {
             match (a, b) {

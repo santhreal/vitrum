@@ -233,6 +233,13 @@ pub struct CellGrid {
     cells: Vec<Cell>,
     damage: Vec<RowDamage>,
     default_style: Style,
+    /// Which physical row holds each logical row.
+    ///
+    /// Scrolling rotates this rather than moving cells, which is what makes a
+    /// scroll independent of the width of the screen. The consequence is that
+    /// `cells` is in no particular order once a region has scrolled, so it is
+    /// not exposed: every reader goes through [`CellGrid::row`] or
+    /// [`CellGrid::cell`], which resolve the indirection.
     row_slots: Vec<usize>,
 }
 
@@ -299,12 +306,6 @@ impl CellGrid {
     /// own colours, so this records no damage.
     pub const fn set_default_style(&mut self, style: Style) {
         self.default_style = style;
-    }
-
-    /// Every cell, row-major.
-    #[must_use]
-    pub fn cells(&self) -> &[Cell] {
-        &self.cells
     }
 
     /// Flat index of `(col, row)`, or `None` when out of bounds.

@@ -149,3 +149,25 @@ fn scrolled_in_rows_use_the_current_background() {
         "the vacated row was filled in the pane colour"
     );
 }
+
+/// Two screens showing the same thing are the same screen, however they got there.
+///
+/// The grid scrolls by rotating an index rather than moving cells, so a screen
+/// that has scrolled holds its rows in a different physical order from one that
+/// has not. Comparing the raw cell buffer would call these two different, which
+/// would make every seek that lands after a scroll disagree with the linear
+/// replay it is supposed to match.
+#[test]
+fn how_a_screen_scrolled_into_place_does_not_change_what_it_equals() {
+    // Three rows of content reached by scrolling two lines off the top.
+    let scrolled = linear(4, 3, b"x\r\ny\r\na\r\nb\r\nc");
+    // The same three rows, written where they sit, with the cursor left in the
+    // same place by the same final keystrokes.
+    let direct = linear(4, 3, b"a\r\nb\r\nc");
+
+    assert_eq!(rows_of(&scrolled), rows_of(&direct), "the fixture must agree");
+    assert_eq!(
+        scrolled, direct,
+        "a screen that scrolled must equal one that did not"
+    );
+}

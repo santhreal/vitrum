@@ -1,0 +1,106 @@
+name: platforms
+
+# macOS and Windows, on the cadence they are worth.
+#
+# `ci.yml` gates every push on Linux, because that is where a defect is found
+# per minute of runner time. This workflow answers the other question, which is
+# whether the tree still builds and passes on the platforms we ship but do not
+# develop on. It runs:
+#
+#   - on every release tag, because a platform break must never reach a user
+#   - nightly, so the worst case is one day of main being broken on a platform
+#     rather than one release cycle
+#   - on any change that touches platform-conditional code, the vendored
+#     webview, a build script, or an installer, which is where the breaks
+#     historically are
+#   - on demand
+#
+# The nightly run is what makes the path filter safe. A filter can only list
+# the places a platform break is likely, and a break that arrives somewhere
+# else is caught within a day rather than at the next release.
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    # Early morning UTC, when nothing else is queued.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      # Platform-conditional code and the things that decide how it is built.
+      - "**/build.rs"
+      - "vendor/**"
+      - "vendor-pty/**"
+      - "crates/vitrum-vt/**"
+      - "packaging/**"
+      - "install.sh"
+      - "install.ps1"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/platforms.yml"
+
+concurrency:
+  group: platforms-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # A cold Windows build is the long pole here.
+    timeout-minutes: 60
+    strategy:
+      # Which platform broke is the useful part of the answer, so one failing
+      # must not cancel the other.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
+
+      # The terminal engine is built from Ghostty source by `vitrum-vt`, whose
+      # default `vendored` route needs Zig. The version is the one Ghostty
+      # pins: a newer Zig fails Ghostty's own build-version check, so this is
+      # not a floating "latest".
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - run: cargo build --release --workspace --locked
+
+      - run: cargo test --release --workspace --locked
+
+      # Advisory, as RELEASING.md says. It reports and never blocks.
+      - run: cargo clippy --release --workspace --locked
+        continue-on-error: true
+
+      # The Windows installer cannot be parsed anywhere else in the pipeline,
+      # and it is the first thing a new user on Windows runs.
+      - name: install.ps1 parses
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            foreach ($e in $errors) {
+              Write-Output "line $($e.Extent.StartLineNumber): $($e.Message)"
+            }
+            exit 1
+          }
+          Write-Output "install.ps1 parses, $($tokens.Count) tokens"

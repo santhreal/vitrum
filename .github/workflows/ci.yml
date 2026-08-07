@@ -1,7 +1,16 @@
 name: ci
 
-# Every push and every pull request. The gates here are the ones RELEASING.md
-# names, in the same order, so a green tick means the tree is releasable.
+# Every push and every pull request, on Linux only.
+#
+# macOS and Windows moved to `platforms.yml`, which runs them nightly, on every
+# release, and on any change that can plausibly break a platform. Running a
+# three-way matrix on every push cost three runners to answer a question that
+# almost always has the same answer, and the queue for those runners was the
+# slowest part of merging anything. What is left here is the gate that actually
+# catches things: a Linux build with warnings fatal, the full test run, and a
+# compile check against macOS that needs no mac.
+#
+# These are the gates RELEASING.md names, in the same order.
 on:
   push:
     branches: [main]
@@ -19,6 +28,12 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+# The self-hosted runner, when the change is allowed to use it.
+#
+# A pull request from a fork runs on a GitHub runner instead. A self-hosted
+# runner executes whatever the workflow says, on hardware we own, and on a
+# public repository anyone can open a pull request. Same-repository changes are
+# ours; forks get the hosted runner and are none the worse for it.
 env:
   CARGO_TERM_COLOR: always
   # A warning is a failure. The crate ships with none and the only way it stays
@@ -27,18 +42,11 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    # Long enough for a cold Windows build, short enough that a hung job frees
-    # its runner the same morning instead of holding it for the six-hour
-    # default.
+    name: linux
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    # Long enough for a cold build, short enough that a hung job frees its
+    # runner the same morning instead of holding it for the six-hour default.
     timeout-minutes: 45
-    strategy:
-      # One platform failing must not cancel the others: which platforms broke
-      # is the useful part of the answer.
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -46,18 +54,19 @@ jobs:
         with:
           components: clippy
 
-      # `shared-key`, not `key`: the release archive job compiles the same
-      # workspace for the same target, and restoring what the Linux test job
-      # already built is the difference between one cold build per push and
-      # two.
+      # Only on a hosted runner. The self-hosted one keeps its cargo home and
+      # target directory between runs, so uploading a multi-gigabyte cache to
+      # GitHub and pulling it back would be slower than the build it saves.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
-          shared-key: ${{ matrix.os }}
+          shared-key: linux
 
       # The client links the system webview. On Ubuntu that is WebKitGTK, and
-      # nothing in the runner image provides it.
+      # nothing in the runner image provides it. The script returns immediately
+      # when the packages are already there, which is the normal case on a
+      # self-hosted runner.
       - name: system webview
-        if: runner.os == 'Linux'
         run: ./.github/system-webview.sh
 
       # The terminal engine is built from Ghostty source by `vitrum-vt`, whose
@@ -82,38 +91,47 @@ jobs:
       # syntax error in either ships silently otherwise, and the Windows one
       # cannot be parsed anywhere else in this pipeline.
       - name: install.sh parses
-        if: runner.os == 'Linux'
         run: sh -n install.sh
 
-      - name: install.ps1 parses
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $errors = $null
-          $tokens = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            foreach ($e in $errors) {
-              Write-Output "line $($e.Extent.StartLineNumber): $($e.Message)"
-            }
-            exit 1
-          }
-          Write-Output "install.ps1 parses, $($tokens.Count) tokens"
+  # What a mac would tell us about a compile error, without a mac.
+  #
+  # Nearly every way this workspace breaks on macOS is a compile error in
+  # `cfg`-gated code, and that is answerable by a cross-target check on Linux
+  # in about a minute. It is not a substitute for building and testing on a
+  # real mac, which `platforms.yml` still does; it is what makes the case where
+  # a mac is worth waiting for rare enough to schedule.
+  macos-check:
+    name: macos compiles
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          shared-key: macos-check
+      # `vitrum-core` is where the platform-conditional code lives. The client
+      # crates link a system webview that has no cross-compilable form, so
+      # checking them here would fail for a reason that says nothing about the
+      # change.
+      - run: cargo check --release -p vitrum-core --target aarch64-apple-darwin --locked
 
   # The archive the updater downloads is built by a script, and the script and
   # `update::archive_name` must agree. Building it on every push is how a
   # rename is caught before a release rather than by a user whose update fails.
   package:
     name: release archive
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: linux
           # The test job on this platform is the one that populates the cache.
           save-if: false
       - name: system webview
@@ -140,7 +158,7 @@ jobs:
   # rig, and a shared runner would publish a number nobody can reproduce.
   docs:
     name: generated docs
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +170,7 @@ jobs:
   # so it is worth a job rather than a periodic audit nobody runs.
   deny:
     name: licenses and advisories
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

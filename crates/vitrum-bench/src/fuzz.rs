@@ -154,8 +154,8 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
             },
             Err(e) => {
                 report.failures.push(format!(
-                    "case {case}: the daemon stopped accepting connections after {} cases: {e:#}                      [repro: fuzz-{case:04}-connect.bin]",
-                    case
+                    "case {case}: the daemon stopped accepting connections: {e:#} \
+                     [repro: fuzz-{case:04}-connect.bin]"
                 ));
                 report.artifacts.push((
                     format!("fuzz-{case:04}-connect.bin"),
@@ -179,7 +179,8 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
                 if !sessions.iter().any(|s| s.id == live) {
                     let name = format!("fuzz-{case:04}-forgot-session.bin");
                     report.failures.push(format!(
-                        "case {case} ({outcome}) made the daemon forget a live session: {payload:.400}                          [repro: {name}]"
+                        "case {case} ({outcome}) made the daemon forget a live \
+                         session: {payload:.400} [repro: {name}]"
                     ));
                     report.artifacts.push((name, payload.as_bytes().to_vec()));
                     interesting.push(json!({ "case": case, "payload": payload }));
@@ -188,7 +189,8 @@ pub async fn run(spec: &FuzzSpec) -> anyhow::Result<Report> {
             Err(e) => {
                 let name = format!("fuzz-{case:04}-oracle-wedge.bin");
                 report.failures.push(format!(
-                    "case {case} ({outcome}) left the daemon unable to answer: {e:#}; payload: {payload:.400}                      [repro: {name}]"
+                    "case {case} ({outcome}) left the daemon unable to answer: \
+                     {e:#}; payload: {payload:.400} [repro: {name}]"
                 ));
                 interesting.push(json!({ "case": case, "payload": payload }));
                 report.artifacts.push((name, payload.into_bytes()));

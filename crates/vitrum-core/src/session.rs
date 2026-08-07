@@ -902,6 +902,9 @@ fn read_loop(
                     if let Some(title) = vt.events().take_title() {
                         apply_engine_title(&session, &title);
                     }
+                    if let Some(pwd) = vt.events().take_pwd() {
+                        apply_engine_pwd(&session, &pwd);
+                    }
                 }
                 if out.send(buf[..n].to_vec()).is_err() {
                     break;
@@ -1100,6 +1103,41 @@ fn apply_engine_title(session: &Session, title: &str) -> bool {
         return false;
     }
     info.title = trimmed.to_string();
+    true
+}
+
+/// Take the directory the shell reported, if it is one this machine has.
+///
+/// Returns whether anything changed. A shell re-announces the same directory on
+/// every prompt, so the comparison is what keeps this from re-walking the
+/// filesystem for a git branch several times a second.
+///
+/// The directory has to exist here. The hostname in an OSC 7 report is whatever
+/// the sending program chose to write, so it proves nothing on its own, and a
+/// session sitting inside `ssh` reports paths that belong to another machine
+/// entirely. Asking whether the directory is actually here is the check that
+/// the two things depending on it, the branch lookup and what the operator is
+/// told about where the session is, actually need.
+///
+/// Unlike the title, this is not something the operator can own. Where a
+/// session is is a fact about the session rather than a name someone chose, and
+/// a shell that has moved has moved.
+fn apply_engine_pwd(session: &Session, raw: &str) -> bool {
+    let Some(dir) = vitrum_vt::pwd_path(raw) else {
+        return false;
+    };
+    let mut info = write_lock(&session.info);
+    if info.cwd == dir.to_string_lossy() {
+        return false;
+    }
+    if !dir.is_dir() {
+        return false;
+    }
+    info.cwd = dir.to_string_lossy().into_owned();
+    // The branch is resolved from the directory, so a session that moved into
+    // another repository is in another repository. This walk is why the
+    // comparison above happens first.
+    info.git_branch = git_branch(&dir);
     true
 }
 

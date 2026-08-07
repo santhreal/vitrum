@@ -66,6 +66,7 @@ pub mod bridge;
 pub mod engine;
 pub mod events;
 pub mod linkage;
+pub mod pwd;
 
 #[cfg(test)]
 mod tests;
@@ -73,6 +74,7 @@ mod tests;
 pub use bridge::{CursorShape, CursorState, SyncStats};
 pub use engine::{Vt, VtError, VtOptions};
 pub use events::Events;
+pub use pwd::pwd_path;
 
 // Re-exported so a host can drive scrolling and read colours without taking a
 // direct dependency on the engine crate, whose version this crate pins.

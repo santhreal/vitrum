@@ -173,8 +173,8 @@ That is not a violation of the four tests, which is why nothing here was
 changed: Launch is interactive and does exactly what it says. `SessionCreated`
 is broadcast to every window, so focusing on receipt would be wrong for the
 other nineteen, and nothing currently records that THIS window is the one that
-asked (`main.rs:2002-2014` sends and dismisses). `SPEC.md` states no
-requirement either way.
+asked (`main.rs:2002-2014` sends and dismisses). Nothing states a requirement
+either way.
 
 But "Launch" that leaves you nowhere is worth a decision, and the fix is small:
 correlate the request with the reply in the requesting window and open it.
@@ -203,7 +203,7 @@ update was **0.051 ms**, which is 0.3% of the figure. It is now 0.005 ms after
 the incremental derivation work, and `tree()` alone went 62.2 us to 5.8 us, but
 that improvement is 0.3% of a number nobody can feel.
 
-SPEC 9.4 already recorded where the time actually goes: **63% WebKit
+The measurement already recorded where the time actually goes: **63% WebKit
 style, layout and paint, 29% Dioxus VDOM diffing**, against 0.54 us for the
 model. So this row cannot be closed from Rust at all, and an agent sent to
 close it correctly reported that rather than optimising the 0.3% and claiming
@@ -427,7 +427,7 @@ revisions.** The claim rested on reading 961 MB of WebProcess PSS as though it
 were WebKit's own cost. It is not: that number is WebKit's cost WITH our page
 already loaded into all twenty processes. Nobody had measured a bare one.
 
-So it was measured. `/tmp/webkit-floor` is twenty tao windows, each with one
+So it was measured. The floor case is twenty tao windows, each with one
 wry webview (the same wry 0.53.5 and tao 0.34.8 this app pins) showing a blank
 document, PSS across the tree:
 
@@ -527,7 +527,7 @@ we already have" was never an option and should not be written here again.
 The Dioxus Native / Blitz migration remains a real plan with a real payoff,
 and this codebase is still prepared for it: every stylesheet is authored
 Blitz-safe (no `position: fixed`, no `:has()`, no `@container`, no nesting, no
-`color-mix()`, no `oklch()`, recorded as SPEC 14.14), `15-rows.css` documents a
+`color-mix()`, no `oklch()`), `15-rows.css` documents a
 flex fallback for its one grid, and `vitrum-grid` is the terminal renderer for
 that path. **But it is no longer required to meet the memory target, and this
 file was wrong to say it was.**
@@ -836,8 +836,7 @@ Built and unreachable, which counts as not built:
 - `vitrum-grid` and `vitrum-replay`: 15,382 orphan lines. `vitrum-grid` is a
   workspace member and compiles; it is unreachable **by design**, because it
   needs a `wgpu::Device` that WebKitGTK cannot provide. `vitrum-replay` is
-  outside the workspace: its library compiles, its tests no longer do. See
-  SPEC 12.2 for the measurement and the decision it needs.
+  outside the workspace: its library compiles, its tests no longer do.
 
 **Two of these were closed, and both were closed by wiring rather than by
 writing anything new**, which is the shape of this whole defect:
@@ -868,13 +867,3 @@ through Blitz, Blitz has no JavaScript engine, and this crate is the
 replacement renderer for that path. It cannot be wired into the current client
 because a WebKitGTK webview has no `wgpu::Device` to hand it. It is the one
 piece of the memory fix that is already written.
-
-`SPEC.md` carries all 120 requirements with status and file:line evidence.
-
----
-
-## The rule that protects all of it
-
-**File ownership is absolute.** Two agents editing one file destroyed hours of
-work twice in one day, and silently restored a defect the user had already
-rejected. One file, one author. If you need a change elsewhere, ask the owner.

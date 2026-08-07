@@ -50,7 +50,7 @@ And some things a headless box cannot tell you honestly at all, at any
 baseline. There is no GPU path, no compositor and no vsync, so anything about
 the WebGL renderer, compositing cost, frame timing or paint latency has to be
 measured on hardware with a real display. Geometry from a headless capture is
-wrong for a separate reason recorded as SPEC 14.16. And while every family in
+wrong for a separate reason recorded below. And while every family in
 the UI stack resolves to DejaVu on that box, no measurement involving text
 width, truncation or row height means anything. The section at the end of this
 file lists each of these with the specifics.
@@ -365,8 +365,7 @@ between a run here and a line in `GOAL.md`.
 - **Compositor and frame timing mean nothing here.** There is no window manager
   and no compositor. The "one `SessionUpdated` in 16 to 20 ms" line is a
   desktop measurement and cannot be reproduced or refuted on `Xvfb`.
-- **Geometry from a headless capture is not trustworthy.** SPEC 14.16 records
-  why: `Xvfb` does not resize the webview surface when `xdotool` resizes the X
+- **Geometry from a headless capture is not trustworthy.** The reason: `Xvfb` does not resize the webview surface when `xdotool` resizes the X
   window, and tao goes on reporting roughly 1018 CSS px whatever size you ask
   for. The same build and the same session read a 225 CSS px sidebar headless
   and 449 on a real display. Use these captures for colour and for band

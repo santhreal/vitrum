@@ -801,12 +801,11 @@ mod tests {
 /// What the titlebar's workspace control SAYS, which is nothing until there is
 /// a choice.
 ///
-/// The question was why a workspace spawns in with
-/// defaults. A first-run window has exactly one workspace because one had
-/// to exist, and printing its name beside the product name announces a
-/// decision nobody made. Measured, "Default" was the highest-contrast text in
-/// the whole window at 14.43:1, against 4.22:1 for the product's own name: the
-/// loudest thing on screen was the least meaningful.
+/// A first-run window has exactly one workspace because one had to exist, and
+/// printing its name beside the product name announces a decision nobody made.
+/// Measured, "Default" was the highest-contrast text in the whole window at
+/// 14.43:1, against 4.22:1 for the product's own name: the loudest thing on
+/// screen was the least meaningful.
 #[cfg(test)]
 mod the_workspace_control_says_nothing_until_it_must {
     use super::*;

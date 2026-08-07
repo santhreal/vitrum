@@ -751,8 +751,7 @@ RUSTFLAGS="-D warnings" cargo check --profile release \
 The `vitrum` binary itself is still first compiled for macOS by CI.
 
 `CHANGELOG.md` is what changed per release; `RELEASING.md` is how a release is
-cut. `SPEC.md` is an internal requirements ledger, not user documentation: read
-it for what is still owed.
+cut.
 
 `vitrum-replay` reads a raw scrollback capture or an asciicast v2 recording and
 answers what the screen held at a given position. Four subcommands: `info` for

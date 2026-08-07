@@ -64,6 +64,9 @@ pub fn search_with(
     query: &Query,
     haystacks: &[Haystack<'_>],
 ) -> Result<SearchResults> {
+    if haystacks.len() >= 4 {
+        return search_with_parallel(matcher, query, haystacks);
+    }
     // Scan in result order so the global cap yields a prefix, not a sample.
     let mut order: Vec<usize> = (0..haystacks.len()).collect();
     order.sort_by_key(|&index| (haystacks[index].session, haystacks[index].base_seq));
@@ -75,6 +78,158 @@ pub fn search_with(
         }
     }
     Ok(sweep.finish())
+}
+
+/// Search haystacks in parallel across chunked worker threads.
+pub fn search_parallel(query: &Query, haystacks: &[Haystack<'_>]) -> Result<SearchResults> {
+    Ok(ParallelSearch::new(query)?.search(haystacks))
+}
+
+/// Search haystacks in parallel with an existing matcher across chunked worker threads.
+pub fn search_with_parallel(
+    matcher: &Matcher,
+    query: &Query,
+    haystacks: &[Haystack<'_>],
+) -> Result<SearchResults> {
+    Ok(ParallelSearch::with_matcher(matcher, query).search(haystacks))
+}
+
+/// Chunked parallel scrollback search iterator across multiple haystacks.
+pub struct ParallelSearch<'a> {
+    query: &'a Query,
+    matcher: Compiled<'a>,
+}
+
+impl<'a> ParallelSearch<'a> {
+    pub fn new(query: &'a Query) -> Result<Self> {
+        let matcher = Matcher::compile(query)?;
+        Ok(Self {
+            query,
+            matcher: Compiled::Owned(matcher),
+        })
+    }
+
+    pub fn with_matcher(matcher: &'a Matcher, query: &'a Query) -> Self {
+        Self {
+            query,
+            matcher: Compiled::Borrowed(matcher),
+        }
+    }
+
+    /// Run chunked parallel search across `haystacks`.
+    pub fn search(&self, haystacks: &[Haystack<'_>]) -> SearchResults {
+        if haystacks.is_empty() {
+            return SearchResults::default();
+        }
+        // Workers are partitioned along session boundaries, never by index
+        // count: a session split across two workers would each enforce
+        // `max_hits_per_session` independently and a single session could over
+        // its allowance. Keeping every haystack of a session in one worker
+        // preserves the documented per-session cap exactly.
+        let mut ordered_indices: Vec<usize> =
+            (0..haystacks.len()).collect();
+        ordered_indices.sort_by_key(|&index| (haystacks[index].session, haystacks[index].base_seq));
+
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .max(1);
+        if num_threads == 1 || haystacks.len() <= 1 {
+            return self.serialize_search(haystacks, &ordered_indices);
+        }
+
+        let mut session_bounds = Vec::new(); // index into ordered_indices where a new session starts
+        session_bounds.push(0usize);
+        for i in 1..ordered_indices.len() {
+            if haystacks[ordered_indices[i]].session != haystacks[ordered_indices[i - 1]].session {
+                session_bounds.push(i);
+            }
+        }
+        // Split session_groups (slices of ordered_indices) across workers without
+        // splitting a session.
+        let mut partitions: Vec<(usize, usize)> = Vec::new(); // (start, end) of ordered_indices
+        // We gather count of sessions so each worker takes a contiguous run of
+        // session groups approximating `groups / num_threads`.
+        let groups_per_worker = session_bounds.len().div_ceil(num_threads);
+        let mut g = 0usize;
+        while g < session_bounds.len() {
+            let g_end = (g + groups_per_worker).min(session_bounds.len());
+            let part_start = session_bounds[g];
+            let part_end = if g_end < session_bounds.len() {
+                session_bounds[g_end]
+            } else {
+                ordered_indices.len()
+            };
+            partitions.push((part_start, part_end));
+            g = g_end;
+        }
+
+        let matcher_ref = self.matcher.get();
+        let query_ref = self.query;
+
+        let ordered = &ordered_indices;
+        let thread_results: Vec<SearchResults> = std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for &(part_start, part_end) in &partitions {
+                handles.push(s.spawn(move || {
+                    let mut sweep = Sweep::with_matcher(matcher_ref, query_ref);
+                    for &index in &ordered[part_start..part_end] {
+                        if !sweep.push(&haystacks[index]) {
+                            break;
+                        }
+                    }
+                    sweep.finish()
+                }));
+            }
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let mut total_lines = 0u64;
+        let mut total_bytes = 0u64;
+        let mut truncated = false;
+        let mut all_hits: Vec<Hit> = Vec::new();
+        for mut res in thread_results {
+            total_lines += res.lines_scanned;
+            total_bytes += res.bytes_scanned;
+            truncated |= res.truncated;
+            all_hits.append(&mut res.hits);
+        }
+
+        // Sort *everything*, then truncate, so a capped result is a true global
+        // prefix: the first `max_hits` in the same order an uncapped search
+        // would have produced.
+        all_hits.sort_by_key(Hit::order_key);
+        truncated |= all_hits.len() > query_ref.max_hits;
+        all_hits.truncate(query_ref.max_hits);
+
+        let sessions_hit = all_hits
+            .windows(2)
+            .filter(|pair| pair[0].session != pair[1].session)
+            .count()
+            + usize::from(!all_hits.is_empty());
+
+        SearchResults {
+            hits: all_hits,
+            lines_scanned: total_lines,
+            bytes_scanned: total_bytes,
+            sessions_hit,
+            truncated,
+        }
+    }
+
+    fn serialize_search(
+        &self,
+        haystacks: &[Haystack<'_>],
+        ordered_indices: &[usize],
+    ) -> SearchResults {
+        let mut sweep = Sweep::with_matcher(self.matcher.get(), self.query);
+        for &index in ordered_indices {
+            if !sweep.push(&haystacks[index]) {
+                break;
+            }
+        }
+        sweep.finish()
+    }
 }
 
 /// A sweep that takes its sessions one at a time.
@@ -933,5 +1088,85 @@ mod tests {
         let results = sweep.finish();
         assert_eq!(results.len(), 1);
         assert_eq!(results.hits[0].visible_lossy(), "target");
+    }
+
+    #[test]
+    fn parallel_search_yields_correct_ordered_results() {
+        let s1 = b"session 1: error A\nsession 1: quiet\n";
+        let s2 = b"session 2: quiet\nsession 2: error B\n";
+        let s3 = b"session 3: error C\n";
+        let s4 = b"session 4: error D\n";
+
+        let c1 = [s1.as_slice()];
+        let c2 = [s2.as_slice()];
+        let c3 = [s3.as_slice()];
+        let c4 = [s4.as_slice()];
+
+        let haystacks = [
+            Haystack { session: 3, base_seq: 0, chunks: &c3 },
+            Haystack { session: 1, base_seq: 0, chunks: &c1 },
+            Haystack { session: 4, base_seq: 0, chunks: &c4 },
+            Haystack { session: 2, base_seq: 0, chunks: &c2 },
+        ];
+
+        let query = Query::literal("error").context(0);
+        let results = search_parallel(&query, &haystacks).expect("search parallel");
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(
+            results.hits.iter().map(|h| h.session).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4],
+            "parallel search must return hits ordered by session"
+        );
+    }
+
+    #[test]
+    fn parallel_per_session_cap_spans_split_session() {
+        // One session arrives as two haystacks; workers are partitioned along
+        // session boundaries, so `max_hits_per_session` must hold across both
+        // halves — not be applied independently per worker.
+        let half1 = b"err a\nerr b\nerr c\nerr d\n";
+        let half2 = b"err e\nerr f\nerr g\n";
+        let c1 = [half1.as_slice()];
+        let c2 = [half2.as_slice()];
+        let c3 = [b"quiet\n".as_slice()];
+        let c4 = [b"quiet\n".as_slice()];
+
+        let haystacks = [
+            Haystack { session: 1, base_seq: 0, chunks: &c1 },
+            Haystack { session: 1, base_seq: 40, chunks: &c2 },
+            Haystack { session: 2, base_seq: 0, chunks: &c3 },
+            Haystack { session: 3, base_seq: 0, chunks: &c4 },
+        ];
+
+        let query = Query::literal("err").context(0).max_hits_per_session(3).max_hits(100);
+        let results = search_parallel(&query, &haystacks).expect("search parallel");
+
+        let session1 = results.hits.iter().filter(|h| h.session == 1).count();
+        assert_eq!(session1, 3, "session split across two haystacks must still honor its cap");
+    }
+
+    #[test]
+    fn parallel_global_cap_is_a_true_prefix() {
+        // With more hits than `max_hits`, the parallel result must equal the
+        // sequential one: the first `max_hits` in result order, not an
+        // arbitrary subset shaped by worker assignment.
+        let bytes: &[u8] = b"hit\nhit\nhit\nhit\nhit\n";
+        let chunks = [bytes];
+        let mut hays = Vec::new();
+        for session in 0..4u64 {
+            hays.push(Haystack { session, base_seq: 0, chunks: &chunks });
+        }
+
+        let query = Query::literal("hit").context(0).max_hits(7).max_hits_per_session(200);
+        let parallel = search_parallel(&query, &hays).expect("parallel");
+        let sequential = search(&query, &hays).expect("sequential");
+
+        assert_eq!(parallel.hits.len(), 7);
+        assert_eq!(parallel.hits.len(), sequential.hits.len());
+        for (p, s) in parallel.hits.iter().zip(sequential.hits.iter()) {
+            assert_eq!((p.session, p.match_seq), (s.session, s.match_seq));
+        }
+        assert!(parallel.truncated);
     }
 }

@@ -297,7 +297,7 @@ pub(crate) fn truncate_middle_by_cluster(text: &str, budget: usize) -> String {
 /// Packed subtract/add sets the high bit of any byte outside that range, so one
 /// mask test rejects controls, DEL, and any non-ASCII UTF-8 lead/continuation.
 #[inline(always)]
-fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
+pub(crate) fn is_all_printable_ascii_8(chunk: &[u8; 8]) -> bool {
     let w = u64::from_ne_bytes(*chunk);
     let sub = w.wrapping_sub(0x2020_2020_2020_2020);
     let chk = sub.wrapping_add(0x2121_2121_2121_2121);

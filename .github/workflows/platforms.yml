@@ -79,6 +79,40 @@ jobs:
         with:
           version: 0.15.2
 
+      # Zig cannot link against the Xcode 26.4 SDK: ziglang/zig#31658, fixed
+      # upstream for 0.16. Against that SDK every libSystem symbol comes back
+      # undefined (`_abort`, `_bzero`, `__availability_version_check`) while
+      # Ghostty's shared library is linked, and the vt engine never builds.
+      #
+      # The newest Xcode below 26.4 is selected rather than a pinned one, so a
+      # runner image that drops the exact version we named still builds. When
+      # Zig 0.16 lands, delete this whole step: nothing else depends on it.
+      - name: xcode zig can link against
+        if: runner.os == 'macOS'
+        run: |
+          echo "installed: $(ls -d /Applications/Xcode_*.app 2>/dev/null | tr '\n' ' ')"
+          pick=""
+          pick_v=""
+          for app in /Applications/Xcode_*.app; do
+            v="${app#/Applications/Xcode_}"
+            v="${v%.app}"
+            # 26.4 and newer carry the SDK that breaks the link.
+            if [ "$(printf '%s\n26.4\n' "$v" | sort -V | head -1)" = "26.4" ]; then
+              continue
+            fi
+            if [ -z "$pick_v" ] || [ "$(printf '%s\n%s\n' "$pick_v" "$v" | sort -V | tail -1)" = "$v" ]; then
+              pick="$app"
+              pick_v="$v"
+            fi
+          done
+          if [ -n "$pick" ]; then
+            echo "DEVELOPER_DIR=$pick/Contents/Developer" >> "$GITHUB_ENV"
+            echo "using Xcode $pick_v"
+          else
+            echo "::warning::no Xcode below 26.4 on this image; the zig link may fail"
+          fi
+          echo "default xcode: $(xcodebuild -version 2>/dev/null | head -1)"
+
       - run: cargo build --release --workspace --locked
 
       - run: cargo test --release --workspace --locked

@@ -104,7 +104,7 @@ declared list. `vendor-pty/README.md` names its single divergence, in
 2. Work on a branch off `main`.
 3. Keep the change to one thing. A rename and a fix in one diff cost more to
    review than both separately.
-4. Update `README.md`, `SPEC.md`, and `CHANGELOG.md` in the same change when
+4. Update `README.md` and `CHANGELOG.md` in the same change when
    the observable behaviour moves.
 5. Commit messages say why the change is being made.
 

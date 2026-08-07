@@ -311,3 +311,29 @@ fn blank_cell_holds_a_space_and_the_full_style() {
     assert_eq!(Style::DEFAULT.bg, Rgba::BLACK);
     assert!(Style::DEFAULT.attrs.is_empty());
 }
+
+/// The ASCII table must agree with the property it replaces, for every input.
+///
+/// `char_width` answers the first 128 characters from a table written by hand
+/// rather than from the East Asian Width property, which is the whole point:
+/// it is the hot path and a lookup beats a property query. A table written by
+/// hand is also a second statement of the rules, and the way that goes wrong is
+/// never the character somebody thought to write a test for. So the whole space
+/// is walked against the property itself.
+#[test]
+fn the_ascii_width_table_agrees_with_the_property_it_replaces() {
+    for val in 0u32..128 {
+        let ch = char::from_u32(val).expect("ascii is a scalar value");
+        let want = match unicode_width::UnicodeWidthChar::width(ch) {
+            None => CharWidth::Control,
+            Some(0) => CharWidth::ZeroWidth,
+            Some(1) => CharWidth::Narrow,
+            Some(_) => CharWidth::Wide,
+        };
+        assert_eq!(
+            char_width(ch),
+            want,
+            "U+{val:04X} is classified differently by the table and the property"
+        );
+    }
+}

@@ -3090,7 +3090,9 @@ checksum = "1dd04e60bc0b07438a6771710ee1698f98f6ebbc7f89b61264af1563b8aeb878"
 dependencies = [
  "crossbeam-channel",
  "dpi",
+ "gtk",
  "keyboard-types",
+ "libxdo",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -5786,7 +5788,7 @@ dependencies = [
  "jni 0.21.1",
  "lazy-js-bundle",
  "libc",
- "muda 0.17.2",
+ "muda 0.19.3",
  "ndk",
  "ndk-context",
  "ndk-sys",

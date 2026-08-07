@@ -19,8 +19,10 @@
 //! boundaries must be Unicode-aware — `caf\u{e9}` must not match inside
 //! `caf\u{e9}s` — and implementing that a second time next to `regex`'s `\b`
 //! is exactly how the two definitions drift apart. Non-ASCII case-insensitive
-//! literals also stay on `regex`: ASCII folding would silently miss Unicode
-//! case pairs.
+//! literals also stay on `regex`, and so does any needle containing `s` or `k`:
+//! `regex` folds with Unicode rules, under which U+017F folds to `s` and U+212A
+//! folds to `k`, so a byte-wise ASCII fold would quietly stop finding lines the
+//! old path found. See [`ascii_folding_is_exact`].
 //!
 //! # Bytes, not strings
 //!
@@ -91,6 +93,28 @@ impl AsciiCaseFoldFinder {
     }
 }
 
+/// Whether folding `needle` as ASCII gives the same answer as Unicode folding.
+///
+/// It does not always. `regex` case-folds with Unicode rules, under which two
+/// non-ASCII characters fold onto ASCII letters: U+017F LATIN SMALL LETTER LONG
+/// S folds to `s`, and U+212A KELVIN SIGN folds to `k`. A case-insensitive
+/// search for `sink` therefore matches `\u{17f}ink` through `regex` and would
+/// not match it through a byte-wise ASCII fold.
+///
+/// So a needle containing `s` or `k` in either case keeps the `regex` path. The
+/// alternative is a search that silently returns fewer hits than it used to,
+/// which is the one failure a search feature cannot have: you cannot see the
+/// line that was not shown to you.
+///
+/// That this pair is the whole list is not taken on faith. A test walks every
+/// Unicode scalar value and fails if `regex` ever folds another one onto an
+/// ASCII letter, so a future Unicode revision cannot widen the gap unnoticed.
+fn ascii_folding_is_exact(needle: &[u8]) -> bool {
+    needle
+        .iter()
+        .all(|b| !matches!(b, b's' | b'S' | b'k' | b'K'))
+}
+
 impl Matcher {
     /// Compile `query`.
     pub fn compile(query: &Query) -> Result<Self> {
@@ -110,7 +134,8 @@ impl Matcher {
         let ascii_casefold_fast_path = matches!(query.pattern, Pattern::Literal(_))
             && query.case_insensitive
             && !query.whole_word
-            && query.pattern.text().is_ascii();
+            && query.pattern.text().is_ascii()
+            && ascii_folding_is_exact(query.pattern.text().as_bytes());
         if ascii_casefold_fast_path {
             let needle = query.pattern.text().as_bytes();
             let first = needle[0];

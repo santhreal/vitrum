@@ -19,4 +19,5 @@ mod rename;
 mod scrollback_capacity;
 mod scrollback_range;
 mod scrollback_seq;
+mod title;
 mod waiting_probe;

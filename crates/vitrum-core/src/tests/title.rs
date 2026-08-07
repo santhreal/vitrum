@@ -1,9 +1,10 @@
-//! What a session is called, and who gets to decide.
+//! What a session is called and where it is, as the terminal reports them.
 //!
 //! The daemon runs the terminal engine over its own sessions' output, so a
 //! program that names itself is named that way in the sidebar with no client
-//! attached and no client involvement. These tests are the contract for who
-//! wins when the program and the operator disagree.
+//! attached and no client involvement, and a shell that changes directory is
+//! shown where it went. These tests are the contract for who wins when the
+//! program and the operator disagree, and for which reports are believed.
 //!
 //! The escape-emitting cases are Unix only for the same reason every other
 //! escape test in this suite is: `cmd.exe /C` has no portable way to put an
@@ -150,4 +151,80 @@ async fn titled(mgr: &SessionManager, id: vitrum_proto::SessionId, want: &str) {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("session was still called {last:?} rather than {want:?}");
+}
+
+/// A shell that moves is shown where it went.
+///
+/// OSC 7 is how a shell says so, and the daemon is the only thing positioned to
+/// hear it: it sees every session's bytes whether or not a window is open.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn a_reported_directory_moves_the_session() {
+    let dir = crate::tests::helpers::TempDir::new("vitrum-osc7-moved");
+    let mgr = SessionManager::new(4096);
+    let id = mgr
+        .spawn(shell_spec(&format!(
+            "printf '\\033]7;file://host{}\\007'",
+            dir.path.display()
+        )))
+        .expect("spawn");
+    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+
+    assert_eq!(
+        mgr.info(id).expect("info").cwd,
+        dir.path.to_string_lossy(),
+        "the session should be where the shell said it is"
+    );
+}
+
+/// A directory that is not on this machine is not believed.
+///
+/// A session inside `ssh` reports the remote machine's paths, and adopting one
+/// would tell the operator the session is somewhere it has never been and send
+/// the branch lookup after a directory that does not exist.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn a_directory_this_machine_does_not_have_is_ignored() {
+    let mgr = SessionManager::new(4096);
+    let started = std::env::temp_dir().to_string_lossy().into_owned();
+    let id = mgr
+        .spawn(shell_spec(
+            "printf '\\033]7;file://remote/definitely/not/here/at/all\\007'",
+        ))
+        .expect("spawn");
+    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+
+    assert_eq!(
+        mgr.info(id).expect("info").cwd,
+        started,
+        "an unreachable directory should leave the session where it was"
+    );
+}
+
+/// Moving into a repository shows that repository's branch.
+///
+/// The branch is resolved from the directory, so a session that walked into
+/// another checkout has to stop reporting the branch of the one it left.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn moving_into_a_repository_picks_up_its_branch() {
+    let dir = crate::tests::helpers::TempDir::new("vitrum-osc7-branch");
+    let git = dir.path.join(".git");
+    std::fs::create_dir_all(&git).expect("create .git");
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/topic\n").expect("write HEAD");
+
+    let mgr = SessionManager::new(4096);
+    let id = mgr
+        .spawn(shell_spec(&format!(
+            "printf '\\033]7;file://host{}\\007'",
+            dir.path.display()
+        )))
+        .expect("spawn");
+    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+
+    assert_eq!(
+        mgr.info(id).expect("info").git_branch.as_deref(),
+        Some("topic"),
+        "the branch should come from the directory the session moved into"
+    );
 }

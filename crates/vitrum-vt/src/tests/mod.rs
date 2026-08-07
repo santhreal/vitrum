@@ -6,6 +6,7 @@
 //! - [`vt_wide`]: double-width characters and grapheme clusters.
 //! - [`vt_damage`]: what does and does not cost work, including the idle path.
 //! - [`vt_events`]: replies, bells, title, and working directory.
+//! - [`vt_pwd`]: decoding an OSC 7 report into a path.
 //! - [`vt_geometry`]: resize, scrollback, and the cursor.
 //! - [`vt_linkage`]: the build's linkage record.
 
@@ -14,6 +15,7 @@ mod vt_damage;
 mod vt_events;
 mod vt_geometry;
 mod vt_linkage;
+mod vt_pwd;
 mod vt_style;
 mod vt_text;
 mod vt_wide;

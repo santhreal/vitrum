@@ -10,9 +10,15 @@
 [advisories]
 version = 2
 yanked = "deny"
-# A known vulnerability and a crate nobody maintains are both reasons to stop.
-# There are no ignores today; add one only with the advisory id and a sentence
-# saying why this tree is not exposed.
+# Vulnerabilities stay deny. Unmaintained advisories are off (`none`): the
+# shipping Linux path still needs gtk3 through wry/dioxus-desktop, and
+# vitrum-grid still needs ttf-parser through fontdue/fontdb (plus a direct
+# Face::parse for underline metrics). Neither has a drop-in upgrade; gtk4 and
+# skrifa are separate migrations. cargo-deny 0.19 scopes unmaintained with
+# all|workspace|transitive|none rather than warn/deny. Add an ignore only for
+# a vulnerability this tree is not exposed to, with the advisory id and a
+# sentence saying why.
+unmaintained = "none"
 ignore = []
 
 [licenses]

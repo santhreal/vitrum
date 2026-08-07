@@ -5,16 +5,36 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "GPU terminal cell-grid renderer for the vitrum native (Blitz) path."
+description = "GPU terminal cell-grid renderer for vitrum terminal sessions."
 readme = "README.md"
 rust-version = "1.85"
 keywords = ["terminal", "wgpu", "renderer", "glyph-atlas", "gpu"]
 categories = ["rendering", "gui", "graphics"]
 
 [dependencies]
-# Pinned to the version Blitz uses so the renderer can share a `wgpu::Device`
-# with a Blitz custom widget without two incompatible wgpu copies in the tree.
-wgpu = "29"
+# Every backend the default set has except Direct3D 12, which cannot be built
+# in this tree today.
+#
+# wgpu-hal hands Direct3D handles to gpu-allocator, and both name those types
+# through the `windows` crate. gpu-allocator accepts `>=0.53, <=0.62`, so it
+# would take 0.62 and agree with wgpu-hal, except that `tao` (the window
+# library under the vendored dioxus-desktop) requires `^0.61` and cargo
+# collapses the permissive range onto it. wgpu-hal is then on 0.62 while
+# gpu-allocator is on 0.61, and `D3D12_RESOURCE_DESC` and `ID3D12Heap` stop
+# being the same types across the call. Reproduce with
+# `cargo check -p vitrum-grid --target x86_64-pc-windows-msvc`.
+#
+# Windows keeps Vulkan and GLES, which is every GPU with a current driver.
+# Restore "dx12" here when tao moves to `windows` 0.62; nothing else is needed.
+wgpu = { version = "29", default-features = false, features = [
+    "std",
+    "parking_lot",
+    "metal",
+    "gles",
+    "vulkan",
+    "wgsl",
+    "webgpu",
+] }
 bytemuck = { version = "1", features = ["derive"] }
 fontdue = "0.9"
 fontdb = "0.23"

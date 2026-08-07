@@ -86,11 +86,18 @@ jobs:
       # themselves. libtest captures their reason, so without this line a run
       # is green and silent about what it did not check. This reports the
       # host's setting; the decision to skip stays in the tests.
+      #
+      # `read` and not `cat`: the redirection for a builtin is performed by the
+      # shell itself, which is the child's parent. `cat` is the child's sibling,
+      # and yama denies a sibling at scope 1 as well as at scope 2, so a check
+      # written with it reports a healthy host as broken. Measured on this
+      # runner: at scope 1 the parent reads and the sibling does not; at scope 2
+      # neither does. The test helper reads its own child the same way.
       - name: probe capability
         run: |
           sleep 30 & p=$!
           scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo "n/a")
-          if cat /proc/$p/syscall >/dev/null 2>&1; then
+          if read -r _ < /proc/$p/syscall 2>/dev/null; then
             echo "kernel answers the waiting probe (yama ptrace_scope=$scope)"
           else
             echo "::warning::this kernel denies /proc/<pid>/syscall (yama" \

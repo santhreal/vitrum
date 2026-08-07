@@ -327,18 +327,21 @@ fn scan_one(
     for span in Lines::new(haystack.chunks) {
         results.lines_scanned += 1;
         scanned_to = (span.offset + span.len as u64 + 1).min(total);
-        // Chunk prefilter: skip line materialization, stripping, and matching for non-matching chunks.
-		// The span's end byte position. `locate` returns `None` exactly at
-		// end-of-data, which is where an unterminated final line reaches; that
-		// line still lives in the last chunk, so fall the range back to the last
-		// chunk there. `unwrap_or((chunk_start,0))` would collapse it to the
-		// start chunk and silently drop a straddling match whose first chunk has
-		// no possible first byte.
-		let (chunk_start, _) = view.locate(span.offset).unwrap_or((0, 0));
-		let (chunk_end, _) = view
-			.locate(span.offset + span.len as u64)
-			.unwrap_or((haystack.chunks.len().saturating_sub(1), 0));
-        let is_possible = (chunk_start..=chunk_end).any(|idx| chunk_possible.get(idx).copied().unwrap_or(true));
+        // Which chunks this line touches. A match cannot be missed by asking
+        // only about them: the prefilter looks for the needle's first byte, and
+        // that byte lies in exactly one chunk, which is inside this range even
+        // when the match itself straddles a boundary.
+        //
+        // `locate` returns `None` exactly at end-of-data, which is where an
+        // unterminated final line ends. That line still lives in the last
+        // chunk, so the end falls back to it rather than to the start chunk,
+        // which would collapse the range and could drop a straddling match.
+        let (chunk_start, _) = view.locate(span.offset).unwrap_or((0, 0));
+        let (chunk_end, _) = view
+            .locate(span.offset + span.len as u64)
+            .unwrap_or((haystack.chunks.len().saturating_sub(1), 0));
+        let is_possible = (chunk_start..=chunk_end)
+            .any(|idx| chunk_possible.get(idx).copied().unwrap_or(true));
         if state.pending.is_empty() && !is_possible {
             if context_before > 0 {
                 if state.before.len() == context_before {

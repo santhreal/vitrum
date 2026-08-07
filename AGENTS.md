@@ -35,3 +35,19 @@ that lacks them.
 This applies to small refinements as well as large ones, including a minimal
 "update available" affordance and any polish of the post-update changelog
 sheet.
+## Demos show agents, not shell output
+
+vitrum manages coding agents. It is not a terminal multiplexer, and a demo
+that shows it running `ls`, `htop`, `cat`, a build log, or any other bare
+shell session argues the opposite: it puts the product in a category where
+tmux, Zellij and Wezterm already win, and where nothing vitrum does is
+visible.
+
+So every screenshot, tape, GIF and README image shows sessions that are
+coding agents, in the states only this product surfaces: an agent working, an
+agent blocked on approval, an agent that finished while you were elsewhere, a
+snoozed session, several projects grouped in the sidebar. The sidebar is the
+subject. A terminal pane is background, and it holds an agent.
+
+That a session can run any command is true and is not the pitch. Do not
+demonstrate it.

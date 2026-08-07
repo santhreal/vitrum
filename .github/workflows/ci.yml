@@ -77,6 +77,22 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # On a runner we own the cache is kept below, so uploading it to
+          # GitHub's cache service costs a post-step and buys nothing.
+          use-cache: ${{ runner.environment == 'github-hosted' }}
+
+      # setup-zig puts both zig cache directories inside the workspace, which
+      # checkout wipes at the start of every run. On our own runner point them
+      # somewhere that survives instead, so the cache is warm without a
+      # download and without a 200s upload afterwards.
+      - name: durable zig cache
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          dir="$HOME/.cache/zig-vitrum"
+          mkdir -p "$dir"
+          echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
 
       - run: cargo build --release --workspace --locked
 
@@ -145,6 +161,22 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # On a runner we own the cache is kept below, so uploading it to
+          # GitHub's cache service costs a post-step and buys nothing.
+          use-cache: ${{ runner.environment == 'github-hosted' }}
+
+      # setup-zig puts both zig cache directories inside the workspace, which
+      # checkout wipes at the start of every run. On our own runner point them
+      # somewhere that survives instead, so the cache is warm without a
+      # download and without a 200s upload afterwards.
+      - name: durable zig cache
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          dir="$HOME/.cache/zig-vitrum"
+          mkdir -p "$dir"
+          echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
       # `vitrum-core` is where the platform-conditional code lives. The client
       # crates link a system webview that has no cross-compilable form, so
       # checking them here would fail for a reason that says nothing about the
@@ -172,6 +204,22 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # On a runner we own the cache is kept below, so uploading it to
+          # GitHub's cache service costs a post-step and buys nothing.
+          use-cache: ${{ runner.environment == 'github-hosted' }}
+
+      # setup-zig puts both zig cache directories inside the workspace, which
+      # checkout wipes at the start of every run. On our own runner point them
+      # somewhere that survives instead, so the cache is warm without a
+      # download and without a 200s upload afterwards.
+      - name: durable zig cache
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          dir="$HOME/.cache/zig-vitrum"
+          mkdir -p "$dir"
+          echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
       - run: ./packaging/build-release-asset.sh
       - name: the checksum must verify
         run: cd dist && sha256sum -c SHA256SUMS

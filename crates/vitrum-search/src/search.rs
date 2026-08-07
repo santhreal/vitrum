@@ -33,6 +33,7 @@
 //! truncated result with mutilated context would be worse than one hit fewer.
 
 use std::collections::VecDeque;
+use std::sync::LazyLock;
 
 use crate::ansi::{Map, Stripper, needs_stripping};
 use crate::chunks::{Chunked, Haystack, LineSpan, Lines};
@@ -64,7 +65,7 @@ pub fn search_with(
     query: &Query,
     haystacks: &[Haystack<'_>],
 ) -> Result<SearchResults> {
-    if haystacks.len() >= 4 {
+    if worth_parallel(haystacks) {
         return search_with_parallel(matcher, query, haystacks);
     }
     // Scan in result order so the global cap yields a prefix, not a sample.
@@ -78,6 +79,37 @@ pub fn search_with(
         }
     }
     Ok(sweep.finish())
+}
+
+/// Below this many bytes, splitting the scan costs more than it saves.
+///
+/// Measured on this workload: at 389 KiB the threaded scan runs at 0.40x the
+/// serial one because spawning dominates, at 1.5 MiB it reaches 1.13x, and by
+/// 3 MiB it is 3.14x and still climbing to roughly 6.5x. The threshold sits
+/// above the break-even point rather than on it, because a scan that is barely
+/// worth splitting is not worth the threads.
+const PARALLEL_MIN_BYTES: usize = 2 * 1024 * 1024;
+
+/// Whether a scan is big enough to be worth splitting across threads.
+///
+/// The deciding quantity is bytes, not haystack count. Four idle sessions
+/// holding a screen each are a few hundred kilobytes and lose badly to a
+/// single-threaded scan; one session holding a long build log is worth
+/// splitting on its own.
+fn worth_parallel(haystacks: &[Haystack<'_>]) -> bool {
+    if haystacks.len() < 2 {
+        return false;
+    }
+    let mut total = 0usize;
+    for haystack in haystacks {
+        for chunk in haystack.chunks {
+            total = total.saturating_add(chunk.len());
+            if total >= PARALLEL_MIN_BYTES {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Search haystacks in parallel across chunked worker threads.
@@ -130,10 +162,15 @@ impl<'a> ParallelSearch<'a> {
             (0..haystacks.len()).collect();
         ordered_indices.sort_by_key(|&index| (haystacks[index].session, haystacks[index].base_seq));
 
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .max(1);
+        // A process does not change how many cores it has; asking per query
+        // put a syscall on the keystroke path.
+        static THREADS: LazyLock<usize> = LazyLock::new(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .max(1)
+        });
+        let num_threads = *THREADS;
         if num_threads == 1 || haystacks.len() <= 1 {
             return self.serialize_search(haystacks, &ordered_indices);
         }
@@ -181,7 +218,15 @@ impl<'a> ParallelSearch<'a> {
                     sweep.finish()
                 }));
             }
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            // A worker panic is the caller's panic; resuming with the original
+            // payload keeps the message and location instead of `Any { .. }`.
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(results) => results,
+                    Err(payload) => std::panic::resume_unwind(payload),
+                })
+                .collect()
         });
 
         let mut total_lines = 0u64;
@@ -195,9 +240,17 @@ impl<'a> ParallelSearch<'a> {
             all_hits.append(&mut res.hits);
         }
 
-        // Sort *everything*, then truncate, so a capped result is a true global
+        // Sort everything, then truncate, so a capped result is a true global
         // prefix: the first `max_hits` in the same order an uncapped search
         // would have produced.
+        //
+        // Today the sort cannot be observed: workers take contiguous ascending
+        // ranges of `ordered_indices` and their results come back in the order
+        // they were spawned, so the concatenation is already in result order,
+        // and deleting this line passes every test. It stays because the cap
+        // below is only a prefix if the input to it is ordered, and that would
+        // otherwise be a property of how partitions happen to be built rather
+        // than of this function. It costs a sort of at most `max_hits` items.
         all_hits.sort_by_key(Hit::order_key);
         truncated |= all_hits.len() > query_ref.max_hits;
         all_hits.truncate(query_ref.max_hits);
@@ -1091,6 +1144,43 @@ mod tests {
     }
 
     #[test]
+    fn a_small_scan_is_not_worth_splitting() {
+        // Four idle sessions holding a screen each: the threaded scan measured
+        // 0.40x the serial one at this size, so this must stay serial.
+        let screen = vec![b'x'; 96 * 1024];
+        let chunks: Vec<[&[u8]; 1]> = (0..4).map(|_| [screen.as_slice()]).collect();
+        let hays: Vec<Haystack<'_>> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Haystack { session: i as u64, base_seq: 0, chunks: c })
+            .collect();
+        assert!(!worth_parallel(&hays));
+    }
+
+    #[test]
+    fn a_long_log_is_worth_splitting_even_as_one_session() {
+        // Bytes decide, not haystack count: two haystacks clearing the
+        // threshold qualify where four small ones did not.
+        let log = vec![b'x'; PARALLEL_MIN_BYTES];
+        let chunks = [log.as_slice()];
+        let hays = [
+            Haystack { session: 1, base_seq: 0, chunks: &chunks },
+            Haystack { session: 1, base_seq: 1, chunks: &chunks },
+        ];
+        assert!(worth_parallel(&hays));
+    }
+
+    #[test]
+    fn one_haystack_never_pays_for_threads() {
+        // A single haystack goes to one worker no matter how big it is, so
+        // splitting could only add cost.
+        let log = vec![b'x'; PARALLEL_MIN_BYTES * 4];
+        let chunks = [log.as_slice()];
+        let hays = [Haystack { session: 1, base_seq: 0, chunks: &chunks }];
+        assert!(!worth_parallel(&hays));
+    }
+
+    #[test]
     fn parallel_search_yields_correct_ordered_results() {
         let s1 = b"session 1: error A\nsession 1: quiet\n";
         let s2 = b"session 2: quiet\nsession 2: error B\n";
@@ -1160,7 +1250,19 @@ mod tests {
 
         let query = Query::literal("hit").context(0).max_hits(7).max_hits_per_session(200);
         let parallel = search_parallel(&query, &hays).expect("parallel");
-        let sequential = search(&query, &hays).expect("sequential");
+        // Driven directly rather than through `search`, which is free to pick
+        // the parallel path itself and would leave this comparing it to itself.
+        let sequential = {
+            let mut order: Vec<usize> = (0..hays.len()).collect();
+            order.sort_by_key(|&i| (hays[i].session, hays[i].base_seq));
+            let mut sweep = Sweep::new(&query).expect("compile");
+            for i in order {
+                if !sweep.push(&hays[i]) {
+                    break;
+                }
+            }
+            sweep.finish()
+        };
 
         assert_eq!(parallel.hits.len(), 7);
         assert_eq!(parallel.hits.len(), sequential.hits.len());

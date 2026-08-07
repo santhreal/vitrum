@@ -69,3 +69,18 @@ fn answering_the_prompt_leaves_a_different_message_alone() {
         Some(false)
     );
 }
+
+use crate::actions::dismiss_persists;
+use crate::state::Layer;
+
+/// Escape goes through `dismiss`, not the sheet's own button. Onboarding and
+/// What's New both promise that any close records them as seen; a layer that
+/// forgets that on Escape comes back on the next launch.
+#[test]
+fn escape_persists_onboarding_and_whats_new() {
+    assert!(dismiss_persists(&Layer::Onboarding));
+    assert!(dismiss_persists(&Layer::WhatsNew));
+    assert!(!dismiss_persists(&Layer::None));
+    assert!(!dismiss_persists(&Layer::Shortcuts));
+}
+

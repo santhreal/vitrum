@@ -579,13 +579,15 @@ mod the_whole_install_over_a_socket;
 #[cfg(test)]
 mod what_an_update_actually_leaves_running;
 
+/// What the titlebar is allowed to say about an update, and when it says
+/// nothing at all.
+#[cfg(test)]
+mod chrome_offer;
+
 /// The mark belongs on the launcher, not in the window.
 ///
 /// Documented in `assets/logo/README.md`; enforced here, because a rule that
 /// lives only in a document is a rule that survives exactly until somebody
 /// wants a splash of brand in the titlebar.
-#[cfg(test)]
-mod chrome_offer;
-
 #[cfg(test)]
 mod where_the_mark_may_appear;

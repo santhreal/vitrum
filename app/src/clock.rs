@@ -26,9 +26,38 @@ use vitrum_fmt::{TimeFormat, Timestamp};
 /// a hardcoded zero puts a user seven hours west of UTC on the wrong day for
 /// the last seven hours of every day.
 pub fn now() -> TimeFormat {
+    let ms = Timestamp::from_system_time(std::time::SystemTime::now()).as_millis();
+    render_clock(ms, vitrum_os::time::utc_offset_secs())
+}
+
+/// Build the clock a paint hands to every row, floored to a whole second.
+///
+/// # Why the reading is deliberately blunted
+///
+/// Every label derived from this clock is measured in seconds at its finest:
+/// [`age`] renders "12s ago", and the model's disposition, parked and working
+/// labels are coarser still. The milliseconds are therefore never visible on
+/// screen — but they were visible to `PartialEq`.
+///
+/// [`TimeFormat`] is a prop of every session row, so a reading that differs by
+/// one millisecond makes every row's props compare unequal, and Dioxus rebuilds
+/// and re-diffs the entire list. At the stated load of twenty sessions the
+/// daemon pushes twenty `SessionUpdated` a second and exactly one row changes
+/// on each, so the client was rebuilding the whole sidebar twenty times a
+/// second to redraw one row's timestamp.
+///
+/// Flooring makes the reading change exactly as often as the coarsest thing
+/// drawn from it, which is once a second. Inside a second every untouched row
+/// compares equal and is skipped; on the boundary they all update together,
+/// which is also the only way twenty rows can agree on "now".
+///
+/// Floor rather than round: rounding would put the boundary half a second away
+/// from the second it names, so a row created at t would read "1s ago" for the
+/// first half of its life.
+pub fn render_clock(now_ms: i64, utc_offset_secs: i32) -> TimeFormat {
     TimeFormat::new(
-        Timestamp::from_system_time(std::time::SystemTime::now()),
-        vitrum_os::time::utc_offset_secs(),
+        Timestamp::from_millis(now_ms.div_euclid(1_000) * 1_000),
+        utc_offset_secs,
     )
 }
 

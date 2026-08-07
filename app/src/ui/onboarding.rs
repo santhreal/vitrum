@@ -404,29 +404,6 @@ mod tests {
     /// The defect: reciting the five names vitrum knows about regardless of
     /// what is installed, which is the exact behaviour the launcher's picker
     /// was changed away from.
-
-    /// A PATH walk still in flight must not claim nothing matched.
-    ///
-    /// The defect: opening the sheet before `detected_agents` returns, then
-    /// rendering the zero-agents sentence, flashes "install an agent" on a
-    /// machine that has one until the walk finishes. Looking is its own state.
-    #[test]
-    fn a_pending_path_walk_does_not_claim_nothing_matched() {
-        let step = find(&machine(None, false, false), StepKind::Agents)
-            .expect("the agents step always applies");
-        assert_eq!(step.state, StepState::Info);
-        assert!(
-            step.body.contains("Looking for agent binaries"),
-            "{}",
-            step.body
-        );
-        assert!(
-            !step.body.contains("Nothing on your PATH"),
-            "{}",
-            step.body
-        );
-    }
-
     #[test]
     fn the_agents_line_names_only_detected_binaries() {
         let cases: &[(&[Detected], &str)] = &[
@@ -455,6 +432,28 @@ mod tests {
             );
             assert!(!line.contains("Gemini"), "{line}");
         }
+    }
+
+    /// A PATH walk still in flight must not claim nothing matched.
+    ///
+    /// The defect: opening the sheet before `detected_agents` returns, then
+    /// rendering the zero-agents sentence, flashes "install an agent" on a
+    /// machine that has one until the walk finishes. Looking is its own state.
+    #[test]
+    fn a_pending_path_walk_does_not_claim_nothing_matched() {
+        let step = find(&machine(None, false, false), StepKind::Agents)
+            .expect("the agents step always applies");
+        assert_eq!(step.state, StepState::Info);
+        assert!(
+            step.body.contains("Looking for agent binaries"),
+            "{}",
+            step.body
+        );
+        assert!(
+            !step.body.contains("Nothing on your PATH"),
+            "{}",
+            step.body
+        );
     }
 
     /// A step appears only while it still has something to say.

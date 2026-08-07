@@ -10,6 +10,11 @@
 # Review notes, one per project, deliberately not shared.
 BACKLOG.md
 
+# Internal operating notes: how work is staged, gated and landed here. The
+# public repository carries contributor-facing rules only, so this directory
+# is deliberately not shared and must never be committed.
+/.internal/
+
 # Capture artifacts. Scoped, NOT a global *.png: a blanket rule would silently
 # swallow the first icon or asset anybody adds under app/assets.
 /harness/out/

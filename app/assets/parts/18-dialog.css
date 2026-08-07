@@ -308,8 +308,6 @@
   line-height: var(--rg-lead-body);
 }
 
-
-
 /* One release. Releases are told apart by the whitespace the body's gap
  * already puts between them, never by a rule: a hairline per release turns a
  * short changelog into a stack of boxes. */

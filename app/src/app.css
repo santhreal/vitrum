@@ -383,6 +383,50 @@ body {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
+  gap: var(--rg-space-1);
+}
+
+/* Quiet update-available chip. Kept next to the titlebar rules that size
+ * this row so a release note does not depend on a later cascade layer. */
+.rg-update {
+  display: inline-flex;
+  align-items: center;
+  height: 1.75rem;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--rg-accent);
+  color: var(--rg-accent);
+  overflow: hidden;
+}
+
+.rg-update__open,
+.rg-update__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-family: var(--rg-font-ui);
+  font-size: var(--rg-text-xs);
+}
+
+.rg-update__open {
+  padding: 0 var(--rg-space-2);
+}
+
+.rg-update__dismiss {
+  width: 1.75rem;
+  padding: 0;
+  opacity: 0.75;
+}
+
+.rg-update__open:hover,
+.rg-update__dismiss:hover {
+  background-color: var(--rg-bg-hover);
+  opacity: 1;
 }
 
 .rg-titlebar__action {

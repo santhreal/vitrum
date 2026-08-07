@@ -28,9 +28,19 @@ enum UpdateUi {
     Failed(String),
 }
 
+#[derive(Props, Clone, PartialEq)]
+pub(super) struct AboutPanelProps {
+    pub state: Signal<UiState>,
+    /// Quiet titlebar check, when one has already answered. Seeding the
+    /// Install button from it means opening About after the chip does not
+    /// ask the network a second time for the same fact.
+    pub offer: Signal<Option<crate::update::Available>>,
+}
+
 #[component]
-pub(super) fn AboutPanel(state: Signal<UiState>) -> Element {
-    let mut ui = use_signal(|| UpdateUi::Idle);
+pub(super) fn AboutPanel(props: AboutPanelProps) -> Element {
+    let state = props.state;
+    let mut offer = props.offer;
     let current = crate::update::current_version();
 
     // The daemon is a separate process that outlives every window, so its
@@ -47,7 +57,23 @@ pub(super) fn AboutPanel(state: Signal<UiState>) -> Element {
     // Held so the Install button knows what it is installing without asking
     // the network a second time and risking a different answer than the one
     // the operator is looking at.
-    let mut ready = use_signal(|| None::<crate::update::Available>);
+    let mut ready = use_signal(|| offer.peek().clone());
+    let mut ui = use_signal(|| match offer.peek().clone() {
+        Some(a) => UpdateUi::Answer(crate::update::Status::Ready(a)),
+        None => UpdateUi::Idle,
+    });
+
+    // Keep Install in step with a quiet check that finishes after About was
+    // already open on Idle, without stomping a Busy or Failed answer the
+    // operator is reading.
+    use_effect(move || {
+        if let Some(a) = offer() {
+            if matches!(ui(), UpdateUi::Idle) {
+                ready.set(Some(a.clone()));
+                ui.set(UpdateUi::Answer(crate::update::Status::Ready(a)));
+            }
+        }
+    });
 
     rsx! {
         div { class: "rg-field",
@@ -82,9 +108,25 @@ pub(super) fn AboutPanel(state: Signal<UiState>) -> Element {
                             let got = crate::off_thread(crate::update::check).await;
                             match got {
                                 Ok(status) => {
-                                    if let crate::update::Status::Ready(a) = &status {
-                                        ready.set(Some(a.clone()));
-                                    }
+                                    // About always surfaces a Ready answer so
+                                    // an intentional Check can Install even
+                                    // after the titlebar chip was dismissed.
+                                    // The chip itself keeps respecting the
+                                    // ignored version.
+                                    let install = match &status {
+                                        crate::update::Status::Ready(a) => Some(a.clone()),
+                                        _ => None,
+                                    };
+                                    ready.set(install);
+                                    let ignored = state
+                                        .peek()
+                                        .daemon
+                                        .settings
+                                        .ignored_update
+                                        .clone();
+                                    offer.set(crate::update::chrome_offer(
+                                        &status, &ignored,
+                                    ));
                                     ui.set(UpdateUi::Answer(status));
                                 }
                                 Err(e) => ui.set(UpdateUi::Failed(format!("{e:#}"))),
@@ -123,7 +165,11 @@ pub(super) fn AboutPanel(state: Signal<UiState>) -> Element {
                                 })
                                 .await;
                                 match done {
-                                    Ok(v) => ui.set(UpdateUi::Installed(v)),
+                                    Ok(v) => {
+                                        offer.set(None);
+                                        ready.set(None);
+                                        ui.set(UpdateUi::Installed(v));
+                                    }
                                     Err(e) => ui.set(UpdateUi::Failed(format!("{e:#}"))),
                                 }
                             });

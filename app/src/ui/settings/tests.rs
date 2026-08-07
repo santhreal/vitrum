@@ -1119,6 +1119,7 @@ struct SheetHarnessProps {
 #[component]
 fn SheetHarness(props: SheetHarnessProps) -> Element {
     let state = use_signal(UiState::default);
+    let update_offer = use_signal(|| None::<crate::update::Available>);
     rsx! {
         SettingsSheet {
             state,
@@ -1126,6 +1127,7 @@ fn SheetHarness(props: SheetHarnessProps) -> Element {
             on_tab: move |_: SettingsTab| {},
             on_reconnect: move |_: String| {},
             on_dismiss: move |()| {},
+            update_offer,
         }
     }
 }

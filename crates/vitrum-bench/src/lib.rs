@@ -22,6 +22,7 @@ pub mod client;
 pub mod fuzz;
 pub mod load;
 pub mod profile;
+pub mod probe;
 pub mod race;
 pub mod report;
 pub mod stats;

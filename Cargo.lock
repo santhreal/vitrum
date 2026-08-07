@@ -5729,7 +5729,11 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "vitrum-grid",
+ "vitrum-model",
  "vitrum-proto",
+ "vitrum-replay",
+ "vitrum-search",
 ]
 
 [[package]]

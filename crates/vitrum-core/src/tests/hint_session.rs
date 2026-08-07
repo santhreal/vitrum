@@ -12,7 +12,9 @@ use vitrum_proto::IDLE_ATTENTION_MS;
 use vitrum_proto::{HintState, SessionStatus};
 
 use crate::SessionManager;
-use crate::tests::helpers::{collect, kernel_reports_other_processes, probe_now, shell_spec, wait_exit};
+#[cfg(target_os = "linux")]
+use crate::tests::helpers::kernel_reports_other_processes;
+use crate::tests::helpers::{collect, probe_now, shell_spec, wait_exit};
 
 /// Resolve the sidebar status exactly as a client would, from the projection.
 fn status(info: &vitrum_proto::SessionInfo) -> (SidebarStatus, StatusSource) {

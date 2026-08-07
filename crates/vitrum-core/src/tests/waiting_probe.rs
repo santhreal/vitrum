@@ -24,7 +24,9 @@ use crate::tests::helpers::DEADLINE;
 use crate::tests::helpers::collect;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::tests::helpers::waiting_settles_on;
-use crate::tests::helpers::{QUIET, blocking_read, kernel_reports_other_processes, probe_now, shell_spec, wait_exit};
+#[cfg(target_os = "linux")]
+use crate::tests::helpers::kernel_reports_other_processes;
+use crate::tests::helpers::{QUIET, blocking_read, probe_now, shell_spec, wait_exit};
 
 /// A spec running `command` with `args` from a directory that exists.
 #[cfg(target_os = "linux")]

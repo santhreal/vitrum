@@ -26,7 +26,17 @@ use crate::serve;
 ///
 /// `pub(crate)` so a sibling test module can bound a wait of its own on the
 /// same number rather than inventing a second one that drifts from it.
+///
+/// Longer on Windows, where a session costs a `CreateProcess` and a
+/// pseudoconsole rather than a `fork`, and the runner is a shared VM: the same
+/// test passed one run and hit this bound at 10.07s the next. The number is
+/// there to turn a hang into a readable failure, not to assert how fast a
+/// child starts, so raising it on the slow platform costs nothing a hang
+/// would have told us.
+#[cfg(not(windows))]
 pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
+#[cfg(windows)]
+pub(crate) const DEADLINE: Duration = Duration::from_secs(30);
 
 /// Window for negative assertions. A bound on absence, not a wait for a result.
 const QUIET: Duration = Duration::from_millis(200);

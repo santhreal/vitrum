@@ -146,6 +146,36 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def merged_into(ref: str, branch: str) -> bool:
+    """Whether `ref` is already an ancestor of `branch`."""
+    done = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ref, branch],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    return done.returncode == 0
+
+
+def branch_exists(name: str) -> bool:
+    return bool(name) and subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", name],
+        cwd=ROOT, capture_output=True, text=True,
+    ).returncode == 0
+
+
+def save_wave(branch: str, base: str, landed: list[int], requested: list[int]) -> None:
+    """Record the wave, including a partial one stopped by a conflict.
+
+    Written before the conflict is resolved, not after the wave completes, or a
+    resolution has nothing to resume onto and the next run starts over.
+    """
+    (ROOT / ".git" / "vitrum-wave").write_text(
+        json.dumps(
+            {"branch": branch, "base": base, "prs": landed, "requested": requested}
+        )
+        + "\n"
+    )
+
+
 def cmd_stage(args: argparse.Namespace) -> int:
     """Merge each pull request onto a fresh staging branch, one at a time."""
     fetch_prs()
@@ -153,6 +183,7 @@ def cmd_stage(args: argparse.Namespace) -> int:
     base = args.base
     branch = args.name or f"staging/{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
 
+    state_path = ROOT / ".git" / "vitrum-wave"
     dirty = [
         line[3:] for line in git("status", "--porcelain").splitlines() if line
     ]
@@ -169,10 +200,34 @@ def cmd_stage(args: argparse.Namespace) -> int:
     if dirty:
         print(f"note: {len(dirty)} uncommitted file(s) untouched by this wave, left alone")
 
-    git("checkout", "-b", branch, base)
-    print(f"staging {branch} from {base}")
+    # Replay a conflict resolution that has already been made once. Restaging a
+    # wave re-merges every pull request in it, so without this the same conflict
+    # is resolved by hand on every attempt, and a wave that conflicts twice
+    # costs the same work twice.
+    git("config", "rerere.enabled", "true")
+
+    # Continue a wave a conflict stopped rather than starting a new branch and
+    # throwing the resolution away. The same command that stopped resumes it,
+    # which is what the message at the bottom of this function promises.
+    prior = json.loads(state_path.read_text()) if state_path.is_file() else {}
+    resuming = (
+        prior.get("requested") == numbers
+        and prior.get("base") == base
+        and branch_exists(prior.get("branch", ""))
+    )
+    if resuming:
+        branch = prior["branch"]
+        git("checkout", branch)
+        print(f"resuming {branch}, {len(prior['prs'])} already merged")
+    else:
+        git("checkout", "-b", branch, base)
+        print(f"staging {branch} from {base}")
     landed: list[int] = []
     for number in numbers:
+        if merged_into(pr_ref(number), branch):
+            landed.append(number)
+            print(f"  #{number}: already on this branch")
+            continue
         # --no-ff always: the merge commit is what bisect points at later, and
         # a fast-forward would erase which pull request a change arrived in.
         done = subprocess.run(
@@ -183,14 +238,14 @@ def cmd_stage(args: argparse.Namespace) -> int:
         if done.returncode != 0:
             conflicts = git("diff", "--name-only", "--diff-filter=U")
             print(f"  #{number}: CONFLICT\n    " + "\n    ".join(conflicts.splitlines()))
-            print("resolve, `git add` the files, `git commit`, then rerun stage for the rest")
+            save_wave(branch, base, landed, numbers)
+            print("resolve, `git add` the files, `git commit`, then run the same"
+                  " stage command again to continue on this branch")
             return 1
         landed.append(number)
         print(f"  #{number}: merged")
 
-    Path(ROOT / ".git" / "vitrum-wave").write_text(
-        json.dumps({"branch": branch, "base": base, "prs": landed}) + "\n"
-    )
+    save_wave(branch, base, landed, numbers)
     print(f"\n{len(landed)} merged onto {branch}\nnext: tools/integrate.py gate")
     return 0
 

@@ -186,12 +186,14 @@ pub enum EventRef<'a> {
         /// Timestamp in microseconds.
         micros: u64,
     },
-    /// Skipped or custom event code.
+    /// An event code this reader has no meaning for, kept so a caller can
+    /// count what it skipped.
     Skipped {
         /// 1-based line number.
         line: usize,
-        /// Code byte if single char.
-        code: Option<u8>,
+        /// The code byte, which is always known by the time an event is
+        /// classified.
+        code: u8,
     },
 }
 
@@ -253,10 +255,11 @@ impl<'a> Iterator for StreamingReader<'a> {
 
             let line_number = self.line_number;
             let decode_buf = &mut self.decode_buf;
-            let (micros, code_byte, data_body) = match parse_event_ref(line, line_number, decode_buf) {
-                Ok(val) => val,
-                Err(err) => return Some(Err(err)),
-            };
+            let (micros, code_byte, data_body) =
+                match parse_event_ref(line, line_number, decode_buf) {
+                    Ok(parsed) => parsed,
+                    Err(error) => return Some(Err(error)),
+                };
 
             if micros < self.previous_micros {
                 return Some(Err(CastError::EventTimeOrder {
@@ -268,8 +271,20 @@ impl<'a> Iterator for StreamingReader<'a> {
             self.previous_micros = micros;
 
             match code_byte {
-                b'o' => return Some(Ok(EventRef::Output { line: self.line_number, micros, raw_data: data_body })),
-                b'm' => return Some(Ok(EventRef::Marker { line: self.line_number, micros, raw_label: data_body })),
+                b'o' => {
+                    return Some(Ok(EventRef::Output {
+                        line: self.line_number,
+                        micros,
+                        raw_data: data_body,
+                    }));
+                }
+                b'm' => {
+                    return Some(Ok(EventRef::Marker {
+                        line: self.line_number,
+                        micros,
+                        raw_label: data_body,
+                    }));
+                }
                 b'r' => {
                     if !data_body.contains('\\') {
                         if let Some((cols, rows)) = parse_geometry(data_body.as_bytes()) {
@@ -288,10 +303,12 @@ impl<'a> Iterator for StreamingReader<'a> {
                     }));
                 }
                 b'i' => return Some(Ok(EventRef::Input { micros })),
-                _ => return Some(Ok(EventRef::Skipped {
-                    line: self.line_number,
-                    code: Some(code_byte),
-                })),
+                _ => {
+                    return Some(Ok(EventRef::Skipped {
+                        line: self.line_number,
+                        code: code_byte,
+                    }));
+                }
             }
         }
     }
@@ -363,7 +380,11 @@ pub fn read(text: &str) -> Result<Recording, CastError> {
     Ok(recording)
 }
 
-fn parse_event_ref<'a>(line: &'a str, number: usize, buf: &mut Vec<u8>) -> Result<(u64, u8, &'a str), CastError> {
+fn parse_event_ref<'a>(
+    line: &'a str,
+    number: usize,
+    buf: &mut Vec<u8>,
+) -> Result<(u64, u8, &'a str), CastError> {
     let bytes = line.as_bytes();
     let mut at = 0usize;
 

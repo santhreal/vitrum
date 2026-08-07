@@ -174,11 +174,13 @@ impl<'a> Sweep<'a> {
         // only wants to know *whether* a pattern occurs sets the cap to zero and
         // reads `truncated`.
         let empty = query.max_hits == 0 || query.max_hits_per_session == 0;
+        let hit_cap = if query.max_hits == usize::MAX { 64 } else { query.max_hits.min(4096) };
         Self {
             state: ScanState::new(query),
             matcher,
             query,
             results: SearchResults {
+                hits: Vec::with_capacity(hit_cap),
                 truncated: empty,
                 ..SearchResults::default()
             },
@@ -263,11 +265,12 @@ struct ScanState {
 
 impl ScanState {
     fn new(query: &Query) -> Self {
+        let pending_cap = if query.max_hits == usize::MAX { 64 } else { query.max_hits.min(64) };
         Self {
-            join: Vec::new(),
+            join: Vec::with_capacity(2048),
             stripper: Stripper::new(),
             before: VecDeque::with_capacity(query.effective_context_before()),
-            pending: Vec::new(),
+            pending: Vec::with_capacity(pending_cap),
             session: None,
             session_hits: 0,
         }
@@ -392,15 +395,14 @@ fn scan_one(
             let original_range = map.range(range.clone());
             let line_seq = haystack.base_seq + span.offset;
 
-            let before = state
-                .before
-                .iter()
-                .map(|&context| ContextLine {
+            let mut before = Vec::with_capacity(state.before.len());
+            for &context in &state.before {
+                before.push(ContextLine {
                     seq: haystack.base_seq + context.offset,
                     index: context.index,
                     bytes: copy_of(&view, context),
-                })
-                .collect();
+                });
+            }
 
             results.hits.push(Hit {
                 session: haystack.session,
@@ -412,7 +414,7 @@ fn scan_one(
                 line: bytes.to_vec(),
                 visible: visible.to_vec(),
                 before,
-                after: Vec::new(),
+                after: Vec::with_capacity(context_after),
             });
             state.session_hits += 1;
             if context_after > 0 {

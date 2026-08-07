@@ -174,7 +174,12 @@ impl<'a> Sweep<'a> {
         // only wants to know *whether* a pattern occurs sets the cap to zero and
         // reads `truncated`.
         let empty = query.max_hits == 0 || query.max_hits_per_session == 0;
-        let hit_cap = if query.max_hits == usize::MAX { 64 } else { query.max_hits.min(4096) };
+        // Enough to skip the first few doublings, not enough to matter if the
+        // search finds nothing. A Hit is 160 bytes, so honouring a caller's
+        // max_hits here would reserve 640 KiB for a cap of 4096 whether or not
+        // a single line matches, which is a strange price for a daemon that is
+        // measured on how little it holds.
+        let hit_cap = query.max_hits.min(64);
         Self {
             state: ScanState::new(query),
             matcher,
@@ -265,7 +270,7 @@ struct ScanState {
 
 impl ScanState {
     fn new(query: &Query) -> Self {
-        let pending_cap = if query.max_hits == usize::MAX { 64 } else { query.max_hits.min(64) };
+        let pending_cap = query.max_hits.min(64);
         Self {
             join: Vec::with_capacity(2048),
             stripper: Stripper::new(),
@@ -395,14 +400,17 @@ fn scan_one(
             let original_range = map.range(range.clone());
             let line_seq = haystack.base_seq + span.offset;
 
-            let mut before = Vec::with_capacity(state.before.len());
-            for &context in &state.before {
-                before.push(ContextLine {
+            // `collect` from an ExactSizeIterator already reserves exactly
+            // once, so spelling the loop out by hand buys nothing.
+            let before = state
+                .before
+                .iter()
+                .map(|&context| ContextLine {
                     seq: haystack.base_seq + context.offset,
                     index: context.index,
                     bytes: copy_of(&view, context),
-                });
-            }
+                })
+                .collect();
 
             results.hits.push(Hit {
                 session: haystack.session,

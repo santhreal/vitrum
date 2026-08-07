@@ -233,6 +233,7 @@ pub struct CellGrid {
     cells: Vec<Cell>,
     damage: Vec<RowDamage>,
     default_style: Style,
+    row_slots: Vec<usize>,
 }
 
 impl CellGrid {
@@ -260,6 +261,7 @@ impl CellGrid {
                 rows as usize
             ],
             default_style,
+            row_slots: (0..rows as usize).collect(),
         })
     }
 
@@ -307,11 +309,17 @@ impl CellGrid {
 
     /// Flat index of `(col, row)`, or `None` when out of bounds.
     #[must_use]
-    pub const fn index(&self, col: u16, row: u16) -> Option<usize> {
+    pub fn index(&self, col: u16, row: u16) -> Option<usize> {
         if col >= self.cols || row >= self.rows {
             return None;
         }
-        Some(row as usize * self.cols as usize + col as usize)
+        let phys_row = self.row_slots[row as usize];
+        Some(phys_row * self.cols as usize + col as usize)
+    }
+
+    #[inline]
+    fn row_base(&self, row: u16) -> usize {
+        self.row_slots[row as usize] * self.cols as usize
     }
 
     /// The cell at `(col, row)`, or `None` when out of bounds.
@@ -327,7 +335,8 @@ impl CellGrid {
             return None;
         }
         let w = self.cols as usize;
-        let start = row as usize * w;
+        let phys_row = self.row_slots[row as usize];
+        let start = phys_row * w;
         Some(&self.cells[start..start + w])
     }
 
@@ -400,7 +409,7 @@ impl CellGrid {
 
         self.detach_straddling_pairs(col, row, width);
 
-        let base = row as usize * self.cols as usize;
+        let base = self.row_base(row);
         if width == 1 {
             self.store(
                 base + col as usize,
@@ -487,7 +496,7 @@ impl CellGrid {
         let row_end = region.row.saturating_add(region.rows).min(self.rows);
         let mut changed = 0;
         for row in region.row..row_end {
-            let base = row as usize * self.cols as usize;
+            let base = self.row_base(row);
             for col in region.col..col_end {
                 if self.store(base + col as usize, col, row, cell) {
                     changed += 1;
@@ -530,8 +539,7 @@ impl CellGrid {
     /// bottom of the region with `fill`.
     ///
     /// `count == 0` is a no-op and records no damage. A `count` at or beyond the
-    /// region height clears the whole region. The move is a single
-    /// `copy_within` on the flat cell array; nothing is allocated.
+    /// region height clears the whole region.
     ///
     /// # Errors
     ///
@@ -544,7 +552,30 @@ impl CellGrid {
         count: u16,
         fill: Cell,
     ) -> Result<(), GridError> {
-        self.scroll(top, bottom, count, fill, true)
+        if top > bottom || bottom >= self.rows {
+            return Err(GridError::InvalidRegion { top, bottom });
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let height = bottom - top + 1;
+        let w = self.cols as usize;
+        let count_usize = (count as usize).min(height as usize);
+        let top_u = top as usize;
+        let bottom_u = bottom as usize;
+
+        self.row_slots[top_u..=bottom_u].rotate_left(count_usize);
+        let vacated_start = (bottom_u + 1).saturating_sub(count_usize);
+        for r in vacated_start..=bottom_u {
+            let phys_row = self.row_slots[r];
+            let base = phys_row * w;
+            self.cells[base..base + w].fill(fill);
+        }
+
+        for row in top..=bottom {
+            self.damage[row as usize].extend(0, self.cols);
+        }
+        Ok(())
     }
 
     /// Move rows `top..=bottom` down by `count`, filling the vacated rows at the
@@ -561,17 +592,6 @@ impl CellGrid {
         count: u16,
         fill: Cell,
     ) -> Result<(), GridError> {
-        self.scroll(top, bottom, count, fill, false)
-    }
-
-    fn scroll(
-        &mut self,
-        top: u16,
-        bottom: u16,
-        count: u16,
-        fill: Cell,
-        up: bool,
-    ) -> Result<(), GridError> {
         if top > bottom || bottom >= self.rows {
             return Err(GridError::InvalidRegion { top, bottom });
         }
@@ -580,25 +600,18 @@ impl CellGrid {
         }
         let height = bottom - top + 1;
         let w = self.cols as usize;
-        let moved = height.saturating_sub(count);
-        if moved > 0 {
-            let n = moved as usize * w;
-            let (src, dst) = if up {
-                ((top + count) as usize * w, top as usize * w)
-            } else {
-                (top as usize * w, (top + count) as usize * w)
-            };
-            self.cells.copy_within(src..src + n, dst);
-        }
-        let blank_rows = if up {
-            (top + moved)..=bottom
-        } else {
-            top..=(bottom - moved)
-        };
-        for row in blank_rows {
-            let base = row as usize * w;
+        let count_usize = (count as usize).min(height as usize);
+        let top_u = top as usize;
+        let bottom_u = bottom as usize;
+
+        self.row_slots[top_u..=bottom_u].rotate_right(count_usize);
+        let vacated_end = top_u + count_usize - 1;
+        for r in top_u..=vacated_end {
+            let phys_row = self.row_slots[r];
+            let base = phys_row * w;
             self.cells[base..base + w].fill(fill);
         }
+
         for row in top..=bottom {
             self.damage[row as usize].extend(0, self.cols);
         }
@@ -636,7 +649,7 @@ impl CellGrid {
             let copy_cols = cols.min(self.cols) as usize;
             let copy_rows = rows.min(self.rows) as usize;
             for row in 0..copy_rows {
-                let src = row * self.cols as usize;
+                let src = self.row_base(row as u16);
                 let dst = row * cols as usize;
                 next[dst..dst + copy_cols].copy_from_slice(&self.cells[src..src + copy_cols]);
             }
@@ -655,6 +668,7 @@ impl CellGrid {
 
         self.cols = cols;
         self.rows = rows;
+        self.row_slots = (0..rows as usize).collect();
         self.damage.clear();
         self.damage.resize(
             rows as usize,

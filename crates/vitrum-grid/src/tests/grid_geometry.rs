@@ -246,6 +246,22 @@ fn scroll_up_moves_rows_by_count_and_blanks_the_bottom() {
     assert_eq!(grid.row_text(3).unwrap(), "   ");
     assert_eq!(grid.row_text(4).unwrap(), "   ");
 }
+#[test]
+fn circular_ring_buffer_scrolling_rotates_row_slots() {
+    let mut grid = CellGrid::new(4, 5, Style::DEFAULT).unwrap();
+    grid.write_str(0, 0, "ROW0", Style::DEFAULT).unwrap();
+    grid.write_str(0, 1, "ROW1", Style::DEFAULT).unwrap();
+    grid.write_str(0, 2, "ROW2", Style::DEFAULT).unwrap();
+    grid.write_str(0, 3, "ROW3", Style::DEFAULT).unwrap();
+    grid.write_str(0, 4, "ROW4", Style::DEFAULT).unwrap();
+
+    grid.scroll_up(0, 4, 1, Cell::default()).unwrap();
+    assert_eq!(grid.row_text(0).unwrap(), "ROW1");
+    assert_eq!(grid.row_text(1).unwrap(), "ROW2");
+    assert_eq!(grid.row_text(2).unwrap(), "ROW3");
+    assert_eq!(grid.row_text(3).unwrap(), "ROW4");
+    assert_eq!(grid.row_text(4).unwrap(), "    ");
+}
 
 /// Scrolling down must move rows the other way and blank the top.
 ///

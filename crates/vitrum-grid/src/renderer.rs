@@ -583,7 +583,6 @@ impl GridRenderer {
     ) -> Result<FrameStats, RenderError> {
         let stride = core::mem::size_of::<CellInstance>() as u64;
         let cols = grid.cols() as usize;
-        let cells = grid.cells();
 
         let mut stats = FrameStats::default();
         let resident_before = self.atlas.resident();
@@ -607,7 +606,7 @@ impl GridRenderer {
             }
 
             for col in span.columns() {
-                let cell = cells[span.row as usize * cols + col as usize];
+                let cell = grid.cell(col, span.row).expect("valid cell index");
                 let entry = self.entry_for(queue, cell)?;
                 scratch.push(CellInstance::build(cell, col, span.row, entry));
             }

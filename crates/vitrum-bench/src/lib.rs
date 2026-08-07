@@ -25,6 +25,7 @@ pub mod profile;
 pub mod probe;
 pub mod race;
 pub mod report;
+pub mod world;
 pub mod stats;
 
 #[cfg(test)]

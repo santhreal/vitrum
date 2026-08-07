@@ -1,10 +1,13 @@
 //! Turning a [`Query`] into something that can be run against a line.
 //!
-//! # Two engines, one interface
+//! # Three paths, one interface
 //!
 //! A plain case-sensitive literal — which is what "which agent mentioned OOM"
 //! actually is — goes to [`memchr::memmem`], a SIMD substring search that runs
-//! at memory bandwidth. Everything else goes to the `regex` crate.
+//! at memory bandwidth. An ASCII case-insensitive literal (still no word
+//! boundaries) takes a narrower path: [`memchr`]/[`memchr::memchr2`] finds the
+//! first byte's lower/upper forms, then `eq_ignore_ascii_case` confirms the
+//! rest. Everything else goes to the `regex` crate.
 //!
 //! The split is drawn where it is for a reason. `regex` already recognises a
 //! bare literal and prefilters with the same machinery, so the win from the
@@ -12,10 +15,12 @@
 //! cache pool on every call, and a scan does one call per line. Over twenty
 //! million lines that overhead is the measurement.
 //!
-//! Whole-word never takes the fast path, even for a literal. Word boundaries
-//! must be Unicode-aware — `caf\u{e9}` must not match inside `caf\u{e9}s` — and
-//! implementing that a second time next to `regex`'s `\b` is exactly how the
-//! two definitions drift apart.
+//! Whole-word never takes either literal path, even for a literal. Word
+//! boundaries must be Unicode-aware — `caf\u{e9}` must not match inside
+//! `caf\u{e9}s` — and implementing that a second time next to `regex`'s `\b`
+//! is exactly how the two definitions drift apart. Non-ASCII case-insensitive
+//! literals also stay on `regex`: ASCII folding would silently miss Unicode
+//! case pairs.
 //!
 //! # Bytes, not strings
 //!
@@ -42,8 +47,48 @@ use crate::query::{Pattern, Query};
 pub enum Matcher {
     /// SIMD substring search: literal, case-sensitive, no word boundaries.
     Literal(Box<memmem::Finder<'static>>),
+    /// ASCII case-insensitive literal: memchr first-byte prefilter, then eq_ignore_ascii_case.
+    AsciiCaseFold(Box<AsciiCaseFoldFinder>),
     /// Everything else.
     Regex(Regex),
+}
+
+/// ASCII case-insensitive substring finder.
+///
+/// Uses `memchr` / `memchr2` only to locate candidate starts from the needle's
+/// first byte (lower and upper). Confirmation is plain `eq_ignore_ascii_case`.
+#[derive(Debug)]
+pub struct AsciiCaseFoldFinder {
+    needle: Vec<u8>,
+    first_lower: u8,
+    first_upper: u8,
+}
+
+impl AsciiCaseFoldFinder {
+    #[inline]
+    pub fn find_at(&self, haystack: &[u8], mut from: usize) -> Option<std::ops::Range<usize>> {
+        let needle_len = self.needle.len();
+        let max_start = haystack.len().checked_sub(needle_len)?;
+        while from <= max_start {
+            let slice = &haystack[from..=max_start];
+            let pos = if self.first_lower == self.first_upper {
+                memchr::memchr(self.first_lower, slice)?
+            } else {
+                memchr::memchr2(self.first_lower, self.first_upper, slice)?
+            };
+            let start = from + pos;
+            if haystack[start..start + needle_len].eq_ignore_ascii_case(&self.needle) {
+                return Some(start..start + needle_len);
+            }
+            from = start + 1;
+        }
+        None
+    }
+
+    #[inline]
+    pub fn is_match(&self, haystack: &[u8]) -> bool {
+        self.find_at(haystack, 0).is_some()
+    }
 }
 
 impl Matcher {
@@ -61,6 +106,19 @@ impl Matcher {
             return Ok(Matcher::Literal(Box::new(
                 memmem::Finder::new(needle).into_owned(),
             )));
+        }
+        let ascii_casefold_fast_path = matches!(query.pattern, Pattern::Literal(_))
+            && query.case_insensitive
+            && !query.whole_word
+            && query.pattern.text().is_ascii();
+        if ascii_casefold_fast_path {
+            let needle = query.pattern.text().as_bytes();
+            let first = needle[0];
+            return Ok(Matcher::AsciiCaseFold(Box::new(AsciiCaseFoldFinder {
+                needle: needle.to_vec(),
+                first_lower: first.to_ascii_lowercase(),
+                first_upper: first.to_ascii_uppercase(),
+            })));
         }
 
         let body = match &query.pattern {
@@ -103,6 +161,7 @@ impl Matcher {
                 let found = finder.find(&haystack[from..])?;
                 Some(from + found..from + found + finder.needle().len())
             }
+            Matcher::AsciiCaseFold(finder) => finder.find_at(haystack, from),
             // `find_at` rather than slicing so that look-around and `^` see the
             // real start of the line. Searching `&haystack[from..]` would let
             // `^error` match in the middle of a line.
@@ -115,6 +174,7 @@ impl Matcher {
     pub fn is_match(&self, haystack: &[u8]) -> bool {
         match self {
             Matcher::Literal(finder) => finder.find(haystack).is_some(),
+            Matcher::AsciiCaseFold(finder) => finder.is_match(haystack),
             Matcher::Regex(regex) => regex.is_match(haystack),
         }
     }
@@ -122,6 +182,10 @@ impl Matcher {
     /// Is this the SIMD fast path?
     pub fn is_fast_literal(&self) -> bool {
         matches!(self, Matcher::Literal(_))
+    }
+    /// Is this the ASCII case-insensitive literal path?
+    pub fn is_ascii_casefold(&self) -> bool {
+        matches!(self, Matcher::AsciiCaseFold(_))
     }
 }
 
@@ -170,6 +234,43 @@ mod tests {
                 .is_fast_literal()
         );
     }
+    /// Locks out the ASCII casefold arm being skipped for ignore-case ASCII
+    /// literals, and being taken for whole-word, regex, or non-ASCII needles.
+    #[test]
+    fn ascii_casefold_path_is_taken_for_ignore_case_ascii_literals() {
+        let matcher = Matcher::compile(&Query::literal("OOM").case_insensitive(true)).unwrap();
+        assert!(matcher.is_ascii_casefold());
+        assert!(matcher.is_match(b"killed: oom"));
+        assert!(matcher.is_match(b"killed: OOM"));
+        assert!(matcher.is_match(b"killed: OoM"));
+        assert!(!matcher.is_match(b"killed: ooo"));
+        assert_eq!(
+            find_all(&matcher, b"oom and OOM and OoM"),
+            vec![0..3, 8..11, 16..19]
+        );
+
+        let dotted = Matcher::compile(&Query::literal("a.b").case_insensitive(true)).unwrap();
+        assert!(dotted.is_ascii_casefold());
+        assert!(dotted.is_match(b"A.B"));
+        assert!(!dotted.is_match(b"AXB"));
+
+        assert!(
+            !Matcher::compile(&Query::literal("OOM").case_insensitive(true).whole_word(true))
+                .unwrap()
+                .is_ascii_casefold()
+        );
+        assert!(
+            !Matcher::compile(&Query::regex("OOM").case_insensitive(true))
+                .unwrap()
+                .is_ascii_casefold()
+        );
+        // Non-ASCII must stay on regex: ASCII folding would miss Unicode pairs.
+        assert!(
+            !Matcher::compile(&Query::literal("caf\u{e9}").case_insensitive(true))
+                .unwrap()
+                .is_ascii_casefold()
+        );
+    }
 
     /// Locks out regex metacharacters being honoured in a literal search. A
     /// user searching for `a.b` in a log of version numbers must not match
@@ -181,8 +282,9 @@ mod tests {
         assert!(dotted.is_match(b"xxa.byy"));
         assert!(!dotted.is_match(b"xxaXbyy"));
 
-        // Also on the non-fast path, where escaping is what does the work.
+        // ASCII ignore-case literals take AsciiCaseFold; metacharacters stay literal.
         let folded = Matcher::compile(&Query::literal("a.b").case_insensitive(true)).unwrap();
+        assert!(folded.is_ascii_casefold());
         assert!(folded.is_match(b"A.B"));
         assert!(!folded.is_match(b"AXB"));
 
@@ -208,11 +310,13 @@ mod tests {
     #[test]
     fn case_insensitive_matches_in_both_directions() {
         let upper = Matcher::compile(&Query::literal("OOM").case_insensitive(true)).unwrap();
+        assert!(upper.is_ascii_casefold());
         assert!(upper.is_match(b"killed: oom"));
         assert!(upper.is_match(b"killed: OOM"));
         assert!(upper.is_match(b"killed: OoM"));
 
         let lower = Matcher::compile(&Query::literal("oom").case_insensitive(true)).unwrap();
+        assert!(lower.is_ascii_casefold());
         assert!(lower.is_match(b"OOM killer"));
     }
 

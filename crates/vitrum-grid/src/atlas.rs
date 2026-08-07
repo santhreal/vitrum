@@ -124,6 +124,7 @@ pub struct GlyphAtlas {
     /// Height of the current shelf.
     shelf_h: u32,
     entries: HashMap<GlyphKey, AtlasEntry>,
+    ascii_entries: [[Option<AtlasEntry>; 4]; 128],
     generation: u64,
     resets_this_frame: u32,
 }
@@ -132,7 +133,7 @@ impl core::fmt::Debug for GlyphAtlas {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GlyphAtlas")
             .field("dim", &self.dim)
-            .field("resident", &self.entries.len())
+            .field("resident", &self.resident())
             .field("generation", &self.generation)
             .finish()
     }
@@ -170,6 +171,7 @@ impl GlyphAtlas {
             shelf_y: 0,
             shelf_h: 0,
             entries: HashMap::new(),
+            ascii_entries: [[None; 4]; 128],
             generation: 0,
             resets_this_frame: 0,
         }
@@ -190,7 +192,13 @@ impl GlyphAtlas {
     /// How many glyphs are currently placed.
     #[must_use]
     pub fn resident(&self) -> usize {
-        self.entries.len()
+        let ascii = self
+            .ascii_entries
+            .iter()
+            .flat_map(|styles| styles.iter())
+            .filter(|entry| entry.is_some())
+            .count();
+        ascii + self.entries.len()
     }
 
     /// Bumped every time the atlas is reset. The renderer compares this against
@@ -204,7 +212,12 @@ impl GlyphAtlas {
     /// Look up a glyph without inserting it.
     #[must_use]
     pub fn get(&self, key: GlyphKey) -> Option<AtlasEntry> {
-        self.entries.get(&key).copied()
+        let val = key.ch as u32;
+        if val < 128 {
+            self.ascii_entries[val as usize][key.style as usize]
+        } else {
+            self.entries.get(&key).copied()
+        }
     }
 
     /// Reset the per-frame reset counter. The renderer calls this once at the
@@ -227,7 +240,12 @@ impl GlyphAtlas {
         fonts: &mut FontStack,
         key: GlyphKey,
     ) -> Result<AtlasEntry, AtlasError> {
-        if let Some(entry) = self.entries.get(&key) {
+        let val = key.ch as u32;
+        if val < 128 {
+            if let Some(entry) = self.ascii_entries[val as usize][key.style as usize] {
+                return Ok(entry);
+            }
+        } else if let Some(entry) = self.entries.get(&key) {
             return Ok(*entry);
         }
         let glyph = fonts.rasterize(key.ch, key.style);
@@ -247,7 +265,12 @@ impl GlyphAtlas {
         glyph: &RasterGlyph,
     ) -> Result<AtlasEntry, AtlasError> {
         if glyph.is_blank() {
-            self.entries.insert(key, AtlasEntry::BLANK);
+            let val = key.ch as u32;
+            if val < 128 {
+                self.ascii_entries[val as usize][key.style as usize] = Some(AtlasEntry::BLANK);
+            } else {
+                self.entries.insert(key, AtlasEntry::BLANK);
+            }
             return Ok(AtlasEntry::BLANK);
         }
 
@@ -267,7 +290,7 @@ impl GlyphAtlas {
                 if self.resets_this_frame >= 1 {
                     return Err(AtlasError::Exhausted {
                         dim: self.dim,
-                        resident: self.entries.len(),
+                        resident: self.resident(),
                     });
                 }
                 self.reset();
@@ -308,7 +331,12 @@ impl GlyphAtlas {
             left: glyph.left.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
             top: glyph.top.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
         };
-        self.entries.insert(key, entry);
+        let val = key.ch as u32;
+        if val < 128 {
+            self.ascii_entries[val as usize][key.style as usize] = Some(entry);
+        } else {
+            self.entries.insert(key, entry);
+        }
         Ok(entry)
     }
 
@@ -338,6 +366,7 @@ impl GlyphAtlas {
     /// tidy would be a needless upload.
     fn reset(&mut self) {
         self.entries.clear();
+        self.ascii_entries = [[None; 4]; 128];
         self.cursor_x = 0;
         self.shelf_y = 0;
         self.shelf_h = 0;

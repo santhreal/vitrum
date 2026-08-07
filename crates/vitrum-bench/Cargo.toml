@@ -10,10 +10,10 @@ publish = false
 
 [dependencies]
 vitrum-grid = { workspace = true }
-vitrum-search = { workspace = true }
-vitrum-replay = { path = "../vitrum-replay", version = "0.1.0" }
 vitrum-model = { workspace = true }
 vitrum-proto = { workspace = true }
+vitrum-replay = { workspace = true }
+vitrum-search = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "process", "signal"] }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }

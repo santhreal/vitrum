@@ -16,6 +16,10 @@ vitrum-fmt = { workspace = true }
 # declaration needs exactly the parser the client already trusts, and a second
 # implementation on the daemon side would be a second set of bugs.
 vitrum-model = { workspace = true }
+# The terminal engine. The daemon parses its own sessions' output because it
+# has to know what a session is doing with no GUI attached at all, which is
+# also why this cannot live in the client.
+vitrum-vt = { workspace = true }
 portable-pty = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

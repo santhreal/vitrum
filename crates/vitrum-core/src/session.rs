@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -87,6 +87,13 @@ pub struct OutputChunk {
 pub(crate) struct Session {
     pub(crate) id: SessionId,
     pub(crate) info: RwLock<SessionInfo>,
+    /// Whether the name belongs to the operator rather than to the program.
+    ///
+    /// A shell sets its window title on every prompt, so a session the
+    /// operator deliberately named would be renamed back by the next command
+    /// they ran. Whoever named it last with intent keeps it: the creator when
+    /// it was spawned with a title, the operator the moment they rename it.
+    pub(crate) title_pinned: AtomicBool,
     pub(crate) scrollback: Mutex<Scrollback>,
     /// Live output fan-out. Kept even with zero receivers so `subscribe` after
     /// the fact is cheap.
@@ -472,6 +479,7 @@ impl SessionManager {
         let session = Arc::new(Session {
             id,
             info: RwLock::new(info),
+            title_pinned: AtomicBool::new(spec.title.is_some()),
             scrollback: Mutex::new(Scrollback::with_capacity(self.scrollback_bytes)),
             output,
             status: status_tx,
@@ -496,7 +504,10 @@ impl SessionManager {
         // shutdown wait on a read that only ends when the child exits.
         std::thread::Builder::new()
             .name(format!("vitrum-pty-read-{}", id.0))
-            .spawn(move || read_loop(reader, child, raw_tx, exit_tx))
+            .spawn({
+                let session = Arc::clone(&session);
+                move || read_loop(session, reader, child, raw_tx, exit_tx)
+            })
             .context("starting the pty reader thread")?;
 
         std::thread::Builder::new()
@@ -778,6 +789,9 @@ impl SessionManager {
         let s = self.require(id)?;
         let mut info = write_lock(&s.info);
         info.title = trimmed.to_string();
+        // From here the program's own title is ignored for this session. The
+        // operator has said what it is called.
+        s.title_pinned.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -824,6 +838,7 @@ impl SessionManager {
 /// enforced where the bytes are published instead of by which thread stops
 /// first.
 fn read_loop(
+    session: Arc<Session>,
     mut reader: Box<dyn Read + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     out: mpsc::UnboundedSender<Vec<u8>>,
@@ -841,11 +856,53 @@ fn read_loop(
         // ever answer and the session cannot report an exit code.
         tracing::warn!(error = %e, "no thread to reap the pty child");
     }
+    // The terminal engine lives on this thread and never leaves it. Two
+    // reasons, and both are load-bearing:
+    //
+    // - It is `!Send`. Parking it in the coalescing task would not compile,
+    //   and making it `Send` would mean paying for synchronisation nothing
+    //   needs, because exactly one thread ever writes to it.
+    // - Parsing is real work. Doing it on the async runtime would let one
+    //   session flooding output stall the timers every OTHER session's
+    //   coalescing window depends on.
+    //
+    // Scrollback is disabled outright. The daemon already keeps the bytes, and
+    // a second copy inside the engine would be the largest allocation per
+    // session for an answer nothing asks it: this engine exists to report what
+    // the program SAID, not to be scrolled.
+    let (cols, rows) = {
+        let info = read_lock(&session.info);
+        (info.cols, info.rows)
+    };
+    let mut vt = match vitrum_vt::Vt::new(vitrum_vt::VtOptions {
+        cols,
+        rows,
+        max_scrollback: 0,
+    }) {
+        Ok(vt) => Some(vt),
+        // A session that runs is worth more than one that is named well. The
+        // engine failing to allocate costs the title and nothing else.
+        Err(e) => {
+            tracing::warn!(session = session.id.0, error = %e, "no terminal engine for this session; titles will not follow the program");
+            None
+        }
+    };
+
     let mut buf = vec![0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if let Some(vt) = vt.as_mut() {
+                    vt.feed(&buf[..n]);
+                    // No wake-up is sent for the new name on purpose. The
+                    // title arrived inside output that is about to be
+                    // published on the line below, and that publication is
+                    // already what makes a client look again.
+                    if let Some(title) = vt.events().take_title() {
+                        apply_engine_title(&session, &title);
+                    }
+                }
                 if out.send(buf[..n].to_vec()).is_err() {
                     break;
                 }
@@ -1018,6 +1075,32 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Take the title the program asked for, if the program still owns the name.
+///
+/// Returns whether anything changed, so the caller only wakes watchers when
+/// there is something to see. A shell re-announces the same title on every
+/// prompt, so "changed" has to mean the string differs, not that a sequence
+/// arrived.
+///
+/// An empty title is refused. `OSC 2 ST` with nothing in it is how some
+/// programs clear the title on exit, and honouring it would blank a row in the
+/// sidebar rather than leave the name the session already had.
+fn apply_engine_title(session: &Session, title: &str) -> bool {
+    if session.title_pinned.load(Ordering::Relaxed) {
+        return false;
+    }
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut info = write_lock(&session.info);
+    if info.title == trimmed {
+        return false;
+    }
+    info.title = trimmed.to_string();
+    true
 }
 
 /// Tab label for a session whose creator did not name it.

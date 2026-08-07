@@ -56,6 +56,8 @@ use crate::state::{
 };
 use crate::ui::dialog;
 
+mod render_count;
+
 /// Disclosure chevron, U+25BE BLACK DOWN-POINTING SMALL TRIANGLE.
 ///
 /// One glyph for both states. `sidebar.css` rotates it -90deg on
@@ -1188,6 +1190,7 @@ fn AgentGlyph(props: AgentGlyphProps) -> Element {
 
 #[allow(non_snake_case)]
 fn SessionRow(props: SessionRowProps) -> Element {
+    render_count::tick();
     let row = &props.row;
     let info = &row.info;
     let id = row.id();
@@ -1464,3 +1467,12 @@ mod rendered_row;
 /// and looks at the HTML that would reach the webview.
 #[cfg(test)]
 mod rendered_sidebar;
+
+/// Does an unchanged row survive a paint?
+///
+/// The rendered-HTML guards above cannot see this: the HTML is identical
+/// whether Dioxus rebuilt a row or skipped it, and the difference between
+/// rebuilding one row per update and rebuilding twenty is the VDOM half of
+/// the frame budget.
+#[cfg(test)]
+mod memoization;

@@ -101,7 +101,7 @@ pub fn ssh_script(host: &str, lines: usize) -> String {
 ///
 /// Single quotes protect everything except a single quote, which is closed,
 /// escaped and reopened. The remote generator contains them.
-fn sh_quote(text: &str) -> String {
+pub(crate) fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 

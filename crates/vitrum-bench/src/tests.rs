@@ -222,18 +222,42 @@ fn world_smallest_geometry_is_the_narrowest_window() {
 /// are distinct — the workload depends on the riddle being the one session
 /// that echoes input back.
 #[test]
-fn world_command_shapes_are_what_the_phases_expect() {
-    let (sh, args) = crate::world::burst_command(10);
-    assert_eq!(sh, "/bin/sh");
-    assert_eq!(args[0], "-c");
-    assert!(args[1].contains(&format!("-le 10")), "emits exactly its line budget");
+fn world_scripts_are_what_the_phases_expect() {
+    let burst = crate::world::burst_script(10);
+    assert!(burst.contains("-le 10"), "emits exactly its line budget");
 
-    let (cat, cat_args) = crate::world::riddle_command();
-    assert_eq!(cat, "/bin/cat");
-    assert!(cat_args.is_empty(), "a bare cat never terminates and echoes input");
+    let riddle = crate::world::riddle_script();
+    assert_eq!(riddle, "exec /bin/cat", "a bare cat never terminates and echoes input");
 
-    let (ssh, ssh_args) = crate::world::ssh_command("somehost.example", 42);
-    assert_eq!(ssh, "/usr/bin/ssh");
-    assert!(ssh_args.contains(&"--".to_string()), "`--` stops flag parsing for the remote argv");
-    assert!(ssh_args.iter().any(|a| a.contains("somehost.example")));
+    let ssh = crate::world::ssh_script("somehost.example", 42);
+    assert!(ssh.contains(" -- "), "`--` stops flag parsing for the remote argv");
+    assert!(ssh.contains("somehost.example"));
+    assert!(ssh.contains("-le 42"), "the remote emits the line budget, not the local shell");
+}
+
+/// The remote command survives the shell that carries it.
+///
+/// The generator contains single quotes, which is the case that breaks naive
+/// quoting: pasted in raw they close the quoting around the remote command and
+/// the tail of it runs on the wrong machine. Asserting on the quoted string
+/// would only restate the implementation, so a shell is asked what it sees.
+#[cfg(unix)]
+#[test]
+fn a_quoted_remote_command_reaches_the_shell_unchanged() {
+    for original in [
+        crate::load::generator(3),
+        "it's got 'several' quotes".to_string(),
+        "$(echo substituted) `echo too`".to_string(),
+    ] {
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("printf %s {}", crate::world::sh_quote(&original)))
+            .output()
+            .expect("run a shell");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            original,
+            "the shell saw something other than the command we quoted"
+        );
+    }
 }

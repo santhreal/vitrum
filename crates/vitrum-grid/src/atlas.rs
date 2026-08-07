@@ -17,6 +17,15 @@ use std::collections::HashMap;
 
 use crate::font::{FontStack, FontStyle, RasterGlyph};
 
+/// ASCII is the overwhelming majority of terminal text, so those entries live
+/// in a directly indexed table instead of behind a hash.
+const ASCII_SLOTS: usize = 128;
+
+/// The ASCII table is indexed by `FontStyle as usize`, so it must stay exactly
+/// as wide as the variant list. Deriving the width means adding a variant is a
+/// compile-time widening rather than a runtime out-of-bounds panic.
+const STYLE_SLOTS: usize = FontStyle::ALL.len();
+
 /// One pixel of empty space is kept around every glyph so a rounding error in
 /// the shader can never sample a neighbour's ink.
 const PADDING: u32 = 1;
@@ -124,7 +133,7 @@ pub struct GlyphAtlas {
     /// Height of the current shelf.
     shelf_h: u32,
     entries: HashMap<GlyphKey, AtlasEntry>,
-    ascii_entries: [[Option<AtlasEntry>; 4]; 128],
+    ascii_entries: [[Option<AtlasEntry>; STYLE_SLOTS]; ASCII_SLOTS],
     generation: u64,
     resets_this_frame: u32,
 }
@@ -171,7 +180,7 @@ impl GlyphAtlas {
             shelf_y: 0,
             shelf_h: 0,
             entries: HashMap::new(),
-            ascii_entries: [[None; 4]; 128],
+            ascii_entries: [[None; STYLE_SLOTS]; ASCII_SLOTS],
             generation: 0,
             resets_this_frame: 0,
         }
@@ -213,7 +222,7 @@ impl GlyphAtlas {
     #[must_use]
     pub fn get(&self, key: GlyphKey) -> Option<AtlasEntry> {
         let val = key.ch as u32;
-        if val < 128 {
+        if (val as usize) < ASCII_SLOTS {
             self.ascii_entries[val as usize][key.style as usize]
         } else {
             self.entries.get(&key).copied()
@@ -241,7 +250,7 @@ impl GlyphAtlas {
         key: GlyphKey,
     ) -> Result<AtlasEntry, AtlasError> {
         let val = key.ch as u32;
-        if val < 128 {
+        if (val as usize) < ASCII_SLOTS {
             if let Some(entry) = self.ascii_entries[val as usize][key.style as usize] {
                 return Ok(entry);
             }
@@ -266,7 +275,7 @@ impl GlyphAtlas {
     ) -> Result<AtlasEntry, AtlasError> {
         if glyph.is_blank() {
             let val = key.ch as u32;
-            if val < 128 {
+            if (val as usize) < ASCII_SLOTS {
                 self.ascii_entries[val as usize][key.style as usize] = Some(AtlasEntry::BLANK);
             } else {
                 self.entries.insert(key, AtlasEntry::BLANK);
@@ -332,7 +341,7 @@ impl GlyphAtlas {
             top: glyph.top.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
         };
         let val = key.ch as u32;
-        if val < 128 {
+        if (val as usize) < ASCII_SLOTS {
             self.ascii_entries[val as usize][key.style as usize] = Some(entry);
         } else {
             self.entries.insert(key, entry);
@@ -366,7 +375,7 @@ impl GlyphAtlas {
     /// tidy would be a needless upload.
     fn reset(&mut self) {
         self.entries.clear();
-        self.ascii_entries = [[None; 4]; 128];
+        self.ascii_entries = [[None; STYLE_SLOTS]; ASCII_SLOTS];
         self.cursor_x = 0;
         self.shelf_y = 0;
         self.shelf_h = 0;

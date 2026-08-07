@@ -14,6 +14,15 @@ packages=(
   librsvg2-dev
 )
 
+# A self-hosted runner installs these once and keeps them. Re-running apt on
+# every job is slow at best, and on a host carrying an unrelated broken
+# repository it fails `apt-get update` for a reason that has nothing to do with
+# the change under test.
+if pkg-config --exists webkit2gtk-4.1 && pkg-config --exists libxdo; then
+  echo "system webview already present, nothing to install"
+  exit 0
+fi
+
 for attempt in 1 2 3; do
   if sudo apt-get update && sudo apt-get install -y "${packages[@]}"; then
     exit 0

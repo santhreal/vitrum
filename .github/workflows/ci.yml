@@ -187,6 +187,60 @@ jobs:
       # commit whose macOS test build did not compile at all.
       - run: cargo check --release -p vitrum-core --target aarch64-apple-darwin --tests --locked
 
+  # What a Windows box would tell us about a compile error, without a Windows
+  # box, and for the same reason as the job above.
+  #
+  # Windows is the platform this workspace breaks on silently, because every
+  # `unix` gate is a `not(windows)` gate stated the other way round and Linux
+  # cannot see either. Two releases in a row were broken here by an import that
+  # only Windows found unused, so this runs on every push instead of waiting
+  # for a dispatch of `platforms.yml`.
+  #
+  # It targets the GNU ABI rather than MSVC, because MSVC needs headers that
+  # cannot be had on Linux. The difference is `target_env`, which nothing in
+  # this workspace gates on; `target_os` and `unix` are identical across the
+  # two, and those are what the code actually asks about. The real MSVC build
+  # still runs in `platforms.yml` before a release.
+  windows-check:
+    name: windows compiles
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          shared-key: windows-check
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          # On a runner we own the cache is kept below, so uploading it to
+          # GitHub's cache service costs a post-step and buys nothing.
+          use-cache: ${{ runner.environment == 'github-hosted' }}
+
+      # setup-zig puts both zig cache directories inside the workspace, which
+      # checkout wipes at the start of every run. On our own runner point them
+      # somewhere that survives instead, so the cache is warm without a
+      # download and without a 200s upload afterwards.
+      - name: durable zig cache
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          dir="$HOME/.cache/zig-vitrum"
+          mkdir -p "$dir"
+          echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+      # `--tests` is the whole point: the gated code that breaks Windows lives
+      # in the test modules, so a check without it passes a workspace whose
+      # test build does not compile.
+      - run: cargo check --release --workspace --tests --target x86_64-pc-windows-gnu --locked
+        env:
+          CC_x86_64_pc_windows_gnu: ${{ github.workspace }}/.github/zig-cc-windows
+
   # The archive the updater downloads is built by a script, and the script and
   # `update::archive_name` must agree. Building it on every push is how a
   # rename is caught before a release rather than by a user whose update fails.

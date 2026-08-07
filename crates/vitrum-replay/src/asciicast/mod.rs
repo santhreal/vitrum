@@ -54,5 +54,5 @@ pub mod writer;
 
 pub use header::Header;
 pub use jsonstr::Utf8Policy;
-pub use reader::{Recording, Resize, read};
+pub use reader::{EventRef, Recording, Resize, StreamingReader, read};
 pub use writer::{to_string, write};

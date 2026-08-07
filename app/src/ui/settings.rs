@@ -2383,9 +2383,9 @@ mod sheet_copy_is_true;
 /// new-session dialog matched it, and the settings panel refused conflicts,
 /// which made it look finished. But the only matcher was the dialog's own
 /// keydown handler, so firing a preset meant opening the dialog first: two
-/// keystrokes to reach the thing whose entire purpose was to be one. The
-/// design requires shortcuts that do complex things like open a session
-/// in a named folder with a named command, and the shipped behaviour did not.
+/// keystrokes to reach the thing whose entire purpose was to be one. A
+/// shortcut must be able to open a session in a named folder with a named
+/// command, and the shipped behaviour did not do that.
 ///
 /// `bootstrap.js` matches exactly ONE table. These tests are about what is in
 /// it.

@@ -951,10 +951,9 @@ fn a_project_whose_sessions_are_elsewhere_is_not_drawn_here() {
 
 /// A brand new workspace draws NOTHING.
 ///
-/// Not a header, not an empty bucket, not a placeholder. The operator
-/// required completely separate workspaces with blank sidebars,
-/// and a header over nothing is the one thing that makes a blank sidebar
-/// look broken instead of empty.
+/// Not a header, not an empty bucket, not a placeholder. Workspaces are
+/// completely separate, with blank sidebars, and a header over nothing is
+/// the one thing that makes a blank sidebar look broken instead of empty.
 #[test]
 fn a_new_workspace_draws_an_entirely_blank_sidebar() {
     let mut st = with(&[1, 2], &[(10, 1, 0), (11, 2, 1)]);

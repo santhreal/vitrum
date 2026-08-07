@@ -43,8 +43,8 @@
 //! learnable rather than a private code.
 //!
 //! No letters, no digits, no monograms. The sidebar's monogram tiles were
-//! removed and nothing replaced them; a
-//! letter-initial avatar is a standing ban in this product.
+//! removed and nothing replaced them; a letter-initial avatar is a standing
+//! ban in this product.
 
 /// Which agent is behind a session.
 ///

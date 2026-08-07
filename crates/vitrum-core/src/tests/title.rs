@@ -17,7 +17,11 @@
 //! title goes through the guards below like any other: it cannot blank a name,
 //! and it cannot touch a session the creator or the operator has named.
 
+// Every test below drives a real shell through an escape sequence, which is
+// why they are all `not(windows)`; the imports they need are gated with them.
+#[cfg(not(windows))]
 use crate::SessionManager;
+#[cfg(not(windows))]
 use crate::tests::helpers::{shell_spec, wait_exit};
 
 /// A program that titles itself is shown under that name.

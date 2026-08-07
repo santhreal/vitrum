@@ -75,7 +75,14 @@ impl Report {
             let repro = out.join("repro");
             std::fs::create_dir_all(&repro)?;
             for (name, bytes) in &self.artifacts {
-                std::fs::write(repro.join(name), bytes)?;
+                // A workload names its own artifacts, so a name is only ever a
+                // file name here. Taking the last component anyway is what
+                // keeps `repro/` the whole of what a report can write to, and
+                // costs nothing to hold.
+                let Some(leaf) = Path::new(name).file_name() else {
+                    anyhow::bail!("repro artifact {name:?} has no file name");
+                };
+                std::fs::write(repro.join(leaf), bytes)?;
             }
         }
         Ok(out)
@@ -173,6 +180,24 @@ fn run_id(workload: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A report writes only into its own `repro/` directory. The names are
+    /// built by the workloads today, but the write path is what has to hold if
+    /// one of them ever builds a name from something it read.
+    #[test]
+    fn an_artifact_name_cannot_climb_out_of_repro() {
+        let mut report = Report::new("guard", "ws://test", serde_json::Value::Null);
+        report
+            .artifacts
+            .push(("../escaped.bin".into(), b"payload".to_vec()));
+        let dir = std::env::temp_dir().join(format!("vitrum-repro-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = report.write(&dir).expect("write");
+        assert!(out.join("repro/escaped.bin").is_file());
+        assert!(!out.join("escaped.bin").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use serde_json::json;
 

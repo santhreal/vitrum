@@ -14,7 +14,7 @@ PROBE_RUN ?= harness/out/probe-20260806T035911Z
 MEMORY_RUNS ?= harness/out/memory-20260806T192242Z harness/out/memory-20260806T192658Z
 IDLE_RUN ?= harness/out/idle-cpu-20260806T192751Z
 
-.PHONY: help build test clippy gate readme-perf readme-perf-check measure package clean
+.PHONY: help build test clippy gate lanes plan readme-perf readme-perf-check measure package clean
 
 help:
 	@echo 'build              release build of every crate, warnings fatal'
@@ -25,6 +25,14 @@ help:
 	@echo 'readme-perf        snapshot the harness runs and inject README tables'
 	@echo 'readme-perf-check  fail if the README tables are stale (CI runs this)'
 	@echo 'package            build the release archive and verify its checksum'
+	@echo 'lanes              every worktree, what is uncommitted, what is unpushed'
+	@echo 'plan               group open pull requests into non-overlapping waves'
+	@echo
+	@echo 'a wave is staged, gated once and landed with tools/integrate.py:'
+	@echo '  tools/integrate.py stage 56 52 57   merge each onto a staging branch'
+	@echo '  tools/integrate.py gate             build and test the wave once'
+	@echo '  tools/integrate.py attribute        if red, find which one did it'
+	@echo '  tools/integrate.py land --push      move main onto it, nothing squashed'
 
 build:
 	RUSTFLAGS='$(RUSTFLAGS_STRICT)' $(CARGO) build --release --workspace --locked
@@ -34,6 +42,12 @@ test:
 
 clippy:
 	$(CARGO) clippy --release --workspace --all-targets
+
+lanes:
+	$(PYTHON) tools/integrate.py lanes
+
+plan:
+	$(PYTHON) tools/integrate.py plan
 
 gate: build test
 

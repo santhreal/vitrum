@@ -50,6 +50,22 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # On a runner we own the cache is kept below, so uploading it to
+          # GitHub's cache service costs a post-step and buys nothing.
+          use-cache: ${{ runner.environment == 'github-hosted' }}
+
+      # setup-zig puts both zig cache directories inside the workspace, which
+      # checkout wipes at the start of every run. On our own runner point them
+      # somewhere that survives instead, so the cache is warm without a
+      # download and without a 200s upload afterwards.
+      - name: durable zig cache
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          dir="$HOME/.cache/zig-vitrum"
+          mkdir -p "$dir"
+          echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
 
       # A tag whose version does not match the workspace would publish the old
       # version under a new tag and there is no way to take it back.

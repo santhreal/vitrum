@@ -24,7 +24,7 @@ use crate::tests::helpers::DEADLINE;
 use crate::tests::helpers::collect;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::tests::helpers::waiting_settles_on;
-use crate::tests::helpers::{QUIET, blocking_read, probe_now, shell_spec, wait_exit};
+use crate::tests::helpers::{QUIET, blocking_read, kernel_reports_other_processes, probe_now, shell_spec, wait_exit};
 
 /// A spec running `command` with `args` from a directory that exists.
 #[cfg(target_os = "linux")]
@@ -58,6 +58,10 @@ fn first_present(candidates: &[&str]) -> Option<PathBuf> {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_shell_at_its_prompt_is_blocked_on_the_operator() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr.spawn(spec("sh", &["-i"])).expect("spawn");
     // The prompt is the shell telling us it has finished starting.
@@ -75,6 +79,10 @@ async fn a_shell_at_its_prompt_is_blocked_on_the_operator() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_child_reading_the_terminal_is_blocked_on_the_operator() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr.spawn(shell_spec("read -r answer")).expect("spawn");
     waiting_settles_on(&mgr, id, Some(true), "a shell read builtin").await;
@@ -89,6 +97,10 @@ async fn a_child_reading_the_terminal_is_blocked_on_the_operator() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_plain_reader_on_the_terminal_is_blocked() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr.spawn(spec("cat", &[])).expect("spawn");
     waiting_settles_on(&mgr, id, Some(true), "cat on the tty").await;
@@ -103,6 +115,10 @@ async fn a_plain_reader_on_the_terminal_is_blocked() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_read_on_another_descriptor_is_working() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     // `exec cat <> fifo` makes cat the foreground leader and parks it in
     // read(2) on a descriptor that is not this session's terminal. Opening
@@ -127,6 +143,10 @@ async fn a_read_on_another_descriptor_is_working() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_sleeping_child_is_working() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr.spawn(spec("sleep", &["300"])).expect("spawn");
     waiting_settles_on(&mgr, id, Some(false), "sleep 300").await;
@@ -140,6 +160,10 @@ async fn a_sleeping_child_is_working() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_spinning_child_is_working() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr.spawn(shell_spec("while :; do :; done")).expect("spawn");
     waiting_settles_on(&mgr, id, Some(false), "a spin loop").await;
@@ -154,6 +178,10 @@ async fn a_spinning_child_is_working() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_shell_reaping_a_child_is_working() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr
         .spawn(shell_spec("while :; do sleep 5; done"))
@@ -169,6 +197,10 @@ async fn a_shell_reaping_a_child_is_working() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_child_that_finishes_its_turn_flips_to_blocked() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr
         .spawn(shell_spec("echo turn; read -r answer; while :; do :; done"))
@@ -318,6 +350,10 @@ async fn a_settled_session_is_never_probed_again() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn output_re_arms_the_probe() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(4096);
     let id = mgr
         .spawn(shell_spec("read -r a; echo second; read -r b"))
@@ -580,6 +616,10 @@ fn ticking_spec() -> SessionSpec {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_streaming_session_is_never_probed() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     // A tick every 10ms against a 150ms settle window, for 30 ticks.
     //
     // The interval used to be 50ms, which left only a 3x margin: three missed

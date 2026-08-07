@@ -12,7 +12,7 @@ use vitrum_proto::IDLE_ATTENTION_MS;
 use vitrum_proto::{HintState, SessionStatus};
 
 use crate::SessionManager;
-use crate::tests::helpers::{collect, probe_now, shell_spec, wait_exit};
+use crate::tests::helpers::{collect, kernel_reports_other_processes, probe_now, shell_spec, wait_exit};
 
 /// Resolve the sidebar status exactly as a client would, from the projection.
 fn status(info: &vitrum_proto::SessionInfo) -> (SidebarStatus, StatusSource) {
@@ -199,6 +199,10 @@ async fn a_silent_harness_never_grows_a_hint() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_declaration_beats_the_observation_for_approval() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(8192);
     let id = mgr
         .spawn(shell_spec(
@@ -229,6 +233,10 @@ async fn a_declaration_beats_the_observation_for_approval() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn observation_alone_resolves_a_blocked_shell_to_ready() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(8192);
     let id = mgr.spawn(shell_spec("read -r x")).expect("spawn");
     let info = probe_now(&mgr, id).await;
@@ -245,6 +253,10 @@ async fn observation_alone_resolves_a_blocked_shell_to_ready() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_working_declaration_beats_a_blocked_observation() {
+    // This kernel will not say what a process is doing; see the helper.
+    if !kernel_reports_other_processes() {
+        return;
+    }
     let mgr = SessionManager::new(8192);
     let id = mgr
         .spawn(shell_spec("printf '\\033]7373;working\\007'; read -r x"))

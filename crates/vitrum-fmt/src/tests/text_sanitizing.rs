@@ -2,7 +2,7 @@
 //! written by whatever program the user ran, so they are attacker-controlled
 //! in the same sense any terminal output is.
 
-use crate::text::{display_width, sanitize_line, title, truncate_end};
+use crate::text::{display_width, is_all_printable_ascii_8, sanitize_line, title, truncate_end};
 
 /// A newline or carriage return must not survive into a single-line label, and
 /// must leave a space behind.
@@ -202,4 +202,72 @@ fn simd_swar_sanitizer_edge_cases() {
 
     let mixed_control = "hello\x07world\x1b[1mbold\x1b[m!";
     assert_eq!(sanitize_line(mixed_control), "helloworldbold!");
+}
+
+/// The eight-byte probe agrees with the rule it stands in for, exhaustively.
+///
+/// The probe decides with one subtract, one add and one mask over a whole word,
+/// so a borrow out of one byte lands in the next. That is safe in one direction
+/// only: a dirty byte must never be reported clean, because the fast path then
+/// copies it through untouched, while a clean byte reported dirty costs only
+/// the slow path. Every pair of adjacent byte values in every position is
+/// checked, which is where a borrow would show if it could.
+#[test]
+fn the_eight_byte_probe_never_calls_a_dirty_byte_clean() {
+    let printable = |b: u8| (0x20..=0x7e).contains(&b);
+    for position in 0..7 {
+        for first in 0..=u8::MAX {
+            for second in 0..=u8::MAX {
+                let mut chunk = [b'A'; 8];
+                chunk[position] = first;
+                chunk[position + 1] = second;
+                let truth = chunk.iter().all(|b| printable(*b));
+                if is_all_printable_ascii_8(&chunk) {
+                    assert!(
+                        truth,
+                        "the probe called {chunk:?} clean when byte {first:#04x} \
+                         or {second:#04x} is outside 0x20..=0x7e, so the fast \
+                         path would copy it into a label untouched"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Sanitizing does not depend on whether the fast path ran.
+///
+/// `ESC [ m` is consumed whole and contributes nothing, so prefixing it leaves
+/// the answer alone while forcing the first byte to be dirty, which is what
+/// sends the same input down the copying path instead of the borrowing one.
+/// The two must agree for every input, or the fast path is not an optimisation
+/// but a second behaviour.
+#[test]
+fn the_fast_path_and_the_slow_path_agree() {
+    let mut seed = 0x243f_6a88_85a3_08d3u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    // Bytes chosen to land on the boundaries the probe cares about, mixed with
+    // the escape introducers the state machine has to consume.
+    let alphabet = [
+        b'a', b'Z', b'0', b' ', 0x1f, 0x20, 0x7e, 0x7f, 0x80, 0xff, 0x1b, b'[', b'm', b']', 0x07,
+        b'\n', b'\r', b'\t',
+    ];
+    for _ in 0..4000 {
+        let len = (next() % 40) as usize;
+        let raw: Vec<u8> = (0..len)
+            .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+            .collect();
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let forced = format!("\u{1b}[m{text}");
+        assert_eq!(
+            sanitize_line(&text),
+            sanitize_line(&forced),
+            "the borrowing path and the copying path disagreed on {text:?}"
+        );
+    }
 }

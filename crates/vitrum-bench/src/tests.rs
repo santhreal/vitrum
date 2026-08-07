@@ -176,3 +176,64 @@ fn the_load_generator_emits_the_width_the_delivery_check_assumes() {
         "the generator itself must not emit CR; the pty adds it"
     );
 }
+
+// --- world geometry & shape -------------------------------------------------
+//
+// The world workload needs a daemon to run, but its geometry model and its
+// session shapes are pure, and they are the part a reviewer should be able to
+// trust without a live server: the smallest-wins convergence check reads these
+// numbers, so a wrong min here makes the whole convergence claim hollow.
+
+/// Windows are monotonically non-narrower, and the narrowest is window 0.
+/// Identical geometry between two windows would let the convergence rule pass
+/// without ever being exercised, so distinct windows must want distinct sizes.
+#[test]
+fn world_windows_are_distinct_and_narrowest_first() {
+    let (c0, r0) = crate::world::geometry(0, 120);
+    assert_eq!((c0, r0), (80, 24));
+    let (c1, r1) = crate::world::geometry(1, 120);
+    assert_eq!((c1, r1), (90, 32));
+    assert_ne!(
+        crate::world::geometry(0, 120),
+        crate::world::geometry(2, 120),
+        "two windows at the same size would not test convergence"
+    );
+}
+
+/// The converged geometry is the per-axis minimum over all windows, which is
+/// exactly what the daemon claims to enforce. Round-trip the stated rule so a
+/// drift in the ceiling, not the death, fails the test.
+#[test]
+fn world_smallest_geometry_is_the_narrowest_window() {
+    let widest = 100;
+    let narrow = crate::world::smallest_geometry(4, widest);
+    let mut cols = u16::MAX;
+    let mut rows = u16::MAX;
+    for w in 0..4 {
+        let (c, r) = crate::world::geometry(w, widest);
+        cols = cols.min(c);
+        rows = rows.min(r);
+    }
+    assert_eq!(narrow, (cols, rows));
+    assert!(narrow.0 >= 80 && narrow.1 >= 24, "geometry never shrinks below the floor");
+}
+
+/// The burst command is `/bin/sh`, the riddle is a bare `/bin/cat`, and both
+/// are distinct — the workload depends on the riddle being the one session
+/// that echoes input back.
+#[test]
+fn world_command_shapes_are_what_the_phases_expect() {
+    let (sh, args) = crate::world::burst_command(10);
+    assert_eq!(sh, "/bin/sh");
+    assert_eq!(args[0], "-c");
+    assert!(args[1].contains(&format!("-le 10")), "emits exactly its line budget");
+
+    let (cat, cat_args) = crate::world::riddle_command();
+    assert_eq!(cat, "/bin/cat");
+    assert!(cat_args.is_empty(), "a bare cat never terminates and echoes input");
+
+    let (ssh, ssh_args) = crate::world::ssh_command("somehost.example", 42);
+    assert_eq!(ssh, "/usr/bin/ssh");
+    assert!(ssh_args.contains(&"--".to_string()), "`--` stops flag parsing for the remote argv");
+    assert!(ssh_args.iter().any(|a| a.contains("somehost.example")));
+}

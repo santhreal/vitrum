@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use vitrum_bench::report::Report;
-use vitrum_bench::{fuzz, load, probe, profile, race};
+use vitrum_bench::{fuzz, load, probe, profile, race, world};
 
 const USAGE: &str = "\
 vitrum-bench: load, concurrency, fuzz and profiling harness for the vitrum daemon
@@ -22,6 +22,8 @@ Usage:
   vitrum-bench race    [--server URL] [--connections N] [--sessions N] [--renames N]
   vitrum-bench fuzz    [--server URL] [--cases N] [--seed N]
   vitrum-bench probe   [--cases N] [--seed N] [--threads N]
+  vitrum-bench world   [--server URL] [--windows N] [--sessions N] [--widest N]
+                       [--burst-lines N] [--ssh-host HOST] [--settle SECS]
   vitrum-bench profile --pid PID [--duration SECS] [--interval SECS]
 
 Common:
@@ -124,6 +126,18 @@ fn run() -> anyhow::Result<bool> {
                 threads: flags.usize_or("--threads", 4)?,
             };
             probe::run(&spec)?
+        }
+        "world" => {
+            let spec = world::WorldSpec {
+                server,
+                windows: flags.usize_or("--windows", 3)?,
+                sessions_per_window: flags.usize_or("--sessions", 3)?,
+                widest_cols: flags.usize_or("--widest", 120)? as u16,
+                lines_per_burst: flags.usize_or("--burst-lines", 400)?,
+                ssh_host: flags.string("--ssh-host"),
+                settle: flags.secs_or("--settle", 2.0)?,
+            };
+            runtime.block_on(profiled(profile_pid, interval, sampler_limit, world::run(&spec)))?
         }
         "profile" => {
             let pid = profile_pid

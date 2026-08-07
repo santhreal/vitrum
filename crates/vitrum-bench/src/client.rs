@@ -386,4 +386,166 @@ impl Client {
             .await?;
         Ok(d)
     }
+
+    /// Attach to `session` at this window's geometry.
+    ///
+    /// The daemon confirms by broadcasting the session's updated projection.
+    /// Matching on the session id is safe here: attach acknowledges itself
+    /// with a `SessionUpdated` naming this session, and a second window
+    /// attaching at the same moment names a different id.
+    pub async fn attach(
+        &mut self,
+        session: SessionId,
+        cols: u16,
+        rows: u16,
+        timeout: Duration,
+    ) -> anyhow::Result<Duration> {
+        let msg = ClientMsg::Attach {
+            session,
+            cols,
+            rows,
+        };
+        let (_, d) = self
+            .round_trip(&msg, timeout, |m| match m {
+                ServerMsg::SessionUpdated(info) if info.id == session => Some(()),
+                _ => None,
+            })
+            .await?;
+        Ok(d)
+    }
+
+    /// Stop receiving live output for `session`. The session keeps running.
+    pub async fn detach(&mut self, session: SessionId, timeout: Duration) -> anyhow::Result<Duration> {
+        let msg = ClientMsg::Detach { session };
+        let (_, d) = self
+            .round_trip(&msg, timeout, |m| match m {
+                ServerMsg::SessionUpdated(info) if info.id == session => Some(()),
+                _ => None,
+            })
+            .await?;
+        Ok(d)
+    }
+
+    /// Write `data` to the session's PTY. Input has no acknowledgement, so the
+    /// recorded latency is the send itself.
+    pub async fn send_input(&mut self, session: SessionId, data: &[u8]) -> anyhow::Result<Duration> {
+        let start = Instant::now();
+        self.send(&ClientMsg::Input {
+            session,
+            data: data.to_vec(),
+        })
+        .await?;
+        Ok(start.elapsed())
+    }
+
+    /// Resize `session` to this window's geometry.
+    ///
+    /// The daemon acknowledges resize with a broadcast `SessionUpdated` only
+    /// when the PTY actually changes size; a no-op resize (the session is
+    /// already at the smallest requested geometry) publishes nothing. So there
+    /// is no reply to wait for — the recorded latency is the send, and the
+    /// convergence check reads the geometry back with `list_now`.
+    pub async fn resize(
+        &mut self,
+        session: SessionId,
+        cols: u16,
+        rows: u16,
+        _timeout: Duration,
+    ) -> anyhow::Result<Duration> {
+        let start = Instant::now();
+        self.send(&ClientMsg::Resize {
+            session,
+            cols,
+            rows,
+        })
+        .await?;
+        Ok(start.elapsed())
+    }
+
+    /// Fetch history older than `before_seq`, collecting every chunk until the
+    /// daemon reports `more: false`.
+    pub async fn scrollback(
+        &mut self,
+        session: SessionId,
+        before_seq: u64,
+        max_bytes: u32,
+        timeout: Duration,
+    ) -> anyhow::Result<(Vec<u8>, Duration)> {
+        let start = Instant::now();
+        let deadline = Instant::now() + timeout;
+        let mut data = Vec::new();
+        let mut before = before_seq;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                bail!("scrollback for session {} never finished within {timeout:?}", session.0);
+            }
+            // The daemon answers each Scrollback request with exactly one
+            // chunk; to page back the client re-asks with that chunk's
+            // from_seq as the new before_seq. So the loop is over requests.
+            self.send(&ClientMsg::Scrollback {
+                session,
+                before_seq: before,
+                max_bytes,
+            })
+            .await?;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    bail!("scrollback for session {} never finished within {timeout:?}", session.0);
+                }
+                match self.next_control(left).await? {
+                    ServerMsg::ScrollbackChunk {
+                        session: s,
+                        data: chunk,
+                        from_seq,
+                        more,
+                        ..
+                    } if s == session => {
+                        data.extend_from_slice(&chunk);
+                        if more {
+                            before = from_seq;
+                            break;
+                        }
+                        return Ok((data, start.elapsed()));
+                    }
+                    ServerMsg::Error { session: s, message, .. } if s == Some(session) => {
+                        bail!("scrollback for session {} refused: {message}", session.0);
+                    }
+                    // The daemon broadcasts other control traffic (session
+                    // updates, created/closed notices) on the same channel;
+                    // skip anything that is not this session's scrollback.
+                    _ => continue,
+                }
+            }
+        }
+    }
+
+    /// Run one server-side search and return the hits.
+    pub async fn search(
+        &mut self,
+        sessions: &[SessionId],
+        pattern: &str,
+        regex: bool,
+        case_insensitive: bool,
+        whole_word: bool,
+        timeout: Duration,
+    ) -> anyhow::Result<(Vec<vitrum_proto::SearchHit>, Duration)> {
+        let msg = ClientMsg::Search {
+            sessions: sessions.to_vec(),
+            pattern: pattern.to_string(),
+            regex,
+            case_insensitive,
+            whole_word,
+            context_lines: 0,
+            max_hits: 1000,
+        };
+        let (hits, d) = self
+            .round_trip(&msg, timeout, |m| match m {
+                ServerMsg::SearchResults { hits, .. } => Some(hits),
+                _ => None,
+            })
+            .await?;
+        Ok((hits, d))
+    }
 }

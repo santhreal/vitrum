@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/hero.png" alt="vitrum managing several coding-agent sessions at once: a live veyyon pane and a sidebar of sessions across multiple project folders." width="960" />
+  <img src="assets/screenshots/hero.png" alt="A vitrum window: the sidebar tracking a bash and a cargo session with what each one is doing, and the focused session showing a git log it has just finished printing." width="960" />
 </p>
 
 # A terminal for running many coding agents at once

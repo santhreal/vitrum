@@ -49,4 +49,4 @@ winapi = { version = "0.3", features = [
     "namedpipeapi",
     "synchapi",
 ] }
-winreg = "0.10"
+winreg = "0.56"

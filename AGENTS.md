@@ -74,3 +74,23 @@ is the single cost of batching that cannot be undone afterwards.
 
 Landing is `--ff-only`, so `main` is never rewritten and a wave that went stale
 is restaged rather than forced.
+
+## Never run a destructive git command in a tree you do not own alone
+
+The tree at the repository root is shared. Another agent's uncommitted file can
+be sitting in it while you integrate, and `git reset --hard`, `git checkout --`,
+`git clean` and `git stash` do not distinguish your work from theirs. This has
+already cost one edit: a `reset --hard` to drop a merge from a staging branch
+took an unrelated modified file with it, and an unstaged change is not in the
+object store, so there is nothing to recover.
+
+Before any command that can discard a working tree:
+
+1. `git status --porcelain` and read it. A file you did not touch means stop.
+2. Snapshot anyway: `git stash create` returns a commit object without touching
+   the working tree, and `git branch wip/<what> <sha>` keeps it.
+3. Prefer the non-destructive form. `git reset --keep` refuses rather than
+   discard local changes, and dropping a merge is `git reset --keep HEAD~1`.
+
+`tools/integrate.py stage` already refuses when a dirty file intersects its
+wave. That check does not cover a command you type yourself.

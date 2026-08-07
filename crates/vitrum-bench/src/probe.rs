@@ -7,11 +7,12 @@
 //! heavily-exercised path. The parse and decode surfaces underneath it — the
 //! binary output frame decoder, the base64 codec, the asciicast reader, the
 //! ANSI stripper, the search matcher, the grid — are pure library code that
-//! a hostile input can reach through a dozen different routes. The VBR replay
-//! parser's reachable panic (a malformed index offset slicing past the end)
-//! escaped every daemon-level test and was only caught by reading the code.
-//! This workload exists so that class of bug has a permanent, reproducible
-//! place to die.
+//! a hostile input can reach through a dozen different routes, and a defect in
+//! one of them is invisible from the wire. The search matcher's ASCII
+//! case-fold path answered "no match" for inputs the regex engine matched, and
+//! no daemon-level test could see it, because the two agreed on every input a
+//! session actually produces. This workload exists so that class of bug has a
+//! permanent, reproducible place to die.
 //!
 //! The probe is deliberately daemon-free: it calls the library functions
 //! directly, in this process, on inputs generated deterministically from a

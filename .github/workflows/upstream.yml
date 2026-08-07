@@ -40,7 +40,7 @@ jobs:
     # is the network, not the check.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No toolchain and no build: this compares source text and asks crates.io
       # a question. Installing Rust here would be a minute spent on nothing.

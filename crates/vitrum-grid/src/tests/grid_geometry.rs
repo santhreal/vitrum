@@ -20,10 +20,12 @@ fn new_grid_is_cols_times_rows_blanks_in_the_requested_style() {
     assert_eq!(grid.cols(), 7);
     assert_eq!(grid.rows(), 3);
     assert_eq!(grid.len(), 21);
-    assert_eq!(grid.cells().len(), 21);
+    assert_eq!(grid.len(), 21);
     assert_eq!(grid.default_style(), s);
-    for cell in grid.cells() {
-        assert_eq!(*cell, Cell::blank(s));
+    for row in 0..grid.rows() {
+        for cell in grid.row(row).unwrap() {
+            assert_eq!(*cell, Cell::blank(s));
+        }
     }
 }
 
@@ -116,8 +118,10 @@ fn out_of_bounds_writes_are_reported_not_clipped() {
         grid.clear_row(2).unwrap_err(),
         GridError::OutOfBounds { col: 0, row: 2 }
     );
-    for cell in grid.cells() {
-        assert_eq!(*cell, Cell::default(), "nothing may have been written");
+    for row in 0..grid.rows() {
+        for cell in grid.row(row).unwrap() {
+            assert_eq!(*cell, Cell::default(), "nothing may have been written");
+        }
     }
 }
 
@@ -223,8 +227,10 @@ fn clear_uses_the_current_default_style() {
     grid.set_default_style(new_default);
     let changed = grid.clear();
     assert_eq!(changed, 6, "3 written plus 3 blanks whose background moved");
-    for cell in grid.cells() {
-        assert_eq!(*cell, Cell::blank(new_default));
+    for row in 0..grid.rows() {
+        for cell in grid.row(row).unwrap() {
+            assert_eq!(*cell, Cell::blank(new_default));
+        }
     }
 }
 
@@ -389,7 +395,7 @@ fn shrinking_truncates_from_the_right_and_bottom() {
     assert_eq!(grid.rows(), 2);
     assert_eq!(grid.row_text(0).unwrap(), "ABC");
     assert_eq!(grid.row_text(1).unwrap(), "ABC");
-    assert_eq!(grid.cells().len(), 6);
+    assert_eq!(grid.len(), 6);
 }
 
 /// A vertical-only resize must keep the columns byte for byte.
@@ -410,7 +416,9 @@ fn vertical_only_resize_matches_the_general_path() {
     b.resize(5, 6).unwrap();
     b.resize(4, 6).unwrap();
 
-    assert_eq!(a.cells(), b.cells());
+    for row in 0..a.rows() {
+        assert_eq!(a.row(row), b.row(row), "row {row} must match");
+    }
     assert_eq!(a.row_text(2).unwrap(), "wxyz");
     assert_eq!(a.row_text(3).unwrap(), "    ");
 }

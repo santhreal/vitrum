@@ -243,11 +243,11 @@ fn emoji_occupies_two_columns() {
 fn rewriting_the_same_wide_character_changes_nothing() {
     let mut grid = CellGrid::new(4, 1, Style::DEFAULT).unwrap();
     grid.write_char(0, 0, '漢', Style::DEFAULT).unwrap();
-    let before: Vec<Cell> = grid.cells().to_vec();
+    let before: Vec<Cell> = grid.row(0).unwrap().to_vec();
     grid.clear_damage();
 
     grid.write_char(0, 0, '漢', Style::DEFAULT).unwrap();
-    assert_eq!(grid.cells(), before.as_slice());
+    assert_eq!(grid.row(0).unwrap(), before.as_slice());
     assert_eq!(
         grid.dirty_cells(),
         0,

@@ -24,3 +24,9 @@ anyhow = { workspace = true }
 # inotify, and the /proc reads that pin a change on a session. `fs` covers
 # both; nothing here needs a watcher crate on top of it.
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }
+
+[dev-dependencies]
+# `test_support::kernel_reports_other_processes`. The observation tests wait
+# on an answer the probe can only give where the kernel permits it, and that
+# question has one definition, in the crate that owns the probe.
+vitrum-core = { workspace = true, features = ["test-support"] }

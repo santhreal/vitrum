@@ -31,5 +31,10 @@ anyhow = { workspace = true }
 # answer comes out of /proc.
 libc = "0.2"
 
+[features]
+# The host-capability checks in `test_support`, for the test builds of other
+# crates. Off by default, so a shipped binary never carries them.
+test-support = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }

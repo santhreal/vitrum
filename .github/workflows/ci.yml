@@ -80,6 +80,25 @@ jobs:
 
       - run: cargo build --release --workspace --locked
 
+      # What the kernel will let the waiting-probe see, printed because the
+      # suite cannot say it. The probe reads /proc/<pid>/syscall, which needs
+      # ptrace attach permission, and where that is denied eighteen tests skip
+      # themselves. libtest captures their reason, so without this line a run
+      # is green and silent about what it did not check. This reports the
+      # host's setting; the decision to skip stays in the tests.
+      - name: probe capability
+        run: |
+          sleep 30 & p=$!
+          scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo "n/a")
+          if cat /proc/$p/syscall >/dev/null 2>&1; then
+            echo "kernel answers the waiting probe (yama ptrace_scope=$scope)"
+          else
+            echo "::warning::this kernel denies /proc/<pid>/syscall (yama" \
+              "ptrace_scope=$scope), so the waiting-probe tests skip themselves." \
+              "Set kernel.yama.ptrace_scope=1 on this runner to restore them."
+          fi
+          kill $p 2>/dev/null || true
+
       - run: cargo test --release --workspace --locked
 
       # Advisory, as RELEASING.md says. It reports and never blocks.

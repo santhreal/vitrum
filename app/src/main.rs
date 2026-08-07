@@ -452,7 +452,7 @@ fn App() -> Element {
     // What the first-run sheet found on PATH. Empty until the sheet is about
     // to open, because resolving it walks every PATH entry and no window that
     // never shows onboarding should pay for that.
-    let mut detected = use_signal(Vec::<launch::Detected>::new);
+    let mut detected = use_signal(|| None::<Vec<launch::Detected>>);
 
     let bridge = use_hook(|| Bridge {
         eval: document::eval(BOOTSTRAP_JS),
@@ -710,23 +710,35 @@ fn App() -> Element {
             // notes, and a window that is neither gets neither. Only the first
             // window: a second window is not a second first run, and two
             // sheets over two windows is the same sheet twice.
-            if seed.ordinal == 0 {
+            //
+            // Agent detection walks every PATH entry. It used to run to
+            // completion before the onboarding sheet opened AND before the
+            // daemon was asked to start, so a first launch paid the scan and
+            // the connect in series. The sheet already treats an empty agent
+            // list as a first-class state, and the daemon row updates live
+            // from `conn`, so the scan can fill in beside the connect rather
+            // than in front of it. Wall clock becomes max(scan, connect)
+            // instead of their sum.
+            let agent_fill = if seed.ordinal == 0 {
                 let onboarded = st.peek().daemon.settings.onboarded;
                 if !onboarded {
-                    // Off the UI thread. Resolving agents stats every PATH
-                    // entry, and the window is already mapped.
-                    let found = tokio::task::spawn_blocking(launch::detected_agents)
-                        .await
-                        .unwrap_or_default();
-                    detected.set(found);
                     st.write().window.layer = Layer::Onboarding;
+                    Some(tokio::task::spawn_blocking(launch::detected_agents))
                 } else {
                     let seen = st.peek().daemon.settings.last_seen_version();
                     if !ui::whatsnew::whats_new(seen.as_ref()).is_empty() {
                         st.write().window.layer = Layer::WhatsNew;
                     }
+                    None
                 }
-            }
+            } else {
+                None
+            };
+            let fill_agents = async {
+                if let Some(handle) = agent_fill {
+                    detected.set(Some(handle.await.unwrap_or_default()));
+                }
+            };
 
             if opts.fixture {
                 let now = tick().now_ms;
@@ -755,6 +767,7 @@ fn App() -> Element {
                     st.write().open(id, now);
                 }
                 reconcile(bridge, st, attached, opts);
+                fill_agents.await;
             } else {
                 // The Advanced tab may point somewhere other than the command
                 // line. `resolved_daemon_url` falls back to `--server` when the
@@ -765,7 +778,12 @@ fn App() -> Element {
                     .settings
                     .resolved_daemon_url(opts.server)
                     .to_string();
-                start_daemon_then_connect(bridge, st, &url, opts).await;
+                // First-run agent detection shares this await so a PATH walk
+                // cannot push the first connect later than it has to.
+                tokio::join!(
+                    start_daemon_then_connect(bridge, st, &url, opts),
+                    fill_agents
+                );
             }
 
             // Re-derive the automatic sidebar width against the window's real

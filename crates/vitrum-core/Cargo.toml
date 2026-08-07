@@ -24,6 +24,7 @@ portable-pty = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+bytes = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # libproc's proc_pidinfo, the only public way to ask what a process's threads

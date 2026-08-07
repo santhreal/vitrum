@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use vitrum_bench::report::Report;
-use vitrum_bench::{fuzz, load, profile, race};
+use vitrum_bench::{fuzz, load, probe, profile, race};
 
 const USAGE: &str = "\
 vitrum-bench: load, concurrency, fuzz and profiling harness for the vitrum daemon
@@ -21,6 +21,7 @@ Usage:
   vitrum-bench load    [--server URL] [--sessions N] [--lines N] [--drain SECS]
   vitrum-bench race    [--server URL] [--connections N] [--sessions N] [--renames N]
   vitrum-bench fuzz    [--server URL] [--cases N] [--seed N]
+  vitrum-bench probe   [--cases N] [--seed N] [--threads N]
   vitrum-bench profile --pid PID [--duration SECS] [--interval SECS]
 
 Common:
@@ -115,6 +116,14 @@ fn run() -> anyhow::Result<bool> {
                 oracle_timeout: flags.secs_or("--oracle-timeout", 10.0)?,
             };
             runtime.block_on(profiled(profile_pid, interval, sampler_limit, fuzz::run(&spec)))?
+        }
+        "probe" => {
+            let spec = probe::ProbeSpec {
+                cases: flags.usize_or("--cases", 200_000)?,
+                seed: flags.u64_or("--seed", 1)?,
+                threads: flags.usize_or("--threads", 4)?,
+            };
+            probe::run(&spec)?
         }
         "profile" => {
             let pid = profile_pid

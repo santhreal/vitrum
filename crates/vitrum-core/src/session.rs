@@ -895,15 +895,24 @@ fn read_loop(
             Ok(n) => {
                 if let Some(vt) = vt.as_mut() {
                     vt.feed(&buf[..n]);
-                    // No wake-up is sent for the new name on purpose. The
-                    // title arrived inside output that is about to be
-                    // published on the line below, and that publication is
-                    // already what makes a client look again.
+                    // A client learns a session changed when its observation
+                    // revision moves, so the revision has to move here. The
+                    // foreground probe would eventually push a fresh projection
+                    // on its own, but it reports children that have settled and
+                    // deliberately leaves a streaming session alone, which is
+                    // exactly the session most likely to be retitling itself
+                    // while it works. Saying so when the name changes costs one
+                    // watch send on a path that already decided something is
+                    // different.
+                    let mut changed = false;
                     if let Some(title) = vt.events().take_title() {
-                        apply_engine_title(&session, &title);
+                        changed |= apply_engine_title(&session, &title);
                     }
                     if let Some(pwd) = vt.events().take_pwd() {
-                        apply_engine_pwd(&session, &pwd);
+                        changed |= apply_engine_pwd(&session, &pwd);
+                    }
+                    if changed {
+                        session.bump();
                     }
                 }
                 if out.send(buf[..n].to_vec()).is_err() {

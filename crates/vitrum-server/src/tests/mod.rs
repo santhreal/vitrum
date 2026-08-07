@@ -11,6 +11,8 @@ mod lifecycle;
 mod listing;
 mod multi_client;
 #[cfg(not(windows))]
+mod naming;
+#[cfg(not(windows))]
 mod observation;
 mod project_registry;
 mod rename;

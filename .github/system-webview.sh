@@ -18,7 +18,15 @@ packages=(
 # every job is slow at best, and on a host carrying an unrelated broken
 # repository it fails `apt-get update` for a reason that has nothing to do with
 # the change under test.
-if pkg-config --exists webkit2gtk-4.1 && pkg-config --exists libxdo; then
+#
+# Asked of dpkg rather than pkg-config, because the same list above is then the
+# only list: two of these four ship no pkg-config module, so asking pkg-config
+# reported them missing on a machine where they were installed.
+present=1
+for package in "${packages[@]}"; do
+  dpkg -s "${package}" >/dev/null 2>&1 || present=0
+done
+if [ "${present}" -eq 1 ]; then
   echo "system webview already present, nothing to install"
   exit 0
 fi

@@ -113,6 +113,12 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           shared-key: macos-check
+      # `vitrum-core` depends on `vitrum-vt`, which builds the Ghostty engine
+      # from source, so this needs Zig exactly as the build job does.
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
       # `vitrum-core` is where the platform-conditional code lives. The client
       # crates link a system webview that has no cross-compilable form, so
       # checking them here would fail for a reason that says nothing about the

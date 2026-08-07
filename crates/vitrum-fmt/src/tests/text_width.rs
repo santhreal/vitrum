@@ -138,3 +138,94 @@ fn ascii_truncate_matches_width_not_byte_length() {
     assert_eq!(truncate_end("hello world", 8), "hello w\u{2026}");
     assert_eq!(display_width(&truncate_end("hello world", 8)), 8);
 }
+
+/// The ASCII fast paths are a second implementation of the grapheme rules, so
+/// they have to be pinned to the first one. Examples cannot do that: a fast
+/// path breaks on the input nobody thought to write down. This walks the whole
+/// one and two byte ASCII space and asserts both implementations agree, so any
+/// future edit to either side that changes a single codepoint fails here.
+#[test]
+fn the_ascii_fast_path_agrees_with_the_grapheme_path() {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    fn by_grapheme(text: &str) -> usize {
+        text.graphemes(true).map(cluster_width).sum()
+    }
+
+    use crate::text::{
+        display_width_by_cluster, fits_by_cluster, truncate_end_by_cluster,
+        truncate_middle_by_cluster,
+    };
+
+    // Every fast path is held against the implementation it shortcuts, output
+    // for output. Asserting only that a result fits its budget would accept a
+    // fast path that truncates somewhere else entirely.
+    fn agree(text: &str, budget: usize, what: &str) {
+        assert_eq!(
+            display_width(text),
+            display_width_by_cluster(text),
+            "display_width disagrees for {what}"
+        );
+        assert_eq!(
+            fits(text, budget),
+            fits_by_cluster(text, budget),
+            "fits disagrees for {what} at {budget}"
+        );
+        assert_eq!(
+            truncate_end(text, budget),
+            truncate_end_by_cluster(text, budget),
+            "truncate_end disagrees for {what} at {budget}"
+        );
+        assert_eq!(
+            truncate_middle(text, budget),
+            truncate_middle_by_cluster(text, budget),
+            "truncate_middle disagrees for {what} at {budget}"
+        );
+    }
+
+    let mut checked = 0usize;
+    let mut buf = String::with_capacity(2);
+    for a in 0u8..128 {
+        buf.clear();
+        buf.push(a as char);
+        assert_eq!(display_width(&buf), by_grapheme(&buf), "width of {a:#04x}");
+        for b in 0u8..128 {
+            buf.clear();
+            buf.push(a as char);
+            buf.push(b as char);
+            let width = by_grapheme(&buf);
+            assert_eq!(display_width(&buf), width, "width of {a:#04x}{b:#04x}");
+            for budget in 0..=3 {
+                assert_eq!(
+                    fits(&buf, budget),
+                    width <= budget,
+                    "fits({a:#04x}{b:#04x}, {budget})"
+                );
+                // Truncation may drop columns but must never claim more than
+                // it was given, which is the invariant the caller lays out to.
+                assert!(
+                    by_grapheme(&truncate_end(&buf, budget)) <= budget,
+                    "truncate_end({a:#04x}{b:#04x}, {budget}) overflows"
+                );
+            }
+            for budget in 0..=4 {
+                agree(&buf, budget, &format!("{a:#04x}{b:#04x}"));
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 128 * 128);
+
+    // Long enough to be over budget, so the middle split actually runs. A
+    // string that fits is returned whole and never reaches the head and tail
+    // walks, which is where the two implementations have the most room to
+    // disagree.
+    for a in 0u8..128 {
+        for b in 0u8..128 {
+            let text = format!("AB{}{}YZ", a as char, b as char);
+            for budget in 2..=5 {
+                agree(&text, budget, &format!("AB{a:#04x}{b:#04x}YZ"));
+            }
+        }
+    }
+}

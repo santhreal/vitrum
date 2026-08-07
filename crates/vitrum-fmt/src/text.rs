@@ -47,6 +47,16 @@ pub fn display_width(text: &str) -> usize {
     if text.is_ascii() {
         return text.bytes().filter(|&b| b >= 0x20 && b != 0x7F).count();
     }
+    display_width_by_cluster(text)
+}
+
+/// The rules, stated once, by walking grapheme clusters.
+///
+/// The ASCII paths above are a second statement of the same rules, kept because
+/// they are the hot case. Naming this one is what lets a test hold the two
+/// against each other over the whole ASCII space instead of over the examples
+/// somebody thought to write down.
+pub(crate) fn display_width_by_cluster(text: &str) -> usize {
     text.graphemes(true).map(cluster_width).sum()
 }
 
@@ -72,6 +82,12 @@ pub fn fits(text: &str, budget: usize) -> bool {
         }
         return true;
     }
+    fits_by_cluster(text, budget)
+}
+
+/// Whether `text` fits, by walking grapheme clusters. See
+/// [`display_width_by_cluster`] for why this is named.
+pub(crate) fn fits_by_cluster(text: &str, budget: usize) -> bool {
     let mut used = 0usize;
     for cluster in text.graphemes(true) {
         used += cluster_width(cluster);
@@ -124,6 +140,15 @@ pub fn truncate_end(text: &str, budget: usize) -> String {
         return out;
     }
 
+    truncate_end_by_cluster(text, budget)
+}
+
+/// Truncate at the end by walking grapheme clusters. See
+/// [`display_width_by_cluster`] for why this is named.
+pub(crate) fn truncate_end_by_cluster(text: &str, budget: usize) -> String {
+    if budget == 0 {
+        return String::new();
+    }
     if fits(text, budget) {
         return text.to_owned();
     }
@@ -210,6 +235,18 @@ pub fn truncate_middle(text: &str, budget: usize) -> String {
         return out;
     }
 
+    truncate_middle_by_cluster(text, budget)
+}
+
+/// Truncate in the middle by walking grapheme clusters. See
+/// [`display_width_by_cluster`] for why this is named.
+pub(crate) fn truncate_middle_by_cluster(text: &str, budget: usize) -> String {
+    if budget == 0 {
+        return String::new();
+    }
+    if budget == 1 {
+        return ELLIPSIS.to_string();
+    }
     if fits(text, budget) {
         return text.to_owned();
     }

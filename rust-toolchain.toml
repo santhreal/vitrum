@@ -1,4 +1,11 @@
 [toolchain]
 channel = "nightly-2026-04-29"
 components = ["rustfmt", "clippy", "rust-analyzer"]
-targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+# `x86_64-pc-windows-gnu` is what the Windows cross check in CI compiles
+# against; MSVC stays for editors and for the real build on a Windows box.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]

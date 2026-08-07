@@ -181,7 +181,11 @@ jobs:
       # crates link a system webview that has no cross-compilable form, so
       # checking them here would fail for a reason that says nothing about the
       # change.
-      - run: cargo check --release -p vitrum-core --target aarch64-apple-darwin --locked
+      #
+      # `--tests` is the point rather than a refinement: most of the gated code
+      # in this crate is in its test modules, and without it this job passed a
+      # commit whose macOS test build did not compile at all.
+      - run: cargo check --release -p vitrum-core --target aarch64-apple-darwin --tests --locked
 
   # The archive the updater downloads is built by a script, and the script and
   # `update::archive_name` must agree. Building it on every push is how a

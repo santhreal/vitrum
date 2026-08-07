@@ -4,6 +4,7 @@
 //! these tests are deterministic: overflow the channel before the pump starts and
 //! the very first receive reports the loss.
 
+#[cfg(unix)]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -229,7 +230,7 @@ fn the_gap_notice_round_trips_as_json() {
 /// The unit tests above force lag deliberately; this one guards the opposite
 /// property, that the normal path never reports one. A pump that mishandled the
 /// non-lagging case would break every session while looking fine under lag.
-#[cfg(not(windows))]
+#[cfg(unix)]
 #[tokio::test]
 async fn a_real_session_streams_without_reporting_a_gap() {
     let mgr = Arc::new(SessionManager::new(64 * 1024));

@@ -171,3 +171,59 @@ fn workflows() -> Vec<(String, String)> {
     assert!(!out.is_empty(), "no workflows were found to check");
     out
 }
+
+/// Every Zig pin agrees with every other one, and with the contributor guide.
+///
+/// The version is load-bearing rather than cosmetic: it is the one Ghostty
+/// pins, and a newer Zig fails Ghostty's own build-version check, so a
+/// contributor who installs the latest release gets a different failure rather
+/// than a safer one. The number therefore lives in six workflow steps and in
+/// `CONTRIBUTING.md`, and nothing made them agree.
+///
+/// Drift here is silent in the direction that matters. Bumping CI leaves the
+/// guide telling every new contributor to install a version CI no longer uses,
+/// and CI going green is exactly what hides it.
+#[test]
+fn the_zig_version_is_pinned_consistently_and_documented() {
+    let mut pins: Vec<(String, String)> = Vec::new();
+    for (name, text) in workflows() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            // A `uses:` step, not the prose about caching that names the
+            // action too: a comment pins nothing and would fail below.
+            let trimmed = line.trim();
+            let step = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+            if !step.starts_with("uses:") || !step.contains("setup-zig") {
+                continue;
+            }
+            // `with:` then `version:` follow the `uses:`, a couple of lines down.
+            let version = lines[at + 1..lines.len().min(at + 6)]
+                .iter()
+                .find_map(|next| next.trim().strip_prefix("version:"))
+                .unwrap_or_else(|| panic!("{name}: a setup-zig step pins no version"));
+            pins.push((name.clone(), version.trim().to_string()));
+        }
+    }
+
+    assert!(
+        pins.len() >= 5,
+        "only {} Zig pins were found; the parser is not reading the steps",
+        pins.len()
+    );
+
+    let (first_file, pinned) = pins[0].clone();
+    for (name, version) in &pins {
+        assert_eq!(
+            version, &pinned,
+            "{name} pins Zig {version} and {first_file} pins {pinned}; one \
+             engine build would use a Zig the other rejects"
+        );
+    }
+
+    let guide = include_str!("../../../CONTRIBUTING.md");
+    assert!(
+        guide.contains(&pinned),
+        "CI pins Zig {pinned} and CONTRIBUTING.md does not name it, so the \
+         guide is telling contributors to install something else"
+    );
+}

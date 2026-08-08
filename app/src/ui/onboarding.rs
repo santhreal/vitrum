@@ -135,7 +135,7 @@ pub struct Step {
 }
 
 /// One page of the walkthrough.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Chapter {
     /// What this machine has, and what is left to do on it.
     Machine,
@@ -315,144 +315,170 @@ pub fn steps(machine: &Machine) -> Vec<Step> {
 /// The first page is this machine. The three after it are the surfaces that
 /// make the first page worth anything, and they are constant: an operator
 /// learns what the inbox is whether or not their daemon happened to be up.
+///
+/// Built by walking [`Chapter::ALL`] rather than by listing pages, so the
+/// match in [`page`] is exhaustive and a chapter added to the enum stops the
+/// build instead of quietly never rendering.
 pub fn pages(machine: &Machine) -> Vec<Page> {
-    vec![
-        Page {
-            chapter: Chapter::Machine,
+    Chapter::ALL
+        .iter()
+        .map(|chapter| page(*chapter, machine))
+        .collect()
+}
+
+/// One chapter's page.
+fn page(chapter: Chapter, machine: &Machine) -> Page {
+    match chapter {
+        Chapter::Machine => Page {
+            chapter,
             title: "Welcome to vitrum".to_string(),
             blurb: intro(machine),
             rows: steps(machine),
         },
-        Page {
-            chapter: Chapter::Inbox,
-            title: "The sidebar is an inbox".to_string(),
-            blurb: "Running twenty agents is only useful if you can tell, without \
-                    visiting them, which one stopped."
-                .to_string(),
-            rows: vec![
-                teach(
-                    StepKind::States,
-                    "Every row says what its agent is doing",
-                    "Working while it runs. Approval when it wants permission to do \
+        Chapter::Inbox => inbox_page(),
+        Chapter::Workspaces => workspaces_page(),
+        Chapter::Rest => rest_page(),
+    }
+}
+
+/// What the sidebar is for.
+fn inbox_page() -> Page {
+    Page {
+        chapter: Chapter::Inbox,
+        title: "The sidebar is an inbox".to_string(),
+        blurb: "Running twenty agents is only useful if you can tell, without \
+                visiting them, which one stopped."
+            .to_string(),
+        rows: vec![
+            teach(
+                StepKind::States,
+                "Every row says what its agent is doing",
+                "Working while it runs. Approval when it wants permission to do \
                      something. Input when it has asked you a question. Ready when it \
                      finished and is waiting. Failed when it exited badly. The colour \
                      down the left edge of the row is that status, so the list reads \
                      at a glance."
-                        .to_string(),
-                ),
-                teach(
-                    StepKind::Attention,
-                    "Jump to whichever one wants you",
-                    chord_sentence(
-                        KeyAction::NextAttention,
-                        |keys| {
-                            format!(
-                                "{keys} moves to the next row that needs you and skips every \
+                    .to_string(),
+            ),
+            teach(
+                StepKind::Attention,
+                "Jump to whichever one wants you",
+                chord_sentence(
+                    KeyAction::NextAttention,
+                    |keys| {
+                        format!(
+                            "{keys} moves to the next row that needs you and skips every \
                                  row that does not. This is the loop the product is for: you \
                                  stop going and looking, and you stop missing the one that \
                                  stopped an hour ago."
-                            )
-                        },
-                        "Rows that need you sort to the top of the list, so you stop going \
+                        )
+                    },
+                    "Rows that need you sort to the top of the list, so you stop going \
                          and looking, and stop missing the one that stopped an hour ago.",
-                    ),
                 ),
-                teach(
-                    StepKind::Persistence,
-                    "The window is not the session",
-                    "Your sessions belong to the daemon. Close this window and they keep \
+            ),
+            teach(
+                StepKind::Persistence,
+                "The window is not the session",
+                "Your sessions belong to the daemon. Close this window and they keep \
                      running, scrollback included; open it again and everything is where \
                      you left it. Quitting the app does not kill your agents."
-                        .to_string(),
-                ),
-            ],
-        },
-        Page {
-            chapter: Chapter::Workspaces,
-            title: "Workspaces keep the list short".to_string(),
-            blurb: "A long day leaves a long list. A workspace is how you say \
-                    \"not this, not now\" without killing anything."
-                .to_string(),
-            rows: vec![
-                teach(
-                    StepKind::Filing,
-                    "File a session where it belongs",
-                    "Right-click any row and use Move to workspace. The switcher above \
+                    .to_string(),
+            ),
+        ],
+    }
+}
+
+/// What a workspace is for.
+fn workspaces_page() -> Page {
+    Page {
+        chapter: Chapter::Workspaces,
+        title: "Workspaces keep the list short".to_string(),
+        blurb: "A long day leaves a long list. A workspace is how you say \
+                \"not this, not now\" without killing anything."
+            .to_string(),
+        rows: vec![
+            teach(
+                StepKind::Filing,
+                "File a session where it belongs",
+                "Right-click any row and use Move to workspace. The switcher above \
                      the sidebar changes which one you are looking at, and the strip \
                      only appears once you have a second workspace, so day one costs \
                      you no chrome."
-                        .to_string(),
-                ),
-                teach(
-                    StepKind::Bands,
-                    "Active, snoozed, settled",
-                    "Inside a workspace, rows sit in three bands. Snooze parks a row \
+                    .to_string(),
+            ),
+            teach(
+                StepKind::Bands,
+                "Active, snoozed, settled",
+                "Inside a workspace, rows sit in three bands. Snooze parks a row \
                      until a time you pick, or until it raises its hand. A session that \
                      wakes early comes back in place, wearing a badge, because the sort \
                      did not move it and the badge is the only thing that can tell you \
                      it returned. Sessions you are finished with drain to settled on \
                      their own."
-                        .to_string(),
-                ),
-                teach(
-                    StepKind::Visibility,
-                    "Each workspace shows what you want it to",
-                    "Settings, Workspaces sets which of the three bands a workspace \
+                    .to_string(),
+            ),
+            teach(
+                StepKind::Visibility,
+                "Each workspace shows what you want it to",
+                "Settings, Workspaces sets which of the three bands a workspace \
                      shows, so one can be everything and another only the things still \
                      running."
-                        .to_string(),
-                ),
-            ],
-        },
-        Page {
-            chapter: Chapter::Rest,
-            title: "The rest of it".to_string(),
-            blurb: "Two keys and one gear, and you have seen the whole product."
-                .to_string(),
-            rows: vec![
-                teach(
-                    StepKind::Shortcuts,
-                    "Every shortcut, on demand",
-                    chord_sentence(
-                        KeyAction::ToggleShortcuts,
-                        |keys| {
-                            format!(
-                                "{keys} shows the full keyboard table, including anything you \
+                    .to_string(),
+            ),
+        ],
+    }
+}
+
+/// The keyboard, the search, and where settings lives.
+fn rest_page() -> Page {
+    Page {
+        chapter: Chapter::Rest,
+        title: "The rest of it".to_string(),
+        blurb: "Two keys and one gear, and you have seen the whole product.".to_string(),
+        rows: vec![
+            teach(
+                StepKind::Shortcuts,
+                "Every shortcut, on demand",
+                chord_sentence(
+                    KeyAction::ToggleShortcuts,
+                    |keys| {
+                        format!(
+                            "{keys} shows the full keyboard table, including anything you \
                                  have rebound. Nothing here is a keystroke you have to \
                                  remember from this sheet."
-                            )
-                        },
-                        "The keyboard table lives in Settings, and lists anything you have \
+                        )
+                    },
+                    "The keyboard table lives in Settings, and lists anything you have \
                          rebound.",
-                    ),
                 ),
-                teach(
-                    StepKind::Search,
-                    "Search every session at once",
-                    chord_sentence(
-                        KeyAction::OpenSearch,
-                        |keys| {
-                            format!(
-                                "{keys} searches scrollback across all of your sessions, not \
+            ),
+            teach(
+                StepKind::Search,
+                "Search every session at once",
+                chord_sentence(
+                    KeyAction::OpenSearch,
+                    |keys| {
+                        format!(
+                            "{keys} searches scrollback across all of your sessions, not \
                                  only the one on screen, which is how you find the run that \
                                  printed the error without remembering which agent it was."
-                            )
-                        },
-                        "Scrollback search runs across all of your sessions, not only the \
+                        )
+                    },
+                    "Scrollback search runs across all of your sessions, not only the \
                          one on screen.",
-                    ),
                 ),
-                teach(
-                    StepKind::Settings,
-                    "Where the rest is",
-                    "The gear at the bottom of the sidebar opens Settings: appearance, \
+            ),
+            teach(
+                StepKind::Settings,
+                "Where the rest is",
+                "The gear at the bottom of the sidebar opens Settings: appearance, \
                      grouping, saved commands with their own shortcuts, notifications, \
                      and the keyboard table."
-                        .to_string(),
-                ),
-            ],
-        },
-    ]
+                    .to_string(),
+            ),
+        ],
+    }
 }
 
 /// Has this operator already done everything the checklist would ask?
@@ -718,9 +744,8 @@ mod tests {
         body.split_whitespace()
             .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '+'))
             .filter(|w| {
-                let function_key = w.starts_with('F')
-                    && w.len() > 1
-                    && w[1..].chars().all(|c| c.is_ascii_digit());
+                let function_key =
+                    w.starts_with('F') && w.len() > 1 && w[1..].chars().all(|c| c.is_ascii_digit());
                 let combination = w.contains('+') && !w.starts_with('+') && !w.ends_with('+');
                 function_key || combination
             })
@@ -728,18 +753,39 @@ mod tests {
             .collect()
     }
 
-    /// WHY: a chapter that exists must be reachable.
+    /// WHY: every chapter is reachable exactly once, and says its own thing.
     ///
-    /// The walkthrough is a hand-written vector, so a chapter added to the
-    /// enum and forgotten in `pages` is a surface that compiles, tests green,
-    /// and never renders. The order matters too: machine readings first,
-    /// because that page is the one whose content depends on the machine and
-    /// the one an operator with a broken daemon needs before any teaching.
+    /// A chapter missing from the walkthrough is now a compile error rather
+    /// than a test failure, because [`pages`] walks [`Chapter::ALL`] through
+    /// an exhaustive match. What the compiler cannot see is the table itself
+    /// being wrong: a chapter listed twice renders the same page twice, and
+    /// two chapters that resolve to the same title mean one of them is a
+    /// copy-paste of the other and an operator reads a page they have already
+    /// read. Both leave the type system perfectly happy.
+    ///
+    /// The order is asserted with it. Machine readings come first because
+    /// that page is the one whose content depends on the machine, and an
+    /// operator whose daemon never came up needs it before any teaching.
     #[test]
-    fn the_walkthrough_visits_every_chapter_once_in_order() {
+    fn every_chapter_is_visited_once_and_renders_a_page_of_its_own() {
+        assert_eq!(
+            Chapter::ALL.iter().collect::<BTreeSet<_>>().len(),
+            Chapter::ALL.len(),
+            "a chapter is listed twice, so its page renders twice"
+        );
+        assert_eq!(
+            Chapter::ALL.first(),
+            Some(&Chapter::Machine),
+            "the machine readings must be the first page"
+        );
+
         for m in every_machine() {
-            let visited: Vec<Chapter> = pages(&m).into_iter().map(|p| p.chapter).collect();
+            let deck = pages(&m);
+            let visited: Vec<Chapter> = deck.iter().map(|p| p.chapter).collect();
             assert_eq!(visited, Chapter::ALL.to_vec());
+
+            let titles: BTreeSet<&str> = deck.iter().map(|p| p.title.as_str()).collect();
+            assert_eq!(titles.len(), deck.len(), "two chapters share a title");
         }
     }
 
@@ -881,11 +927,7 @@ mod tests {
             "{}",
             step.body
         );
-        assert!(
-            !step.body.contains("Nothing on your PATH"),
-            "{}",
-            step.body
-        );
+        assert!(!step.body.contains("Nothing on your PATH"), "{}", step.body);
     }
 
     /// A reading appears only while it still has something to say.
@@ -907,7 +949,11 @@ mod tests {
             (true, true, &[StepKind::Agents]),
         ];
         for (connected, any_session, expected) in cases {
-            let m = machine(Some(vec![agent("Codex", "codex")]), *connected, *any_session);
+            let m = machine(
+                Some(vec![agent("Codex", "codex")]),
+                *connected,
+                *any_session,
+            );
             assert_eq!(
                 kinds(&m),
                 *expected,
@@ -951,7 +997,8 @@ mod tests {
             (vec![], StepState::Todo),
             (vec![agent("Codex", "codex")], StepState::Done),
         ] {
-            let step = find(&machine(Some(agents), true, false), StepKind::Agents).expect("present");
+            let step =
+                find(&machine(Some(agents), true, false), StepKind::Agents).expect("present");
             assert_eq!(step.state, expected);
         }
     }

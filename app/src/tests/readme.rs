@@ -230,13 +230,11 @@ fn every_screenshot_the_readme_shows_exists() {
         .parent()
         .expect("the crate lives under the workspace root");
 
-    let mut shown = 0;
     for rest in readme.split("](").skip(1) {
         let target = rest.split(')').next().unwrap_or_default();
         if !target.starts_with("assets/") {
             continue;
         }
-        shown += 1;
         assert!(
             root.join(target).is_file(),
             "the README points at {target}, which is not in the repository"

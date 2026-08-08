@@ -37,8 +37,33 @@ cargo test  --release --workspace
 The toolchain is pinned by `rust-toolchain.toml`. `rustup` reads it and
 installs the right nightly by itself, so you do not pick a version.
 
-The client links the system webview, which is the only system dependency.
+Two system dependencies, not one. The client links the system webview, and
 `README.md` lists the package name for each platform.
+
+`vitrum-vt` also needs a **Zig toolchain**, because its default `vendored`
+feature builds libghostty from source and pins the engine commit the tests
+ran against. Without `zig` on your `PATH` the two commands above stop at
+`libghostty-vt-sys` with `failed to execute zig build: No such file or
+directory`, which comes from that crate's build script and does not say what
+to install.
+
+The `system` feature links a libghostty the platform already provides and
+needs no Zig, but only when one is actually discoverable:
+
+```sh
+pkg-config --exists ghostty-vt   # must succeed first
+cargo test --release -p vitrum-vt --no-default-features --features system
+```
+
+If that `pkg-config` check fails, the feature does not save you. The sys
+crate falls back to cloning Ghostty and building it, so the run ends at the
+same Zig error it would have without the feature. `vitrum-vt/build.rs` exists
+to turn that into an error naming the missing piece, but it cannot always win
+the race: Cargo may run the sys crate's build script first, and then the
+unhelpful panic is the one you see.
+
+Everything outside `vitrum-vt` builds without Zig, which is why
+`cargo test -p vitrum` works on a machine that has never had it.
 
 CI runs the same two commands with `RUSTFLAGS: -D warnings`, so a warning is
 a failed build. A helper that is only reachable on one platform is dead code

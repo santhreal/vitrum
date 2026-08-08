@@ -734,7 +734,9 @@ mod tests {
     ///
     /// What this does NOT catch: a real agent given a shell-shaped title, and
     /// a screenshot taken from something other than the fixture. The first is
-    /// covered below; the second is a review gate, not a test.
+    /// covered below; the second is covered by [`crate::tests::assets`], which
+    /// refuses to let an image sit in the tree without a written claim about
+    /// which agents are on screen.
     #[test]
     fn no_fixture_session_runs_a_shell_or_an_unrecognised_command() {
         for row in sessions(NOW) {

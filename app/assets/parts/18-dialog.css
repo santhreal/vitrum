@@ -297,6 +297,34 @@
   line-height: var(--rg-lead-body);
 }
 
+/* The walkthrough is the one sheet whose footer holds more than a row of
+ * buttons. The position dots take the left end, so Back and the primary
+ * control stay exactly where every other sheet puts them and the hand that
+ * pressed Next three times does not have to move on the fourth page. */
+.rg-onboard__foot {
+  align-items: center;
+}
+
+.rg-onboard__dots {
+  display: flex;
+  gap: var(--rg-space-1);
+  margin-right: auto;
+}
+
+/* Smaller than any control here on purpose: this is a position readout, not
+ * a target. It carries aria-hidden for the same reason, the heading having
+ * already said which page this is. */
+.rg-onboard__dot {
+  width: var(--rg-space-1);
+  height: var(--rg-space-1);
+  border-radius: 50%;
+  background-color: var(--rg-border-strong);
+}
+
+.rg-onboard__dot--on {
+  background-color: var(--rg-fg-muted);
+}
+
 /* -- What's new: a changelog ------------------------------------------- */
 
 /* The line under the title. Same role as `.rg-onboard__intro`: one sentence

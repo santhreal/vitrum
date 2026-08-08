@@ -6,59 +6,55 @@
 //! re-reads, so the few claims in it that a machine can check are checked
 //! here, against the code rather than against a copy of the prose.
 
-/// Each platform's paste fetches the archive that the release workflow builds.
+/// The installers fetch targets the release workflow actually builds.
 ///
-/// The install path used to be `cargo build` plus `install -m755`, and the
-/// test asserted exactly that. Now the first thing the README offers is a
-/// download, which puts three files that can disagree in one line: the
+/// The README used to carry a per-platform paste, and this test checked the
+/// paste. The paste is gone: it named an archive and extracted it without
+/// verifying a digest, so the documented install is now the two scripts in
+/// the repository root. That moves the same disagreement one file over. The
 /// release matrix names the targets, `update.rs` names the archive, and the
-/// paste names both. A typo in any of them is a 404 for whoever pastes it,
-/// so the paste is checked against the other two rather than against prose.
+/// scripts name both, and a typo in any of them is a 404 for whoever runs it.
+/// Checked against the workflow rather than against prose.
 #[test]
-fn the_install_blocks_name_the_real_binaries() {
-    let readme = include_str!("../../../README.md");
+fn the_installers_fetch_targets_the_release_workflow_builds() {
     let manifest = include_str!("../../Cargo.toml");
     let release = include_str!("../../../.github/workflows/release.yml");
+    let sh = include_str!("../../../install.sh");
+    let ps1 = include_str!("../../../install.ps1");
     assert!(
         manifest.contains("name = \"vitrum\""),
         "the client package is no longer named `vitrum`, so its binary is not `vitrum`"
     );
-    for (platform, block) in install_blocks(readme) {
-        let fetch = block
-            .lines()
-            .find(|l| l.contains("releases/download"))
-            .unwrap_or_else(|| panic!("the {platform} block downloads nothing"));
-        // The same shape `update::archive_name` builds and the release
-        // workflow uploads. A paste asking for a name nothing publishes is
-        // indistinguishable from a broken release.
+
+    let built = target_triples(release);
+    assert!(
+        !built.is_empty(),
+        "the release workflow builds no recognisable target triple"
+    );
+    for (script, text) in [("install.sh", sh), ("install.ps1", ps1)] {
+        let wanted = target_triples(text);
         assert!(
-            fetch.contains("/vitrum-$v-") && fetch.contains(".tar.gz"),
-            "the {platform} block does not ask for a `vitrum-<version>-<target>.tar.gz`: {fetch}"
+            !wanted.is_empty(),
+            "{script} names no target triple, so it cannot be asking for a \
+             published archive"
         );
-        let target = fetch
-            .split("/vitrum-$v-")
-            .nth(1)
-            .and_then(|rest| rest.split(".tar.gz").next())
-            .expect("the archive name was just checked");
-        // macOS resolves its architecture at paste time, so the literal in
-        // the README is a suffix of two matrix entries rather than one.
-        let suffix = target.rsplit(')').next().unwrap_or(target);
-        assert!(
-            release.contains(suffix),
-            "the {platform} block downloads `{suffix}`, which the release workflow does not build"
-        );
-        // Both binaries come out of the one archive, so what has to hold is
-        // that the paste unpacks it somewhere on PATH and then runs the
-        // client, rather than leaving a tarball in the operator's lap.
-        assert!(
-            block.contains("tar xz") || block.contains("tar xzf"),
-            "the {platform} block never unpacks the archive"
-        );
-        assert!(
-            block.contains("vitrum") && !block.contains("vitrum-app"),
-            "the {platform} block does not end up running `vitrum`"
-        );
+        for target in &wanted {
+            assert!(
+                built.contains(target),
+                "{script} downloads `{target}`, which the release workflow \
+                 does not build"
+            );
+        }
+        for binary in ["vitrum", "vitrum-server"] {
+            assert!(
+                text.contains(binary),
+                "{script} never places `{binary}`, and the client will not run \
+                 without the daemon beside it"
+            );
+        }
     }
+
+    let readme = include_str!("../../../README.md");
     assert!(
         readme.contains("vitrum update"),
         "the README never tells the operator how to update"
@@ -69,54 +65,75 @@ fn the_install_blocks_name_the_real_binaries() {
     );
 }
 
-/// The fenced code block under each install heading, by platform.
-fn install_blocks(readme: &str) -> Vec<(&'static str, String)> {
-    ["Linux", "macOS", "Windows"]
-        .into_iter()
-        .map(|platform| {
-            let heading = readme
-                .find(&format!("### {platform}"))
-                .unwrap_or_else(|| panic!("the README has no {platform} install heading"));
-            let rest = &readme[heading..];
-            let open = rest
-                .find("```")
-                .unwrap_or_else(|| panic!("the {platform} section has no code block"));
-            let body = &rest[open + 3..];
-            let start = body.find('\n').expect("a fence has a newline") + 1;
-            let end = body[start..]
-                .find("```")
-                .unwrap_or_else(|| panic!("the {platform} code block is unterminated"));
-            (platform, body[start..start + end].to_string())
-        })
-        .collect()
+/// Every Rust target triple named anywhere in `text`.
+///
+/// Derived by scanning rather than from a hardcoded list, so a new platform
+/// in the release matrix is compared instead of silently ignored.
+fn target_triples(text: &str) -> std::collections::BTreeSet<String> {
+    const SUFFIXES: [&str; 4] = [
+        "-unknown-linux-gnu",
+        "-unknown-linux-musl",
+        "-apple-darwin",
+        "-pc-windows-msvc",
+    ];
+    let mut found = std::collections::BTreeSet::new();
+    for token in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')) {
+        if SUFFIXES.iter().any(|s| token.ends_with(s)) && !token.starts_with('-') {
+            found.insert(token.to_string());
+        }
+    }
+    found
 }
 
-/// The version in the README's download URL is THIS version.
+/// No command in the README carries a version literal.
 ///
-/// The install instructions name a tag, `v0.1.0`, in a URL. The moment the
-/// crate version moves and that URL does not, the first command a new
-/// operator runs fetches the wrong release, or a 404. A version in prose
-/// is a version that drifts; this pins it to `CARGO_PKG_VERSION`.
+/// This used to require the opposite: every download URL had to name
+/// `v{CARGO_PKG_VERSION}`, pinned so the prose could not drift from the
+/// crate. It drifted anyway, in the worse direction. The URLs named
+/// `refs/tags/v0.1.0` and no such tag was ever pushed, so the pin held a
+/// version literal steady against a release that did not exist and the first
+/// command a new operator ran was a 404.
+///
+/// A version cannot be pinned in prose to something the repository cannot
+/// prove. What it can prove is that no command hardcodes one: the installers
+/// resolve the latest release at run time and a source build clones the
+/// repository, so neither can go stale. The version appears once, as a
+/// statement of fact in Status, and that one is pinned.
 #[test]
-fn the_readme_downloads_the_version_this_crate_is() {
+fn no_command_in_the_readme_hardcodes_a_version() {
     let readme = include_str!("../../../README.md");
     let v = env!("CARGO_PKG_VERSION");
-    assert!(
-        readme.contains(&format!("tags/v{v}.tar.gz")),
-        "the README's tarball URL is not v{v}; it will fetch the wrong release"
-    );
-    assert!(
-        readme.contains(&format!("--branch v{v}")),
-        "the README's git clone is not pinned to v{v}"
-    );
-    assert!(
-        readme.contains(&format!("vitrum-{v}")),
-        "the README cd's into a directory the v{v} tarball does not unpack to"
-    );
+    for (n, block) in fenced_blocks(readme).iter().enumerate() {
+        for stale in [v, "refs/tags/"] {
+            assert!(
+                !block.contains(stale),
+                "code block {n} in the README contains `{stale}`, which pins a \
+                 command to a release this repository cannot prove exists:\n{block}"
+            );
+        }
+    }
     assert!(
         readme.contains(&format!("version {v}")),
         "the Status section no longer states version {v}"
     );
+}
+
+/// The body of every fenced code block in `text`.
+fn fenced_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut inside: Option<String> = None;
+    for line in text.lines() {
+        match (&mut inside, line.trim_start().starts_with("```")) {
+            (None, true) => inside = Some(String::new()),
+            (Some(_), true) => blocks.push(inside.take().expect("just matched")),
+            (Some(body), false) => {
+                body.push_str(line);
+                body.push('\n');
+            }
+            (None, false) => {}
+        }
+    }
+    blocks
 }
 
 /// Every keyboard shortcut the README advertises is bound.
@@ -202,20 +219,78 @@ fn the_readme_admits_that_losing_the_daemon_loses_the_sessions() {
     );
 }
 
-/// The README promises no package and no piped script.
+/// The README promises no package that does not exist, and no install that
+/// skips verification.
 ///
-/// Release archives exist, so a download is no longer a false claim. A
-/// package in someone else's index still is, and `curl | sh` is worse than a
-/// false claim: it teaches the operator to run whatever the host serves.
+/// A package in someone else's index is a false claim while nothing is
+/// published there. `curl | sh` used to be banned here on the grounds that it
+/// teaches the operator to run whatever the host serves, which is true, and
+/// the alternative that shipped under that ban was worse: three pastes that
+/// resolved a version, downloaded an archive and extracted it onto `PATH`
+/// having checked no digest at all, on a page that claimed elsewhere that this
+/// project verifies its downloads.
+///
+/// So the rule is the property that actually protects the operator, rather
+/// than the shape of the command. Whatever the README tells someone to run has
+/// to be a script in this repository, and that script has to refuse an archive
+/// it cannot match against the release `SHA256SUMS`.
 #[test]
-fn nothing_promises_an_installer_that_does_not_exist() {
+fn the_documented_install_verifies_what_it_downloads() {
     let readme = include_str!("../../../README.md");
-    for absent in ["brew install", "apt install vitrum", "| sh", "| bash"] {
+    for absent in ["brew install", "apt install vitrum", "cargo install vitrum"] {
         assert!(
             !readme.contains(absent),
-            "the README advertises `{absent}`, which this release does not ship"
+            "the README advertises `{absent}`, which this project does not publish"
         );
     }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the workspace root");
+
+    let mut piped = 0;
+    for script in ["install.sh", "install.ps1"] {
+        if !readme.contains(script) {
+            continue;
+        }
+        piped += 1;
+        assert!(
+            root.join(script).is_file(),
+            "the README tells the operator to run {script}, which is not in \
+             the repository"
+        );
+        let text = std::fs::read_to_string(root.join(script))
+            .unwrap_or_else(|why| panic!("cannot read {script}: {why}"));
+        // Naming the file is not verifying it. A script that mentions
+        // SHA256SUMS in a comment and installs regardless passes a substring
+        // check and fails the operator, so what is required is the whole
+        // path: fetch the manifest, compute a digest with a real tool, and
+        // abort on a mismatch having installed nothing.
+        for (needle, missing) in [
+            ("SHA256SUMS", "never fetches the release SHA256SUMS"),
+            ("checksum mismatch", "has no mismatch path, so it cannot refuse"),
+            ("nothing was installed", "does not promise to leave nothing behind on a mismatch"),
+        ] {
+            assert!(
+                text.contains(needle),
+                "{script} is the documented install and {missing}"
+            );
+        }
+        let hashes = ["sha256sum", "shasum", "Get-FileHash"]
+            .iter()
+            .any(|tool| text.contains(tool));
+        assert!(
+            hashes,
+            "{script} computes no SHA-256 anywhere, so whatever it compares \
+             against SHA256SUMS is not the archive it downloaded"
+        );
+    }
+
+    assert!(
+        piped >= 2,
+        "only {piped} install scripts were found in the README; the install \
+         section no longer names the scripts this test can check"
+    );
 }
 
 /// Every image the README shows is in the repository.

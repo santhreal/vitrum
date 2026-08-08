@@ -51,7 +51,7 @@ $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { 
 if ($arch -ne 'AMD64') {
     Fail "no published release for Windows $arch" @(
         'Releases carry x86_64 Windows only.',
-        'Build from source instead: cargo install vitrum vitrum-server'
+        'Build from source instead: https://github.com/santhreal/vitrum#build-from-source'
     )
 }
 $Target = 'x86_64-pc-windows-msvc'

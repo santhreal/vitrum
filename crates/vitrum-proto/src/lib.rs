@@ -219,6 +219,20 @@ impl HintState {
         }
     }
 
+    /// Every state, in the order the documentation introduces them.
+    ///
+    /// Enumerated so a gate can walk the set rather than repeat it. Adding a
+    /// variant lands here and then fails whatever reads this until the new
+    /// state has been decided about: `hint.rs::token` stops compiling, and the
+    /// integration tests go red until each shipped harness either wires the
+    /// state up or says in writing why it does not.
+    pub const ALL: [HintState; 4] = [
+        HintState::Approval,
+        HintState::Input,
+        HintState::Working,
+        HintState::Ready,
+    ];
+
     /// True when the agent has declared it is blocked on the operator.
     pub fn blocks_on_operator(&self) -> bool {
         matches!(self, Self::Approval | Self::Input)

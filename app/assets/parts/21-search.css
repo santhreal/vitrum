@@ -290,6 +290,15 @@
   min-height: 0;
   overflow-y: auto;
 
+  /* An `overflow` scroller is promoted to its own composited layer, and a
+   * layer with no background of its own is filled with the engine's base
+   * colour -- white -- for the frame between promotion and the first content
+   * paint. On this sheet that read as a full-window white flash the moment a
+   * search returned hits. Naming the sheet's own surface makes the layer
+   * opaque from the first frame. Every scroller in this tree owes the same
+   * declaration; `scroller_layers_are_opaque` holds the line. */
+  background-color: var(--rg-surface-overlay);
+
   display: flex;
   flex-direction: column;
   gap: var(--rg-space-4);

@@ -27,6 +27,19 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Changed
 
+- **First launch now walks through the product, not just the machine.**
+  Onboarding was one screen of three derived rows: is the daemon up, what is
+  on your PATH, how to start a session. Everything that makes this different
+  from a terminal with tabs — that the sidebar is an inbox, that a row's
+  colour is its agent's state, that one chord jumps to whichever agent wants
+  you, that sessions outlive the window, that workspaces and the three bands
+  exist at all — was discoverable only by accident. It is now four short
+  pages: what this machine has, then the inbox, then workspaces, then the
+  keyboard and search. Every keystroke it teaches is looked up in the live
+  keymap at render time, so a rebind cannot leave it teaching a dead key, and
+  a guard rejects any chord-shaped text on any page that the keymap does not
+  claim. It still animates nothing, holds no timer, is skippable from every
+  page, and does not come back.
 - **A quiet sidebar now costs nothing as time passes.** The clock was floored
   to a whole second, which stopped rows rebuilding within a second and left
   every row rebuilding on every second boundary, forever. A row reading

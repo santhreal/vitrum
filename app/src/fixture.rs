@@ -133,9 +133,9 @@ pub fn sessions(now_ms: u64) -> Vec<SessionView> {
         s(
             4,
             1,
-            "cargo watch",
-            "cargo",
-            &["watch", "-x", "test"],
+            "codex - flake triage",
+            "codex",
+            &["--full-auto"],
             SessionStatus::Exited { code: Some(0) },
             5_400_000,
             Some("main"),
@@ -155,9 +155,9 @@ pub fn sessions(now_ms: u64) -> Vec<SessionView> {
         s(
             6,
             2,
-            "bash",
-            "/bin/bash",
-            &["-l"],
+            "claude - trace review",
+            "claude",
+            &["--resume"],
             SessionStatus::Running,
             48_000,
             Some("perf/ftrace"),
@@ -177,8 +177,8 @@ pub fn sessions(now_ms: u64) -> Vec<SessionView> {
         s(
             8,
             3,
-            "python repl",
-            "python3",
+            "gemini - notebook port",
+            "gemini",
             &[],
             SessionStatus::Running,
             15_000,
@@ -211,9 +211,9 @@ pub fn sessions(now_ms: u64) -> Vec<SessionView> {
         ),
         ("veyyon", SessionStatus::Running, 12_000, false),
         ("veyyon", SessionStatus::Running, 155_000, true),
-        ("make", SessionStatus::Running, 6_000, false),
+        ("claude", SessionStatus::Running, 6_000, false),
         (
-            "make",
+            "codex",
             SessionStatus::Exited { code: Some(2) },
             1_800_000,
             false,
@@ -354,43 +354,63 @@ pub fn transcript(info: &SessionInfo) -> Vec<String> {
             info.git_branch.as_deref().unwrap_or("-")
         ),
         String::new(),
-        "\u{1b}[2m  This pane is a real xterm.js grid. Dioxus never diffs it: the\u{1b}[0m".into(),
-        "\u{1b}[2m  container is one keyed, childless node and everything below it\u{1b}[0m".into(),
-        "\u{1b}[2m  is owned entirely by JavaScript.\u{1b}[0m".into(),
-        String::new(),
-        "  \u{1b}[30;48;5;16m  \u{1b}[41m  \u{1b}[42m  \u{1b}[43m  \u{1b}[44m  \u{1b}[45m  \u{1b}[46m  \u{1b}[47m  \u{1b}[0m  \u{1b}[2m8 colour\u{1b}[0m".into(),
-        "  \u{1b}[48;5;236m  \u{1b}[48;5;24m  \u{1b}[48;5;30m  \u{1b}[48;5;64m  \u{1b}[48;5;136m  \u{1b}[48;5;166m  \u{1b}[48;5;124m  \u{1b}[48;5;90m  \u{1b}[0m  \u{1b}[2m256 colour\u{1b}[0m".into(),
-        String::new(),
     ];
+    // What follows is an agent at work, because that is what this pane holds
+    // in the product and therefore what a screenshot of it has to show. It
+    // replaced a card describing the renderer and two colour ramps: accurate,
+    // but it made the pane read as a test harness, and the pane is the one
+    // place a reader looks to find out what vitrum runs.
+    //
+    // The SGR escapes still prove the VT parser is live; they are just doing
+    // it inside a diff now, where colour means something, rather than in a
+    // ramp labelled with its own colour depth.
     match &info.status {
-        SessionStatus::Running => lines.push(format!(
-            "\u{1b}[32m*\u{1b}[0m running   \u{1b}[2mattach would stream live PTY bytes here\u{1b}[0m\r\n\r\n{} \u{1b}[7m \u{1b}[0m",
-            prompt(info)
-        )),
+        SessionStatus::Running => lines.extend([
+            "\u{1b}[38;5;68m*\u{1b}[0m \u{1b}[2mread\u{1b}[0m  app/src/session/registry.rs".into(),
+            "\u{1b}[38;5;68m*\u{1b}[0m \u{1b}[2mread\u{1b}[0m  app/src/session/reaper.rs".into(),
+            String::new(),
+            "  The reaper closes the pty before the registry drops its handle,".into(),
+            "  so a reattach arriving in that window sees a closed descriptor".into(),
+            "  and reports the session as dead. Holding the guard across the".into(),
+            "  close removes the window entirely.".into(),
+            String::new(),
+            "\u{1b}[2m~\u{1b}[0m app/src/session/registry.rs".into(),
+            "  \u{1b}[31m- let handle = self.handles.remove(&id);\u{1b}[0m".into(),
+            "  \u{1b}[32m+ let handle = self.handles.get(&id).cloned();\u{1b}[0m".into(),
+            String::new(),
+            "\u{1b}[33m?\u{1b}[0m apply this edit\u{1b}[2m   y yes   n skip   e explain\u{1b}[0m"
+                .into(),
+            String::new(),
+            "\u{1b}[7m \u{1b}[0m".into(),
+        ]),
         SessionStatus::Starting => lines.push(
-            "\u{1b}[33m*\u{1b}[0m starting  \u{1b}[2mspawned, no output observed yet\u{1b}[0m".into(),
+            "\u{1b}[33m*\u{1b}[0m starting  \u{1b}[2mspawned, waiting for the first token\u{1b}[0m"
+                .into(),
         ),
-        SessionStatus::Exited { code: Some(c) } if *c == 0 => lines.push(
-            "\u{1b}[90m*\u{1b}[0m exited 0  \u{1b}[2mchild finished cleanly\u{1b}[0m".into(),
-        ),
-        SessionStatus::Exited { code: Some(c) } => lines.push(format!(
-            "\u{1b}[31m*\u{1b}[0m exited {c} \u{1b}[2mchild failed\u{1b}[0m"
-        )),
+        SessionStatus::Exited { code: Some(c) } if *c == 0 => lines.extend([
+            "  Renamed the guard and updated the four call sites that took it".into(),
+            "  by value. Nothing else referenced the old name.".into(),
+            String::new(),
+            "\u{1b}[90m*\u{1b}[0m exited 0  \u{1b}[2mthe agent finished and left the branch clean\u{1b}[0m".into(),
+        ]),
+        SessionStatus::Exited { code: Some(c) } => lines.extend([
+            "  Stopped: the change needs a decision I should not make alone.".into(),
+            "  Two callers disagree about who owns the handle after a reattach.".into(),
+            String::new(),
+            format!("\u{1b}[31m*\u{1b}[0m exited {c} \u{1b}[2mthe agent gave up and said why\u{1b}[0m"),
+        ]),
         SessionStatus::Exited { code: None } => lines.push(
-            "\u{1b}[31m*\u{1b}[0m signalled \u{1b}[2mchild was killed\u{1b}[0m".into(),
+            "\u{1b}[31m*\u{1b}[0m signalled \u{1b}[2mthe agent was stopped from outside\u{1b}[0m"
+                .into(),
         ),
     }
     lines
 }
 
-fn prompt(info: &SessionInfo) -> String {
-    let leaf = info.cwd.rsplit('/').next().unwrap_or(&info.cwd);
-    format!("\u{1b}[38;5;68m{leaf}\u{1b}[0m \u{1b}[2m$\u{1b}[0m")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentKind;
     use crate::state::UiState;
     use vitrum_model::{Clock, Disposition, DispositionPolicy, SidebarStatus, StatusSource};
 
@@ -697,5 +717,100 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// WHY: this fixture is where every published screenshot comes from, so a
+    /// shell in it becomes a shell on the front page. The demo assets deleted
+    /// alongside this test showed `bash`, `cargo watch`, `python3` and two
+    /// `make` sessions, and each of those was a row this file defined. Banning
+    /// the pictures in AGENTS.md only removes the symptom; while the fixture
+    /// can still produce a shell row, the next screenshot puts one back.
+    ///
+    /// The class closed here is the whole sidebar, not the five rows that were
+    /// wrong: the kind is resolved through the same [`AgentKind::of`] the tab
+    /// strip paints with, so a session whose command is a shell, a build tool,
+    /// an interpreter or anything else this build cannot name fails. Adding a
+    /// row is therefore red until its command is a recognised agent.
+    ///
+    /// What this does NOT catch: a real agent given a shell-shaped title, and
+    /// a screenshot taken from something other than the fixture. The first is
+    /// covered below; the second is a review gate, not a test.
+    #[test]
+    fn no_fixture_session_runs_a_shell_or_an_unrecognised_command() {
+        for row in sessions(NOW) {
+            let kind = AgentKind::of(&row.info.command);
+            assert!(
+                !matches!(kind, AgentKind::Shell | AgentKind::Unknown),
+                "session {:?} runs {:?}, which resolves to {kind:?}; the sidebar \
+                 in every screenshot is built from this list",
+                row.info.title,
+                row.info.command
+            );
+        }
+    }
+
+    /// A row's title is what a reader actually sees, and it is set separately
+    /// from the command, so a `claude` session titled `bash` would pass the
+    /// check above and still sell a terminal multiplexer in the screenshot.
+    /// The argv is checked with it because the focused pane prints it.
+    ///
+    /// The boundary, stated because it was measured rather than assumed: this
+    /// catches text that NAMES a shell or a build tool, so `["run", "cargo",
+    /// "test"]` and `["-c", "bash -lc make"]` both fail. An argv like
+    /// `["watch", "-x", "test"]` passes, and that is the intended answer, not
+    /// a gap: attached to a recognised agent it renders as `codex watch -x
+    /// test`, which is an agent invocation. Widening this to generic words
+    /// would fail honest agent flags and buy nothing.
+    #[test]
+    fn no_fixture_title_or_argv_reads_as_a_shell_or_a_build_tool() {
+        for row in sessions(NOW) {
+            let argv = row.info.args.join(" ");
+            for text in [row.info.title.as_str(), argv.as_str()] {
+                let lowered = text.to_ascii_lowercase();
+                for banned in [
+                    "bash", "zsh", "fish", "shell", "cargo", "git ", "make", "npm", "docker",
+                    "htop", "python",
+                ] {
+                    assert!(
+                        !lowered.contains(banned),
+                        "{text:?} names {banned:?}, and a sidebar row reading like \
+                         a shell command is what puts vitrum in tmux's category"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A focused pane paints a transcript, and a `$` prompt with a block cursor
+    /// is the single most recognisable shell tell there is. The pane may say it
+    /// is a fixture, describe the session and prove the VT parser runs; it may
+    /// not imitate a shell waiting for a command.
+    #[test]
+    fn no_transcript_paints_a_shell_prompt() {
+        for row in sessions(NOW) {
+            for line in transcript(&row.info) {
+                let bare = strip_sgr(&line);
+                assert!(
+                    !bare.contains(" $ ") && !bare.trim_end().ends_with(" $"),
+                    "transcript for {:?} paints a prompt: {bare:?}",
+                    row.info.title
+                );
+            }
+        }
+    }
+
+    /// Drop SGR escapes so a prompt cannot hide behind colour codes.
+    fn strip_sgr(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut rest = line;
+        while let Some(at) = rest.find('\u{1b}') {
+            out.push_str(&rest[..at]);
+            rest = match rest[at..].find('m') {
+                Some(end) => &rest[at + end + 1..],
+                None => "",
+            };
+        }
+        out.push_str(rest);
+        out
     }
 }

@@ -20,6 +20,10 @@
   <strong><a href="SECURITY.md">Security</a></strong>
 </p>
 
+<p align="center">
+  <img src="assets/screenshots/hero.png" width="960" alt="One vitrum window holding four coding agents grouped by project: a Gemini session working, a Claude session waiting for approval, a Codex session ready, and a second Claude session asking for input. The focused Claude session has read two files, explained a race between the reaper and the registry, and is holding a proposed edit until it is approved." />
+</p>
+
 # A terminal for running many coding agents at once
 
 You run several coding agents at a time. Each one wants a terminal, none of them

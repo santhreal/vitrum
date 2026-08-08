@@ -7,6 +7,14 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Fixed
 
+- **Terminal and Keyboard settings now take effect in every open window.**
+  Text scale, terminal font and renderer, terminal opacity and the key
+  bindings are pushed into the webview as a script, and the push ran in the
+  document of whichever window the sheet was open in. Every other window kept
+  its old font, scrollback, renderer and chords until it was next opened,
+  which made four controls quietly window-local while the rest of the sheet
+  was global. Each window now subscribes to the change and applies it in its
+  own document.
 - **Escape on What's New (and onboarding) now records the sheet as seen.** Closing with the button or the backdrop already did; Escape only cleared the layer, so the notes could return on the next launch.
 - **A second window no longer kills the process.** Opening window two panicked
   with `DuplicateCustomProtocol("vitrum-backdrop")`: every webview is built

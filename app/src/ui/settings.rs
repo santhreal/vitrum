@@ -61,7 +61,7 @@
 //!   the Compact density, which shrinks both variants together and is real.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,7 @@ use vitrum_os::capability::{Support, Unavailable};
 use vitrum_os::notify::{Notification, NotificationKind, Notifier};
 use vitrum_proto::{SessionId, SessionStatus};
 
+use crate::instance::Mailbox;
 use crate::keymap::{CHORDS, Help, KeyAction, Scope, Shift};
 use crate::state::{
     BackdropFit, Density, KeyboardPrefs, Settings, SettingsTab, TermRenderer, TerminalPrefs,
@@ -1386,31 +1387,105 @@ pub fn live_script(settings: &Settings) -> String {
     script
 }
 
-/// Push every live-reconfigurable setting into the webview.
+/// Every live window's inbox for [`live_script`] output.
+///
+/// Held by `Weak`, so a closing window needs no deregistration call and the
+/// bus needs no window identity: the inbox dies with the component tree that
+/// owned it, and the next broadcast drops the dangling entry. An explicit
+/// unsubscribe would have to be driven from the window layer's close path, and
+/// one missed call there is a queue that grows for the life of the process
+/// holding scripts nobody will ever drain.
+static LISTENERS: Mutex<Vec<Weak<Mailbox<String>>>> = Mutex::new(Vec::new());
+
+/// Take the listener list, ignoring poisoning.
+///
+/// A panicking window must not cost every other window its settings for the
+/// rest of the process. The list is a vector of weak pointers and there is no
+/// state a panic could leave half-applied.
+fn listeners() -> std::sync::MutexGuard<'static, Vec<Weak<Mailbox<String>>>> {
+    LISTENERS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Register an inbox for one window and hand it back.
+fn subscribe() -> Arc<Mailbox<String>> {
+    let inbox = Arc::new(Mailbox::new());
+    listeners().push(Arc::downgrade(&inbox));
+    inbox
+}
+
+/// Post `script` to every window that still has an inbox, forgetting the rest.
+fn broadcast(script: &str) {
+    let live = {
+        let mut listeners = listeners();
+        let mut live = Vec::with_capacity(listeners.len());
+        listeners.retain(|inbox| match inbox.upgrade() {
+            Some(inbox) => {
+                live.push(inbox);
+                true
+            }
+            None => false,
+        });
+        live
+    };
+    // Posted outside the lock: `Mailbox::post` wakes its wakers, and a waker
+    // that resumed its task inline would re-enter this function on a lock this
+    // thread already holds.
+    for inbox in live {
+        inbox.post(script.to_owned());
+    }
+}
+
+/// Subscribe this window to live settings pushes, for as long as it exists.
+///
+/// One call per window, at the top of its root component. The inbox lives in a
+/// hook rather than inside the future, so the subscription's lifetime is the
+/// component tree's rather than the task's.
+pub fn use_live_settings() {
+    let inbox = use_hook(subscribe);
+    use_future(move || {
+        let inbox = inbox.clone();
+        async move {
+            loop {
+                let script = inbox.next().await;
+                let _ = document::eval(&script);
+            }
+        }
+    });
+}
+
+/// Push every live-reconfigurable setting into the window that is mounting.
+///
+/// The self-directed half of [`apply_live`]. A window that has just been
+/// constructed has to catch up to settings changed before it existed, and
+/// broadcasting to do it would re-evaluate the same script in every sibling
+/// for no reason.
+pub fn apply_here(settings: &Settings) {
+    let _ = document::eval(&live_script(settings));
+}
+
+/// Push every live-reconfigurable setting into EVERY live window.
 ///
 /// Theme, density and reduced motion are absent on purpose: those are
 /// attributes on the app root, so Dioxus reapplies them as part of the same
 /// re-render the settings change already causes, with no bridge involved.
 ///
-/// # Scope: this reaches ONE window
+/// # Why this is a broadcast
 ///
 /// `document::eval` runs in the calling scope's document, and dioxus-desktop
-/// gives every window its own. `Settings` however lives on `DaemonState`,
-/// which is shared by every window in the process. So a Terminal or Keyboard
-/// change made in window 1 updates the shared model — and therefore every
-/// window's markup, immediately, because they all render from it — but the
-/// xterm options and the chord table are only pushed into window 1's webview.
-/// Windows 2..N keep their old terminal font, scrollback, renderer and
-/// keybindings until they are next constructed.
+/// gives every window its own, while `Settings` lives on `DaemonState`, which
+/// every window in the process shares. Evaluating directly here updated every
+/// window's markup — they all render from the shared model — but pushed the
+/// xterm options and the chord table into one webview only. Windows 2..N kept
+/// their old terminal font, scrollback, renderer and keybindings until they
+/// were next constructed, which made those four controls silently
+/// window-local while every other control in the sheet was global.
 ///
-/// This is a known gap, not a design. It is stated here rather than hidden
-/// because the whole premise of this module is that a control which does not
-/// take effect does not ship, and "takes effect in the window you were looking
-/// at" is a weaker promise than the one the modal makes. Closing it needs the
-/// shell to fan the script out across live windows, which is the window
-/// layer's to own: this module has no handle on any document but its own.
+/// So this posts to a per-window inbox instead, and each window runs the
+/// script in its own document. The window that made the change is not a
+/// special case: it receives its own broadcast through the same subscription,
+/// one executor tick later.
 pub fn apply_live(settings: &Settings) {
-    let _ = document::eval(&live_script(settings));
+    broadcast(&live_script(settings));
 }
 
 /// Persist to disk, then push into the webview.

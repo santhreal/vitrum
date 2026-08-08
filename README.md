@@ -14,15 +14,10 @@
 
 <p align="center">
   <strong><a href="#install">Install</a></strong> ·
-  <strong><a href="#watch-it-work">Demo</a></strong> ·
   <strong><a href="#what-it-costs-to-run">Performance</a></strong> ·
   <strong><a href="#first-run">First run</a></strong> ·
   <strong><a href="CONTRIBUTING.md">Contributing</a></strong> ·
   <strong><a href="SECURITY.md">Security</a></strong>
-</p>
-
-<p align="center">
-  <img src="assets/screenshots/hero.png" alt="A vitrum window: the sidebar tracking a bash and a cargo session with what each one is doing, and the focused session showing a git log it has just finished printing." width="960" />
 </p>
 
 # A terminal for running many coding agents at once
@@ -92,28 +87,6 @@ curl -fsSLO https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh
 less install.sh
 sh install.sh
 ```
-
----
-
-## Watch it work
-
-Starting a real `cargo test`, watching it stream, then sweeping every session's
-scrollback for a line in it.
-
-![A command typed into the launcher, its output streaming into the pane, then a scrollback search finding a line across two sessions.](assets/screenshots/demo.gif)
-
-The same recording as video, if the GIF is too coarse to read:
-[demo.mp4](assets/screenshots/demo.mp4).
-
-**The launcher.** Type a command, or pick one you have run before. Agents already
-on your `PATH` are offered without being configured.
-
-![The launcher, with recent commands and the agents found on PATH.](assets/screenshots/launcher.png)
-
-**Search across sessions.** One sweep over every session's scrollback, live or
-finished, grouped by the session each line came from.
-
-![Scrollback search showing three matches across two sessions, each hit highlighted in its surrounding lines.](assets/screenshots/search.png)
 
 ---
 

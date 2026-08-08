@@ -243,12 +243,39 @@ fn every_screenshot_the_readme_shows_exists() {
         );
     }
 
-    // The count is asserted too: a rewrite that drops the screenshots would
-    // otherwise pass this test by showing nothing at all.
-    assert!(
-        shown >= 4,
-        "the README shows {shown} local assets; the screenshots and the demo are 4"
-    );
+    // No count is asserted any more, and the reason is the point. This used to
+    // demand four Markdown assets. Those four were a GIF, an MP4 and two
+    // screenshots, and every one of them showed `bash`, `cargo test` or
+    // `git log` filling the pane, with an absolute path from the recording
+    // machine visible in the launcher. They argued the product was a terminal
+    // multiplexer, so they were deleted, and a number that only described
+    // them is not a contract worth keeping.
+    //
+    // The rule they broke is asserted instead: a demo asset may not be named
+    // for a shell or a build tool, because that name becomes a session title
+    // on the front page. See AGENTS.md, "Demos show agents, not shell output".
+    let referenced = readme
+        .split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .chain(
+            readme
+                .split("src=\"")
+                .skip(1)
+                .filter_map(|rest| rest.split('"').next()),
+        )
+        .filter(|target| target.starts_with("assets/"));
+    for target in referenced {
+        for banned in [
+            "bash", "zsh", "fish", "shell", "cargo", "git", "make", "npm", "docker", "htop",
+        ] {
+            assert!(
+                !target.contains(banned),
+                "the README shows {target}, and a demo asset named for a shell \
+                 or a build tool puts vitrum in tmux's category"
+            );
+        }
+    }
 }
 
 /// The banner is in the repository too.

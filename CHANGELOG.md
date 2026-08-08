@@ -27,6 +27,16 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Changed
 
+- **A quiet sidebar now costs nothing as time passes.** The clock was floored
+  to a whole second, which stopped rows rebuilding within a second and left
+  every row rebuilding on every second boundary, forever. A row reading
+  `5h ago` repeats that answer 3600 times before one character changes, so at
+  twenty sessions that was twenty row rebuilds a second for nothing. Each row
+  now gets a clock floored to the coarsest instant it cannot tell apart from
+  now, taken from whichever of its label or its state changes soonest. Sixty
+  second-boundaries over twenty settled rows rebuild nothing at all, measured.
+  Rows with a live timer, a countdown to a wake, or a pending auto-settle keep
+  a per-second clock and update exactly as before.
 - **First launch opens the walkthrough while the daemon is still starting.**
   Agent detection used to finish its PATH walk before the sheet appeared and
   before the connect began, so the two costs added. The sheet opens

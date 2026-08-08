@@ -292,3 +292,136 @@ fn one_update_rebuilds_exactly_one_row() {
         "{REPEATS} title changes emitted {edits} DOM edits, over the          {EDIT_BUDGET}-per-update budget"
     );
 }
+
+/// A window of `n` sessions whose last activity is `age_ms` in the past.
+///
+/// [`state_with`] pins its rows an hour old, which puts them exactly on the
+/// `59m`/`1h` threshold: advancing one second there genuinely changes what
+/// every row says. That is the right fixture for the tests above and the wrong
+/// one for the tests below, which are about rows with nothing to say.
+fn state_aged(n: u64, age_ms: u64) -> UiState {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum")];
+    st.daemon.sessions = (0..n)
+        .map(|i| {
+            row(10 + i)
+                .project(1)
+                .command("claude")
+                .title(&format!("session {i}"))
+                .waiting(Some(false))
+                .created_at_ms(NOW - age_ms)
+                .last_activity_ms(NOW - age_ms)
+                .build()
+        })
+        .collect();
+    st
+}
+
+/// Mount `initial`, then advance the clock in `steps` one-second ticks, and
+/// report how many row bodies ran across all of them.
+fn rows_rebuilt_over(initial: UiState, steps: i64) -> usize {
+    let mut dom = VirtualDom::new_with_props(Harness, HarnessProps { initial });
+    render_count::take();
+    dom.rebuild_in_place();
+    render_count::take();
+
+    let clock = CLOCK.with(|c| c.get()).expect("harness published its clock");
+    let mut total = 0;
+    for step in 1..=steps {
+        dom.in_runtime(|| {
+            let mut clock = clock;
+            clock.set(NOW as i64 + step * 1_000);
+        });
+        dom.render_immediate(&mut dioxus_core::NoOpMutations);
+        total += render_count::take();
+    }
+    total
+}
+
+/// WHY: the second-quantised clock stopped rows rebuilding WITHIN a second and
+/// left them rebuilding on every second boundary, forever, whether or not they
+/// had anything new to say. A row reading `5h ago` repeats that answer 3600
+/// times before one character of it changes, and at twenty sessions that is
+/// twenty row bodies a second for nothing.
+///
+/// The row clock is floored per row now, so this asserts the consequence: a
+/// minute of paints over rows with no pending anything must rebuild NOTHING.
+/// Sixty boundaries, twenty rows, zero rebuilds.
+///
+/// The class is "time passing costs work in a row where nothing time-driven
+/// is happening". It is stated as a total over many boundaries rather than
+/// one, because a single-boundary check cannot tell a row that is genuinely
+/// stable from one that happens to straddle a threshold.
+#[test]
+fn a_minute_of_paints_over_settled_rows_rebuilds_nothing() {
+    // 5h07m: comfortably inside the hour bucket, and deliberately not on a
+    // boundary, so nothing these rows draw changes for another 53 minutes.
+    let aged = state_aged(20, 5 * HOUR as u64 + 7 * 60_000);
+    assert_eq!(
+        rows_rebuilt_over(aged, 60),
+        0,
+        "sixty second-boundaries rebuilt rows that had nothing new to say"
+    );
+}
+
+/// The other half, and the half that stops the change from being "freeze old
+/// rows": when an aged row's own label finally turns over, it MUST rebuild.
+///
+/// Without this, the test above is satisfied by a clock that never moves.
+#[test]
+fn an_aged_row_rebuilds_when_its_own_hour_turns_over() {
+    // One second short of six hours, so a single tick crosses `5h` into `6h`.
+    let aged = state_aged(20, 6 * HOUR as u64 - 1_000);
+    let (first, again) = rebuilt_after(aged, 1_000);
+    assert!(first > 0, "the harness mounted no rows");
+    assert_eq!(
+        again, first,
+        "an aged row crossed its own label boundary and {first} rows did not update"
+    );
+}
+
+/// A row with a live timer keeps its per-second clock.
+///
+/// The floor is allowed to coarsen only what cannot be told apart. A working
+/// row draws an elapsed counter, so every second is a real change and skipping
+/// it would stop the timer on screen.
+#[test]
+fn a_working_row_still_rebuilds_every_second() {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum")];
+    st.daemon.sessions = (0..4)
+        .map(|i| {
+            row(10 + i)
+                .project(1)
+                .command("claude")
+                .title(&format!("session {i}"))
+                .hint(vitrum_proto::HintState::Working, None, NOW - 30_000)
+                .created_at_ms(NOW - 5 * HOUR as u64)
+                .last_activity_ms(NOW - 5 * HOUR as u64)
+                .build()
+        })
+        .collect();
+    let (first, again) = rebuilt_after(st, 1_000);
+    assert!(first > 0, "the harness mounted no rows");
+    assert_eq!(
+        again, first,
+        "a working row's elapsed timer stopped: {first} mounted, {again} rebuilt"
+    );
+}
+
+/// [`rows_rebuilt_after_advancing`] against an arbitrary window rather than
+/// the hour-old default.
+fn rebuilt_after(initial: UiState, advance_ms: i64) -> (usize, usize) {
+    let mut dom = VirtualDom::new_with_props(Harness, HarnessProps { initial });
+    render_count::take();
+    dom.rebuild_in_place();
+    let first = render_count::take();
+
+    let clock = CLOCK.with(|c| c.get()).expect("harness published its clock");
+    dom.in_runtime(|| {
+        let mut clock = clock;
+        clock.set(NOW as i64 + advance_ms);
+    });
+    dom.render_immediate(&mut dioxus_core::NoOpMutations);
+    (first, render_count::take())
+}

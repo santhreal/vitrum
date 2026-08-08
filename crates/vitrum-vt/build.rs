@@ -13,9 +13,21 @@
 //! Ghostty and compile it, and the only symptom is a build that took ten
 //! minutes and produced a binary tracking a different engine than intended.
 //!
-//! So the route is decided here, before that crate runs, and a route that
-//! cannot be satisfied is a build error naming the exact missing piece and the
-//! command that installs it.
+//! So the route is decided here, and a route that cannot be satisfied is a
+//! build error naming the exact missing piece and the command that installs
+//! it.
+//!
+//! What this cannot promise is that it runs FIRST. Cargo decides when each
+//! build script runs, and `libghostty-vt-sys` is a dependency rather than a
+//! build dependency, so on a machine with neither a system libghostty nor a
+//! Zig toolchain the sys crate's own panic can surface before this check
+//! reports anything. Observed with `--no-default-features --features system`
+//! and no `ghostty-vt` in `pkg-config`: the build ended at `failed to execute
+//! zig build`, not at the message below.
+//!
+//! The check is therefore the useful error when it wins and never the only
+//! line of defence. `CONTRIBUTING.md` states the prerequisite directly for
+//! that reason.
 
 use std::fmt;
 

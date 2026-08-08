@@ -5,8 +5,7 @@
 <h1 align="center">vitrum</h1>
 
 <p align="center">
-  <a href="https://crates.io/crates/vitrum"><img src="https://img.shields.io/crates/v/vitrum?style=flat-square&color=7aa2f7&label=crates.io&labelColor=0a0a0a" alt="vitrum on crates.io" /></a>&nbsp;
-  <a href="https://docs.rs/vitrum-core"><img src="https://img.shields.io/badge/docs-vitrum-7aa2f7?style=flat-square&labelColor=0a0a0a" alt="vitrum documentation" /></a>&nbsp;
+  <a href="https://github.com/santhreal/vitrum/releases/latest"><img src="https://img.shields.io/github/v/release/santhreal/vitrum?style=flat-square&color=7aa2f7&label=release&labelColor=0a0a0a" alt="Latest vitrum release" /></a>&nbsp;
   <a href="https://github.com/santhreal/vitrum/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/santhreal/vitrum/ci.yml?style=flat-square&label=CI&labelColor=0a0a0a" alt="CI" /></a>&nbsp;
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-7aa2f7?style=flat-square&labelColor=0a0a0a" alt="License: MIT OR Apache-2.0" /></a>&nbsp;
   <a href="https://github.com/santhreal/vitrum/stargazers"><img src="https://img.shields.io/github/stars/santhreal/vitrum?style=flat-square&color=7aa2f7&labelColor=0a0a0a" alt="Stars" /></a>
@@ -34,63 +33,57 @@ closing the window costs you nothing.
 
 ## Install
 
-One paste, per platform. It downloads the latest release, puts both binaries on
-your `PATH`, and starts the app.
+One command. It resolves the latest release, verifies the archive against the
+release `SHA256SUMS`, refuses to install on a mismatch, puts `vitrum` and
+`vitrum-server` on your `PATH`, and starts the app.
 
-### Linux
-
-```sh
-mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-unknown-linux-gnu.tar.gz" | tar xz -C ~/.local/bin && vitrum
-```
-
-### macOS
+**Linux and macOS**
 
 ```sh
-mkdir -p ~/.local/bin && v=$(curl -fsSL https://api.github.com/repos/santhreal/vitrum/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p') && curl -fsSL "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz" | tar xz -C ~/.local/bin && vitrum
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh
 ```
 
-### Windows (PowerShell)
+**Windows**
 
 ```powershell
-$b="$env:LOCALAPPDATA\Programs\vitrum"; mkdir -Force $b >$null; $v=(irm https://api.github.com/repos/santhreal/vitrum/releases/latest).tag_name.TrimStart('v'); iwr "https://github.com/santhreal/vitrum/releases/download/v$v/vitrum-$v-x86_64-pc-windows-msvc.tar.gz" -OutFile "$b\v.tgz"; tar xzf "$b\v.tgz" -C $b; del "$b\v.tgz"; [Environment]::SetEnvironmentVariable('Path',"$([Environment]::GetEnvironmentVariable('Path','User'));$b",'User'); & "$b\vitrum.exe"
+irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 | iex
 ```
 
-If `vitrum` is not found afterwards, `~/.local/bin` is not on your `PATH` (or on
-Windows, open a new terminal).
+That is the whole install. Update in place later with `vitrum update`, which
+checks the same `SHA256SUMS` and refuses a release that is not covered by it.
 
-Requires a WebKit runtime, which is the only system dependency. Debian and
-Ubuntu: `sudo apt install libwebkit2gtk-4.1`. Fedora: `sudo dnf install
-webkit2gtk4.1`. Arch: `sudo pacman -S webkit2gtk-4.1`. macOS and Windows ship
-one.
+One system dependency, a WebKit runtime, and only on Linux. Debian and Ubuntu:
+`sudo apt install libwebkit2gtk-4.1`. Fedora: `sudo dnf install webkit2gtk4.1`.
+Arch: `sudo pacman -S webkit2gtk-4.1`. macOS and Windows ship one.
 
-Update in place with `vitrum update`.
+If `vitrum` is not found afterwards, the install directory is not on your
+`PATH`; on Windows, open a new terminal.
 
-### From crates.io
+### Read it before you run it
 
-```sh
-cargo install vitrum vitrum-server
-```
-
-Builds from source, so it needs the development packages listed under
-[Requirements](#requirements). Both names in one command: `vitrum` looks for the
-daemon beside itself, so a client without `vitrum-server` has nothing to talk
-to.
-
-Prefer to build it yourself? See [Build from source](#build-from-source).
-
-### With a script you can read first
-
-The pastes above are one line each. If you would rather see what runs, the same
-work is in [`install.sh`](install.sh) and [`install.ps1`](install.ps1): they
-resolve the latest release, verify the archive against the release
-`SHA256SUMS`, and refuse to install on a mismatch. Download it, read it, then
-run it. Nothing here is ever piped straight into a shell.
+Piping a script into a shell means trusting whatever the host serves, so the
+script is worth a look, and it is written to be read:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh
 less install.sh
 sh install.sh
 ```
+
+It refuses to install anything it cannot verify. If the release has no
+`SHA256SUMS`, if that file has no entry for the archive, or if the digest
+disagrees, it stops and installs nothing rather than falling back.
+
+Earlier versions of this page offered a shorter paste that skipped all of
+that: it resolved a version, downloaded the archive and extracted it straight
+onto your `PATH` without checking a digest at all, while telling you elsewhere
+that the project verifies its downloads. A one-line install that quietly drops
+the verification is worse than a longer one that keeps it.
+
+### Build from source
+
+If you would rather build it, [Build from source](#build-from-source) is the
+full path, and it is the one to use while you are changing the code.
 
 ---
 
@@ -217,35 +210,17 @@ on three runs).
 
 ## Build from source
 
-Build a **release**, not `main`. `main` carries whatever is in flight; a tag is
-a state that was tested as a whole.
+One command, and it needs the [Requirements](#requirements) above:
 
 ```sh
-curl -L https://github.com/santhreal/vitrum/archive/refs/tags/v0.1.0.tar.gz | tar xz
-cd vitrum-0.1.0
-cargo build --release --locked
+git clone https://github.com/santhreal/vitrum && cd vitrum && cargo build --release --locked
 ```
 
-Or with git, if you would rather have the history:
-
-```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/santhreal/vitrum
-cd vitrum
-cargo build --release --locked
-```
-
-`--locked` builds the exact dependency versions the tag was tested against.
+`--locked` builds the exact dependency versions this tree was tested against.
 Drop it only if you deliberately want Cargo to resolve fresher ones.
 
-Check what you built with `vitrum --version`; it reports the crate version the
-tag was cut at, so an installed copy can always be told from a rebuild.
-
-Every release is listed at
-[github.com/santhreal/vitrum/releases](https://github.com/santhreal/vitrum/releases).
-Each one carries the source tag GitHub generates for it, plus a per-platform
-archive and the `SHA256SUMS` that `vitrum update` checks the archive against.
-Building from source is the documented path for a first install; the archive is
-what an installed copy updates itself from.
+Check what you built with `vitrum --version`, which reports the crate version
+it was built at, so an installed copy can always be told from a rebuild.
 
 That produces three binaries in `target/release` (or wherever your
 `CARGO_TARGET_DIR` points, if you set one):
@@ -330,7 +305,7 @@ cat > "$HOME/Applications/vitrum.app/Contents/Info.plist" <<EOF
   <key>CFBundleIdentifier</key><string>dev.santhreal.vitrum</string>
   <key>CFBundleExecutable</key><string>vitrum</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$("$bin/vitrum" --version | awk '{print $NF}')</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 EOF

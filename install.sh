@@ -77,7 +77,7 @@ client will not run without the daemon beside it or on your `PATH`.
 Published targets are x86_64 Linux (glibc), Apple silicon macOS, Intel macOS,
 and x86_64 Windows. On any other platform, build from source:
 
-  cargo install vitrum vitrum-server
+  git clone https://github.com/santhreal/vitrum && cd vitrum && cargo build --release
 EOF
 }
 
@@ -204,7 +204,7 @@ case "$os" in
             *)
                 die "no published release for Linux $arch" \
                     "Releases carry x86_64 Linux only." \
-                    "Build from source instead: cargo install vitrum vitrum-server" \
+                    "Build from source instead: https://github.com/$REPO#build-from-source" \
                     "You will need a WebKitGTK 4.1 development package first; see" \
                     "https://github.com/$REPO#requirements"
                 ;;
@@ -217,14 +217,14 @@ case "$os" in
             *)
                 die "no published release for macOS $arch" \
                     "Releases carry Apple silicon and Intel macOS only." \
-                    "Build from source instead: cargo install vitrum vitrum-server"
+                    "Build from source instead: https://github.com/$REPO#build-from-source"
                 ;;
         esac
         ;;
     *)
         die "this installer supports Linux and macOS; found $os" \
             "On Windows, use install.ps1 from the same repository." \
-            "Anywhere else, build from source: cargo install vitrum vitrum-server"
+            "Anywhere else, build from source: https://github.com/$REPO#build-from-source"
         ;;
 esac
 

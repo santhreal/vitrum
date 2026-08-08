@@ -40,12 +40,18 @@ installs the right nightly by itself, so you do not pick a version.
 Two system dependencies, not one. The client links the system webview, and
 `README.md` lists the package name for each platform.
 
-`vitrum-vt` also needs a **Zig toolchain**, because its default `vendored`
-feature builds libghostty from source and pins the engine commit the tests
-ran against. Without `zig` on your `PATH` the two commands above stop at
+`vitrum-vt` also needs a **Zig toolchain, exactly 0.15.2**, because its default
+`vendored` feature builds libghostty from source and pins the engine commit the
+tests ran against. Without `zig` on your `PATH` the two commands above stop at
 `libghostty-vt-sys` with `failed to execute zig build: No such file or
 directory`, which comes from that crate's build script and does not say what
 to install.
+
+The version is not advice. It is the one Ghostty pins, and a newer Zig fails
+Ghostty's own build-version check, so installing the latest release is a
+different failure rather than a safer one. CI pins 0.15.2 in every workflow
+that builds the engine, and a test asserts this paragraph still names the same
+version they do.
 
 The `system` feature links a libghostty the platform already provides and
 needs no Zig, but only when one is actually discoverable:

@@ -7,6 +7,7 @@
 
 mod actions;
 mod assets;
+mod integrations;
 mod platform_build;
 mod readme;
 mod upstream;

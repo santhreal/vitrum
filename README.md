@@ -555,6 +555,17 @@ An agent that can run a shell command can call `vitrum hint approval` from its
 own permission prompt, which is where the sequence earns its keep: the row
 turns Approval the moment the agent asks, and back the moment you answer.
 
+### From Claude Code
+
+That last paragraph is a whole integration once you try it, because a Claude
+Code hook has nowhere to write: its stdout belongs to Claude Code, and it runs
+with no controlling terminal, so the sequence has to be delivered to the pty by
+hand.
+
+[`integrations/claude-code`](integrations/claude-code) is that, ready to
+install: a hook, the three lines of `settings.json` that call it, and what each
+event maps to.
+
 ---
 
 ## Running it on another machine

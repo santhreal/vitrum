@@ -5,6 +5,16 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+### Added
+
+- **Claude Code can now declare Approval, so the sidebar shows it.**
+  `integrations/claude-code` ships a hook, the `settings.json` that calls it
+  and the event mapping. Approval and Input cannot be observed from a pty, so
+  they only appear when an agent declares them, and a hook could not declare
+  anything: Claude Code owns the hook's stdout and runs it with no controlling
+  terminal, so there was nowhere to write the sequence. The hook finds the pty
+  by walking its own ancestors. Linux only, because it reads `/proc`.
+
 ### Fixed
 
 - **Terminal and Keyboard settings now take effect in every open window.**

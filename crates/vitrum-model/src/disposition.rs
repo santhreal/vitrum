@@ -331,6 +331,57 @@ impl SessionView {
         Disposition::Active
     }
 
+    /// The earliest `now` at which this row's clock-derived STATE is still
+    /// what it is at `clock`.
+    ///
+    /// [`disposition`](Self::disposition) is a function of time in three
+    /// places: a snooze that has elapsed, a wake the operator has not seen,
+    /// and the auto-settle window. A caller that wants to feed this row a
+    /// coarser clock, to avoid rebuilding it when nothing it draws has moved,
+    /// must not coarsen it past any of those, or the row keeps its old
+    /// disposition after the instant it was supposed to change.
+    ///
+    /// Each source contributes the last boundary it crossed at or before
+    /// `clock`, and the answer is the latest of them. Substituting it leaves
+    /// the row on the same side of every transition:
+    ///
+    /// - **Parked.** A snoozed row draws a live countdown to its own wake, so
+    ///   there is nothing to coarsen and this returns `clock` unchanged.
+    /// - **Woken.** Once the wake instant has passed the clock may not slide
+    ///   back before it, or the row parks itself again.
+    /// - **Working.** The elapsed label moves every second, so the grid is a
+    ///   second, anchored at the instant the turn began.
+    /// - **Auto-settle.** A one-way boundary at a known instant: before it any
+    ///   earlier clock is also before it, and after it the clock must stay
+    ///   after.
+    ///
+    /// The label a row draws is a separate concern with its own grid, in
+    /// `TimeFormat::relative_floor`. A caller wanting both takes the later of
+    /// the two, which is the one that changes soonest.
+    pub fn clock_floor_ms(&self, clock: Clock, policy: DispositionPolicy) -> u64 {
+        let now = clock.now_ms;
+        if self.effective_snoozed(clock) {
+            return now;
+        }
+        let mut floor = 0;
+        if let Some(snooze) = self.snooze
+            && now >= snooze.wake_at_ms
+        {
+            floor = floor.max(snooze.wake_at_ms);
+        }
+        if let Some(since) = self.working_since_ms() {
+            let whole_seconds = (now.saturating_sub(since) / 1_000).saturating_mul(1_000);
+            floor = floor.max(since.saturating_add(whole_seconds));
+        }
+        if let Some(window_ms) = policy.auto_settle_after_ms {
+            let deadline = self.info.last_activity_ms.saturating_add(window_ms);
+            if now >= deadline {
+                floor = floor.max(deadline);
+            }
+        }
+        floor.min(now)
+    }
+
     /// The band this session renders in.
     pub fn section(&self, clock: Clock, policy: DispositionPolicy) -> Section {
         self.disposition(clock, policy).section()
@@ -861,5 +912,226 @@ mod tests {
             serde_json::to_string(&Disposition::Woke).expect("disposition serialises"),
             "\"woke\""
         );
+    }
+
+    /// WHY: `clock_floor_ms` lets a caller feed a row a coarser clock so an
+    /// unchanged row is not rebuilt. That is only sound if the coarser clock
+    /// decides every transition the same way, so the property asserted is the
+    /// substitution: for a spread of rows and a spread of instants, the
+    /// disposition under the floored clock equals the disposition under the
+    /// real one.
+    ///
+    /// The class this closes is "a row whose state depends on time is frozen
+    /// past its own transition". Each of the three time-driven branches in
+    /// [`SessionView::disposition`] is represented below, and the sweep steps
+    /// across each boundary rather than sitting on one side of it.
+    ///
+    /// What it does NOT catch: a NEW time-driven branch added to
+    /// `disposition` without a matching term in `clock_floor_ms`. That is what
+    /// `every_time_driven_branch_is_represented_here` is for.
+    #[test]
+    fn flooring_the_clock_never_changes_the_disposition() {
+        let mut checked = 0;
+        // Both policies, because they take different branches: `manual` never
+        // auto-settles, so sweeping it alone would leave the auto-settle term
+        // in `clock_floor_ms` completely untested. `default` is what the
+        // sidebar actually renders with.
+        for policy in [DispositionPolicy::manual(), DispositionPolicy::default()] {
+            for (name, row) in time_driven_rows() {
+                for step in 0..600 {
+                    let now = NOW - 5 * HOUR + step * 37_000;
+                    let real = Clock::utc(now);
+                    let floored = Clock::utc(row.clock_floor_ms(real, policy));
+                    assert!(
+                        floored.now_ms <= now,
+                        "{name}: floor ran ahead of the clock at {now}"
+                    );
+                    assert_eq!(
+                        row.disposition(floored, policy),
+                        row.disposition(real, policy),
+                        "{name} under {policy:?}: disposition changed under the floored clock at {now}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 4000, "swept only {checked} points");
+    }
+
+    /// The floor must actually hold still for a row with nothing time-driven
+    /// left in it, or the whole mechanism buys nothing.
+    ///
+    /// A settled row an hour past every deadline is the common case in a
+    /// sidebar full of finished agents: two clocks a second apart must floor
+    /// to the same instant.
+    #[test]
+    fn a_row_with_nothing_pending_floors_to_a_stable_instant() {
+        let row = ViewBuilder::new(1)
+            .exited(0)
+            .last_activity_ms(NOW - 5 * HOUR)
+            .build();
+        let a = row.clock_floor_ms(Clock::utc(NOW), policy());
+        let b = row.clock_floor_ms(Clock::utc(NOW + 1_000), policy());
+        assert_eq!(a, b, "a quiet row's floor moved within a second");
+
+        // And a working row must NOT hold still: its elapsed label ticks.
+        let working = ViewBuilder::new(2)
+            .running()
+            .hint(HintState::Working, None, NOW - 30_000)
+            .build();
+        assert_ne!(
+            working.clock_floor_ms(Clock::utc(NOW), policy()),
+            working.clock_floor_ms(Clock::utc(NOW + 1_000), policy()),
+            "a working row was frozen and its timer would stop"
+        );
+    }
+
+    /// A parked row is never coarsened, because it draws a countdown to its
+    /// own wake. Freezing it would stop that countdown dead.
+    #[test]
+    fn a_parked_row_is_never_coarsened() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .waiting(Some(false))
+            .last_activity_ms(NOW - HOUR)
+            .snooze(NOW - HOUR, NOW + HOUR)
+            .build();
+        for step in 0..50 {
+            let now = NOW + step * 1_000;
+            assert_eq!(
+                row.clock_floor_ms(Clock::utc(now), policy()),
+                now,
+                "a parked row was coarsened"
+            );
+        }
+    }
+
+    /// The wake instant is a boundary the floor may not cross backwards.
+    ///
+    /// Without the snooze term a woken row would be handed a clock from before
+    /// its wake and park itself again, which is the bug that looks like a row
+    /// flickering between bands.
+    #[test]
+    fn a_woken_row_cannot_be_floored_back_into_its_snooze() {
+        let row = ViewBuilder::new(1)
+            .running()
+            .waiting(Some(false))
+            .last_activity_ms(NOW - 2 * HOUR)
+            .snooze(NOW - 2 * HOUR, NOW - 1_000)
+            .build();
+        let real = Clock::utc(NOW);
+        assert_ne!(row.disposition(real, policy()), Disposition::Snoozed);
+        let floored = Clock::utc(row.clock_floor_ms(real, policy()));
+        assert_ne!(
+            row.disposition(floored, policy()),
+            Disposition::Snoozed,
+            "the floor put a woken row back to sleep"
+        );
+    }
+
+    /// Rows covering every time-driven branch of `disposition`, so the sweep
+    /// above is not three copies of the same easy case.
+    fn time_driven_rows() -> Vec<(&'static str, SessionView)> {
+        vec![
+            (
+                "parked, wakes in an hour",
+                ViewBuilder::new(1)
+                    .running()
+                    .waiting(Some(false))
+                    .last_activity_ms(NOW - HOUR)
+                    .snooze(NOW - HOUR, NOW + HOUR)
+                    .build(),
+            ),
+            (
+                "woke a second ago, unseen",
+                ViewBuilder::new(2)
+                    .running()
+                    .waiting(Some(false))
+                    .last_activity_ms(NOW - 2 * HOUR)
+                    .snooze(NOW - 2 * HOUR, NOW - 1_000)
+                    .build(),
+            ),
+            (
+                // Last activity exactly one auto-settle window ago, so the
+                // deadline lands on NOW and the sweeps cross it. A row that
+                // was merely "recent" would put the deadline seven days out
+                // and silently test nothing.
+                // Idle rather than mid-turn: auto-settle deliberately refuses
+                // to drain a Working row, so a `waiting(false)` row here would
+                // never cross the deadline and the sweep would prove nothing.
+                "live and quiet, auto-settle deadline at NOW",
+                ViewBuilder::new(3)
+                    .running()
+                    .idle_ms(vitrum_proto::IDLE_ATTENTION_MS * 10)
+                    .last_activity_ms(NOW - DispositionPolicy::DEFAULT_AUTO_SETTLE_MS)
+                    .build(),
+            ),
+            (
+                "working, elapsed ticking",
+                ViewBuilder::new(4)
+                    .running()
+                    .hint(HintState::Working, None, NOW - 30_000)
+                    .build(),
+            ),
+            (
+                "exited and acknowledged",
+                ViewBuilder::new(5)
+                    .exited(0)
+                    .last_activity_ms(NOW - 5 * HOUR)
+                    .build(),
+            ),
+        ]
+    }
+
+    /// Every time-driven branch of `disposition` must have a term in
+    /// `clock_floor_ms`, and this is the check that goes red when a new one is
+    /// added without one.
+    ///
+    /// It cannot read the source, so it does the next best thing: it asserts
+    /// that for each row above there EXISTS a pair of adjacent instants where
+    /// the disposition changes, and that the floor tracks that change exactly.
+    /// A new branch with no term would let the disposition move while the
+    /// floor stayed put, which this catches as a mismatch.
+    #[test]
+    fn the_floor_tracks_every_transition_it_is_responsible_for() {
+        // Counted per policy, because the auto-settle transition only exists
+        // under a policy that has a window at all.
+        for policy in [DispositionPolicy::manual(), DispositionPolicy::default()] {
+            let mut seen: Vec<&'static str> = Vec::new();
+            for (name, row) in time_driven_rows() {
+                let mut transitions = 0;
+                for step in 0..7200u64 {
+                    let before = Clock::utc(NOW - HOUR + step * 1_000);
+                    let after = Clock::utc(NOW - HOUR + (step + 1) * 1_000);
+                    if row.disposition(before, policy) != row.disposition(after, policy) {
+                        transitions += 1;
+                        // The floor at `after` must not be old enough to still
+                        // render the pre-transition state.
+                        let floored = Clock::utc(row.clock_floor_ms(after, policy));
+                        assert_eq!(
+                            row.disposition(floored, policy),
+                            row.disposition(after, policy),
+                            "{name} under {policy:?}: the floor lagged a real transition"
+                        );
+                    }
+                }
+                if transitions > 0 {
+                    seen.push(name);
+                }
+            }
+            // The sweep is only evidence if it actually crossed something. A
+            // wake fires under either policy; the auto-settle row only under
+            // the policy that has a window.
+            assert!(
+                seen.iter().any(|n| n.starts_with("parked")),
+                "no wake transition was exercised under {policy:?}; swept {seen:?}"
+            );
+            if policy.auto_settle_after_ms.is_some() {
+                assert!(
+                    seen.iter().any(|n| n.starts_with("live and quiet")),
+                    "no auto-settle transition was exercised; swept {seen:?}"
+                );
+            }
+        }
     }
 }

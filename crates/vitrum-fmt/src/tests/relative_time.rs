@@ -298,3 +298,101 @@ fn the_same_inputs_always_produce_the_same_label() {
     assert_eq!(format.relative(then), first);
     assert_eq!(first, "5s");
 }
+
+/// WHY: `relative_floor` exists so a caller can substitute a coarser `now` and
+/// rebuild less often. That is only sound if the substitution is invisible, so
+/// the property asserted here is the substitution itself rather than any
+/// particular grid: for every elapsed time across the whole table, the floored
+/// clock must render the byte-identical label.
+///
+/// Swept rather than sampled at the thresholds, because the failure this
+/// guards against is an off-by-one in one bucket's arithmetic, and a test that
+/// only probes the boundaries it was written against cannot see a bucket whose
+/// interior is wrong.
+#[test]
+fn flooring_the_clock_never_changes_the_label() {
+    let format = clock();
+    let mut checked = 0;
+    for secs in sweep() {
+        let then = Timestamp::from_secs(NOW_SECS - secs);
+        let floored = TimeFormat::new(format.relative_floor(then), format.utc_offset_secs());
+        assert_eq!(
+            floored.relative_ago(then),
+            format.relative_ago(then),
+            "elapsed {secs}s renders differently under the floored clock"
+        );
+        checked += 1;
+    }
+    assert!(checked > 500, "swept only {checked} points");
+}
+
+/// The floor must never run ahead of the clock it came from. A value in the
+/// future would render a label for time that has not passed, and because it is
+/// fed back in as `now` it would do so silently.
+#[test]
+fn the_floor_never_exceeds_the_clock() {
+    let format = clock();
+    for secs in sweep() {
+        let then = Timestamp::from_secs(NOW_SECS - secs);
+        assert!(
+            format.relative_floor(then) <= format.now(),
+            "floor ran ahead of now at elapsed {secs}s"
+        );
+    }
+}
+
+/// The point of the whole exercise: the floor must actually hold still.
+///
+/// Two clocks one second apart, both inside one label's interval, must floor
+/// to the same instant, or the caller rebuilds every second exactly as it did
+/// before and the change bought nothing. An hour-old row is the case that
+/// motivated it.
+#[test]
+fn clocks_inside_one_label_floor_to_the_same_instant() {
+    let hour_old = Timestamp::from_secs(NOW_SECS - SECS_PER_HOUR);
+    let a = clock().relative_floor(hour_old);
+    let later = TimeFormat::utc(Timestamp::from_secs(NOW_SECS + 1));
+    assert_eq!(a, later.relative_floor(hour_old), "1h ago moved within a second");
+
+    let minute_old = Timestamp::from_secs(NOW_SECS - 90);
+    assert_eq!(
+        clock().relative_floor(minute_old),
+        later.relative_floor(minute_old),
+        "1m ago moved within a second"
+    );
+
+    // And the other half: a label that SHOULD move must move, or "hold still"
+    // has been implemented as "freeze".
+    let five_secs = Timestamp::from_secs(NOW_SECS - 5);
+    assert_ne!(
+        clock().relative_floor(five_secs),
+        later.relative_floor(five_secs),
+        "a per-second label was frozen"
+    );
+}
+
+/// Elapsed values across every bucket, dense near the thresholds where the
+/// arithmetic changes and sparse through the interiors.
+fn sweep() -> Vec<i64> {
+    let mut out = Vec::new();
+    for secs in 0..180 {
+        out.push(secs);
+    }
+    for secs in (180..ABSOLUTE_AFTER_SECS + 3 * SECS_PER_DAY).step_by(997) {
+        out.push(secs);
+    }
+    for edge in [
+        JUST_NOW_SECS,
+        SECS_PER_MIN,
+        SECS_PER_HOUR,
+        SECS_PER_DAY,
+        ABSOLUTE_AFTER_SECS,
+    ] {
+        out.extend([edge - 1, edge, edge + 1]);
+    }
+    out
+}
+
+const SECS_PER_MIN: i64 = 60;
+const SECS_PER_HOUR: i64 = 60 * SECS_PER_MIN;
+const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;

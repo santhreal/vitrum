@@ -159,6 +159,19 @@ impl TimeFormat {
         self.utc_offset_secs
     }
 
+    /// The same formatter reading a different instant.
+    ///
+    /// The zone travels with the formatter rather than being taken apart and
+    /// reassembled by the caller, which is what a caller wanting a coarser
+    /// clock would otherwise have to do.
+    #[must_use]
+    pub const fn at(self, now: Timestamp) -> Self {
+        Self {
+            now,
+            utc_offset_secs: self.utc_offset_secs,
+        }
+    }
+
     /// Elapsed time from `then` to `now`, clamped at zero.
     #[must_use]
     pub const fn elapsed(self, then: Timestamp) -> std::time::Duration {
@@ -201,6 +214,80 @@ impl TimeFormat {
             return self.absolute_date(then);
         }
         self.relative(then) + " ago"
+    }
+
+    /// The earliest `now` that still renders [`relative_ago`](Self::relative_ago)
+    /// exactly as this one does.
+    ///
+    /// Every label here floors onto a grid, so each one is constant across a
+    /// whole interval: `5h ago` holds for an hour, `4m ago` for a minute, and
+    /// an absolute date for the rest of the local day. This returns the start
+    /// of the interval `now` currently sits in.
+    ///
+    /// # Why this exists
+    ///
+    /// A caller that rebuilds when the clock changes rebuilds every second,
+    /// including for a row whose text will not move for another hour. Flooring
+    /// the clock to this instant makes the value stable for exactly as long as
+    /// the label it feeds, so equal labels compare equal and the rebuild is
+    /// skipped. It is the same trade the second-quantised clock already makes,
+    /// carried down to the precision each individual label actually needs.
+    ///
+    /// The result is never later than `now` and never earlier than the current
+    /// interval's start, so substituting it changes no rendered string.
+    #[must_use]
+    pub fn relative_floor(self, then: Timestamp) -> Timestamp {
+        let secs = self.elapsed(then).as_secs() as i64;
+        // A future or barely-past instant reads `just now` until it reaches
+        // JUST_NOW_SECS, so the whole window collapses onto `then` itself.
+        if secs < JUST_NOW_SECS {
+            return Timestamp::from_millis(then.as_millis().min(self.now.as_millis()));
+        }
+        // Past a week the label is a calendar date, which turns over at local
+        // midnight rather than on any grid anchored at `then`.
+        //
+        // Two things make this branch the awkward one. Local midnight can fall
+        // BELOW the seven-day threshold, which would turn `Nov 7` back into
+        // `6d ago`, so the floor is clamped to the instant the label became a
+        // date. And `absolute_date` appends the year only when it differs from
+        // the local year of `now`, so a floor that lands in the previous year
+        // would silently add or drop one; that case declines to coarsen at all
+        // rather than render a different string.
+        if secs >= ABSOLUTE_AFTER_SECS {
+            let local = self
+                .now
+                .as_secs()
+                .saturating_add(i64::from(self.utc_offset_secs));
+            let midnight = floor_div(local, SECS_PER_DAY) * SECS_PER_DAY;
+            let utc = midnight.saturating_sub(i64::from(self.utc_offset_secs));
+            let became_a_date = then
+                .as_secs()
+                .saturating_add(ABSOLUTE_AFTER_SECS)
+                .saturating_mul(MILLIS_PER_SEC);
+            let floored = Timestamp::from_millis(
+                utc.saturating_mul(MILLIS_PER_SEC)
+                    .max(became_a_date)
+                    .min(self.now.as_millis()),
+            );
+            if self.civil(floored).0 != self.civil(self.now).0 {
+                return self.now;
+            }
+            return floored;
+        }
+        let unit = if secs < SECS_PER_MIN {
+            1
+        } else if secs < SECS_PER_HOUR {
+            SECS_PER_MIN
+        } else if secs < SECS_PER_DAY {
+            SECS_PER_HOUR
+        } else {
+            SECS_PER_DAY
+        };
+        let floored = (secs / unit) * unit;
+        Timestamp::from_millis(
+            then.as_millis()
+                .saturating_add(floored.saturating_mul(MILLIS_PER_SEC)),
+        )
     }
 
     /// The local calendar date: `Mar 3`, or `Mar 3, 2024` in another year.

@@ -43,7 +43,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use vitrum_fmt::TimeFormat;
+use vitrum_fmt::{TimeFormat, Timestamp};
 use vitrum_model::{Disposition, Section, SessionView, SidebarStatus};
 use vitrum_proto::{ProjectId, SessionId, SessionStatus};
 
@@ -594,7 +594,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                 fields,
                                                 active: st.window.focused == Some(s.id()),
                                                 picked: st.window.selection.contains(s.id()),
-                                                clock: props.clock,
+                                                clock: row_clock(props.clock, s),
                                                 home: Rc::clone(&home),
                                                 contested: st.daemon.collisions.for_session(s.id()),
                                                 on_select: props.on_select,
@@ -650,7 +650,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                                     fields,
                                                                     active: st.window.focused == Some(s.id()),
                                                                     picked: st.window.selection.contains(s.id()),
-                                                                    clock: props.clock,
+                                                                    clock: row_clock(props.clock, s),
                                                                     home: Rc::clone(&home),
                                                                     contested: st.daemon.collisions.for_session(s.id()),
                                                                     on_select: props.on_select,
@@ -792,6 +792,43 @@ fn empty_bucket_hint(key: GroupKey) -> &'static str {
         GroupKey::Unfiled => "Nothing unfiled.",
         GroupKey::Project(_) | GroupKey::Directory(_) => "No sessions here yet.",
     }
+}
+
+/// The coarsest clock that renders this row byte-identically to `clock`.
+///
+/// # Why a row gets its own clock
+///
+/// [`SessionRow`] is memoized on its props, and the clock is one of them, so
+/// a clock that moves rebuilds the row. A whole-second clock already stops the
+/// rebuild inside one second, but it still rebuilds EVERY row on every second
+/// boundary, forever. Most of those rows had nothing to say: a row reading
+/// `5h ago` repeats that answer 3600 times before it changes, and at the
+/// stated load of twenty sessions that is twenty rebuilds a second buying one
+/// changed character an hour.
+///
+/// So the clock handed to a row is floored to the coarsest instant that row
+/// cannot tell apart from now. Two things vary with time in a row and each
+/// owns its own grid:
+///
+/// - the LABEL it draws, whose thresholds live in `TimeFormat::relative_floor`
+/// - its STATE, whose transitions live in `SessionView::clock_floor_ms`
+///
+/// The later of the two wins, because that is the one that changes soonest.
+/// The result sits inside both intervals, so every string and every
+/// disposition is what it would have been at the real clock, and the row is
+/// rebuilt exactly when something it shows actually moves.
+///
+/// A row with a live timer, a countdown, or a pending transition therefore
+/// keeps a per-second clock and rebuilds as before. That is the point: this
+/// buys precision back only where it was never being spent.
+fn row_clock(clock: TimeFormat, row: &SessionView) -> TimeFormat {
+    let policy = vitrum_model::DispositionPolicy::default();
+    let state = row.clock_floor_ms(inbox::model_clock(clock), policy);
+    let label = clock
+        .relative_floor(Timestamp::from_millis(row.info.last_activity_ms as i64))
+        .as_millis();
+    let floor = label.max(state as i64).min(clock.now().as_millis());
+    clock.at(Timestamp::from_millis(floor))
 }
 
 #[derive(Props, Clone, PartialEq)]

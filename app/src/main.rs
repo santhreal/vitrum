@@ -697,6 +697,11 @@ fn App() -> Element {
 
     // One long-lived reader. Not a poll: it parks on the channel until the
     // bridge has something to say.
+    // Every window runs the settings script the sheet broadcasts, not just the
+    // window the sheet was open in. Subscribed here, at the top of the root
+    // component, so the subscription lasts exactly as long as this window.
+    ui::settings::use_live_settings();
+
     // The window, for the one measurement this future takes. Cloned rather
     // than captured by reference because the future outlives this render.
     let settle_window = window.clone();
@@ -730,7 +735,7 @@ fn App() -> Element {
             }
             // Pushes the restored text scale, terminal options and key bindings
             // into the webview that just mounted.
-            ui::settings::apply_live(&st.peek().daemon.settings);
+            ui::settings::apply_here(&st.peek().daemon.settings);
 
             // First run gets the walkthrough, an upgrade gets the release
             // notes, and a window that is neither gets neither. Only the first

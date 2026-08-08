@@ -1197,3 +1197,212 @@ fn the_appearance_tab_renders_the_stored_defaults_as_selected() {
         "a shipped default is not expressible by its own menu: {html}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Live settings reach every window
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// WHY THIS SUITE EXISTS (LIVE-SETTINGS FAN-OUT).
+///
+/// `Settings` is one shared model and `document::eval` is per-document, so
+/// applying a change by evaluating in the calling scope reached exactly one
+/// window. Markup-driven settings looked global because every window renders
+/// from the shared model; the four that ride the script — text scale, terminal
+/// options, terminal opacity and the chord table — were silently window-local.
+///
+/// The class is "a settings change that reaches some live windows and not
+/// others", not the specific control that exposed it. These tests are written
+/// against the fan-out itself, at the one choke point every control passes
+/// through, so a fifth script-borne setting is covered the day it is added
+/// without a test per control:
+///
+/// - every subscriber gets it, at one through four windows, not just the first
+/// - the payload is whatever `live_script` builds, so the bus cannot drift
+///   into shipping a stale or constant script
+/// - order is preserved, so two quick changes cannot land inverted
+/// - a closed window is forgotten, and the listener list does not grow without
+///   bound across window churn
+/// - mounting a window subscribes it exactly once, and dropping it
+///   unsubscribes, so the fan-out cannot be correct while nothing is wired to
+///   it
+///
+/// What it does NOT catch: that WebKit executes the script. Everything past
+/// `document::eval` needs a live webview, so `apply_here` and the eval call
+/// itself are unproven here and are covered only by running the app.
+
+/// Serialize the process-global listener list and hand each test a clean bus.
+fn with_bus<T>(body: impl FnOnce() -> T) -> T {
+    static BUS: Mutex<()> = Mutex::new(());
+    let _held = BUS.lock().unwrap_or_else(|e| e.into_inner());
+    listeners().clear();
+    let out = body();
+    listeners().clear();
+    out
+}
+
+/// Everything one window has been handed since the last drain.
+fn drain(inbox: &Arc<Mailbox<String>>) -> Vec<String> {
+    inbox.lock().queue.drain(..).collect()
+}
+
+#[test]
+fn every_live_window_receives_a_settings_broadcast() {
+    with_bus(|| {
+        for windows in 1..=4 {
+            listeners().clear();
+            let inboxes: Vec<_> = (0..windows).map(|_| subscribe()).collect();
+
+            broadcast("SCRIPT");
+
+            for (n, inbox) in inboxes.iter().enumerate() {
+                assert_eq!(
+                    drain(inbox),
+                    vec!["SCRIPT".to_string()],
+                    "window {n} of {windows} did not get the change"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn a_broadcast_carries_exactly_what_live_script_builds() {
+    with_bus(|| {
+        let inbox = subscribe();
+
+        let mut small = settings();
+        small.text_scale_pct = TEXT_SCALE_MIN_PCT;
+        apply_live(&small);
+
+        let mut large = settings();
+        large.text_scale_pct = TEXT_SCALE_MAX_PCT;
+        apply_live(&large);
+
+        let sent = drain(&inbox);
+        assert_eq!(
+            sent,
+            vec![live_script(&small), live_script(&large)],
+            "the bus must carry the script for the settings it was given"
+        );
+        assert_ne!(
+            sent[0], sent[1],
+            "two different settings that produce the same script would make \
+             the assertion above pass for the wrong reason"
+        );
+    });
+}
+
+#[test]
+fn changes_reach_every_window_in_the_order_they_were_made() {
+    with_bus(|| {
+        let first = subscribe();
+        let second = subscribe();
+
+        broadcast("one");
+        broadcast("two");
+
+        for (n, inbox) in [&first, &second].into_iter().enumerate() {
+            assert_eq!(
+                drain(inbox),
+                vec!["one".to_string(), "two".to_string()],
+                "window {n} saw the two changes out of order"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_window_that_opens_later_gets_the_next_change_and_no_replay() {
+    with_bus(|| {
+        let early = subscribe();
+        broadcast("before");
+        let late = subscribe();
+
+        assert!(
+            drain(&late).is_empty(),
+            "a window that did not exist yet must not be handed history"
+        );
+
+        broadcast("after");
+        assert_eq!(drain(&late), vec!["after".to_string()]);
+        assert_eq!(drain(&early), vec!["before".to_string(), "after".to_string()]);
+    });
+}
+
+#[test]
+fn a_closed_window_is_forgotten_and_the_list_does_not_grow() {
+    with_bus(|| {
+        let survivor = subscribe();
+        for _ in 0..64 {
+            drop(subscribe());
+        }
+        assert_eq!(listeners().len(), 65, "every subscription is recorded");
+
+        broadcast("A");
+
+        assert_eq!(
+            listeners().len(),
+            1,
+            "opening and closing windows must not accumulate dead entries"
+        );
+        assert_eq!(drain(&survivor), vec!["A".to_string()]);
+
+        drop(survivor);
+        broadcast("B");
+        assert!(
+            listeners().is_empty(),
+            "a broadcast with no window left must be a no-op, not a panic"
+        );
+    });
+}
+
+/// A window, reduced to the one hook this suite is about.
+#[component]
+fn LiveHarness() -> Element {
+    use_live_settings();
+    rsx! { div {} }
+}
+
+#[test]
+fn mounting_a_window_subscribes_it_exactly_once() {
+    with_bus(|| {
+        let mut windows = Vec::new();
+        for expected in 1..=3 {
+            let mut dom = VirtualDom::new(LiveHarness);
+            dom.rebuild_in_place();
+            windows.push(dom);
+            assert_eq!(
+                listeners().len(),
+                expected,
+                "mounting a window must register one inbox, and only one"
+            );
+        }
+
+        broadcast("SCRIPT");
+        assert_eq!(
+            listeners().len(),
+            3,
+            "a mounted window's subscription outlives the broadcast"
+        );
+    });
+}
+
+#[test]
+fn closing_a_window_unsubscribes_it() {
+    with_bus(|| {
+        let mut dom = VirtualDom::new(LiveHarness);
+        dom.rebuild_in_place();
+        let staying = subscribe();
+        assert_eq!(listeners().len(), 2);
+
+        drop(dom);
+        broadcast("SCRIPT");
+
+        assert_eq!(
+            listeners().len(),
+            1,
+            "a window that closed must drop off the bus"
+        );
+        assert_eq!(drain(&staying), vec!["SCRIPT".to_string()]);
+    });
+}

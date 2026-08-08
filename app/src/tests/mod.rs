@@ -1942,6 +1942,69 @@ fn every_app_duration_token_is_zeroed_under_reduced_motion() {
     }
 }
 
+/// Every scroller in every shipped stylesheet paints its own background.
+///
+/// WHY: `overflow: auto` promotes an element to its own composited scrolling
+/// layer. WebKit fills such a layer with the engine's base colour -- white --
+/// for the frames between promotion and the first content paint, so a
+/// scroller that inherits its surface visually instead of declaring it
+/// flashes white the first time it is shown. `.rg-search__results` did
+/// exactly that: opening a search that returned hits flashed the whole
+/// window white for roughly one frame at 25fps. `.rg-sheet__body` on the
+/// What's New and onboarding sheets and `.rg-sidebar__body` were the same
+/// defect waiting for a first paint someone had not happened to film.
+///
+/// The set is read from `stylesheets()`, the same array the document is
+/// built from, so a stylesheet added later is covered without being listed
+/// here and a new bare scroller turns this RED rather than shipping.
+///
+/// What it does NOT catch: a scroller whose declared background is
+/// transparent or a colour that does not match the surface behind it. Both
+/// are visible in review; neither produces the white frame this closes.
+#[test]
+fn every_scroller_paints_its_own_background() {
+    let mut checked = 0usize;
+    for (name, css) in stylesheets() {
+        let code = strip_css_comments(css);
+        let mut rest = code.as_str();
+        while let Some(open) = rest.find('{') {
+            let selector = rest[..open].rsplit(['}', ';']).next().unwrap_or("").trim();
+            let Some(close) = rest[open + 1..].find('}') else {
+                break;
+            };
+            let body = &rest[open + 1..open + 1 + close];
+            rest = &rest[open + 1 + close + 1..];
+
+            // Nested blocks -- @media, @supports -- hold rules, not
+            // declarations, and their own text carries no overflow.
+            let scrolls = body.split(';').any(|decl| {
+                let Some((prop, value)) = decl.split_once(':') else {
+                    return false;
+                };
+                matches!(prop.trim(), "overflow" | "overflow-x" | "overflow-y")
+                    && matches!(value.trim(), "auto" | "scroll")
+            });
+            if !scrolls {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                body.split(';').any(|decl| {
+                    decl.split_once(':')
+                        .is_some_and(|(prop, _)| prop.trim().starts_with("background"))
+                }),
+                "{name}: `{selector}` scrolls without painting a background, so its \
+                 composited layer shows white until its content arrives"
+            );
+        }
+    }
+    assert!(
+        checked >= 6,
+        "only {checked} scrollers were found, so the parser stopped seeing them \
+         and this guard is no longer reading the stylesheets"
+    );
+}
+
 /// Every keyframe animation in the client is one-shot, and none of them
 /// reflows.
 ///

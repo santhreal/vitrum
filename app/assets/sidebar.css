@@ -816,6 +816,11 @@
   padding: 0 var(--rg-content-inset) var(--rg-space-3);
   scrollbar-width: thin;
   scrollbar-color: var(--rg-scroll-thumb) transparent;
+
+  /* Opaque for the same reason `.rg-search__results` is: a composited
+   * scrolling layer with no background of its own paints white until its
+   * content arrives. Matches `.rg-sidebar`, whose fill this covers. */
+  background-color: var(--rg-surface);
 }
 
 .rg-sidebar__body::-webkit-scrollbar {

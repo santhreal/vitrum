@@ -213,6 +213,11 @@
   gap: var(--rg-band-gap);
   overflow-y: auto;
   overscroll-behavior: contain;
+
+  /* Opaque for the same reason `.rg-search__results` is: a composited
+   * scrolling layer with no background paints white until its content
+   * arrives. Matches `.rg-sheet`, which this body fills edge to edge. */
+  background-color: var(--rg-bg-elevated);
 }
 
 /* -- Onboarding: one sentence and a checklist --------------------------- */

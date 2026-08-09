@@ -112,14 +112,20 @@ files=$(
 for file in $files; do
     # A tarball or a text file alongside the binaries is not a defect, so skip
     # anything the disassembler does not recognise rather than failing on it.
-    arch=$($objdump --file-headers "$file" 2>/dev/null |
-        sed -n 's/^architecture: *\([^,]*\).*/\1/p' | head -1) || arch=
-    [ -n "$arch" ] || continue
+    #
+    # Match on the `file format` line rather than on `architecture:`. Only ELF
+    # and PE get an `architecture:` line; for Mach-O llvm-objdump prints a Mach
+    # header table instead, so keying on it skipped every macOS binary, left
+    # `checked` at zero and failed both mac legs with "no binaries found to
+    # disassemble". Every object format carries `file format`.
+    fmt=$($objdump --file-headers "$file" 2>/dev/null |
+        sed -n 's/.*file format \(.*\)/\1/p' | head -1) || fmt=
+    [ -n "$fmt" ] || continue
 
-    case "$arch" in
-        i386:x86-64|x86_64*) pattern=$X86_ABOVE_FLOOR; floor='AVX2' ;;
-        aarch64*|arm64*)     pattern=$ARM_ABOVE_FLOOR; floor='armv8.2-a' ;;
-        *) die "unknown architecture '$arch' in $file; extend the floor table" ;;
+    case "$fmt" in
+        *x86-64*|*x86_64*)  pattern=$X86_ABOVE_FLOOR; floor='AVX2' ;;
+        *arm64*|*aarch64*)  pattern=$ARM_ABOVE_FLOOR; floor='armv8.2-a' ;;
+        *) die "unknown object format '$fmt' in $file; extend the floor table" ;;
     esac
 
     checked=$((checked + 1))
@@ -159,8 +165,8 @@ for file in $files; do
     # emit it choose at run time from CPUID. If a binary carries that code and
     # never executes CPUID, nothing is choosing, and the assumption this floor
     # rests on does not hold for it.
-    case "$arch" in
-        i386:x86-64|x86_64*)
+    case "$fmt" in
+        *x86-64*|*x86_64*)
             wide=$(printf '%s\n' "$text" | grep -c '%ymm' || true)
             guards=$(printf '%s\n' "$text" | grep -cE '	cpuid' || true)
             if [ "$wide" -gt 0 ] && [ "$guards" -eq 0 ]; then
@@ -168,11 +174,11 @@ for file in $files; do
                 continue
             fi
             printf '  ok  %s: %s, nothing above %s, %s AVX2 behind %s CPUID sites\n' \
-                "$(basename "$file")" "$arch" "$floor" "$wide" "$guards"
+                "$(basename "$file")" "$fmt" "$floor" "$wide" "$guards"
             ;;
         *)
             printf '  ok  %s: %s, nothing above the %s floor\n' \
-                "$(basename "$file")" "$arch" "$floor"
+                "$(basename "$file")" "$fmt" "$floor"
             ;;
     esac
 done

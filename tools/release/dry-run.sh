@@ -129,6 +129,29 @@ git -C "$repo" remote set-url origin "$work/origin.git"
 git -C "$repo" tag -l | while read -r t; do git -C "$repo" tag -d "$t" >/dev/null; done
 ok "origin repointed at a scratch remote with no tags"
 
+# A cut refuses to run against an empty Unreleased section, on purpose: a
+# release whose notes nobody wrote must stop. That makes "is there anything
+# unreleased right now" a property of the moment rather than of the tooling,
+# and the rehearsal is about the tooling — run the day after a release, it
+# failed here having proven nothing. So the clone gets a note of its own when
+# it has none, which also means the roll below is exercised on known content.
+if ! ( cd "$repo" && tools/release/changelog.sh unreleased >/dev/null 2>&1 ); then
+    awk '
+        !seeded && /^## Unreleased/ {
+            print
+            print ""
+            print "- Rehearsal note, written by the release dry run."
+            seeded = 1
+            next
+        }
+        { print }
+    ' "$repo/CHANGELOG.md" > "$repo/CHANGELOG.md.seed"
+    mv "$repo/CHANGELOG.md.seed" "$repo/CHANGELOG.md"
+    git -C "$repo" add -- CHANGELOG.md
+    git -C "$repo" commit --quiet -m 'dry run: an unreleased note to cut'
+    ok 'seeded an unreleased note: the tree had none to rehearse with'
+fi
+
 old=$(cd "$repo" && tools/release/versions.sh current)
 unreleased=$(cd "$repo" && tools/release/changelog.sh unreleased)
 # A first release may be cutting a version whose section was written before the

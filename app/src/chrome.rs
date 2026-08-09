@@ -430,7 +430,10 @@ pub(crate) fn window_config(
             (0, 0, 0, 0)
         } else {
             (6, 6, 8, 255)
-        });
+        })
+        // The mark, on the window's own surface, for the whole interval before
+        // the webview has anything to show. See `splash`.
+        .with_on_window(|window, _dom| crate::splash::install(&window));
 
     // The scheme is registered exactly once for the process, not once per
     // window, and the second window is the one that proves it: every webview

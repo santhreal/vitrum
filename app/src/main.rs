@@ -47,6 +47,7 @@ mod launch;
 #[allow(dead_code)]
 mod pane;
 mod socket;
+mod splash;
 mod state;
 mod sync;
 mod termpalette;

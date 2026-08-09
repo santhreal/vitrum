@@ -112,11 +112,59 @@ fn an_empty_line_has_no_program() {
     assert_eq!(split_command("   \t "), None);
 }
 
-/// The shell must always resolve to something, so the command dropdown's
-/// last resort can never be blank.
+/// Defect class: the product offering a shell as a thing to launch.
+///
+/// vitrum manages coding agents. A suggestion list that ends in `/bin/bash`
+/// tells a first-run operator with no agent installed that this is a
+/// terminal multiplexer, and any screenshot of the launcher ships that
+/// claim (`AGENTS.md`, "Demos show agents, not shell output"). The
+/// invariant is at the choke point: NOTHING `command_suggestions` invents
+/// may resolve to [`AgentKind::Shell`], for any input. History is exempt
+/// by construction — it holds only lines this operator really launched —
+/// and is checked here to prove the rule is about what the product offers,
+/// not about what an operator may run.
+///
+/// The shipped table is enumerated at run time, so adding an agent to
+/// `AGENTS` puts it under this gate without anyone remembering to.
 #[test]
-fn the_login_shell_is_never_empty() {
-    assert!(!default_shell().is_empty());
+fn no_invented_suggestion_is_a_shell() {
+    use vitrum_model::AgentKind;
+
+    let every: Vec<Detected> = AGENTS
+        .iter()
+        .map(|(label, command)| Detected { label, command })
+        .collect();
+    let got = command_suggestions(&LaunchStore::default(), &every, "", 1_000, 64);
+    assert_eq!(got.len(), AGENTS.len(), "every shipped agent must be offered");
+    for s in &got {
+        assert_ne!(
+            s.source,
+            CommandSource::History,
+            "{} came from an empty history",
+            s.line
+        );
+        assert_ne!(
+            AgentKind::of(&s.line),
+            AgentKind::Shell,
+            "the launcher invented a shell row: {}",
+            s.line
+        );
+    }
+
+    // An operator who has really launched a shell still gets it back. The
+    // gate is on invention, not on what this machine may run.
+    let mut store = LaunchStore::default();
+    store.history.push(HistoryEntry {
+        command: "/bin/bash".into(),
+        args: vec![],
+        count: 1,
+        last_used_ms: 900,
+        icon: None,
+    });
+    let got = command_suggestions(&store, &[], "", 1_000, 64);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].source, CommandSource::History);
+    assert_eq!(got[0].line, "/bin/bash");
 }
 
 /// Detection must report only what is installed, in table order, and must

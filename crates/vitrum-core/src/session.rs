@@ -1206,13 +1206,16 @@ fn reap(child: &mut (dyn portable_pty::Child + Send + Sync)) -> Option<i32> {
 }
 
 /// Blocking PTY write loop. Ends when the session drops its queue.
+///
+/// A write that fails ends the loop, because the master is gone and every
+/// keystroke after it would fail the same way. It is reported rather than
+/// swallowed: a silent break here is indistinguishable from a session whose
+/// input is simply being ignored, which is a bug that can survive for a long
+/// time precisely because nothing says anything.
 fn write_loop(mut writer: Box<dyn Write + Send>, mut input: mpsc::UnboundedReceiver<Bytes>) {
     while let Some(data) = input.blocking_recv() {
-        if writer
-            .write_all(&data)
-            .and_then(|()| writer.flush())
-            .is_err()
-        {
+        if let Err(e) = writer.write_all(&data).and_then(|()| writer.flush()) {
+            tracing::warn!(error = %e, bytes = data.len(), "writing to the pty");
             break;
         }
     }

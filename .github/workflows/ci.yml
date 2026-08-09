@@ -482,7 +482,10 @@ jobs:
       # that the other 151 gate, rather than being hidden behind a red that
       # everyone already knows the reason for.
       - name: the session crate on a real pseudoconsole
-        run: cargo test -p vitrum-core --locked -- --skip input_reaches_the_child_and_its_reply_returns
+        run: >
+          cargo test -p vitrum-core --locked --
+          --skip input_reaches_the_child_and_its_reply_returns
+          --skip a_raw_pseudoconsole_accepts_written_input
 
       # CONFIRMED FAILING. Observed on windows-latest: the child prints its
       # prompt, `mgr.write` is called with `hello\r\n`, and the stream stops at
@@ -490,11 +493,20 @@ jobs:
       # are not reaching the console input buffer, so this is input delivery
       # rather than the child or the assertion.
       #
-      # Allowed to fail so it reports without blocking. When it goes green,
-      # delete this step and drop the `--skip` above.
+      # The probe alongside it removes vitrum from the picture: it writes to the
+      # pty handle directly and reports what the write returned, which separates
+      # a bad master handle from bytes the console accepted and dropped. The
+      # session layer cannot tell those apart, because its write is a queue send
+      # that returns Ok long before anything touches the console.
+      #
+      # Allowed to fail so they report without blocking. When input works,
+      # delete this step and both skips above.
       - name: keyboard input reaches a Windows child
         continue-on-error: true
-        run: cargo test -p vitrum-core --locked -- input_reaches_the_child_and_its_reply_returns
+        run: >
+          cargo test -p vitrum-core --locked --
+          input_reaches_the_child_and_its_reply_returns
+          a_raw_pseudoconsole_accepts_written_input
 
   # The archive the updater downloads is built by a script, and the script,
   # `update::archive_name` and both installers must agree on its name. This

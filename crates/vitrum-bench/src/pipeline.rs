@@ -20,15 +20,18 @@
 //!   the run containing it is observable on the broadcast channel. Reported as
 //!   a distribution, because the tail is the thing an operator feels and a mean
 //!   is exactly where a stall goes to hide.
-//! - **Structural cost per megabyte.** Read syscalls, publishes, bytes copied
-//!   into the coalescer's staging buffer, bytes parsed by the daemon-side
-//!   terminal engine, and process-wide allocations. These come from
-//!   [`vitrum_core::PumpCounts`] and from this binary's own allocator, so they
-//!   are counts of what happened rather than inferences from a duration.
-//! - **The duplicated parse.** Every byte the daemon reads is parsed by
-//!   libghostty here and parsed again by the client's emulator. The engine is
-//!   timed on its own over the same bytes, so its share of the pipeline is a
-//!   measured fraction rather than a suspicion.
+//! - **Structural cost per megabyte.** Read syscalls, publishes, task wakeups,
+//!   bytes copied when a run cannot be rejoined in place, bytes the daemon
+//!   scans, reader arena allocations, and process-wide allocations. These come
+//!   from [`vitrum_core::PumpCounts`] and from this binary's own allocator, so
+//!   they are counts of what happened rather than inferences from a duration.
+//!   Reads per megabyte is the one that matters most now: with the engine off
+//!   the read path and the staging copy gone, a megabyte is mostly syscalls.
+//! - **The parse the daemon does not make.** A full terminal engine used to be
+//!   fed every byte on the read thread so the daemon could learn two strings.
+//!   It is timed here on its own, over the same bytes, because that is the
+//!   cost taking it off the path removed — and the cost the client's own
+//!   emulator still pays once, which is where it belongs.
 //!
 //! # The child
 //!
@@ -224,11 +227,13 @@ pub struct Phase {
     pub wakeups_per_mb: f64,
     pub staged_bytes_per_mb: f64,
     pub parsed_bytes_per_mb: f64,
+    /// Reader arena allocations, the byte path's whole allocation cost.
+    pub arenas_per_mb: f64,
     pub allocs_per_mb: f64,
     pub alloc_bytes_per_mb: f64,
 }
 
-/// What the daemon-side terminal engine costs on its own.
+/// What the terminal engine that used to sit on the read path costs on its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseCost {
     pub bytes: u64,
@@ -238,9 +243,9 @@ pub struct ParseCost {
     ///
     /// Both rates are megabytes per second over the same bytes, so the parse
     /// time per byte divided by the pipeline time per byte is just the ratio of
-    /// the rates. A value of 0.5 means half of what a session spends moving a
-    /// megabyte is spent parsing it a first time, before the client parses it a
-    /// second.
+    /// the rates. A value of 0.5 means feeding this engine again on the read
+    /// thread would add half of what a session now spends moving a megabyte —
+    /// which is what it did, and why it is gone.
     pub share_of_pipeline: f64,
 }
 
@@ -293,7 +298,7 @@ pub async fn run(spec: &PipelineSpec) -> anyhow::Result<Report> {
         .unwrap_or(0.0);
     let parse = parse_cost(spec.megabytes.max(1) * 1024 * 1024, single)?;
 
-    let (interactive, pump) = latency(&exe, spec.samples, spec.scrollback_bytes).await?;
+    let (interactive, pump) = latency(&exe, spec.samples, spec.scrollback_bytes, 0).await?;
 
     if let Some(summary) = interactive.summary() {
         report.latencies.push(("pty-to-broadcast".into(), summary));
@@ -303,7 +308,21 @@ pub async fn run(spec: &PipelineSpec) -> anyhow::Result<Report> {
     } else {
         report
             .failures
-            .push("no interactive sample was delivered at all".into());
+            .push("no interactive sample completed".into());
+    }
+
+    // The same keystroke with eight sessions streaming beside it. A window
+    // tuned only against an idle daemon is tuned against the case nobody
+    // complains about.
+    let (loaded, loaded_pump) = latency(&exe, spec.samples, spec.scrollback_bytes, 8).await?;
+    if let Some(summary) = loaded.summary() {
+        report
+            .latencies
+            .push(("pty-to-broadcast under 8 flooding sessions".into(), summary));
+    } else {
+        report
+            .failures
+            .push("no interactive sample completed under load".into());
     }
 
     if let Some(one) = phases.iter().find(|p| p.sessions == 1) {
@@ -318,6 +337,7 @@ pub async fn run(spec: &PipelineSpec) -> anyhow::Result<Report> {
         "throughput": phases,
         "daemon_parse": parse,
         "interactive_pump_counts": counts_json(&pump),
+        "interactive_pump_counts_under_load": counts_json(&loaded_pump),
     });
     report.duration_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -329,7 +349,10 @@ fn counts_json(c: &PumpCounts) -> serde_json::Value {
         "publishes": c.publishes,
         "wakeups": c.wakeups,
         "staged_bytes": c.staged_bytes,
+        "idle_flushes": c.idle_flushes,
+        "capped_flushes": c.capped_flushes,
         "parsed_bytes": c.parsed_bytes,
+        "arenas": c.arenas,
     })
 }
 
@@ -411,6 +434,7 @@ async fn throughput(
         pump.wakeups += counts.wakeups;
         pump.staged_bytes += counts.staged_bytes;
         pump.parsed_bytes += counts.parsed_bytes;
+        pump.arenas += counts.arenas;
     }
     for &id in &ids {
         let _ = manager.close(id);
@@ -432,6 +456,7 @@ async fn throughput(
         wakeups_per_mb: pump.wakeups as f64 / mb,
         staged_bytes_per_mb: pump.staged_bytes as f64 / mb,
         parsed_bytes_per_mb: pump.parsed_bytes as f64 / mb,
+        arenas_per_mb: pump.arenas as f64 / mb,
         allocs_per_mb: (after.0 - before.0) as f64 / mb,
         alloc_bytes_per_mb: (after.1 - before.1) as f64 / mb,
     })
@@ -476,6 +501,7 @@ async fn latency(
     exe: &Path,
     samples: usize,
     scrollback_bytes: usize,
+    floods: usize,
 ) -> anyhow::Result<(Latencies, PumpCounts)> {
     let manager = Arc::new(SessionManager::new(scrollback_bytes));
     let spec = spec_for(
@@ -484,6 +510,29 @@ async fn latency(
         "interactive",
     );
     let id = manager.spawn(spec).context("spawning the idle child")?;
+    // Sibling sessions streaming flat out for the whole measurement. This is
+    // the question an operator asks: not what a keystroke costs on an idle
+    // daemon, but what it costs while an agent is dumping a build log beside
+    // it. Each emitter is given far more to write than the sample loop can
+    // consume so none of them finishes early and quietly ends the load.
+    let mut noisy = Vec::with_capacity(floods);
+    for n in 0..floods {
+        let spec = spec_for(
+            exe,
+            vec!["emit".into(), "--bytes".into(), (1usize << 40).to_string()],
+            &format!("flood {n}"),
+        );
+        let flood = manager.spawn(spec).context("spawning a flooding sibling")?;
+        let flood_info = manager.info(flood).context("a freshly spawned session")?;
+        let rx = manager
+            .attach(flood, manager.new_viewer(), flood_info.cols, flood_info.rows)
+            .context("attaching to a flooding sibling")?;
+        // Drained on a task so the broadcast does not simply back up: a client
+        // that never reads makes the load disappear.
+        tokio::spawn(drain(rx, u64::MAX));
+        manager.write(flood, b"\n").context("releasing a flood")?;
+        noisy.push(flood);
+    }
     let info = manager.info(id).context("a freshly spawned session")?;
     let mut rx = manager
         .attach(id, manager.new_viewer(), info.cols, info.rows)
@@ -507,11 +556,14 @@ async fn latency(
     let pump = manager
         .pump_counts(id)
         .context("the interactive session vanished")?;
+    for flood in noisy {
+        let _ = manager.close(flood);
+    }
     let _ = manager.close(id);
     Ok((recorded, pump))
 }
 
-/// Time the daemon-side terminal engine over the same bytes, alone.
+/// Time the engine that used to sit on the read path over the same bytes, alone.
 fn parse_cost(bytes: usize, pipeline_mb_per_sec: f64) -> anyhow::Result<ParseCost> {
     let block = block();
     let mut vt = vitrum_vt::Vt::new(vitrum_vt::VtOptions {

@@ -230,7 +230,9 @@ pub(crate) fn usage() -> String {
          commands:\n  \
          update               install the newest published release\n  \
          hint                 declare what a session is doing, so the sidebar\n                       \
-         can show Approval and Input. `vitrum hint --help`.\n",
+         can show Approval and Input. `vitrum hint --help`.\n  \
+         icons                write the launcher, Windows and macOS icons into\n                       \
+         a data directory. `vitrum icons --help`.\n",
         wire::DEFAULT_WS_URL
     )
 }

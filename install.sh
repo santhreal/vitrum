@@ -404,6 +404,27 @@ if [ "$INTEGRATE" = 1 ]; then
         append_once "$rc" 'alias vu=' 'alias vu="vitrum update"'
     done
 
+    # The icon set is drawn by the binary, not shipped beside it. The release
+    # archive carries `vitrum` and `vitrum-server` and nothing else, so there
+    # is no PNG to unpack and no converter on the machine to make one; the mark
+    # is geometry compiled into the client and `vitrum icons` rasterises it.
+    #
+    # Idempotent: it overwrites the same paths every time, so a second install
+    # replaces the set rather than adding to it.
+    icon_data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+    icons_written=0
+    if [ "$os" = "Linux" ]; then
+        if "$INSTALL_DIR/vitrum" icons "$icon_data_dir" >/dev/null 2>&1; then
+            icons_written=1
+            say "  $icon_data_dir/icons/hicolor/*/apps/vitrum.png"
+            if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+                gtk-update-icon-cache -q -t -f "$icon_data_dir/icons/hicolor" 2>/dev/null || true
+            fi
+        else
+            warn "could not write the icon set, so the launcher entry has no picture"
+        fi
+    fi
+
     if [ "$os" = "Linux" ]; then
         apps="$HOME/.local/share/applications"
         if mkdir -p "$apps" 2>/dev/null; then
@@ -417,6 +438,14 @@ Terminal=false
 Categories=Development;TerminalEmulator;
 StartupWMClass=vitrum
 EOF
+            # Named, not a path: the launcher resolves `vitrum` against the
+            # hicolor tree written above and picks the size it needs. Only
+            # written when that tree exists, because an `Icon=` naming nothing
+            # is how an entry ends up with a broken-image placeholder instead
+            # of the desktop's own generic one.
+            if [ "$icons_written" = 1 ]; then
+                printf 'Icon=vitrum\n' >> "$apps/vitrum.desktop"
+            fi
             if command -v update-desktop-database >/dev/null 2>&1; then
                 update-desktop-database "$apps" 2>/dev/null || true
             fi
@@ -429,6 +458,19 @@ EOF
     if [ "$os" = "Darwin" ]; then
         app="$HOME/Applications/vitrum.app"
         if mkdir -p "$app/Contents/MacOS" 2>/dev/null; then
+            # Staged and copied rather than written into the bundle directly:
+            # `CFBundleIconFile` names a file in `Resources`, and the emitter
+            # also writes a freedesktop theme tree that has no business in an
+            # app bundle.
+            bundle_icon=""
+            if mkdir -p "$app/Contents/Resources" 2>/dev/null &&
+                "$INSTALL_DIR/vitrum" icons "$TMPDIR_SELF/iconset" >/dev/null 2>&1 &&
+                cp "$TMPDIR_SELF/iconset/icons/vitrum.icns" \
+                    "$app/Contents/Resources/vitrum.icns" 2>/dev/null; then
+                bundle_icon='  <key>CFBundleIconFile</key><string>vitrum.icns</string>'
+            else
+                warn "could not write the app icon, so the bundle shows a blank one"
+            fi
             cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -436,6 +478,7 @@ EOF
   <key>CFBundleName</key><string>vitrum</string>
   <key>CFBundleIdentifier</key><string>dev.santhreal.vitrum</string>
   <key>CFBundleExecutable</key><string>vitrum</string>
+$bundle_icon
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>NSHighResolutionCapable</key><true/>

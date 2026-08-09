@@ -15,6 +15,7 @@ mod badge_label;
 mod capability;
 mod deeplink;
 mod icon;
+mod mark;
 mod notify_payload;
 mod paths;
 mod registration;

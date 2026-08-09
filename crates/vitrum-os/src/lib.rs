@@ -41,6 +41,8 @@ pub mod branding;
 pub mod capability;
 pub mod deeplink;
 pub mod icon;
+pub mod iconfile;
+pub mod mark;
 pub mod notify;
 pub mod paths;
 pub mod single_instance;

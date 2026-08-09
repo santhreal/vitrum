@@ -26,10 +26,35 @@ static TRANSLUCENT: LazyLock<bool> = LazyLock::new(|| {
         .needs_transparent_window()
 });
 
+/// Size of the raster handed to the window manager as this window's icon.
+///
+/// One raster, because that is all `tao` accepts: it sets a single
+/// `_NET_WM_ICON` on X11 and one `HICON` pair on Windows, and both scale what
+/// they are given. 128 is the size a HiDPI alt-tab and a Windows jump list ask
+/// for, and it downsamples to a legible 16 pixel taskbar entry; handing over a
+/// 16 pixel raster instead leaves the alt-tab switcher upscaling eight times.
+const WINDOW_ICON_SIZE: u32 = 128;
+
+/// The mark, rasterised for the window manager.
+///
+/// Not a file, and not a resource: the geometry is compiled in and drawn by
+/// [`vitrum_os::mark`], so a window that opens before anything is installed
+/// still carries the mark. Without this the window shows whatever generic
+/// placeholder the desktop keeps for a program it cannot identify.
+///
+/// `None` only if the rasteriser ever hands back a buffer whose length
+/// disagrees with its dimensions, which `tao` rejects. A window with the
+/// generic icon is the right answer to that; refusing to open is not.
+fn window_icon() -> Option<vitrum_dioxus_desktop::tao::window::Icon> {
+    let img = vitrum_os::mark::render_mark(WINDOW_ICON_SIZE, vitrum_os::mark::MARK_COLOUR);
+    vitrum_dioxus_desktop::tao::window::Icon::from_rgba(img.rgba, img.width, img.height).ok()
+}
+
 /// The OS window for one slot.
 pub(crate) fn window_builder(state: &WindowGeometry, scale: f64, os_scale: f64) -> WindowBuilder {
     let window = WindowBuilder::new()
         .with_title("vitrum")
+        .with_window_icon(window_icon())
         .with_inner_size(PhysicalSize::new(state.width, state.height))
         .with_position(PhysicalPosition::new(state.x, state.y))
         .with_min_inner_size(PhysicalSize::new(
@@ -112,6 +137,101 @@ pub(crate) fn strip_css(css: &str) -> String {
     out
 }
 
+/// How long a start may take before the loading screen appears.
+///
+/// The screen exists for a cold start: a daemon that has to be launched, a
+/// profile that has to be read off a cold disk, a webview process that has to
+/// be spawned. It does not exist for a warm one, and showing it there would be
+/// a flash of a logo that is gone before it can be read, which is the visual
+/// signature of a program that is not sure what it is doing.
+///
+/// 400 milliseconds is the boundary between "instant" and "waiting" in the
+/// interaction literature this product's motion rules already follow, and it
+/// is comfortably longer than a warm start on the machines this was measured
+/// on. Nothing is inserted into the document before it elapses, so a 200
+/// millisecond start renders no overlay at all: not hidden, not zero-opacity,
+/// absent.
+pub(crate) const LOADING_SCREEN_DELAY_MS: u64 = 400;
+
+/// The mark, from the one file its geometry is written in.
+///
+/// Inlined rather than fetched. The loading screen is on screen precisely when
+/// nothing else has loaded yet, so a request for the mark is a request that
+/// resolves after the thing it was drawn for is over.
+///
+/// A loading screen is one of the two places the mark is allowed to appear;
+/// see `update/where_the_mark_may_appear.rs` for the other and for everywhere
+/// it may not.
+const BRAND_MARK_SVG: &str = include_str!("../../assets/logo/vitrum.svg");
+
+/// The loading screen's own script, evaluated in the document head.
+const LOADING_JS: &str = include_str!("loading.js");
+
+/// The boot splash's own declarations, without the element around them.
+///
+/// Not a member of [`stylesheets`]: that array is the set of sheets the
+/// design-system guards read, and this is not a design-system part. It is
+/// three declarations that have to be in force before the first of those
+/// sheets is even parsed.
+fn loading_css() -> String {
+    // The same base the webview is created with, so the screen is the window
+    // rather than a panel drawn on top of it. A translucent profile gets a
+    // transparent one for the same reason `window_config` does: the operator
+    // asked to see through the window, and that includes while it starts.
+    let background = if *TRANSLUCENT { "transparent" } else { "#060608" };
+    format!(
+        "#vitrum-boot{{position:fixed;inset:0;display:flex;\
+         align-items:center;justify-content:center;background:{background};\
+         color:#4C6EF5;z-index:2147483647}}\
+         #vitrum-boot svg{{width:96px;height:96px}}"
+    )
+}
+
+/// The boot splash's mark and timer.
+fn loading_scripts() -> String {
+    format!(
+        "<script>window.__vitrum_bootDelayMs={LOADING_SCREEN_DELAY_MS};\
+         window.__vitrum_bootMark={mark:?};</script>\
+         <script>{LOADING_JS}</script>",
+        mark = BRAND_MARK_SVG
+    )
+}
+
+/// Every `<style>` the document head ships, named, in emission order.
+///
+/// The head is BUILT from this list rather than from a literal run of tags,
+/// so a sheet cannot reach the operator without a name here, and the coverage
+/// guard has something to enumerate. It used to be a run of literals checked
+/// against the number two, and adding the boot splash turned a decision into
+/// a surprise failure that read as an off-by-one.
+pub(crate) fn style_origins() -> Vec<(&'static str, String)> {
+    // One pass over every stylesheet, once per call. The engine gets the
+    // declarations; the reasoning stays in the source files where it is read.
+    //
+    // ONE `<style>`, not sixteen. Cascade order is concatenation order, so
+    // joining them changes nothing about which rule wins. What it changes is
+    // how many stylesheet objects the engine carries: sixteen per document,
+    // and a document per window, so twenty windows in one web process held
+    // 320 of them where 20 will do. None of these sheets opens with
+    // `@charset` or `@import`, which are the two at-rules that must come
+    // first in a sheet and are the only reason not to do this.
+    //
+    // `stylesheets()` still returns them separately, because the guards that
+    // check a class is styled need to name the file that styles it.
+    let sheets = stylesheets();
+    let mut bundle =
+        String::with_capacity(sheets.iter().map(|(_, s)| s.len()).sum::<usize>() + 32);
+    for (_, sheet) in sheets.iter() {
+        bundle.push_str(&strip_css(sheet));
+        bundle.push('\n');
+    }
+    vec![
+        ("vendored xterm.css", XTERM_CSS.to_string()),
+        ("the design-system bundle", bundle),
+        ("the boot splash", loading_css()),
+    ]
+}
+
 /// The inlined stylesheet and script bundle, built once for the process.
 ///
 /// `OnceLock` rather than `LazyLock` because the renderer name in it comes off
@@ -121,40 +241,27 @@ pub(crate) fn strip_css(css: &str) -> String {
 pub(crate) fn document_head(opts: Options) -> &'static str {
     static HEAD: OnceLock<String> = OnceLock::new();
     HEAD.get_or_init(|| {
-        // One pass over every stylesheet, once per process. The engine gets the
-        // declarations; the reasoning stays in the source files where it is
-        // read. `xterm.css` is vendored and left alone.
-        // ONE `<style>`, not sixteen.
-        //
-        // Cascade order is concatenation order, so joining them changes
-        // nothing about which rule wins. What it changes is how many
-        // stylesheet objects the engine carries: sixteen per document, and a
-        // document per window, so twenty windows in one web process held 320
-        // of them where 20 will do. None of these sheets opens with `@charset`
-        // or `@import`, which are the two at-rules that must come first in a
-        // sheet and are the only reason not to do this.
-        //
-        // `stylesheets()` still returns them separately, because the guards
-        // that check a class is styled need to name the file that styles it.
-        let css: String = {
-            let sheets = stylesheets();
-            let mut out =
-                String::with_capacity(sheets.iter().map(|(_, s)| s.len()).sum::<usize>() + 32);
-            out.push_str("<style>");
-            for (_, sheet) in sheets.iter() {
-                out.push_str(&strip_css(sheet));
-                out.push('\n');
+        // Every sheet, in one place: `style_origins` decides what ships and
+        // in what order, and this loop only wraps each one in its element.
+        let styles: String = {
+            let origins = style_origins();
+            let mut out = String::with_capacity(
+                origins.iter().map(|(_, css)| css.len() + 16).sum::<usize>(),
+            );
+            for (_, css) in origins.iter() {
+                out.push_str("<style>");
+                out.push_str(css);
+                out.push_str("</style>");
             }
-            out.push_str("</style>");
             out
         };
         format!(
-            "<style>{XTERM_CSS}</style>\
-             {css}\
+            "{styles}\
              <script>window.__vitrum_renderer={:?};window.__vitrum_keymap={};</script>\
              <script type=\"text/plain\" id=\"rg-vendor-xterm\">{XTERM_JS}</script>\
              <script type=\"text/plain\" id=\"rg-vendor-webgl\">{ADDON_WEBGL_JS}</script>\
-             <script type=\"text/plain\" id=\"rg-vendor-fit\">{ADDON_FIT_JS}</script>",
+             <script type=\"text/plain\" id=\"rg-vendor-fit\">{ADDON_FIT_JS}</script>\
+             {loading}",
             opts.renderer.as_str(),
             // The table the OPERATOR has, not the compile-time default: their
             // rebindings folded in and their saved presets appended. The head
@@ -191,6 +298,7 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
             // parsing is not.
             // The tag is written into the literal above rather than built as
             // an argument, so the 100 KB is copied once instead of twice.
+            loading = loading_scripts(),
         )
     })
     .as_str()
@@ -411,3 +519,5 @@ pub(crate) fn open_window(from: &DesktopContext, opts: Options, link: Option<Dee
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod loading_tests;

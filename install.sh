@@ -8,21 +8,42 @@
 #
 #   sh install.sh                 install the latest release
 #   sh install.sh 0.1.0           install a specific version
+#   sh install.sh --uninstall     remove everything the installer wrote
 #   sh install.sh --help          full usage
 #
 # Env overrides:
 #   VITRUM_VERSION       version to install, same as the argument
 #   VITRUM_INSTALL_DIR   where the binaries go (default: $HOME/.local/bin)
+#   VITRUM_BASE_URL      where the release assets live, for a mirror
 #   GITHUB_TOKEN         sent to the GitHub API, for rate-limited networks
+#
+# Everything this script writes is recorded in an install manifest, and
+# `--uninstall` removes exactly what the manifest lists. A machine that has a
+# proxy, no write permission, a running vitrum, a truncated download, an
+# unsupported libc or no WebKit runtime is told which of those it is, and the
+# installer exits non-zero without installing half of anything.
 
 set -eu
 
 REPO="santhreal/vitrum"
 VERSION="${VITRUM_VERSION:-}"
 INSTALL_DIR="${VITRUM_INSTALL_DIR:-$HOME/.local/bin}"
+BASE_URL="${VITRUM_BASE_URL:-}"
 INTEGRATE=1
+RUNTIME_CHECK=1
+UNINSTALL=0
 if [ -n "${VITRUM_NO_INTEGRATE:-}" ]; then INTEGRATE=0; fi
+if [ -n "${VITRUM_NO_RUNTIME_CHECK:-}" ]; then RUNTIME_CHECK=0; fi
 TMPDIR_SELF=""
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
+MANIFEST="$DATA_DIR/vitrum/install-manifest"
+MANIFEST_NEW=""
+
+# One marked block per shell rc, so the uninstaller can take back exactly the
+# lines the installer added and leave the rest of the file untouched.
+BLOCK_BEGIN="# >>> vitrum >>>"
+BLOCK_END="# <<< vitrum <<<"
 
 # ============================================================
 # output
@@ -37,6 +58,25 @@ die() {
     for line in "$@"; do
         printf '  %s\n' "$line" >&2
     done
+    exit 1
+}
+
+# A failure of the network path. Identical to `die`, except that it names the
+# proxy when there is one: a proxy is the single most common reason a download
+# arrives empty, truncated, or as a login page, and an operator who is not told
+# it was in force will go looking at the release instead.
+die_net() {
+    printf 'error: %s\n' "$1" >&2
+    shift
+    for line in "$@"; do
+        printf '  %s\n' "$line" >&2
+    done
+    if [ -n "$PROXY" ]; then
+        printf '  %s\n' "A proxy is in force: $PROXY" >&2
+        printf '  %s\n' "It has to allow HTTPS to the download host. Add the host to no_proxy," >&2
+        printf '  %s\n' "unset the proxy, or fetch the archive on a machine that can reach it and" >&2
+        printf '  %s\n' "install from a local copy with --base-url=file:///path/to/assets." >&2
+    fi
     exit 1
 }
 
@@ -64,19 +104,29 @@ Options:
   --install-dir=PATH      where to put the binaries
                           (default: $HOME/.local/bin)
   --version=VERSION       same as the positional VERSION argument
+  --base-url=URL          directory holding the release archive and its
+                          SHA256SUMS, for a mirror or an air-gapped copy;
+                          needs an explicit VERSION
   --no-integrate          install the binaries only: no launcher entry, no
                           PATH edit, no `vu` shortcut
+  --no-runtime-check      install even though the WebKit runtime is missing,
+                          for an image that installs it separately
+  --uninstall             remove everything this installer wrote, and nothing
+                          else
   -h, --help              show this help and exit
 
 Environment:
   VITRUM_VERSION          same as --version
   VITRUM_INSTALL_DIR      same as --install-dir
+  VITRUM_BASE_URL         same as --base-url
   GITHUB_TOKEN            bearer token for the GitHub API
   VITRUM_NO_INTEGRATE     set to anything for --no-integrate
+  VITRUM_NO_RUNTIME_CHECK set to anything for --no-runtime-check
 
 Beyond the binaries, the installer adds a launcher entry, puts the install
-directory on your `PATH`, and defines `vu` as `vitrum update`. Each step is
-idempotent and each is skipped by --no-integrate.
+directory on your `PATH` for bash, zsh and fish, and defines `vu` as
+`vitrum update`. Each step is idempotent and each is skipped by
+--no-integrate.
 
 The installer downloads `vitrum-<version>-<target>.tar.gz` and the release
 `SHA256SUMS`, refuses to install if the digests disagree, and then places
@@ -118,8 +168,23 @@ while [ $# -gt 0 ]; do
             VERSION="$2"
             shift
             ;;
+        --base-url=*)
+            BASE_URL="${1#--base-url=}"
+            ;;
+        --base-url)
+            [ $# -ge 2 ] || die "--base-url needs a URL" \
+                "Pass it as --base-url=https://mirror.example/vitrum/v0.1.0."
+            BASE_URL="$2"
+            shift
+            ;;
         --no-integrate)
             INTEGRATE=0
+            ;;
+        --no-runtime-check)
+            RUNTIME_CHECK=0
+            ;;
+        --uninstall)
+            UNINSTALL=1
             ;;
         -*)
             die "unknown option: $1" "Run 'sh install.sh --help' for the options."
@@ -135,9 +200,293 @@ done
 # Accepting either spelling here is what keeps `install.sh v0.1.0` and
 # `install.sh 0.1.0` from building two different URLs.
 VERSION="${VERSION#v}"
+BASE_URL="${BASE_URL%/}"
 
 [ -n "$INSTALL_DIR" ] || die "install directory is empty" \
     "Pass --install-dir=PATH or unset VITRUM_INSTALL_DIR."
+
+os=$(uname -s)
+arch=$(uname -m)
+
+# ============================================================
+# what is already running
+# ============================================================
+
+# The pid of a process running exactly the binary at $1, or nothing.
+#
+# The path is compared, not the name: an unrelated `vitrum` from a source
+# checkout is none of this installer's business, and refusing to install
+# because of it would be a false alarm the operator cannot clear.
+running_pid() {
+    rp_path="$1"
+    rp_name="${rp_path##*/}"
+    rp_pids=""
+    if command -v pgrep >/dev/null 2>&1; then
+        rp_pids=$(pgrep -x "$rp_name" 2>/dev/null || true)
+    fi
+    for rp_pid in $rp_pids; do
+        rp_exe=""
+        if [ -r "/proc/$rp_pid/exe" ]; then
+            rp_exe=$(readlink "/proc/$rp_pid/exe" 2>/dev/null || true)
+            rp_exe="${rp_exe% (deleted)}"
+        elif command -v ps >/dev/null 2>&1; then
+            # macOS `ps -o comm=` prints the executable path, Linux the name.
+            rp_exe=$(ps -p "$rp_pid" -o comm= 2>/dev/null || true)
+        fi
+        if [ "$rp_exe" = "$rp_path" ]; then
+            printf '%s\n' "$rp_pid"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The client is refused, the daemon is not.
+#
+# Replacing the client under a running window leaves that window on the old
+# build and, on some filesystems, fails outright. Quitting it costs nothing:
+# the sessions are the daemon's children and survive the window closing.
+#
+# The daemon is a different call. Refusing while it runs would mean no install
+# could ever complete without ending every session on the machine, which is the
+# one thing this product promises not to make you do. Its file is replaced by
+# rename, the running process keeps its own open image, and it is told plainly
+# that it stays on the old code until someone restarts it.
+refuse_if_client_running() {
+    if rc_pid=$(running_pid "$INSTALL_DIR/vitrum"); then
+        die "vitrum is running from $INSTALL_DIR/vitrum (pid $rc_pid)" \
+            "Quit the vitrum window, then run this again." \
+            "Your sessions are not affected: they belong to vitrum-server, which" \
+            "this installer never stops." \
+            "To leave the running copy alone, install elsewhere with --install-dir=PATH."
+    fi
+}
+
+# ============================================================
+# shell rc files
+# ============================================================
+
+fish_config() {
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+}
+
+# True when this machine has that shell: it is installed, it is the login
+# shell, or its rc is already there. A machine with no fish gets no fish file
+# invented for it, and a machine with fish gets its PATH edit whether or not
+# fish is the shell that happens to be running the installer.
+shell_present() {
+    if [ -e "$2" ]; then return 0; fi
+    if command -v "$1" >/dev/null 2>&1; then return 0; fi
+    if [ "$(basename "${SHELL:-/bin/sh}")" = "$1" ]; then return 0; fi
+    return 1
+}
+
+# Calls $1 as `$1 <syntax> <file>` for every rc that should carry the block.
+#
+# `~/.profile` is read by login shells and by most desktop sessions, so it is
+# what makes the launcher entry find the binary. The interactive rc of each
+# shell is what makes an open terminal find it. bash alone was not enough:
+# zsh is the default on macOS, and fish is neither POSIX nor willing to read
+# `export PATH=`.
+each_rc() {
+    "$1" posix "$HOME/.profile"
+    if shell_present bash "$HOME/.bashrc"; then "$1" posix "$HOME/.bashrc"; fi
+    if shell_present zsh "${ZDOTDIR:-$HOME}/.zshrc"; then "$1" posix "${ZDOTDIR:-$HOME}/.zshrc"; fi
+    if shell_present fish "$(fish_config)"; then "$1" fish "$(fish_config)"; fi
+}
+
+# Removes the vitrum block from $1, and the single blank line that precedes it.
+# Returns 0 only when a block was really taken out, so callers can report what
+# they touched. Everything outside the markers is copied through byte for byte.
+rc_block_strip() {
+    sf="$1"
+    [ -f "$sf" ] || return 1
+    if ! grep -qF "$BLOCK_BEGIN" "$sf" 2>/dev/null; then return 1; fi
+    st="$sf.vitrum-tmp.$$"
+    if awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        $0 == b { if (nb > 0) nb--; skip = 1; next }
+        $0 == e { skip = 0; next }
+        skip { next }
+        $0 == "" { nb++; next }
+        { while (nb > 0) { print ""; nb-- } print }
+        END { while (nb-- > 0) print "" }
+    ' "$sf" > "$st" 2>/dev/null && cat "$st" > "$sf" 2>/dev/null; then
+        rm -f "$st"
+        return 0
+    fi
+    rm -f "$st"
+    warn "could not edit $sf; delete the '$BLOCK_BEGIN' block there by hand"
+    return 1
+}
+
+# Writes the block into $2 in the syntax named by $1, replacing any block that
+# is already there. Re-running the installer, or running it with a different
+# --install-dir, leaves exactly one block naming the current directory.
+rc_block_write() {
+    rk="$1"
+    rf="$2"
+    rd=$(dirname "$rf")
+    if [ ! -d "$rd" ]; then
+        mkdir -p "$rd" 2>/dev/null || { warn "could not create $rd, so $rf was not written"; return 0; }
+    fi
+    if [ ! -e "$rf" ]; then
+        : > "$rf" 2>/dev/null || { warn "could not create $rf, so PATH and vu are not set for that shell"; return 0; }
+    fi
+    if [ ! -w "$rf" ]; then
+        warn "$rf is not writable, so PATH and vu were not added there"
+        return 0
+    fi
+    rc_block_strip "$rf" >/dev/null 2>&1 || true
+    {
+        printf '\n%s\n' "$BLOCK_BEGIN"
+        if [ "$rk" = fish ]; then
+            printf 'if not contains "%s" $PATH\n' "$INSTALL_DIR"
+            printf '    set -gx PATH "%s" $PATH\n' "$INSTALL_DIR"
+            printf 'end\n'
+            printf 'alias vu "vitrum update"\n'
+        else
+            # Guarded, because an rc is read once per shell and an unguarded
+            # prepend grows $PATH by one entry every time a shell nests.
+            printf 'case ":$PATH:" in\n'
+            printf '    *":%s:"*) ;;\n' "$INSTALL_DIR"
+            printf '    *) export PATH="%s:$PATH" ;;\n' "$INSTALL_DIR"
+            printf 'esac\n'
+            if [ "$rf" != "$HOME/.profile" ]; then
+                printf 'alias vu="vitrum update"\n'
+            fi
+        fi
+        printf '%s\n' "$BLOCK_END"
+    } >> "$rf" 2>/dev/null || { warn "could not write $rf"; return 0; }
+    say "  $rf"
+    manifest_add rc "$rf"
+}
+
+rc_block_remove() {
+    if rc_block_strip "$2"; then
+        say "  $2 (vitrum block)"
+        REMOVED=1
+    fi
+}
+
+# ============================================================
+# install manifest
+# ============================================================
+#
+# Uninstalling is not a list of paths in a document for you to retype. Every
+# file the installer creates is recorded as it is created, including the icon
+# files, whose names come from the binary rather than from this script, so
+# `--uninstall` removes what was written on this machine and nothing that
+# happened to be sitting next to it.
+
+manifest_add() {
+    [ -n "$MANIFEST_NEW" ] || return 0
+    printf '%s %s\n' "$1" "$2" >> "$MANIFEST_NEW" 2>/dev/null || true
+}
+
+# Merges the previous manifest in, so an install that moved to a new directory
+# still knows about the copy it left behind, and commits the result.
+manifest_commit() {
+    [ -n "$MANIFEST_NEW" ] && [ -f "$MANIFEST_NEW" ] || return 0
+    if [ -f "$MANIFEST" ]; then
+        while IFS= read -r ml; do
+            [ -n "$ml" ] || continue
+            if grep -qxF "$ml" "$MANIFEST_NEW"; then continue; fi
+            mp="${ml#* }"
+            [ -e "$mp" ] || continue
+            printf '%s\n' "$ml" >> "$MANIFEST_NEW"
+        done < "$MANIFEST"
+    fi
+    if mkdir -p "$(dirname "$MANIFEST")" 2>/dev/null &&
+        cat "$MANIFEST_NEW" > "$MANIFEST" 2>/dev/null; then
+        return 0
+    fi
+    warn "could not write $MANIFEST, so --uninstall will fall back to the default layout"
+}
+
+# Empty directories the installer created on its way to a file it removed.
+# `rmdir` and not `rm -r`: a directory that still holds anything is somebody
+# else's, and is left exactly as it is.
+prune_dirs() {
+    for pd in \
+        "$DATA_DIR"/icons/hicolor/*/apps \
+        "$DATA_DIR"/icons/hicolor/* \
+        "$DATA_DIR/icons/hicolor" \
+        "$DATA_DIR/icons" \
+        "$DATA_DIR/vitrum"; do
+        if [ -d "$pd" ]; then rmdir "$pd" 2>/dev/null || true; fi
+    done
+}
+
+remove_file() {
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        if rm -f "$1" 2>/dev/null; then
+            say "  $1"
+            REMOVED=1
+        else
+            warn "could not remove $1"
+        fi
+    fi
+}
+
+remove_tree() {
+    if [ -d "$1" ]; then
+        if rm -rf "$1" 2>/dev/null; then
+            say "  $1"
+            REMOVED=1
+        else
+            warn "could not remove $1"
+        fi
+    fi
+}
+
+# ============================================================
+# uninstall
+# ============================================================
+
+if [ "$UNINSTALL" = 1 ]; then
+    refuse_if_client_running
+    REMOVED=0
+    say "Removing vitrum."
+    if [ -f "$MANIFEST" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            kind="${line%% *}"
+            path="${line#* }"
+            case "$kind" in
+                file) remove_file "$path" ;;
+                tree) remove_tree "$path" ;;
+                rc) rc_block_remove rc "$path" ;;
+                *) warn "ignoring an unreadable manifest line: $line" ;;
+            esac
+        done < "$MANIFEST"
+        rm -f "$MANIFEST"
+    else
+        say "  no manifest at $MANIFEST, so this removes the default layout"
+        remove_file "$INSTALL_DIR/vitrum"
+        remove_file "$INSTALL_DIR/vitrum-server"
+        remove_file "$DATA_DIR/applications/vitrum.desktop"
+        remove_tree "$HOME/Applications/vitrum.app"
+        for icon in "$DATA_DIR"/icons/hicolor/*/apps/vitrum.png \
+            "$DATA_DIR/icons/vitrum.ico" "$DATA_DIR/icons/vitrum.icns"; do
+            remove_file "$icon"
+        done
+        each_rc rc_block_remove
+    fi
+    prune_dirs
+    if [ "$REMOVED" = 0 ]; then
+        die "no vitrum install was found, so nothing was removed" \
+            "Looked for the manifest at $MANIFEST and for binaries in $INSTALL_DIR." \
+            "If it is installed somewhere else, name it: --uninstall --install-dir=PATH"
+    fi
+    if running_pid "$INSTALL_DIR/vitrum-server" >/dev/null 2>&1; then
+        say ""
+        warn "vitrum-server is still running from the copy that was just removed."
+        say "  It keeps its sessions until you stop it, and stopping it ends them."
+    fi
+    say ""
+    say "Config and state were left alone; they are listed in docs/configuration.md."
+    exit 0
+fi
 
 # ============================================================
 # tools
@@ -147,15 +496,28 @@ need() {
     command -v "$1" >/dev/null 2>&1 || die "$1 is required and was not found" "$2"
 }
 
-if command -v curl >/dev/null 2>&1; then
-    FETCH="curl"
-elif command -v wget >/dev/null 2>&1; then
-    FETCH="wget"
-else
-    die "neither curl nor wget is available" \
-        "Install one of them, or download the archive by hand from" \
-        "https://github.com/$REPO/releases and unpack it into $INSTALL_DIR."
-fi
+case "$BASE_URL" in
+    file://*)
+        # A local copy of the assets is read, not downloaded, so an air-gapped
+        # host with neither curl nor wget can still install. Requiring a
+        # downloader here would contradict the advice the failure below gives.
+        FETCH="file"
+        ;;
+    *)
+        if command -v curl >/dev/null 2>&1; then
+            FETCH="curl"
+        elif command -v wget >/dev/null 2>&1; then
+            FETCH="wget"
+        else
+            die "neither curl nor wget is available, so nothing can be downloaded" \
+                "Install one of them: 'sudo apt install curl', 'sudo dnf install curl'," \
+                "'sudo pacman -S curl' or 'brew install curl'." \
+                "Or download the archive and its SHA256SUMS by hand from" \
+                "https://github.com/$REPO/releases, put them in one directory, and run" \
+                "this script again with --base-url=file:///that/directory --version=X.Y.Z"
+        fi
+        ;;
+esac
 
 need tar "Install tar, or unpack the release archive by hand."
 
@@ -172,12 +534,51 @@ else
         "will not install an unverified binary."
 fi
 
+# ============================================================
+# proxy
+# ============================================================
+#
+# A proxy is not an error. Being behind one and not knowing it is: the download
+# then fails, or succeeds and hands over a login page, and every symptom points
+# at the release. So the proxy is named in the summary, named again in any
+# network failure, and rejected up front when it is spelled in a way curl and
+# wget cannot use.
+
+PROXY=""
+for pv in https_proxy HTTPS_PROXY all_proxy ALL_PROXY http_proxy HTTP_PROXY; do
+    eval "pvalue=\${$pv:-}"
+    [ -n "$pvalue" ] || continue
+    case "$pvalue" in
+        http://*/* | http://*[!/] | https://*/* | https://*[!/] | socks5://* | socks5h://* | socks4://*) ;;
+        *)
+            die "$pv is set to '$pvalue', which is not a URL a proxy can be reached at" \
+                "curl and wget read it as scheme://host:port, so a bare host:port is" \
+                "treated as a hostname and every download fails with a name lookup." \
+                "Set it as http://${pvalue}, or unset $pv."
+            ;;
+    esac
+    PROXY="$pv=$pvalue"
+    break
+done
+
 fetch() {
-    # $1 url, $2 destination
+    # $1 url, $2 destination. Timeouts, because a proxy that accepts the
+    # connection and then says nothing would otherwise hang the install with
+    # no output at all.
+    #
+    # `file://` is copied rather than fetched: wget has no such scheme at all,
+    # and a mirror on a local disk is the only way an air-gapped host installs.
+    case "$1" in
+        file://*)
+            cp "${1#file://}" "$2" 2>/dev/null
+            return
+            ;;
+    esac
     if [ "$FETCH" = "curl" ]; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 30 \
+            --speed-limit 1024 --speed-time 60 -o "$2" "$1"
     else
-        wget -q -O "$2" "$1"
+        wget -q --tries=3 --connect-timeout=30 --read-timeout=60 -O "$2" "$1"
     fi
 }
 
@@ -185,16 +586,18 @@ fetch_api() {
     # $1 url. Prints the body. GITHUB_TOKEN lifts the anonymous rate limit.
     if [ "$FETCH" = "curl" ]; then
         if [ -n "${GITHUB_TOKEN:-}" ]; then
-            curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+            curl -fsSL --retry 3 --connect-timeout 30 \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" "$1"
         else
-            curl -fsSL --retry 3 "$1"
+            curl -fsSL --retry 3 --connect-timeout 30 "$1"
         fi
     else
         if [ -n "${GITHUB_TOKEN:-}" ]; then
-            wget -q -O - --header="Authorization: Bearer $GITHUB_TOKEN" "$1"
+            wget -q -O - --tries=3 --connect-timeout=30 \
+                --header="Authorization: Bearer $GITHUB_TOKEN" "$1"
         else
-            wget -q -O - "$1"
+            wget -q -O - --tries=3 --connect-timeout=30 "$1"
         fi
     fi
 }
@@ -203,51 +606,198 @@ fetch_api() {
 # platform
 # ============================================================
 
-os=$(uname -s)
-arch=$(uname -m)
-
 # Exactly the four triples `.github/workflows/release.yml` builds and uploads.
-# Anything else has no asset to download, so it is told to build from source
-# rather than sent to a URL that will 404.
+# Anything else has no asset to download, so it is told what it is and what to
+# do about it, rather than being sent to a URL that answers 404.
 case "$os" in
     Linux)
         case "$arch" in
             x86_64 | amd64) TARGET="x86_64-unknown-linux-gnu" ;;
             *)
-                die "no published release for Linux $arch" \
-                    "Releases carry x86_64 Linux only." \
-                    "Build from source instead: https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
-                    "You will need a WebKitGTK 4.1 development package first; see" \
-                    "https://github.com/$REPO/blob/main/CONTRIBUTING.md"
+                die "there is no published build for Linux on $arch" \
+                    "Releases carry x86_64 Linux only, so no archive exists to download." \
+                    "Build from source on this machine instead:" \
+                    "  https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
+                    "You will need a WebKitGTK 4.1 development package first."
                 ;;
         esac
+        # The published Linux build links glibc. On a musl host it would
+        # install cleanly and then fail to start with a loader error naming a
+        # file nobody has, so the libc is checked here instead.
+        libc="glibc"
+        for loader in /lib/ld-musl-*.so.1; do
+            if [ -e "$loader" ]; then libc="musl"; fi
+        done
+        if command -v ldd >/dev/null 2>&1; then
+            case "$(ldd --version 2>&1 | head -1)" in
+                *musl*) libc="musl" ;;
+            esac
+        fi
+        if [ "$libc" = musl ]; then
+            die "there is no published build for Linux with musl libc" \
+                "This host runs musl (Alpine and Void use it); the release archive is" \
+                "linked against glibc and would fail to start with a missing loader." \
+                "Build from source on this machine instead:" \
+                "  https://github.com/$REPO/blob/main/CONTRIBUTING.md"
+        fi
         ;;
     Darwin)
         case "$arch" in
             arm64 | aarch64) TARGET="aarch64-apple-darwin" ;;
             x86_64) TARGET="x86_64-apple-darwin" ;;
             *)
-                die "no published release for macOS $arch" \
+                die "there is no published build for macOS on $arch" \
                     "Releases carry Apple silicon and Intel macOS only." \
                     "Build from source instead: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
                 ;;
         esac
         ;;
     *)
-        die "this installer supports Linux and macOS; found $os" \
+        die "this installer supports Linux and macOS; this host reports $os" \
             "On Windows, use install.ps1 from the same repository." \
             "Anywhere else, build from source: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
         ;;
 esac
 
 # ============================================================
+# preflight
+# ============================================================
+#
+# Everything that can be known before a byte is downloaded is checked before a
+# byte is downloaded. Finding out that a directory is read-only, or that the
+# machine has no WebKit, after ninety megabytes have crossed a metered link is
+# a worse experience than the failure itself.
+
+# The package that carries the WebKit runtime, named for this distribution.
+# "install a WebKit runtime" is not an instruction anyone can run.
+webkit_package() {
+    wid=""
+    wlike=""
+    if [ -r /etc/os-release ]; then
+        wid=$(sed -n 's/^ID=//p' /etc/os-release | head -1 | tr -d '"')
+        wlike=$(sed -n 's/^ID_LIKE=//p' /etc/os-release | head -1 | tr -d '"')
+    fi
+    for wcandidate in $wid $wlike; do
+        case "$wcandidate" in
+            debian | ubuntu | linuxmint | pop | elementary | raspbian | kali)
+                printf 'sudo apt install libwebkit2gtk-4.1-0'
+                return 0
+                ;;
+            fedora | rhel | centos | rocky | almalinux)
+                printf 'sudo dnf install webkit2gtk4.1'
+                return 0
+                ;;
+            arch | manjaro | endeavouros | cachyos)
+                printf 'sudo pacman -S webkit2gtk-4.1'
+                return 0
+                ;;
+            opensuse | opensuse-tumbleweed | opensuse-leap | suse | sles)
+                printf 'sudo zypper install libwebkit2gtk-4_1-0'
+                return 0
+                ;;
+            alpine)
+                printf 'sudo apk add webkit2gtk-4.1'
+                return 0
+                ;;
+            void)
+                printf 'sudo xbps-install -S webkit2gtk'
+                return 0
+                ;;
+            gentoo)
+                printf 'sudo emerge net-libs/webkit-gtk:4.1'
+                return 0
+                ;;
+            nixos)
+                printf 'nix-env -iA nixpkgs.webkitgtk_4_1'
+                return 0
+                ;;
+        esac
+    done
+    printf 'install your distribution package for libwebkit2gtk-4.1.so.0'
+}
+
+have_webkit() {
+    if command -v ldconfig >/dev/null 2>&1; then
+        if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then return 0; fi
+    fi
+    for wdir in /usr/lib /usr/lib64 /lib /lib64 /usr/local/lib \
+        /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+        for wlib in "$wdir"/libwebkit2gtk-4.1.so*; do
+            if [ -e "$wlib" ]; then return 0; fi
+        done
+    done
+    return 1
+}
+
+# A directory the installer can really write into, rather than one the mode
+# bits merely suggest it can: a read-only mount, a full filesystem and an
+# immutable directory all pass `-w` and fail the first write.
+assert_writable() {
+    aw_dir="$1"
+    if [ -e "$aw_dir" ] && [ ! -d "$aw_dir" ]; then
+        die "$aw_dir exists and is not a directory" \
+            "Move it aside, or install somewhere else with --install-dir=PATH."
+    fi
+    if [ ! -d "$aw_dir" ]; then
+        aw_parent=$(dirname "$aw_dir")
+        while [ ! -d "$aw_parent" ] && [ "$aw_parent" != "/" ]; do
+            aw_parent=$(dirname "$aw_parent")
+        done
+        mkdir -p "$aw_dir" 2>/dev/null ||
+            die "could not create $aw_dir" \
+                "$aw_parent is where it stopped: you do not have permission to create" \
+                "a directory there, or the filesystem is read-only." \
+                "Pick a writable directory with --install-dir=PATH."
+    fi
+    aw_probe="$aw_dir/.vitrum-write-test.$$"
+    if ! (: > "$aw_probe") 2>/dev/null; then
+        rm -f "$aw_probe" 2>/dev/null || true
+        die "$aw_dir cannot be written to" \
+            "The directory exists, and creating a file in it was refused: it is owned" \
+            "by another user, mounted read-only, or the filesystem is full." \
+            "Pick a writable directory with --install-dir=PATH, or run this as the" \
+            "user that owns $aw_dir. Do not run the installer as root to install" \
+            "into your own home directory: it would leave root-owned binaries there."
+    fi
+    rm -f "$aw_probe" 2>/dev/null || true
+}
+
+assert_writable "$INSTALL_DIR"
+refuse_if_client_running
+
+if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ]; then
+    if ! have_webkit; then
+        die "vitrum needs a WebKit runtime and this machine has none" \
+            "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
+            "it the binary installs and then fails to open a window." \
+            "Install it first:" \
+            "  $(webkit_package)" \
+            "Then run this installer again." \
+            "To install anyway, for an image that adds the runtime separately, pass" \
+            "--no-runtime-check."
+    fi
+fi
+
+# A re-install is normal and is stated, so the operator knows the version they
+# are leaving as well as the one they are getting.
+PREVIOUS=""
+if [ -x "$INSTALL_DIR/vitrum" ]; then
+    PREVIOUS=$("$INSTALL_DIR/vitrum" --version 2>/dev/null || true)
+    [ -n "$PREVIOUS" ] || PREVIOUS="an unreadable build"
+fi
+
+# ============================================================
 # version
 # ============================================================
 
-if [ -z "$VERSION" ]; then
+if [ -n "$BASE_URL" ]; then
+    [ -n "$VERSION" ] || die "--base-url needs an explicit version" \
+        "A mirror has no releases API to ask, so the version cannot be resolved." \
+        "Pass it: sh install.sh 0.1.0 --base-url=$BASE_URL"
+elif [ -z "$VERSION" ]; then
     say "Resolving the latest release of $REPO."
     latest=$(fetch_api "https://api.github.com/repos/$REPO/releases/latest") || latest=""
-    [ -n "$latest" ] || die "could not reach the GitHub releases API" \
+    [ -n "$latest" ] || die_net "could not reach the GitHub releases API" \
         "Check your network, or pass an explicit version:" \
         "  sh install.sh 0.1.0" \
         "Published versions are listed at https://github.com/$REPO/releases"
@@ -259,7 +809,11 @@ if [ -z "$VERSION" ]; then
 fi
 
 ARCHIVE="vitrum-${VERSION}-${TARGET}.tar.gz"
-BASE="https://github.com/$REPO/releases/download/v${VERSION}"
+if [ -n "$BASE_URL" ]; then
+    BASE="$BASE_URL"
+else
+    BASE="https://github.com/$REPO/releases/download/v${VERSION}"
+fi
 
 say ""
 say "  version      v${VERSION}"
@@ -267,6 +821,8 @@ say "  target       ${TARGET}"
 say "  archive      ${ARCHIVE}"
 say "  install to   ${INSTALL_DIR}"
 say "  binaries     vitrum, vitrum-server"
+[ -z "$PREVIOUS" ] || say "  replacing    ${PREVIOUS}"
+[ -z "$PROXY" ] || say "  proxy        ${PROXY}"
 say ""
 
 # ============================================================
@@ -276,19 +832,66 @@ say ""
 TMPDIR_SELF=$(mktemp -d 2>/dev/null || mktemp -d -t vitrum) ||
     die "could not create a temporary directory" \
         "Check that TMPDIR points somewhere writable."
+MANIFEST_NEW="$TMPDIR_SELF/manifest"
+: > "$MANIFEST_NEW"
 
 say "Downloading $ARCHIVE."
 fetch "$BASE/$ARCHIVE" "$TMPDIR_SELF/$ARCHIVE" ||
-    die "could not download $BASE/$ARCHIVE" \
+    die_net "could not download $BASE/$ARCHIVE" \
         "Check that v${VERSION} is published and carries an asset for ${TARGET}:" \
         "  https://github.com/$REPO/releases/tag/v${VERSION}"
 
+# Why a shape check when there is a digest two steps below: because "checksum
+# mismatch" is the wrong answer to "the transfer stopped half way" and to "a
+# captive portal sent you its login page". Both are common, neither is a bad
+# release, and each has a different thing for the operator to do.
+archive_shape() {
+    if [ ! -s "$1" ]; then
+        printf 'it is empty (0 bytes)'
+        return 0
+    fi
+    as_size=$(wc -c < "$1" | tr -d ' ')
+    as_magic=$(head -c 2 "$1" | od -An -tx1 2>/dev/null | tr -d ' \n')
+    if [ "$as_magic" != "1f8b" ]; then
+        if head -c 512 "$1" | grep -qi -e '<html' -e '<!doctype' -e '<title'; then
+            printf 'it is a web page, not an archive (%s bytes)' "$as_size"
+        else
+            printf 'it is not a gzip archive (%s bytes, first bytes %s)' \
+                "$as_size" "${as_magic:-none}"
+        fi
+        return 0
+    fi
+    if command -v gzip >/dev/null 2>&1; then
+        if ! gzip -t "$1" 2>/dev/null; then
+            printf 'it is truncated: the gzip stream ends part way through (%s bytes)' "$as_size"
+        fi
+    elif ! tar tzf "$1" >/dev/null 2>&1; then
+        printf 'it is truncated: the archive ends part way through (%s bytes)' "$as_size"
+    fi
+}
+
+shape=$(archive_shape "$TMPDIR_SELF/$ARCHIVE")
+if [ -n "$shape" ]; then
+    die_net "the download of $ARCHIVE did not arrive intact: $shape" \
+        "Nothing was installed." \
+        "This is the transfer, not the release: retry, and if it keeps stopping" \
+        "at the same size, something between you and the download host is cutting" \
+        "the connection."
+fi
+
 say "Downloading SHA256SUMS."
 fetch "$BASE/SHA256SUMS" "$TMPDIR_SELF/SHA256SUMS" ||
-    die "could not download $BASE/SHA256SUMS" \
+    die_net "could not download $BASE/SHA256SUMS" \
         "Every vitrum release publishes it, so a release without one is" \
         "incomplete and must not be installed. Report it at" \
         "https://github.com/$REPO/issues"
+
+if ! head -1 "$TMPDIR_SELF/SHA256SUMS" | grep -Eq '^[0-9a-fA-F]{64}[ *]'; then
+    die_net "what came back for SHA256SUMS is not a checksum file" \
+        "Its first line is not a digest and a filename, so something answered on" \
+        "the release's behalf: a proxy, a captive portal, or a sign-in page." \
+        "Nothing was installed."
+fi
 
 # Matched literally rather than with a regex: the archive name is full of dots,
 # and a dot in a pattern matches anything, which would accept a digest filed
@@ -303,31 +906,24 @@ while read -r digest name; do
 done < "$TMPDIR_SELF/SHA256SUMS"
 [ -n "$expected" ] || die "SHA256SUMS has no entry for $ARCHIVE" \
     "The release is inconsistent with its own checksum file and this" \
-    "installer will not install an unverified archive. Report it at" \
-    "https://github.com/$REPO/issues"
+    "installer will not install an unverified archive. Nothing was installed." \
+    "Report it at https://github.com/$REPO/issues, or install a version whose" \
+    "checksum file lists its own archive: sh install.sh X.Y.Z"
 
 actual=$(sha256_of "$TMPDIR_SELF/$ARCHIVE")
 if [ "$actual" != "$expected" ]; then
     die "checksum mismatch for $ARCHIVE; nothing was installed" \
         "expected $expected" \
         "actual   $actual" \
-        "Do not use this download. Retry, and if it fails again report it at" \
-        "https://github.com/$REPO/issues"
+        "The archive is intact but is not the file this release published, so it" \
+        "was changed on the way here. Do not use this download. Retry, and if it" \
+        "fails again report it at https://github.com/$REPO/issues"
 fi
 say "Checksum verified."
 
 # ============================================================
 # install
 # ============================================================
-
-mkdir -p "$INSTALL_DIR" ||
-    die "could not create $INSTALL_DIR" \
-        "Pick a writable directory with --install-dir=PATH."
-[ -w "$INSTALL_DIR" ] ||
-    die "$INSTALL_DIR is not writable" \
-        "Pick a writable directory with --install-dir=PATH, or run this as the" \
-        "user that owns $INSTALL_DIR. Do not run the installer as root to" \
-        "install into your own home directory."
 
 tar xzf "$TMPDIR_SELF/$ARCHIVE" -C "$TMPDIR_SELF" ||
     die "could not unpack $ARCHIVE" \
@@ -340,16 +936,42 @@ for bin in vitrum vitrum-server; do
             "Report it at https://github.com/$REPO/issues"
 done
 
-# Both binaries move in one pass. The client and the daemon speak a versioned
-# protocol, so a half-finished install is a pair that refuses to talk.
+# Staged inside the install directory and renamed into place, one rename each.
+# A rename within a directory is atomic and works over a file another process
+# is executing, so a running vitrum-server keeps the image it started with
+# instead of failing the install with ETXTBSY.
 for bin in vitrum vitrum-server; do
-    chmod 755 "$TMPDIR_SELF/$bin"
-    mv -f "$TMPDIR_SELF/$bin" "$INSTALL_DIR/$bin" ||
-        die "could not install $bin into $INSTALL_DIR" \
-            "Check permissions on $INSTALL_DIR, or use --install-dir=PATH."
+    staged="$INSTALL_DIR/.$bin.vitrum-new.$$"
+    if ! cat "$TMPDIR_SELF/$bin" > "$staged" 2>/dev/null; then
+        rm -f "$staged" 2>/dev/null || true
+        die "could not write $bin into $INSTALL_DIR" \
+            "There was room and permission a moment ago, so the filesystem filled up" \
+            "or the directory changed underneath the install." \
+            "Nothing was replaced. Free some space, or use --install-dir=PATH."
+    fi
+    chmod 755 "$staged"
+    if ! mv -f "$staged" "$INSTALL_DIR/$bin" 2>/dev/null; then
+        rm -f "$staged" 2>/dev/null || true
+        die "could not replace $INSTALL_DIR/$bin" \
+            "The file is held open, or the directory does not allow replacing it." \
+            "Quit anything running from $INSTALL_DIR and try again, or install" \
+            "elsewhere with --install-dir=PATH."
+    fi
+    manifest_add file "$INSTALL_DIR/$bin"
 done
 
-say "Installed vitrum and vitrum-server into $INSTALL_DIR."
+if [ -n "$PREVIOUS" ]; then
+    say "Replaced $PREVIOUS with vitrum $VERSION in $INSTALL_DIR."
+else
+    say "Installed vitrum and vitrum-server into $INSTALL_DIR."
+fi
+
+if server_pid=$(running_pid "$INSTALL_DIR/vitrum-server"); then
+    warn "vitrum-server (pid $server_pid) is still running the previous build."
+    say "  Its sessions are unaffected. It takes the new build when it is next"
+    say "  restarted, and restarting it ends every session it holds, so do that"
+    say "  when the agents are idle."
+fi
 
 # ============================================================
 # desktop integration
@@ -360,49 +982,18 @@ say "Installed vitrum and vitrum-server into $INSTALL_DIR."
 # an application means. Every step here is idempotent and skipped by
 # --no-integrate.
 
-rc_files() {
-    # ~/.profile is read by login shells and by most desktop sessions, so it is
-    # what makes the launcher entry find the binary. The interactive rc is what
-    # makes the current terminal find it.
-    printf '%s\n' "$HOME/.profile"
-    case "$(basename "${SHELL:-/bin/sh}")" in
-        zsh) printf '%s\n' "$HOME/.zshrc" ;;
-        bash) printf '%s\n' "$HOME/.bashrc" ;;
-    esac
-}
-
-append_once() {
-    file="$1"
-    marker="$2"
-    line="$3"
-    [ -e "$file" ] || : > "$file" 2>/dev/null || return 0
-    if grep -qsF "$marker" "$file"; then return 0; fi
-    printf '\n# vitrum\n%s\n' "$line" >> "$file" 2>/dev/null || return 0
-    say "  $file"
-}
-
 if [ "$INTEGRATE" = 1 ]; then
     say ""
     say "Setting up."
 
+    each_rc rc_block_write
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *)
-            rc_files | while read -r rc; do
-                append_once "$rc" "$INSTALL_DIR:\$PATH" \
-                    "export PATH=\"$INSTALL_DIR:\$PATH\""
-            done
             PATH="$INSTALL_DIR:$PATH"
             export PATH
             ;;
     esac
-
-    rc_files | while read -r rc; do
-        case "$rc" in
-            "$HOME/.profile") continue ;;
-        esac
-        append_once "$rc" 'alias vu=' 'alias vu="vitrum update"'
-    done
 
     # The icon set is drawn by the binary, not shipped beside it. The release
     # archive carries `vitrum` and `vitrum-server` and nothing else, so there
@@ -410,15 +1001,28 @@ if [ "$INTEGRATE" = 1 ]; then
     # is geometry compiled into the client and `vitrum icons` rasterises it.
     #
     # Idempotent: it overwrites the same paths every time, so a second install
-    # replaces the set rather than adding to it.
-    icon_data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+    # replaces the set rather than adding to it. The paths it prints are the
+    # ones recorded, so the uninstaller removes the set this build wrote rather
+    # than a list of names copied into this script.
     icons_written=0
     if [ "$os" = "Linux" ]; then
-        if "$INSTALL_DIR/vitrum" icons "$icon_data_dir" >/dev/null 2>&1; then
+        if "$INSTALL_DIR/vitrum" icons "$DATA_DIR" > "$TMPDIR_SELF/icons.list" 2>/dev/null; then
             icons_written=1
-            say "  $icon_data_dir/icons/hicolor/*/apps/vitrum.png"
+            while IFS= read -r written; do
+                if [ -n "$written" ]; then manifest_add file "$written"; fi
+            done < "$TMPDIR_SELF/icons.list"
+            say "  $DATA_DIR/icons/hicolor/*/apps/vitrum.png"
             if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-                gtk-update-icon-cache -q -t -f "$icon_data_dir/icons/hicolor" 2>/dev/null || true
+                # Recorded only when this install is what created it: an
+                # existing cache describes other applications' icons too, and
+                # taking it away on uninstall would be taking their picture.
+                icon_cache="$DATA_DIR/icons/hicolor/icon-theme.cache"
+                had_cache=0
+                if [ -e "$icon_cache" ]; then had_cache=1; fi
+                gtk-update-icon-cache -q -t -f "$DATA_DIR/icons/hicolor" 2>/dev/null || true
+                if [ "$had_cache" = 0 ] && [ -e "$icon_cache" ]; then
+                    manifest_add file "$icon_cache"
+                fi
             fi
         else
             warn "could not write the icon set, so the launcher entry has no picture"
@@ -426,7 +1030,7 @@ if [ "$INTEGRATE" = 1 ]; then
     fi
 
     if [ "$os" = "Linux" ]; then
-        apps="$HOME/.local/share/applications"
+        apps="$DATA_DIR/applications"
         if mkdir -p "$apps" 2>/dev/null; then
             cat > "$apps/vitrum.desktop" <<EOF
 [Desktop Entry]
@@ -449,6 +1053,7 @@ EOF
             if command -v update-desktop-database >/dev/null 2>&1; then
                 update-desktop-database "$apps" 2>/dev/null || true
             fi
+            manifest_add file "$apps/vitrum.desktop"
             say "  $apps/vitrum.desktop"
         else
             warn "could not write $apps, so there is no launcher entry"
@@ -489,35 +1094,28 @@ EOF
             # `vitrum-server` next to itself or not at all.
             ln -sf "$INSTALL_DIR/vitrum" "$app/Contents/MacOS/vitrum"
             ln -sf "$INSTALL_DIR/vitrum-server" "$app/Contents/MacOS/vitrum-server"
+            manifest_add tree "$app"
             say "  $app"
             say "  the bundle is unsigned; the first launch needs right-click, then Open"
         else
             warn "could not write $app, so there is no launcher entry"
         fi
     fi
+else
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*) ;;
+        *) warn "$INSTALL_DIR is not on your PATH, so 'vitrum' will not be found." ;;
+    esac
 fi
 
-if [ "$os" = "Linux" ]; then
-    # A WebKit runtime is vitrum's only system dependency. `ldconfig -p` is the
-    # cheap, reliable check on glibc hosts; where it is absent the requirement
-    # is stated and left to you rather than guessed at.
-    if command -v ldconfig >/dev/null 2>&1; then
-        if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
-            :
-        else
-            warn "libwebkit2gtk-4.1 was not found; vitrum will not open a window without it."
-            say "  Debian and Ubuntu: sudo apt install libwebkit2gtk-4.1"
-            say "  Fedora:            sudo dnf install webkit2gtk4.1"
-            say "  Arch:              sudo pacman -S webkit2gtk-4.1"
-        fi
-    else
-        say "vitrum needs a WebKitGTK 4.1 runtime, its only system dependency."
-        say "  Debian and Ubuntu: sudo apt install libwebkit2gtk-4.1"
-        say "  Fedora:            sudo dnf install webkit2gtk4.1"
-        say "  Arch:              sudo pacman -S webkit2gtk-4.1"
-    fi
+manifest_commit
+
+if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 0 ] && ! have_webkit; then
+    warn "the WebKit runtime is still missing, so vitrum will not open a window."
+    say "  $(webkit_package)"
 fi
 
 say ""
 say "Run 'vitrum', or open it from your app launcher."
 say "Update with 'vitrum update', or 'vu' in a new shell."
+say "Remove it with 'sh install.sh --uninstall'."

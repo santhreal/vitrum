@@ -499,3 +499,296 @@ fn every_document_the_readme_links_to_exists() {
          longer links out to the documentation it moved its detail into"
     );
 }
+
+/// The install path answers for what a real machine does to it.
+///
+/// An installer is judged on the day it fails. Every case below was reached
+/// by a machine at some point: a proxy that returns a sign-in page, a
+/// transfer that stops half way, a directory owned by root, an editor open
+/// on the binary being replaced, a distribution whose WebKit package is
+/// spelled differently, an architecture nobody publishes for. Each one used
+/// to arrive as a 404, a bare non-zero exit, or the wrong diagnosis
+/// entirely: "checksum mismatch" is what a truncated download used to say,
+/// and it sends the operator to the release instead of to their network.
+///
+/// So the contract is that each case is detected as itself. The needles are
+/// message fragments rather than code, because the message is the product
+/// here; a rewrite that keeps the check and drops the sentence has removed
+/// the only part the operator sees.
+#[test]
+fn the_installer_answers_for_what_a_real_machine_does() {
+    let sh = include_str!("../../../install.sh");
+    let ps1 = include_str!("../../../install.ps1");
+    let doc = include_str!("../../../docs/install.md");
+
+    // case, what install.sh must say, what install.ps1 must say
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        (
+            "no downloader at all",
+            "neither curl nor wget is available",
+            None, // PowerShell has Invoke-WebRequest built in
+        ),
+        (
+            "a proxy variable that is not a URL",
+            "is not a URL a proxy can be reached at",
+            Some("is not a URL a proxy can be reached at"),
+        ),
+        (
+            "a proxy that blocks the download",
+            "A proxy is in force",
+            Some("A proxy is in force"),
+        ),
+        (
+            "a transfer that stopped early",
+            "it is truncated",
+            Some("it is truncated"),
+        ),
+        (
+            "a portal page instead of the archive",
+            "it is a web page, not an archive",
+            Some("it is a web page, not an archive"),
+        ),
+        (
+            "a checksum file that is not one",
+            "is not a checksum file",
+            Some("is not a checksum file"),
+        ),
+        (
+            "a checksum file with no line for this archive",
+            "has no entry for",
+            Some("has no entry for"),
+        ),
+        (
+            "a digest that disagrees",
+            "checksum mismatch",
+            Some("checksum mismatch"),
+        ),
+        (
+            "an install directory that refuses a write",
+            "cannot be written to",
+            Some("cannot be written to"),
+        ),
+        (
+            "a running vitrum in the install directory",
+            "is running from",
+            Some("is running from"),
+        ),
+        (
+            "a re-install over an existing one",
+            "replacing    ",
+            Some("replacing    "),
+        ),
+        (
+            "an uninstall of exactly what was written",
+            "install-manifest",
+            Some("install-manifest"),
+        ),
+        (
+            "an architecture with no published build",
+            "there is no published build for Linux on",
+            Some("there is no published build for Windows on"),
+        ),
+    ];
+
+    for (case, in_sh, in_ps1) in cases {
+        assert!(
+            sh.contains(in_sh),
+            "install.sh never says `{in_sh}`, so {case} is not a case it \
+             answers for"
+        );
+        if let Some(needle) = in_ps1 {
+            assert!(
+                ps1.contains(needle),
+                "install.ps1 never says `{needle}`, so {case} is not a case \
+                 it answers for"
+            );
+        }
+    }
+
+    // A libc mismatch installs cleanly and then fails to start, so it is
+    // caught by name rather than left to the loader.
+    assert!(
+        sh.contains("musl libc"),
+        "install.sh does not name musl, so a musl host gets a glibc archive \
+         and a loader error instead of a sentence it can act on"
+    );
+
+    // The runtime package, spelled the way each distribution spells it.
+    // "install a WebKit runtime" is not an instruction anyone can run.
+    for package in [
+        "libwebkit2gtk-4.1-0",  // Debian, Ubuntu
+        "webkit2gtk4.1",        // Fedora
+        "webkit2gtk-4.1",       // Arch
+        "libwebkit2gtk-4_1-0",  // openSUSE
+        "net-libs/webkit-gtk",  // Gentoo
+        "webkitgtk_4_1",        // NixOS
+    ] {
+        assert!(
+            sh.contains(package),
+            "install.sh does not name `{package}`, so that distribution is \
+             told to install something it has no package for"
+        );
+        assert!(
+            doc.contains(package),
+            "docs/install.md does not name `{package}`"
+        );
+    }
+    assert!(
+        ps1.contains("Microsoft.EdgeWebView2Runtime"),
+        "install.ps1 does not name the WebView2 runtime package, so a Windows \
+         machine without it is left with a binary that opens no window"
+    );
+
+    // Every shell that gets a PATH edit, in the syntax that shell parses.
+    // bash alone left zsh users (every macOS default shell) and fish users
+    // with binaries they could not run by name.
+    for (rc, syntax) in [
+        (".bashrc", "export PATH="),
+        (".zshrc", "export PATH="),
+        ("config.fish", "set -gx PATH"),
+    ] {
+        assert!(
+            sh.contains(rc) && sh.contains(syntax),
+            "install.sh does not edit {rc} with `{syntax}`, so that shell \
+             cannot find the binary it just installed"
+        );
+    }
+
+    // The checks that cost nothing run before the download that costs
+    // something. Finding out that the machine has no WebKit after ninety
+    // megabytes crossed a metered link is a worse experience than the
+    // failure itself.
+    let download = sh
+        .find("Downloading $ARCHIVE")
+        .expect("install.sh downloads the archive");
+    for (what, needle) in [
+        ("the WebKit runtime check", "needs a WebKit runtime"),
+        ("the write permission check", "cannot be written to"),
+        ("the running-client check", "is running from"),
+    ] {
+        let at = sh
+            .find(needle)
+            .unwrap_or_else(|| panic!("install.sh has no {what}"));
+        assert!(
+            at < download,
+            "{what} runs after the download in install.sh, so the operator \
+             pays for the archive before being told they cannot use it"
+        );
+    }
+    let ps1_download = ps1
+        .find("Downloading $Archive")
+        .expect("install.ps1 downloads the archive");
+    for (what, needle) in [
+        ("the WebView2 runtime check", "needs the WebView2 runtime"),
+        ("the write permission check", "cannot be written to"),
+        ("the running-client check", "is running from"),
+    ] {
+        let at = ps1
+            .find(needle)
+            .unwrap_or_else(|| panic!("install.ps1 has no {what}"));
+        assert!(
+            at < ps1_download,
+            "{what} runs after the download in install.ps1, so the operator \
+             pays for the archive before being told they cannot use it"
+        );
+    }
+
+    // The page an operator reads before running any of it.
+    for needle in ["--uninstall", "-Uninstall", "--base-url", "--no-runtime-check"] {
+        assert!(
+            doc.contains(needle),
+            "docs/install.md does not document `{needle}`"
+        );
+    }
+}
+
+/// No failure leaves without saying what to do next.
+///
+/// Enumerated from the scripts rather than from a list here, so a check added
+/// tomorrow is held to the same rule as the ones added today: a bare `die` or
+/// a bare `Fail` turns this red until someone writes the sentence that follows
+/// it. A message that only names the fault leaves the operator with a failed
+/// install and a search engine.
+#[test]
+fn every_installer_failure_names_what_to_do_next() {
+    let sh = include_str!("../../../install.sh");
+    let mut checked = 0;
+    for (n, line) in sh.lines().enumerate() {
+        let trimmed = line.trim_start();
+        // The definitions themselves, and the call inside `need`, which
+        // forwards its caller's action as the second argument.
+        if trimmed.starts_with("die()") || trimmed.starts_with("die_net()") {
+            continue;
+        }
+        let Some(rest) = call_argument_text(trimmed, &["die ", "die_net "]) else {
+            continue;
+        };
+        checked += 1;
+        // Either the actions continue onto the next line, or a second quoted
+        // argument carries them on this one.
+        let continued = line.trim_end().ends_with('\\');
+        let two_arguments = rest.matches('"').count() >= 4;
+        assert!(
+            continued || two_arguments,
+            "install.sh line {} fails with a message and no action:\n  {trimmed}",
+            n + 1
+        );
+    }
+    assert!(
+        checked >= 15,
+        "only {checked} failure paths were found in install.sh; the script no \
+         longer routes its failures through `die`, so nothing here is checked"
+    );
+
+    let ps1 = include_str!("../../../install.ps1");
+    let mut ps1_checked = 0;
+    for (n, line) in ps1.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("function Fail") || trimmed.starts_with("function FailNet") {
+            continue;
+        }
+        let Some(rest) = call_argument_text(trimmed, &["Fail ", "FailNet "]) else {
+            continue;
+        };
+        // `Fail $Message ($Actions + $extra)` inside FailNet forwards its
+        // caller's words; the caller is what this rule is about.
+        if rest.trim_start().starts_with('$') {
+            continue;
+        }
+        ps1_checked += 1;
+        assert!(
+            rest.contains("@("),
+            "install.ps1 line {} fails with a message and no action:\n  {trimmed}",
+            n + 1
+        );
+    }
+    assert!(
+        ps1_checked >= 10,
+        "only {ps1_checked} failure paths were found in install.ps1; the \
+         script no longer routes its failures through `Fail`"
+    );
+}
+
+/// The text after a call to one of `names` on `line`, if it is a call.
+///
+/// A call starts the statement: `die "..."`, or `x || die "..."`. A mention
+/// inside a comment or a string is not one, and matching those would make the
+/// rule above unfalsifiable.
+fn call_argument_text<'a>(line: &'a str, names: &[&str]) -> Option<&'a str> {
+    if line.starts_with('#') {
+        return None;
+    }
+    for name in names {
+        let at = if line.starts_with(name) {
+            Some(0)
+        } else {
+            line.find(&format!("|| {name}"))
+                .map(|i| i + 3)
+                .or_else(|| line.find(&format!("; {name}")).map(|i| i + 2))
+        };
+        if let Some(at) = at {
+            return Some(&line[at + name.len()..]);
+        }
+    }
+    None
+}

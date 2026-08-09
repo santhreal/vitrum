@@ -52,14 +52,18 @@ digest=$(sha256sum "$serve/$archive" | cut -d' ' -f1)
 printf '  archive  %s\n' "$archive"
 printf '  size     %s bytes\n' "$size"
 printf '  sha256   %s\n' "$digest"
-printf '  contents %s\n' "$(tar tzf "$serve/$archive" | tr '\n' ' ')"
+# Listed once and kept. Piping `tar tzf` into `grep -q` kills tar with SIGPIPE
+# the moment grep matches, and tar reports that as "tar: stdout: write error"
+# in the middle of a passing run, which reads like a corrupt archive.
+entries=$(tar tzf "$serve/$archive")
+printf '  contents %s\n' "$(printf '%s' "$entries" | tr '\n' ' ')"
 printf '  SHA256SUMS:\n'
 sed 's/^/    /' "$serve/SHA256SUMS"
 
 # `install.sh` names the two binaries it moves; an archive missing either one
 # verifies and then fails halfway through installing.
 for bin in vitrum vitrum-server; do
-    tar tzf "$serve/$archive" | grep -qx "$bin" ||
+    printf '%s\n' "$entries" | grep -qx "$bin" ||
         die "the archive has no $bin at its root"
 done
 ok 'the archive carries vitrum and vitrum-server at its root'

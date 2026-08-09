@@ -105,10 +105,16 @@ for path in $OVERLAY; do
     mkdir -p "$(dirname "$repo/$path")"
     cp -R "$path" "$repo/$path"
 done
-git -C "$repo" -c user.name=dry-run -c user.email=dry-run@invalid \
-    add -A -- $OVERLAY
-git -C "$repo" -c user.name=dry-run -c user.email=dry-run@invalid \
-    commit --quiet --allow-empty -m 'dry run: release tooling from the working tree'
+# An identity on the clone, not on each command. A cut commits, and `cut.sh`
+# runs its own `git commit` in here: a machine with no `user.email` configured
+# — every hosted CI runner is one — fails that commit with "empty ident name"
+# after the rehearsal has already done its work. The identity is repository
+# local, so it describes these throwaway commits and reaches nothing else.
+git -C "$repo" config user.name 'release dry run'
+git -C "$repo" config user.email 'dry-run@invalid'
+git -C "$repo" add -A -- $OVERLAY
+git -C "$repo" commit --quiet --allow-empty \
+    -m 'dry run: release tooling from the working tree'
 [ -z "$(git -C "$repo" status --porcelain)" ] || die 'the clone is not clean'
 ok "clone at $(git -C "$repo" rev-parse --short HEAD), tree clean"
 

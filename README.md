@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo/vitrum.svg" alt="vitrum" width="72" />
-</p>
-
 <h1 align="center">vitrum</h1>
 
 <p align="center">
@@ -19,17 +15,29 @@
   <strong><a href="SECURITY.md">Security</a></strong>
 </p>
 
-<p align="center">
-  <img src="assets/screenshots/hero.png" width="960" alt="One vitrum window holding four coding agents grouped by project: a Gemini session working, a Claude session waiting for approval, a Codex session ready, and a second Claude session asking for input. The focused Claude session has read two files, explained a race between the reaper and the registry, and is holding a proposed edit until it is approved." />
-</p>
+# One interface for every agent TUI you have running
 
-# A terminal for running many coding agents at once
+vitrum runs the agent TUIs you already use — Claude Code, Codex, Gemini CLI,
+veyyon, or any other command — and puts them in one window with one list down
+the side.
 
-You run several coding agents at a time. Each one wants a terminal, none of them
-tell you when they are done, and a tab bar does not scale past about four. vitrum
-gives every session a row that says which agent is running it and whether it is
-working, waiting for you, or dead, and it keeps them all alive in one daemon so
-closing the window costs you nothing.
+Every session gets a row: which tool is running it, which project it is in,
+and what it is doing right now.
+
+- **working** — busy, nothing for you to do
+- **waiting for approval** — it wants a yes before it edits or runs something
+- **waiting for input** — it asked you a question
+- **ready** — it finished, possibly while you were reading something else
+- **failed** — it died
+
+Agent TUIs block. Four of them in tab bars means clicking through tabs to find
+the one stuck waiting on you, because tabs show names and never states. This
+shows states. `Ctrl+Shift+Down` jumps straight to the next session that wants
+something.
+
+Sessions run in a background daemon, not in the window. Closing the window or
+updating the app does not kill them. Reopen it and everything is still there,
+scrollback included.
 
 ## Install
 
@@ -244,10 +252,10 @@ Run it in place to check the build before installing anything:
 
 ---
 
-### Desktop entry and icon
+### Desktop entry
 
-The pastes above install the command. These add a launcher entry, an icon, and a
-`vu` shortcut for `vitrum update`. Run from a repository checkout.
+The install above places the command. These add a launcher entry and a `vu`
+shortcut for `vitrum update`. Run from a repository checkout.
 
 #### Linux
 
@@ -255,18 +263,12 @@ The pastes above install the command. These add a launcher entry, an icon, and a
 bin=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release
 mkdir -p ~/.local/bin ~/.local/share/applications
 install -m755 "$bin/vitrum" "$bin/vitrum-server" ~/.local/bin/
-for s in 16 24 32 48 64 128 256 512; do
-  install -Dm644 assets/logo/vitrum-$s.png \
-    ~/.local/share/icons/hicolor/${s}x${s}/apps/vitrum.png
-done
-gtk-update-icon-cache -qtf ~/.local/share/icons/hicolor 2>/dev/null || true
 cat > ~/.local/share/applications/vitrum.desktop <<EOF
 [Desktop Entry]
 Type=Application
 Name=vitrum
-Comment=A terminal for running many coding agents at once
+Comment=One interface for every agent TUI you have running
 Exec=$HOME/.local/bin/vitrum
-Icon=vitrum
 Terminal=false
 Categories=Development;TerminalEmulator;
 StartupWMClass=vitrum
@@ -348,9 +350,7 @@ $menu = [Environment]::GetFolderPath('Programs')
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$menu\vitrum.lnk")
 $s.TargetPath = "$bin\vitrum.exe"
 $s.WorkingDirectory = $bin
-$s.Description = "A terminal for running many coding agents at once"
-Copy-Item assets\logo\vitrum.ico $bin -Force
-$s.IconLocation = "$bin\vitrum.ico"
+$s.Description = "One interface for every agent TUI you have running"
 $s.Save()
 if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Force -Path $PROFILE | Out-Null }
 if (-not (Select-String -Path $PROFILE -Pattern 'function vu' -Quiet)) {
@@ -369,7 +369,6 @@ carry the `update` argument with it.
 ```sh
 rm -f ~/.local/bin/vitrum ~/.local/bin/vitrum-server
 rm -f ~/.local/share/applications/vitrum.desktop
-rm -f ~/.local/share/icons/hicolor/*/apps/vitrum.png
 ```
 
 Then delete the `# vitrum` alias line from your shell rc. vitrum writes nothing

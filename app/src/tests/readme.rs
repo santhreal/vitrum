@@ -293,40 +293,31 @@ fn the_documented_install_verifies_what_it_downloads() {
     );
 }
 
-/// Every image the README shows is in the repository.
+/// Every image the README shows is in the repository, and none is a picture
+/// of a shell.
 ///
-/// The screenshots are the first thing anyone sees, and a moved or renamed file
-/// turns the top of the page into three broken-image icons. Nothing else in the
-/// build reads these paths, so nothing else would notice.
+/// The page ships no pictures at all right now. Every one it used to carry
+/// was deleted: a GIF, an MP4 and two screenshots that showed `bash`,
+/// `cargo test` or `git log` filling the pane with a path from the recording
+/// machine in the launcher, then a hero that was a photograph of the test
+/// fixture, captioned as four real sessions. Each argued the product was a
+/// terminal multiplexer, or was simply not the product.
+///
+/// So there is no floor here, and that is deliberate. A count only ever
+/// forced someone to keep a bad picture on the page to keep the build green,
+/// which is exactly how the fixture screenshot survived. What is asserted is
+/// the pair of rules a replacement has to satisfy: it exists, and it is not
+/// named for a shell or a build tool. See AGENTS.md, "Demos show agents, not
+/// shell output".
 #[test]
-fn every_screenshot_the_readme_shows_exists() {
+fn every_image_the_readme_shows_exists_and_is_not_a_shell() {
     let readme = include_str!("../../../README.md");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("the crate lives under the workspace root");
 
-    for rest in readme.split("](").skip(1) {
-        let target = rest.split(')').next().unwrap_or_default();
-        if !target.starts_with("assets/") {
-            continue;
-        }
-        assert!(
-            root.join(target).is_file(),
-            "the README points at {target}, which is not in the repository"
-        );
-    }
-
-    // No count is asserted any more, and the reason is the point. This used to
-    // demand four Markdown assets. Those four were a GIF, an MP4 and two
-    // screenshots, and every one of them showed `bash`, `cargo test` or
-    // `git log` filling the pane, with an absolute path from the recording
-    // machine visible in the launcher. They argued the product was a terminal
-    // multiplexer, so they were deleted, and a number that only described
-    // them is not a contract worth keeping.
-    //
-    // The rule they broke is asserted instead: a demo asset may not be named
-    // for a shell or a build tool, because that name becomes a session title
-    // on the front page. See AGENTS.md, "Demos show agents, not shell output".
+    // Markdown `](path)` and HTML `src="path"` both put an image on the page,
+    // and a scan for one is blind to the other. The banner was HTML.
     let referenced = readme
         .split("](")
         .skip(1)
@@ -338,7 +329,12 @@ fn every_screenshot_the_readme_shows_exists() {
                 .filter_map(|rest| rest.split('"').next()),
         )
         .filter(|target| target.starts_with("assets/"));
+
     for target in referenced {
+        assert!(
+            root.join(target).is_file(),
+            "the README points at {target}, which is not in the repository"
+        );
         for banned in [
             "bash", "zsh", "fish", "shell", "cargo", "git", "make", "npm", "docker", "htop",
         ] {
@@ -349,36 +345,6 @@ fn every_screenshot_the_readme_shows_exists() {
             );
         }
     }
-}
-
-/// The banner is in the repository too.
-///
-/// The test above reads Markdown image syntax. The banner, the badge row and
-/// anything else that needs centring are HTML, because Markdown cannot centre
-/// an image, and `<img src>` is invisible to a scan for `](`. The first image
-/// on the page is exactly the one worth checking.
-#[test]
-fn every_html_image_the_readme_shows_exists() {
-    let readme = include_str!("../../../README.md");
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the crate lives under the workspace root");
-
-    let mut shown = 0;
-    for rest in readme.split("src=\"").skip(1) {
-        let target = rest.split('"').next().unwrap_or_default();
-        // Badges are served by shields.io. Only our own files are ours to keep.
-        if !target.starts_with("assets/") {
-            continue;
-        }
-        shown += 1;
-        assert!(
-            root.join(target).is_file(),
-            "the README's HTML points at {target}, which is not in the repository"
-        );
-    }
-
-    assert!(shown >= 1, "the README shows no banner");
 }
 
 /// The generated performance regions are present, closed, and filled.

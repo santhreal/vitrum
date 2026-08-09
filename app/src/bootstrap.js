@@ -23,7 +23,6 @@
 
 const state = {
   term: null,
-  fit: null,
   // Set once a mount has failed, so the failure is reported once instead of
   // retried on every pane op. Declared here rather than assigned onto the
   // object later: one hidden class for the life of the window.
@@ -242,7 +241,6 @@ function mount(el) {
 
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-  state.fit = fit;
 
   // Reaching the top of the buffer asks the daemon for what came before it.
   //

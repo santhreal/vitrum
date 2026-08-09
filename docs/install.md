@@ -1,7 +1,6 @@
 # Installing, updating, removing
 
-The install command is in the [README](../README.md). This page covers what it
-does, how to pin or roll back a version, and how to remove it.
+The install command is in the [README](../README.md).
 
 ## What the installer does
 

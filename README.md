@@ -39,7 +39,7 @@ irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 | iex
 
 Both scripts resolve the latest release, check the archive against the release
 `SHA256SUMS`, install nothing on a mismatch, place `vitrum` and `vitrum-server`
-on `PATH`, and start the app. `vitrum update` repeats that in place.
+on `PATH`, and add a launcher entry. `vitrum update` repeats that in place.
 
 Linux needs a WebKit runtime: `libwebkit2gtk-4.1` on Debian and Ubuntu,
 `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch. macOS and Windows ship one.

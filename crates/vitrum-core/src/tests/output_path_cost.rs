@@ -163,7 +163,8 @@ async fn published_bytes_are_parsed_exactly_once() {
     );
 }
 
-/// A burst must cost far fewer task wakeups than it costs reads.
+/// A backlog of reads costs one timer and a handful of wakeups, not one of
+/// each per read.
 ///
 /// WHY: the coalescer awaited each read under its own `timeout_at`, which
 /// armed a timer and rescheduled the task once per read. A pty hands back a
@@ -171,30 +172,50 @@ async fn published_bytes_are_parsed_exactly_once() {
 /// thousands of timer registrations to publish sixteen runs. One timer per
 /// window plus `recv_many` collapses that.
 ///
-/// The assertion is a ratio against this run's own read count rather than an
-/// absolute number, because how much a pty returns per read depends on the
-/// machine and on how fast the reader is draining it. Per-read waiting pins
-/// wakeups to reads exactly, so any real batching clears this bound and its
-/// absence cannot.
+/// The reads are queued before anything polls the channel, which is what makes
+/// the bound exact rather than a ratio. Against a live session the number of
+/// reads waiting when `recv_many` runs is a scheduling outcome — how far the
+/// reader thread got ahead — so the ratio a burst produces is a property of
+/// the machine. This assertion was written that way and was flaky for it: it
+/// failed on the CI runner at 475 wakeups for 756 reads, reproduced locally in
+/// four runs out of six, and its bound of half was never something the loop
+/// promised.
 ///
-/// This does NOT catch wakeups outside the coalescer, and it does not measure
-/// scheduling latency: a batch that is too large would show up as latency, not
-/// here.
+/// With `N` reads already in the channel the fixed loop takes the first from
+/// `next_read` and the rest `BATCH_READS` at a time, so it costs one timer,
+/// one publish, and at most `1 + (N-1)/BATCH_READS` wakeups. Per-read waiting
+/// costs `N` of each and cannot come near it.
+///
+/// This does NOT catch wakeups outside the coalescer, and it says nothing
+/// about how a live reader thread and this loop interleave: that is the part
+/// no count can pin down.
 #[cfg(not(windows))]
 #[tokio::test]
-async fn a_burst_is_drained_in_fewer_wakeups_than_reads() {
-    let (script, want) = flood(4096);
-    let (_, counts) = burst(&script, want).await;
-    assert!(
-        counts.reads > 32,
-        "only {} reads: too small a burst to say anything about batching",
+async fn a_backlog_costs_one_timer_and_a_batch_of_wakeups() {
+    const READS: usize = 512;
+    let coalescer = crate::session::Coalescer::new().expect("a pty for the harness");
+    for _ in 0..READS {
+        coalescer.queue(b"xxxxxxxx");
+    }
+    let counts = coalescer.drain().await;
+
+    assert_eq!(
+        counts.reads, 0,
+        "the harness does no pty reads; {} were counted",
         counts.reads,
     );
+    assert_eq!(
+        (counts.publishes, counts.timers),
+        (1, 1),
+        "{READS} queued reads are one run: {counts:?}",
+    );
+    let ceiling = 1 + (READS - 1).div_ceil(crate::session::BATCH_READS) as u64;
     assert!(
-        counts.wakeups * 2 < counts.reads,
-        "{} wakeups for {} reads; reads are supposed to arrive in batches",
+        counts.wakeups <= ceiling,
+        "{} wakeups for {READS} queued reads, ceiling {ceiling}; reads that \
+         are already in the channel are supposed to arrive {} at a time",
         counts.wakeups,
-        counts.reads,
+        crate::session::BATCH_READS,
     );
 }
 

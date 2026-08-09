@@ -225,6 +225,9 @@ pub struct Phase {
     pub reads_per_mb: f64,
     pub publishes_per_mb: f64,
     pub wakeups_per_mb: f64,
+    /// Run windows armed. One per published run, so it does not grow with how
+    /// small a pty's reads are; `wakeups_per_mb` does.
+    pub timers_per_mb: f64,
     pub staged_bytes_per_mb: f64,
     pub parsed_bytes_per_mb: f64,
     /// Reader arena allocations, the byte path's whole allocation cost.
@@ -348,6 +351,7 @@ fn counts_json(c: &PumpCounts) -> serde_json::Value {
         "reads": c.reads,
         "publishes": c.publishes,
         "wakeups": c.wakeups,
+        "timers": c.timers,
         "staged_bytes": c.staged_bytes,
         "idle_flushes": c.idle_flushes,
         "capped_flushes": c.capped_flushes,
@@ -432,6 +436,7 @@ async fn throughput(
         pump.reads += counts.reads;
         pump.publishes += counts.publishes;
         pump.wakeups += counts.wakeups;
+        pump.timers += counts.timers;
         pump.staged_bytes += counts.staged_bytes;
         pump.parsed_bytes += counts.parsed_bytes;
         pump.arenas += counts.arenas;
@@ -454,6 +459,7 @@ async fn throughput(
         reads_per_mb: pump.reads as f64 / mb,
         publishes_per_mb: pump.publishes as f64 / mb,
         wakeups_per_mb: pump.wakeups as f64 / mb,
+        timers_per_mb: pump.timers as f64 / mb,
         staged_bytes_per_mb: pump.staged_bytes as f64 / mb,
         parsed_bytes_per_mb: pump.parsed_bytes as f64 / mb,
         arenas_per_mb: pump.arenas as f64 / mb,

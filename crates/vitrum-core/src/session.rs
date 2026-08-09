@@ -143,7 +143,7 @@ const FLUSH_BYTES: usize = 64 * 1024;
 /// Enough that a firehose is drained in a few passes and small enough that the
 /// vector behind it stays a fixed, tiny allocation. It bounds work per wakeup,
 /// not work per window: the loop goes round again while the window is open.
-const BATCH_READS: usize = 64;
+pub(crate) const BATCH_READS: usize = 64;
 
 /// Whether the reader thread reaches end of stream on its own.
 ///
@@ -245,6 +245,12 @@ pub struct OutputChunk {
 ///   output. It is the difference between draining a channel and being woken
 ///   once per item in it, and it is the one cost that grows with how SMALL a
 ///   pty's reads are rather than with how much a session writes.
+/// - `timers` is how many run windows were armed. One `sleep_until` covers a
+///   whole run, so this tracks published runs and not read syscalls; the
+///   defect it exists to catch — awaiting each read under its own
+///   `timeout_at` — makes it track reads instead. Unlike `wakeups`, which
+///   moves with how far ahead of the coalescer the reader thread happens to
+///   get, this is a whole number the shape of the loop fixes.
 /// - `staged_bytes` is bytes copied into the coalescer's staging buffer on
 ///   their way to being published. A run that consists of a single read is
 ///   published without being copied at all, so this stays BELOW the byte
@@ -264,6 +270,7 @@ pub struct PumpCounts {
     pub reads: u64,
     pub publishes: u64,
     pub wakeups: u64,
+    pub timers: u64,
     pub staged_bytes: u64,
     pub parsed_bytes: u64,
     pub arenas: u64,
@@ -284,6 +291,7 @@ struct PumpTally {
     reads: AtomicU64,
     publishes: AtomicU64,
     wakeups: AtomicU64,
+    timers: AtomicU64,
     staged_bytes: AtomicU64,
     parsed_bytes: AtomicU64,
     arenas: AtomicU64,
@@ -297,6 +305,7 @@ impl PumpTally {
             reads: self.reads.load(Ordering::Relaxed),
             publishes: self.publishes.load(Ordering::Relaxed),
             wakeups: self.wakeups.load(Ordering::Relaxed),
+            timers: self.timers.load(Ordering::Relaxed),
             staged_bytes: self.staged_bytes.load(Ordering::Relaxed),
             parsed_bytes: self.parsed_bytes.load(Ordering::Relaxed),
             arenas: self.arenas.load(Ordering::Relaxed),
@@ -1209,6 +1218,139 @@ fn write_loop(mut writer: Box<dyn Write + Send>, mut input: mpsc::UnboundedRecei
     }
 }
 
+/// The coalescer, fed by hand, with no reader thread racing it.
+///
+/// WHY: every count in this loop that is worth asserting on is a count of what
+/// it did with a BACKLOG, and a live session cannot be made to have one. The
+/// reader thread and the coalescer run concurrently, so how many reads are
+/// queued when `recv_many` is polled is a scheduling outcome: on an idle
+/// machine the reader gets far ahead and a burst batches, and on a loaded one
+/// it does not. A bound written against that ratio measures the machine, which
+/// is the flake this harness exists to remove — one such bound failed on the
+/// self-hosted CI runner at 475 wakeups for 756 reads and passed on the same
+/// commit locally.
+///
+/// Filling the channel before anything polls it makes the backlog a fact
+/// rather than a hope, so the wakeup and timer counts a burst costs become
+/// exact whole numbers.
+// Only the non-Windows suite calls this: the Windows path publishes on a
+// different schedule and `a_backlog_costs_one_timer_and_a_batch_of_wakeups`
+// is `cfg(not(windows))` for it. The cfg is theirs rather than an `allow`, so
+// that this goes dead the day that test does.
+#[cfg(all(test, not(windows)))]
+pub(crate) struct Coalescer {
+    session: Arc<Session>,
+    raw: mpsc::UnboundedSender<BytesMut>,
+    raw_rx: mpsc::UnboundedReceiver<BytesMut>,
+    exit_rx: oneshot::Receiver<Option<i32>>,
+}
+
+#[cfg(all(test, not(windows)))]
+impl Coalescer {
+    /// A session with a real PTY and a real child, and nothing reading it.
+    ///
+    /// The PTY is real because `Session` owns a master and a killer and this
+    /// must be the same struct the daemon runs, not a parallel one that could
+    /// drift from it. Nothing writes to the child and nothing reads the
+    /// master: the bytes under test go into the channel directly.
+    pub(crate) fn new() -> anyhow::Result<Self> {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("opening a pty for the coalescer harness")?;
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("60");
+        cmd.cwd(std::env::current_dir().context("no working directory")?);
+        let child = pair.slave.spawn_command(cmd).context("spawning sleep")?;
+        let child_pid = child.process_id();
+        let killer = child.clone_killer();
+        drop(pair.slave);
+
+        let id = SessionId(1);
+        let now = now_ms();
+        let (output, _) = broadcast::channel(OUTPUT_CHANNEL_CHUNKS);
+        let (status_tx, _) = watch::channel(SessionStatus::Starting);
+        let (observations_tx, _) = watch::channel(0u64);
+        let (input_tx, _input_rx) = mpsc::unbounded_channel::<Bytes>();
+        let info = SessionInfo {
+            id,
+            project_id: vitrum_proto::ProjectId(1),
+            title: "coalescer".into(),
+            cwd: String::new(),
+            command: "sleep".into(),
+            args: vec!["60".into()],
+            status: SessionStatus::Starting,
+            created_at_ms: now,
+            last_activity_ms: now,
+            cols: 80,
+            rows: 24,
+            git_branch: None,
+            unread: false,
+            attention: Attention::default(),
+            hint: None,
+            term_title: None,
+        };
+        let session = Arc::new(Session {
+            id,
+            info: RwLock::new(info),
+            title_pinned: AtomicBool::new(false),
+            scrollback: Mutex::new(Scrollback::with_capacity(1 << 24)),
+            output,
+            status: status_tx,
+            observations: observations_tx,
+            master: Mutex::new(pair.master),
+            viewers: Mutex::new(BTreeMap::new()),
+            resizes: AtomicU64::new(0),
+            probes: AtomicU64::new(0),
+            activity: Notify::new(),
+            closed: Notify::new(),
+            input: Mutex::new(Some(input_tx)),
+            killer: Mutex::new(killer),
+            last_focus_ms: AtomicU64::new(0),
+            child_pid,
+            pump: PumpTally::default(),
+        });
+        let (raw, raw_rx) = mpsc::unbounded_channel::<BytesMut>();
+        let (_exit_tx, exit_rx) = oneshot::channel::<Option<i32>>();
+        Ok(Self {
+            session,
+            raw,
+            raw_rx,
+            exit_rx,
+        })
+    }
+
+    /// Queue one read, exactly as the reader thread would hand one over.
+    pub(crate) fn queue(&self, bytes: &[u8]) {
+        self.raw
+            .send(BytesMut::from(bytes))
+            .expect("the coalescer has not started yet");
+    }
+
+    /// Run the loop to end of stream and report what it spent.
+    ///
+    /// The sender is dropped first, so everything queued is already there when
+    /// the first poll happens and the loop ends on end of stream rather than
+    /// on a deadline.
+    pub(crate) async fn drain(self) -> PumpCounts {
+        let Coalescer {
+            session,
+            raw,
+            raw_rx,
+            exit_rx,
+        } = self;
+        drop(raw);
+        coalesce_loop(Arc::clone(&session), raw_rx, exit_rx).await;
+        let counts = session.pump.snapshot();
+        let _ = lock(&session.killer).kill();
+        counts
+    }
+}
+
 /// Coalesce raw reads into a few large chunks, then publish them.
 async fn coalesce_loop(
     session: Arc<Session>,
@@ -1272,6 +1414,7 @@ async fn coalesce_loop(
         // registrations and 2500 wakeups for every megabyte, to publish
         // sixteen runs.
         let window = tokio::time::sleep_until((Instant::now() + FLUSH_IDLE).min(cap));
+        session.pump.timers.fetch_add(1, Ordering::Relaxed);
         tokio::pin!(window);
         let mut hit_cap = false;
         while pending < FLUSH_BYTES {

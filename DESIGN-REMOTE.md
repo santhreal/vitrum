@@ -156,7 +156,7 @@ is what makes the promise true rather than approximately true.
 
 ---
 
-## The honest limit: what still kills a PTY
+## What still kills a PTY
 
 Sessions survive **client** loss today, and will survive network loss once §3
 lands. They do **not** survive **daemon** loss, and no amount of reconnect

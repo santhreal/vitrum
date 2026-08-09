@@ -39,8 +39,8 @@ is in scope with the reasoning either way, and if it is in scope, a fix in a
 0.1.x release with the issue named in `CHANGELOG.md`. A credit in the advisory
 if you want one. There is no bounty.
 
-Please give the fix a chance to ship before disclosing publicly. If the report
-turns out to be out of scope, say so publicly whenever you like.
+Please give the fix a chance to ship before disclosing publicly. A report ruled
+out of scope carries no such request; publish it whenever you like.
 
 ## Scope
 

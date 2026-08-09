@@ -93,7 +93,9 @@ before 1.0 a minor bump may break things, and this file says when it does.
   can be dismissed for that exact version so it does not nag on every launch.
 - `install.sh` and `install.ps1`: the release install as a file you can read,
   with the archive verified against the release `SHA256SUMS` and no install on
-  a mismatch. Nothing is piped into a shell.
+  a mismatch. The README pipes the script into a shell for convenience; what
+  makes that safe is the digest check, not the absence of a pipe, and the
+  script is a file you can download and read first.
 - `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `AUTHORS`, `NOTICE`,
   issue forms, a pull request template, and Dependabot.
 - A `cargo-deny` policy and the CI job that enforces it, so a dependency whose

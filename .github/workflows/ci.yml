@@ -28,12 +28,28 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
   cancel-in-progress: true
 
-# The self-hosted runner, when the change is allowed to use it.
+# Which runner, and why the label is a variable rather than a literal.
 #
-# A pull request from a fork runs on a GitHub runner instead. A self-hosted
-# runner executes whatever the workflow says, on hardware we own, and on a
-# public repository anyone can open a pull request. Same-repository changes are
-# ours; forks get the hosted runner and are none the worse for it.
+# A pull request from a fork runs on a GitHub runner. A self-hosted runner
+# executes whatever the workflow says, on hardware we own, and on a public
+# repository anyone can open a pull request. Same-repository changes are ours;
+# forks get the hosted runner and are none the worse for it.
+#
+# The label for our own hardware comes from the `CI_RUNNER` repository
+# variable, and an unset variable means `ubuntu-latest`. It was the literal
+# `vitrum` before, and no runner was ever registered under that label, so six
+# of the seven jobs below asked for a machine that does not exist. They sat in
+# `queued` until GitHub discarded them a day later with no steps and no reason
+# — the exact failure the note above calls "a broken pipeline rather than a
+# busy one", except that here it was every push rather than a contended queue.
+# `ci` therefore never reported once. The single job that did run on every
+# push is `release machinery`, and the only thing separating it from the other
+# six is that it names a hosted runner.
+#
+# A label is a claim that some machine answers to it, and no expression in a
+# workflow can check that claim. So the default is the runner that is always
+# there: the worst case becomes a slower build instead of a pipeline that is
+# silently never green, and adopting owned hardware is one variable away.
 env:
   CARGO_TERM_COLOR: always
   # A warning is a failure. The crate ships with none and the only way it stays
@@ -43,7 +59,7 @@ env:
 jobs:
   test:
     name: linux
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     # Long enough for a cold build, short enough that a hung job frees its
     # runner the same morning instead of holding it for the six-hour default.
     timeout-minutes: 45
@@ -235,6 +251,60 @@ jobs:
           sh tools/upstream/check.sh
           sh tools/upstream/check.sh --fork vendor-ghostty-vt-sys
 
+      # Both ways this pipeline has stalled were a label no machine answers
+      # to: `vitrum`, for a self-hosted runner that was never registered, and
+      # `macos-13`, for an image GitHub retired. Neither fails. The job is
+      # accepted, queued, and abandoned a day later with no steps and no
+      # reason, so the repository looks busy rather than broken, and a release
+      # matrix that cannot complete blocks the publish that needs it.
+      #
+      # Nothing at runtime catches this, because by the time a label is wrong
+      # there is no runner to run the check on. So the labels are checked here
+      # instead, from the one job that asks for a runner GitHub always has.
+      #
+      # The allowlist is the point rather than the labels in it: a new label
+      # of any kind — a typo, a self-hosted name, a retired image, an image
+      # that does not exist yet — is red until someone adds it deliberately.
+      # It cannot see through `vars.CI_RUNNER`, which is a repository setting
+      # and not a file; that label is the one thing here still taken on trust.
+      - name: every runner label is one a runner answers to
+        run: |
+          set -eu
+          allowed=" ubuntu-latest macos-latest macos-15-intel windows-latest "
+
+          # Three ways a label reaches a runner: a bare `runs-on` scalar, an
+          # operand of `&&`/`||` in a `runs-on` expression (which is how the
+          # fork ternary picks one), and a matrix `os:` value, in either the
+          # inline-list or the one-per-entry form.
+          labels=$(
+            {
+              grep -rhE '^[[:space:]]*runs-on:[[:space:]]*[A-Za-z0-9._-]+[[:space:]]*$' .github/workflows \
+                | sed -E 's/.*runs-on:[[:space:]]*//; s/[[:space:]]*$//'
+              grep -rhE '^[[:space:]]*runs-on:.*\$\{\{' .github/workflows \
+                | grep -oE "(&&|\|\|)[[:space:]]*'[A-Za-z0-9._-]+'" \
+                | grep -oE "'[A-Za-z0-9._-]+'" | tr -d "'"
+              grep -rhE '^[[:space:]]*-?[[:space:]]*os:[[:space:]]*[A-Za-z0-9._-]+[[:space:]]*$' .github/workflows \
+                | sed -E 's/.*os:[[:space:]]*//; s/[[:space:]]*$//'
+              grep -rhE '^[[:space:]]*os:[[:space:]]*\[' .github/workflows \
+                | sed -E 's/.*\[//; s/\].*//' | tr ',' '\n' | tr -d ' []'
+            } | grep -v '^$' | sort -u
+          )
+
+          # A silent pass would also be the result of a broken matcher.
+          test -n "$labels" || { echo "::error::no runner label was found at all, so this check proved nothing"; exit 1; }
+
+          bad=0
+          for label in $labels; do
+            case "$allowed" in
+              *" $label "*) echo "ok       $label" ;;
+              *)
+                echo "::error::runs-on names '$label', which is not a runner label this repository has agreed on. A label with no runner behind it does not fail the job, it queues it forever. Add it to the allowlist in this step if a runner really answers to it."
+                bad=1
+                ;;
+            esac
+          done
+          exit $bad
+
   # What a mac would tell us about a compile error, without a mac.
   #
   # Nearly every way this workspace breaks on macOS is a compile error in
@@ -244,7 +314,7 @@ jobs:
   # a mac is worth waiting for rare enough to schedule.
   macos-check:
     name: macos compiles
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -303,7 +373,7 @@ jobs:
   # still runs in `platforms.yml` before a release.
   windows-check:
     name: windows compiles
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -348,7 +418,7 @@ jobs:
   # whose update fails, and the digest refusal is exercised rather than assumed.
   package:
     name: release archive
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -391,7 +461,7 @@ jobs:
   # rig, and a shared runner would publish a number nobody can reproduce.
   docs:
     name: generated docs
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -403,7 +473,7 @@ jobs:
   # so it is worth a job rather than a periodic audit nobody runs.
   deny:
     name: licenses and advisories
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

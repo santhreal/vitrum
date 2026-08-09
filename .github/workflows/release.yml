@@ -183,7 +183,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          # `macos-15-intel`, not `macos-13`. The x86_64 mac image was
+          # `macos-13` until GitHub retired it, and a retired image does not
+          # fail: nothing answers the label, so the job sits in `queued`. It
+          # did that for this leg of the v0.1.0 tag while its three siblings
+          # were picked up within three minutes, and because `publish` needs
+          # the whole matrix, the tag never produced a release at all. This is
+          # the label GitHub kept x86_64 macOS on after the retirement, and it
+          # is itself temporary: Intel macs go away when the `macos-15` image
+          # reaches end of life, and this target goes with them.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc

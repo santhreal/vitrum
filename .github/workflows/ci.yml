@@ -135,6 +135,56 @@ jobs:
       - name: install.sh parses
         run: sh -n install.sh
 
+  # What is in the pictures, on every pull request.
+  #
+  # The suite in `app/src/tests/assets.rs` enumerates every picture in the tree
+  # and reads every description of one: an asset no document shows fails, and a
+  # description written in shell vocabulary fails. Both are review gates
+  # AGENTS.md states and a reviewer has already missed once.
+  #
+  # Its own job, and not a line in the run above, because the verdict is for a
+  # different reader. A pull request that adds a screenshot wants one check
+  # named `assets` going red beside the diff, not a failure buried in a
+  # workspace test log; and this one is over in the time it takes to link the
+  # client, because it runs those tests and nothing else.
+  assets:
+    name: assets
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # The same key as the build job: this compiles the same crate with the
+      # same flags, so a second cache would be a second copy of it.
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          shared-key: linux
+
+      # The gate lives in the client binary, and the client links the system
+      # webview, so this job needs the same two prerequisites the build does.
+      - name: system webview
+        run: ./.github/system-webview.sh
+
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          use-cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: durable zig cache
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          dir="$HOME/.cache/zig-vitrum"
+          mkdir -p "$dir"
+          echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+
+      # `--bin vitrum` because the client crate has no library target, and the
+      # module path because a green `assets` must mean the asset gate ran.
+      - run: cargo test --release -p vitrum --bin vitrum --locked assets::
+
   # The release machinery, on every push, because the day it is needed is a
   # day nobody wants to debug it. None of this builds the workspace: it reads
   # manifests, rehearses a cut in a throwaway clone and throws the clone away.

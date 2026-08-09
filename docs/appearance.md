@@ -49,3 +49,15 @@ a backdrop image instead.
 
 Mica and Acrylic on Windows, and `NSVisualEffectView` on macOS, are not in this
 release.
+
+## The mark
+
+<p align="center">
+  <img src="../assets/logo/vitrum.svg" alt="The vitrum mark: a cut stone drawn as ten stroked segments on a 96 unit grid" width="96" />
+</p>
+
+`assets/logo/vitrum.svg` is the only place the mark's shape is written down.
+Every raster the platforms need — the window icon, the Windows `.ico`, the
+macOS `.icns`, the freedesktop hicolor PNGs — is computed from that geometry at
+build time by `vitrum-os`, so there is no second copy of the mark to drift from
+this one.

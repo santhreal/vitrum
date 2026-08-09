@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
-use vitrum_server::DEFAULT_SCROLLBACK_BYTES;
+use vitrum_server::{DEFAULT_PORT, DEFAULT_SCROLLBACK_BYTES};
 use vitrum_proto::{
     ClientMsg, OUTPUT_HEADER_LEN, PROTOCOL_VERSION, ProjectId, ServerMsg, SessionId,
 };
@@ -67,7 +67,7 @@ impl Options {
     fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut opts = Options {
             pid: 0,
-            port: 7737,
+            port: DEFAULT_PORT,
             scenario: String::new(),
             sessions: 20,
             viewers: 0,

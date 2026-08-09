@@ -419,6 +419,61 @@ pub fn resolve_status(
 /// Split out so the hint path can fall through to it and so tests can pin the
 /// unhinted behaviour, which is the common case: most harnesses will never emit
 /// a hint and must still get a useful sidebar.
+///
+/// # The permanent limit: a Node TUI is never observably blocked
+///
+/// Gemini and Claude Code put a trust prompt on screen — "Do you trust the
+/// files in this folder?" — and this function answers `Working` for the whole
+/// time it is up. That is not a defect with a fix pending. It is the honest
+/// answer, and the reason is structural.
+///
+/// What is OBSERVED: the daemon's foreground probe asks the operating system
+/// whether the session's foreground process is blocked reading the terminal.
+/// For a C-style REPL that reads stdin directly it answers yes, and
+/// [`StatusSource::Waiting`] is proof. Both of these agents are Node
+/// TUIs. Node never blocks in `read(2)` on stdin: libuv registers the tty fd
+/// with the event loop and the process sits in `epoll_wait` (`kqueue` on
+/// macOS), which is not a terminal read. The probe is therefore
+/// `Some(false)` for the entire life of the process, prompt on screen or not,
+/// and this arm resolves `Working`.
+///
+/// What is INFERRED, and what is not: nothing here is inferred. `Some(false)`
+/// is a true statement about the process — it really is not blocked on the
+/// terminal, it is in an event loop — and `Working` is the correct reading of
+/// it. The thing that is unobservable is one level up: whether the bytes that
+/// event loop last painted were a question. No syscall distinguishes an agent
+/// computing inside its event loop from one parked in the same event loop
+/// waiting for a keystroke, because they are the same process in the same
+/// state.
+///
+/// Why no rule is written here instead: every candidate is a guess wearing a
+/// heuristic's clothes. Silence plus `Some(false)` is a spinner as often as a
+/// prompt. Matching prompt text is matching one release of one vendor's
+/// English. Treating "Node plus quiet" as blocked would relabel every
+/// long-running Node agent that is genuinely thinking, and a status that is
+/// wrong under load is worse than one that is coarse, because the operator
+/// stops believing the column. [`SidebarStatus::Approval`] and
+/// [`SidebarStatus::Input`] exist precisely so that nothing we measure can
+/// reach them; see [`SidebarStatus::requires_declaration`].
+///
+/// What would have to change for the blocked state to become detectable, in
+/// increasing order of how much of it is ours:
+///
+/// - The agent declares it. One `ESC ] 7373 ; approval ST` and this function
+///   is never consulted — [`StatusSource::Hint`] takes it, exactly and with no
+///   hedge. This is the intended path and the only one that is correct by
+///   construction.
+/// - The agent publishes it in its terminal title, as Codex does.
+///   [`StatusSource::Title`] then reaches the same states, hedged as inferred.
+/// - Absent both, the operating system would have to expose what an fd is
+///   being polled FOR and whether the loop has anything else runnable. Linux
+///   can name the fds in an `epoll` set through `/proc`, but "the tty is in
+///   the set" is true of a Node TUI from the moment it starts and says
+///   nothing about now. There is no portable answer and no correct
+///   Linux-only one.
+///
+/// Until an agent opts into one of the two declaration channels, `Working` is
+/// what this product can honestly say about it, and it says exactly that.
 fn resolve_observed(attention: &Attention) -> StatusResolution {
     if attention.failed {
         // The server only sets this on a bad exit, so reaching it on a live row

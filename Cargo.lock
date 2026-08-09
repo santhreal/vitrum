@@ -2188,7 +2188,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -6011,24 +6011,6 @@ dependencies = [
  "vitrum-proto",
  "windows 0.62.2",
  "zbus",
-]
-
-[[package]]
-name = "vitrum-pane-lab"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gdk",
- "glib",
- "gtk",
- "libc",
- "pollster 1.0.1",
- "serde_json",
- "vitrum-grid",
- "vitrum-portable-pty",
- "vitrum-vt",
- "webkit2gtk",
- "wgpu",
 ]
 
 [[package]]

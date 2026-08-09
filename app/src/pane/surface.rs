@@ -7,9 +7,10 @@
 //! toplevel as the WebKit view the shell is drawn with, with no offscreen
 //! copy and no compositing pass in between.
 //!
-//! The prototype in `crates/vitrum-pane-lab` proved this works and measured
-//! it. What is here is the same sequence, with the lab's benchmark harness,
-//! pty, argument parsing and side-by-side webview experiment left behind.
+//! A throwaway prototype proved this sequence works and measured it before it
+//! was written here. What is here is the same sequence, with that prototype's
+//! benchmark harness, pty, argument parsing and side-by-side webview
+//! experiment left behind, and the prototype itself deleted.
 //!
 //! X11 only, deliberately: see the module doc of [`super`] for what Wayland
 //! needs and why it is not attempted here.

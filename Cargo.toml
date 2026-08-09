@@ -11,7 +11,6 @@ members = [
     "crates/vitrum-os",
     "crates/vitrum-search",
     "crates/vitrum-bench",
-    "crates/vitrum-pane-lab",
     "app",
     "vendor",
     "vendor-pty",

@@ -9,16 +9,17 @@
 //! sink, which in the app is the same `ClientMsg::Input` frame the webview's
 //! keyboard path already sends.
 //!
-//! The mechanism was proved and measured in `crates/vitrum-pane-lab` before
-//! any of it was written here. On an RTX 4090 the native Vulkan path sustained
-//! 24.7 MB/s with frame times of 0.79 ms at p50, 1.22 ms at p95 and 1.28 ms at
-//! p99; xterm.js in the DOM sustained a higher 44.9 MB/s but with a p99 of
-//! 46 ms and a worst frame of 147 ms. Throughput is not the argument, and this
-//! module is not a performance change. The argument is that going native
-//! leaves one parser in the product instead of two, and puts OSC 7 and OSC 133
-//! semantics — working directory, prompt and command boundaries, exit status —
-//! in Rust where the sidebar can read them, rather than in a JavaScript
-//! addon's private state.
+//! The mechanism was proved and measured in a throwaway prototype before any
+//! of it was written here, and that prototype has been deleted rather than
+//! left in the workspace to rot beside the real thing. On an RTX 4090 the
+//! native Vulkan path sustained 24.7 MB/s, with frame times of 0.79 ms at p50,
+//! 1.22 ms at p95 and 1.28 ms at p99; xterm.js in the DOM sustained a higher
+//! 44.9 MB/s but with a p99 of 46 ms and a worst frame of 147 ms. Throughput
+//! is not the argument, and this module is not a performance change. The
+//! argument is that going native leaves one parser in the product instead of
+//! two, and puts OSC 7 and OSC 133 semantics — working directory, prompt and
+//! command boundaries, exit status — in Rust where the sidebar can read them,
+//! rather than in a JavaScript addon's private state.
 //!
 //! # What is not here yet
 //!

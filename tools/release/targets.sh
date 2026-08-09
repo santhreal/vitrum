@@ -26,8 +26,14 @@ die() { printf 'targets: %s\n' "$*" >&2; exit 1; }
 sorted() { LC_ALL=C sort -u; }
 
 # Every triple the file names, whatever syntax it names it in.
+#
+# A triple that follows a `/` is a multiarch library directory, not a target:
+# `/usr/lib/x86_64-linux-gnu` is where a Debian derivative keeps the WebKit
+# this installer probes for, and reading it as a published target failed this
+# check on a file that named the right four.
 found_in() {
-    grep -oE '(aarch64|x86_64|i686|armv7)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9]+)?' "$1" |
+    grep -oE '(^|[^/[:alnum:]_.-])(aarch64|x86_64|i686|armv7)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9]+)?' "$1" |
+        grep -oE '(aarch64|x86_64|i686|armv7)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9]+)?' |
         sorted
 }
 

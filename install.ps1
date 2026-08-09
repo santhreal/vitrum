@@ -291,6 +291,26 @@ if ($NoIntegrate) {
         $env:Path = "$env:Path;$InstallDir"
     }
 
+    # The icon is drawn by the binary rather than shipped beside it: the
+    # release archive carries vitrum.exe and vitrum-server.exe and nothing
+    # else, and there is no converter on the machine. `vitrum icons` writes a
+    # multi-size .ico from the mark's geometry, so the Start menu entry and
+    # every shortcut pinned from it stop showing the generic placeholder.
+    #
+    # Idempotent: the same path is overwritten on every install.
+    $ico = $null
+    try {
+        $iconRoot = Join-Path $env:LOCALAPPDATA 'vitrum'
+        & (Join-Path $InstallDir 'vitrum.exe') icons $iconRoot | Out-Null
+        $candidate = Join-Path $iconRoot 'icons\vitrum.ico'
+        if (Test-Path $candidate) {
+            $ico = $candidate
+            Say "  $candidate"
+        }
+    } catch {
+        Warn "could not write the icon set: $($_.Exception.Message)"
+    }
+
     try {
         $menu = [Environment]::GetFolderPath('Programs')
         $lnk = Join-Path $menu 'vitrum.lnk'
@@ -298,6 +318,10 @@ if ($NoIntegrate) {
         $s.TargetPath = Join-Path $InstallDir 'vitrum.exe'
         $s.WorkingDirectory = $InstallDir
         $s.Description = 'One interface for every agent TUI you have running'
+        # Only when the file is really there. A shortcut whose IconLocation
+        # names a missing file shows a broken-document glyph, which is worse
+        # than the generic executable icon Windows would have used.
+        if ($ico) { $s.IconLocation = "$ico,0" }
         $s.Save()
         Say "  $lnk"
     } catch {

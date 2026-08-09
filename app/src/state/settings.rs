@@ -306,6 +306,21 @@ pub struct Settings {
     /// quiet check's answer against this is what keeps a "not now" from
     /// coming back every launch, without hiding a later release.
     pub ignored_update: String,
+    /// Draw the sidebar's restart-to-update affordance.
+    ///
+    /// Cosmetic, and cosmetic only. Off hides the band saying a restart will
+    /// take the staged build, and hides nothing else: the client keeps
+    /// checking, keeps staging a verified update and keeps applying it on the
+    /// next start. An operator who does not want a badge has not asked to be
+    /// left on an old build, and `vitrum update` and the About tab are
+    /// unaffected. [`crate::update::restart_offer`] is the only reader.
+    pub show_restart_to_update: bool,
+    /// Which stream of releases this profile follows.
+    ///
+    /// Stable resolves the latest published release. Nightly also resolves the
+    /// moving `nightly` prerelease, and still takes a stable release when one
+    /// is newer than the nightly. Verification does not vary by channel.
+    pub update_channel: crate::update::Channel,
 }
 
 impl Default for Settings {
@@ -329,6 +344,8 @@ impl Default for Settings {
             onboarded: false,
             seen_version: String::new(),
             ignored_update: String::new(),
+            show_restart_to_update: true,
+            update_channel: crate::update::Channel::default(),
         }
     }
 }

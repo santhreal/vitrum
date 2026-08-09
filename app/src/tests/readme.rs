@@ -319,24 +319,29 @@ fn the_installer_finishes_the_install() {
         (
             "install.sh",
             sh,
-            [
+            &[
                 "vitrum.desktop",           // Linux launcher entry
                 "vitrum.app",               // macOS bundle
                 "alias vu=",                // the update shortcut
                 "export PATH=",             // PATH, persisted
                 "--no-integrate",           // and an opt out for images
-            ],
+                "vitrum\" icons ",          // the icon set, drawn by the binary
+                "Icon=vitrum",              // named in the launcher entry
+                "CFBundleIconFile",         // and in the macOS bundle
+            ][..],
         ),
         (
             "install.ps1",
             ps1,
-            [
+            &[
                 "vitrum.lnk",
                 "CreateShortcut",
                 "function vu",
                 "SetEnvironmentVariable('Path'",
                 "NoIntegrate",
-            ],
+                "vitrum.exe') icons",       // the icon set, drawn by the binary
+                "IconLocation",             // and put on the Start menu shortcut
+            ][..],
         ),
     ] {
         for needle in needles {

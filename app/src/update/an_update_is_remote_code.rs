@@ -10,6 +10,11 @@ fn release_json(tag: &str, assets: &[(&str, &str)]) -> serde_json::Value {
     })
 }
 
+/// What the stable channel makes of one release object.
+fn parse_release(release: &serde_json::Value) -> Result<Status> {
+    resolve(Channel::Stable, Some(release), None, &current_version())
+}
+
 fn targz(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut tar = tar::Builder::new(Vec::new());
     for (name, body) in files {
@@ -220,11 +225,19 @@ fn an_archive_cannot_escape_the_install_directory() {
             target.display(),
             dir.display()
         );
-        assert_eq!(temp.parent(), Some(dir.as_path()));
+        assert_eq!(
+            temp.parent(),
+            Some(staging_dir(&dir).as_path()),
+            "an entry staged {} outside the staging directory",
+            temp.display()
+        );
     }
-    // Staged, not yet renamed: the bytes are inside `dir` under a
-    // temporary name, which is the whole point.
-    assert_eq!(fs::read(dir.join(".vitrum.incoming")).unwrap(), b"pwned");
+    // Staged, not yet renamed: the bytes are in the staging directory under
+    // the name they will take, which is the whole point.
+    assert_eq!(
+        fs::read(staging_dir(&dir).join("vitrum")).unwrap(),
+        b"pwned"
+    );
     assert!(!Path::new("/tmp/vitrum-pwned").exists(), "archive escaped");
     assert!(
         !Path::new("/tmp/vitrum-server").exists(),
@@ -360,9 +373,13 @@ fn the_release_doc_uploads_the_assets() {
         doc.contains("packaging/build-release-asset.sh"),
         "RELEASING.md no longer builds the update asset"
     );
+    // The path moved when publishing moved into the workflow: the maintainer
+    // no longer writes `dist/SHA256SUMS` by hand. What the updater requires is
+    // unchanged and is what this guards — the document must still say a
+    // release carries the checksums, on both channels.
     assert!(
-        doc.contains("dist/SHA256SUMS"),
-        "RELEASING.md no longer uploads the checksums the updater requires"
+        doc.contains("SHA256SUMS"),
+        "RELEASING.md no longer names the checksums the updater requires"
     );
 }
 

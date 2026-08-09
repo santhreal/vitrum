@@ -30,6 +30,7 @@ mod clock;
 mod fixture;
 mod geometry;
 mod hint;
+mod icons;
 mod inbox;
 mod instance;
 mod keymap;
@@ -163,12 +164,15 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR", "1")
     };
 
-    // A previous update on Windows could not delete the image it replaced,
-    // because that image was the process doing the replacing. It has exited by
-    // now, so this is the first moment the file can go.
-    if let Ok(dir) = update::install_dir() {
-        update::sweep_displaced(&dir);
-    }
+    // An update staged by an earlier run is applied here: before the window,
+    // before the daemon is dialled, and before any subcommand, because this is
+    // the only moment at which nothing yet depends on which build is on disk.
+    // It also sweeps the image a previous update on Windows could not delete,
+    // the process holding it open having been the one doing the replacing.
+    //
+    // The daemon is not restarted. It keeps running the old code until the
+    // operator restarts it, which ends every session it holds.
+    update::apply_on_start();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -183,6 +187,13 @@ fn main() {
     // nothing is logged, and no window is touched.
     if args.first().map(String::as_str) == Some("hint") {
         std::process::exit(hint::run_hint(&args[1..]));
+    }
+    // `icons` writes the platform icon set from the mark's geometry. The
+    // installer runs it after moving the binary into place, because the
+    // release archive carries two executables and nothing else: an installed
+    // copy has no icon files to unpack and no toolchain to build them with.
+    if args.first().map(String::as_str) == Some("icons") {
+        std::process::exit(icons::run_icons(&args[1..]));
     }
     let opts = match Options::parse(args.iter().cloned()) {
         Ok(o) => o,
@@ -478,6 +489,15 @@ fn App() -> Element {
                 .unwrap_or_else(|| "none".into())
         );
         seeded
+    });
+
+    // What the sidebar's restart affordance reads. Seeded from disk so a build
+    // that was staged by a previous run and applied a moment ago, or one
+    // staged by `vitrum update` while no window was open, is known before the
+    // first poll rather than a few seconds into the session.
+    let update_standing = use_signal(|| match update::install_dir() {
+        Ok(dir) => update::standing(&dir, None),
+        Err(_) => update::Standing::Current,
     });
 
     let bridge = use_hook(|| Bridge {
@@ -881,8 +901,9 @@ fn App() -> Element {
         }
     });
 
-    // After first paint. A GitHub round trip must not lengthen the path to a
-    // usable window, and a fixture has no network story to tell.
+    // After first paint, then every [`update::CHECK_INTERVAL`]. A GitHub round
+    // trip must not lengthen the path to a usable window, and a fixture has no
+    // network story to tell.
     use_future(move || {
         let mut update_offer = update_offer;
         async move {
@@ -896,15 +917,24 @@ fn App() -> Element {
             // A forced offer is for screenshots and demos; paint it on the
             // first tick. A real check waits so it cannot compete with the
             // first paint or the daemon connect for the network.
-            let delay = if std::env::var_os("VITRUM_UPDATE_OFFER").is_some() {
+            let forced = std::env::var_os("VITRUM_UPDATE_OFFER").is_some();
+            let delay = if forced {
                 std::time::Duration::from_millis(50)
             } else {
                 std::time::Duration::from_secs(2)
             };
             tokio::time::sleep(delay).await;
-            let got = off_thread(update::quiet_check).await;
-            match got {
-                Ok(status) => {
+            loop {
+                let channel = st.peek().daemon.settings.update_channel;
+                // Silence, not an error, when the network is unreachable: the
+                // operator did not ask for this check and must not be handed
+                // its failure.
+                let got = if forced {
+                    off_thread(update::quiet_check).await.ok()
+                } else {
+                    off_thread(move || update::background_check(channel)).await
+                };
+                if let Some(status) = got {
                     let ignored = st.peek().daemon.settings.ignored_update.clone();
                     let next = update::chrome_offer(&status, &ignored);
                     tracing::debug!(
@@ -915,9 +945,32 @@ fn App() -> Element {
                     );
                     update_offer.set(next);
                 }
-                Err(e) => {
-                    tracing::debug!("quiet update check skipped: {e:#}");
+                if forced {
+                    return;
                 }
+                tokio::time::sleep(update::CHECK_INTERVAL).await;
+            }
+        }
+    });
+
+    // What the sidebar says about an update: nothing, one available, or one
+    // staged and waiting for a restart. Polled rather than pushed, because
+    // `vitrum update` in a terminal stages one from outside this process.
+    use_future(move || {
+        let mut update_standing = update_standing;
+        let update_offer = update_offer;
+        async move {
+            loop {
+                let offer = update_offer.peek().clone();
+                let next = off_thread(move || match update::install_dir() {
+                    Ok(dir) => update::standing(&dir, offer.as_ref()),
+                    Err(_) => update::Standing::Current,
+                })
+                .await;
+                if *update_standing.peek() != next {
+                    update_standing.set(next);
+                }
+                tokio::time::sleep(update::STAGED_POLL).await;
             }
         }
     });
@@ -1132,6 +1185,31 @@ fn App() -> Element {
                         // silently discarded on the next launch.
                         ui::settings::commit(&st.peek());
                         sidebar_pinned.set(true);
+                    },
+                    update_standing,
+                    // Restart into the staged build.
+                    //
+                    // A new process of the same path, then this window
+                    // closes. `apply_on_start` is the FIRST thing that new
+                    // process runs, before the window and before the daemon
+                    // is dialled, so it is the one that performs the swap;
+                    // nothing is applied from inside the image being
+                    // replaced. Sessions are the daemon's and outlive both.
+                    //
+                    // A spawn that fails leaves the window exactly as it was,
+                    // which is the right failure: closing first and then
+                    // discovering the relaunch did not work would take the
+                    // operator's window away to install nothing.
+                    on_restart: {
+                        let window = window.clone();
+                        move |()| {
+                            let Ok(exe) = std::env::current_exe() else {
+                                return;
+                            };
+                            if std::process::Command::new(exe).spawn().is_ok() {
+                                window.close();
+                            }
+                        }
                     },
                 }
 

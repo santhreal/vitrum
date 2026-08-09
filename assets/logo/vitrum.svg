@@ -1,24 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="vitrum">
   <title>vitrum</title>
   <!--
-    A cut stone seen face on: a table across the top, two crown facets, and a
-    pavilion coming to a point. The V of the pavilion and the T dropping from
-    the table are the mark; the girdle line is what makes it read as a gem
-    rather than an arrow.
+    A cut stone seen face on: a table across the top, a girdle, and a pavilion
+    coming to a point. The V of the pavilion facets and the T dropping from the
+    table are the mark. The girdle is drawn as two segments, left edge to the
+    left facet and right facet to the right edge, so the middle stays open and
+    the V reads through it.
 
-    Geometry is on a 96 unit grid so every stroke lands on a half unit at 16,
-    24, 32, 48 and 64 pixels. Stroke width is 5 at 96, which is 1.67 px at 32
-    and still solid at 16 after the icon builder swaps in the heavier variant.
+    Geometry sits on a 96 unit grid. The girdle meets the facet lines at
+    x = 35.4 and x = 60.6, which is where the lines from the table corners
+    (30,24) and (66,24) to the culet (48,84) cross y = 42.
   -->
   <g fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
-    <!-- Crown: table edge and the two shoulders. -->
-    <path d="M30 24 H66 L84 42 H12 Z" />
+    <!-- Crown: left shoulder, table, right shoulder. -->
+    <path d="M12 42 L30 24 H66 L84 42" />
     <!-- Pavilion: shoulders down to the culet. -->
     <path d="M12 42 L48 84 L84 42" />
-    <!-- The two facet lines that make the V, from the table corners. -->
+    <!-- Girdle, open across the middle. -->
+    <path d="M12 42 H35.4" />
+    <path d="M60.6 42 H84" />
+    <!-- The V: table corners to the culet. -->
     <path d="M30 24 L48 84" />
     <path d="M66 24 L48 84" />
-    <!-- The T: a stem dropping from the middle of the table to the girdle. -->
-    <path d="M48 24 V47" />
+    <!-- The T: a stem from the middle of the table through the girdle. -->
+    <path d="M48 24 V50" />
   </g>
 </svg>

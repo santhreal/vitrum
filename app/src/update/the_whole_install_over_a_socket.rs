@@ -95,9 +95,15 @@ fn available(base: &str) -> Available {
     }
 }
 
-/// A good release replaces both binaries and reports each step.
+/// A good release is staged whole, and the next start installs it.
+///
+/// The live binaries are deliberately still the old ones when `install`
+/// returns: this product releases many times a day, and an update that
+/// replaced them under a running client would make every release an
+/// interruption. What the socket proves is that the bytes that come off the
+/// wire, get verified, and get staged are the bytes the next start renames in.
 #[test]
-fn a_verified_release_replaces_both_binaries() {
+fn a_verified_release_is_staged_and_applied_on_the_next_start() {
     let dir = scratch("ok");
     fs::write(dir.join("vitrum"), b"old client").unwrap();
     fs::write(dir.join("vitrum-server"), b"old daemon").unwrap();
@@ -115,16 +121,31 @@ fn a_verified_release_replaces_both_binaries() {
         .expect("install succeeded");
     server.join().ok();
 
-    assert_eq!(fs::read(dir.join("vitrum")).unwrap(), b"new client");
-    assert_eq!(fs::read(dir.join("vitrum-server")).unwrap(), b"new daemon");
+    // The running pair is untouched.
+    assert_eq!(fs::read(dir.join("vitrum")).unwrap(), b"old client");
+    assert_eq!(fs::read(dir.join("vitrum-server")).unwrap(), b"old daemon");
+    assert_eq!(
+        staged(&dir).and_then(|s| s.version()),
+        Some(Version::parse("9.9.9").unwrap()),
+        "nothing was recorded as staged: {steps:?}"
+    );
     assert!(
         steps.iter().any(|s| s.contains("verifying checksum")),
         "the operator was never told it verified: {steps:?}"
     );
     assert!(
-        steps.iter().any(|s| s.contains("updated to 9.9.9")),
+        steps.iter().any(|s| s.contains("staged 9.9.9")),
         "no completion line: {steps:?}"
     );
+
+    // The next start.
+    assert_eq!(
+        apply_staged(&dir).expect("applied"),
+        Some(Version::parse("9.9.9").unwrap())
+    );
+    assert_eq!(fs::read(dir.join("vitrum")).unwrap(), b"new client");
+    assert_eq!(fs::read(dir.join("vitrum-server")).unwrap(), b"new daemon");
+
     // Nothing left behind to be mistaken for a binary.
     let leftovers: Vec<_> = fs::read_dir(&dir)
         .unwrap()
@@ -132,10 +153,7 @@ fn a_verified_release_replaces_both_binaries() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.starts_with('.'))
         .collect();
-    assert!(
-        leftovers.is_empty(),
-        "staging files survived: {leftovers:?}"
-    );
+    assert!(leftovers.is_empty(), "staging files survived: {leftovers:?}");
     fs::remove_dir_all(&dir).ok();
 }
 

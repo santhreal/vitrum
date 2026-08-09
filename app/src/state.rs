@@ -3407,20 +3407,6 @@ pub fn attention_label(a: &Attention) -> String {
     }
 }
 
-/// What the row can say about whether the agent is blocked.
-///
-/// `waiting == None` means this daemon's platform cannot answer the question,
-/// which is Windows today. The row says so rather than implying the agent is
-/// working, because a shell that silently reports "working" for every blocked
-/// Windows session is worse than one that admits the gap.
-pub fn waiting_note(a: &Attention) -> Option<&'static str> {
-    match a.waiting {
-        Some(true) => Some("blocked reading input"),
-        Some(false) => None,
-        None => Some("this platform cannot tell whether the agent is blocked"),
-    }
-}
-
 /// Human-readable status for a row's `title` tooltip.
 ///
 /// Exit text comes from [`vitrum_fmt::exit`] so the client, the daemon logs and

@@ -65,14 +65,23 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/runner-hygiene
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      # Only on a hosted runner. The self-hosted one keeps its cargo home and
-      # target directory between runs, so uploading a multi-gigabyte cache to
-      # GitHub and pulling it back would be slower than the build it saves.
+      # Only on a hosted runner. A runner we own keeps its cargo home and its
+      # registry between runs, so uploading a multi-gigabyte cache to GitHub
+      # and pulling it back would be slower than the build it saves.
+      #
+      # It does NOT keep its target directory: `actions/checkout` cleans the
+      # workspace and logs `Removing target/` on every job, so each build here
+      # is cold. Caching would not fix that either, because the cache is keyed
+      # on the lockfile and restoring one is the download this skips. Making
+      # the rig warm means keeping the target directory out of the workspace
+      # checkout deletes, which is a decision about the machine rather than
+      # about this file.
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -169,6 +178,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/runner-hygiene
       - uses: dtolnay/rust-toolchain@stable
       # The same key as the build job: this compiles the same crate with the
       # same flags, so a second cache would be a second copy of it.
@@ -348,6 +358,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/runner-hygiene
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -407,6 +418,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/runner-hygiene
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
@@ -493,6 +505,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/runner-hygiene
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

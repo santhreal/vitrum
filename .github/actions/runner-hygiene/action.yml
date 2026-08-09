@@ -1,0 +1,54 @@
+name: runner hygiene
+description: >
+  Refuse to build on a self-hosted runner whose toolchain home is shared with
+  the other runners on the same machine.
+
+# WHY THIS EXISTS
+#
+# Four self-hosted runners share one login account on the build machine, so
+# unless each is told otherwise they also share one CARGO_HOME and one
+# RUSTUP_HOME. Cargo and rustup both assume they own those directories. When
+# two jobs run at once, one installing a toolchain or repopulating the registry
+# rewrites files the other is compiling against, and the build that loses the
+# race fails somewhere far from the cause: `could not execute process rustc`,
+# sccache unable to hash a source file that existed a second ago, or an ICE
+# reading a vanished path. All three were seen on this repository, all three
+# were read as flakes, and none of them names the real problem.
+#
+# The condition is invisible from inside a job, which is why it survived. This
+# makes it loud: a runner that has not been isolated fails on its first step,
+# with the fix in the message, instead of corrupting a build ten minutes in.
+#
+# Hosted runners get a fresh machine per job and are skipped.
+
+runs:
+  using: composite
+  steps:
+    - if: runner.environment != 'github-hosted'
+      shell: bash
+      run: |
+        set -eu
+        bad=0
+        for var in CARGO_HOME RUSTUP_HOME; do
+          # `${!var}` is the value of the variable this iteration names.
+          value="${!var-}"
+          case "$var" in
+            CARGO_HOME) shared="$HOME/.cargo" ;;
+            RUSTUP_HOME) shared="$HOME/.rustup" ;;
+          esac
+
+          if [ -z "$value" ]; then
+            echo "::error::$var is unset on a self-hosted runner, so it defaults to $shared, which every runner on this machine shares. Concurrent jobs will overwrite each other's toolchain."
+            bad=1
+          elif [ "$value" = "$shared" ]; then
+            echo "::error::$var is $value, which every runner on this machine shares. Concurrent jobs will overwrite each other's toolchain."
+            bad=1
+          else
+            echo "$var=$value"
+          fi
+        done
+
+        if [ "$bad" -ne 0 ]; then
+          echo "::error::Give this runner a private toolchain home. In its .env, next to the PATH line, set CARGO_HOME and RUSTUP_HOME to a directory only this runner uses, then restart its service so the new environment is read."
+          exit 1
+        fi

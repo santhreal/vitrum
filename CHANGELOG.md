@@ -5,6 +5,46 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+### Added
+
+- **The Windows executable carries the mark.** Explorer, the taskbar,
+  Alt-Tab and the shortcut the installer writes all draw an executable from
+  its own icon resource, and none of them runs the program, so the window
+  icon set at startup reaches none of them. The `.ico` is generated during
+  the build from the same procedural geometry the window icon and the
+  installer use, so it cannot drift from the mark, and no binary image is
+  committed. A missing resource compiler warns and still produces a working
+  binary.
+
+### Fixed
+
+- **The window paints in a tenth of a second instead of seven tenths.**
+  Nothing drew the toplevel until the event loop started, which happens
+  after the webview is built, so a launch showed a black rectangle for
+  690 ms. The window now takes its background and pumps GTK's pending
+  events as soon as it is built. First painted pixel moved from 690 ms to
+  100 ms.
+- **No surface flashes white before the first frame.** Two defects on
+  Linux. The GTK window kept the theme's background, which is white under a
+  light theme. And wry builds a GDK colour by passing the 0-255 channels
+  straight into a type whose channels run 0.0 to 1.0, so `(6, 6, 8, 255)`
+  clamped to opaque white. The window now carries an explicit background,
+  and the webview is told its colour through the WebKit call in the units
+  that call expects. The full-screen white frame at 706 ms is gone.
+- **The mark stands on the window until the webview takes it.** The
+  interval between the window appearing and the document painting was flat
+  dark. The toplevel draws the 96 px mark from `vitrum-os` and retires it
+  the moment a mapped WebKit view exists, so the mark holds the screen from
+  107 ms to 645 ms and never paints over the running UI.
+
+### Removed
+
+- **The loading screen that could not load.** It lived inside the document,
+  so it could only appear once the webview it was covering for already
+  existed, and against its own 400 ms delay the widest window it could ever
+  have painted in was 143 ms. Deleting it removes `loading.js` and drops the
+  JavaScript bill from 432,438 bytes to 429,041.
+
 ## v0.1.1 - 2026-08-09
 
 ### Added

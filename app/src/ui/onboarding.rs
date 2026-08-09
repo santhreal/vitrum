@@ -494,8 +494,8 @@ pub fn intro(machine: &Machine) -> String {
     if all_clear(machine) {
         "You are already running. Here is what the rest of the window is for.".to_string()
     } else {
-        "A terminal for running many coding agents at once. Here is what this machine \
-         has."
+        "One interface for every agent TUI you have running. Here is what this \
+         machine has."
             .to_string()
     }
 }

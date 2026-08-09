@@ -72,11 +72,17 @@ gate: build test
 # the difference between a green lane and a lane that never ran.
 CRATE ?= vitrum
 
+# Warnings are denied here for the same reason CI denies them: a `pub(crate)`
+# helper that only the tests call is a warning under `cargo test`, which every
+# lane runs and passes, and an error under the plain build, which only CI ran.
+# Three of those reached main in one morning before this line existed.
 fast:
 	@if [ '$(CRATE)' = vitrum ]; then \
-		$(CARGO) test -p vitrum --bin vitrum --locked; \
+		RUSTFLAGS='$(RUSTFLAGS_STRICT)' $(CARGO) test -p vitrum --bin vitrum --locked && \
+		RUSTFLAGS='$(RUSTFLAGS_STRICT)' $(CARGO) check -p vitrum --locked; \
 	else \
-		$(CARGO) test -p '$(CRATE)' --locked; \
+		RUSTFLAGS='$(RUSTFLAGS_STRICT)' $(CARGO) test -p '$(CRATE)' --locked && \
+		RUSTFLAGS='$(RUSTFLAGS_STRICT)' $(CARGO) check -p '$(CRATE)' --locked; \
 	fi
 
 # The measurement itself needs the rig: a host with a display it owns and the

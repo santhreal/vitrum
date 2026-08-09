@@ -120,10 +120,17 @@ jobs:
             # four cold release builds. A schedule always builds, and so does
             # the first push after a force-push, where there is no range to
             # compare against.
+            #
+            # Every path a build reads has to be here or the skip is wrong.
+            # `vendor-ghostty-vt-sys/` is a workspace member and is the fork
+            # that pins the instruction set of the shipped binaries, so a
+            # change to it is exactly the change that most needs rebuilding.
+            # `tools/release/` supplies the version bump and the ISA check
+            # that run inside the build job, and this file is the build.
             if [ "$GITHUB_EVENT_NAME" = push ] &&
                git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then
               changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" |
-                grep -E '^(app/|crates/|vendor/|vendor-pty/|packaging/|Cargo\.(toml|lock)$)' || true)
+                grep -E '^(app/|crates/|vendor/|vendor-pty/|vendor-ghostty-vt-sys/|packaging/|tools/release/|\.github/workflows/release\.yml$|Cargo\.(toml|lock)$)' || true)
               if [ -z "$changed" ]; then
                 build=false
                 echo "no crate, app or packaging change since $BEFORE; skipping"

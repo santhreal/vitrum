@@ -38,6 +38,24 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 /// it parses the whole `&&` line, which is before `set /p` has assigned it. The
 /// child inherits `L` through the environment and delayed expansion reads it at
 /// the moment it runs.
+///
+/// CONFIRMED FAILING on windows-latest, and the first thing that ever ran it
+/// was the `windows tests` job added for the burst question. The child reaches
+/// its prompt and the stream then stops dead at 78 bytes:
+///
+/// ```text
+/// \e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[Hask:\e[1C\e]0;C:\Windows\system32\cmd.exe\a\e[?25h
+/// ```
+///
+/// `ask:` is there, so the child is running and reading. After `write` there is
+/// no reply AND NO ECHO. A console echoes what it reads in cooked mode, so the
+/// absence of the echo puts this before the child: the bytes are not reaching
+/// the console input buffer at all. That makes it input delivery, not this
+/// test's script and not `set /p`.
+///
+/// Left exactly as it is. The workflow runs it in a step of its own that is
+/// allowed to fail, so it reports on every push without blocking the 151 that
+/// pass, and weakening it would throw away the only evidence anyone has.
 #[cfg(windows)]
 #[tokio::test]
 async fn input_reaches_the_child_and_its_reply_returns() {

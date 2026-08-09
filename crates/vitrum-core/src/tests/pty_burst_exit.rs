@@ -72,13 +72,20 @@ async fn a_burst_followed_by_an_immediate_exit_is_published_whole() {
 
 /// Every line a child wrote before exiting must still be there on Windows.
 ///
-/// WHY: this is the same defect as above and the platform that still has it.
-/// A Windows pseudoconsole does not close the read side while the session
+/// WHY: a Windows pseudoconsole does not close the read side while the session
 /// holds its master, so the reader cannot reach end of stream and
 /// `READER_REPORTS_EOF` is false there. The coalescer instead ends the stream
-/// after one `FLUSH_WINDOW` of quiet following the exit, which is a stopwatch
-/// again: any gap between chunks longer than that window ends the stream while
-/// the child's output is still arriving, and the rest is discarded.
+/// after one `FLUSH_WINDOW` of quiet following the exit. That is a stopwatch,
+/// and the standing assumption was that it truncates a burst: any gap between
+/// chunks longer than the window would end the stream while output was still
+/// arriving.
+///
+/// IT DOES NOT, at these sizes. This passes on windows-latest, which is the
+/// first time the assumption was ever measured rather than reasoned about, so
+/// the belief that Windows loses bursts is retired until something reproduces
+/// it. The window is still a stopwatch and this is what watches it: a machine
+/// slow enough, or a child bursty enough, to open a gap wider than
+/// `FLUSH_WINDOW` turns this red rather than shipping silent truncation.
 ///
 /// WHY IT IS NOT THE SAME ASSERTION: the Unix case compares the published
 /// bytes to the exact bytes the child wrote. That cannot hold here. A

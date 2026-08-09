@@ -50,10 +50,7 @@ use vitrum_proto::{ProjectId, SessionId, SessionStatus};
 use crate::agent::{AgentMark, AgentMarks};
 use crate::clock::age;
 use crate::inbox::{self, Pill};
-use crate::state::{
-    Click, ConnState, GroupKey, UiState, attention_label, attention_modifier, status_label,
-    waiting_note,
-};
+use crate::state::{Click, ConnState, GroupKey, UiState, attention_label, attention_modifier};
 use crate::ui::dialog;
 
 mod render_count;
@@ -145,6 +142,20 @@ pub struct SidebarProps {
     /// rendered itself dead and could never be reached. A landing-order
     /// scaffold that outlives the landing is indistinguishable from a stub.
     pub on_settings: EventHandler<()>,
+    /// What the update path has to say, polled by `main.rs`.
+    ///
+    /// A [`Signal`] rather than a value because the poll that fills it runs
+    /// every [`crate::update::STAGED_POLL`] for the life of the window, and a
+    /// build staged by `vitrum update` in a terminal must reach the panel
+    /// without the operator doing anything.
+    pub update_standing: Signal<crate::update::Standing>,
+    /// Restart into the staged build.
+    ///
+    /// Not an `Option`: the affordance is only emitted when there is a build
+    /// to restart into, so a handler that could be absent would put a live
+    /// control on screen that did nothing, which is the defect
+    /// [`SidebarProps::on_settings`] documents above.
+    pub on_restart: EventHandler<()>,
 }
 
 #[allow(non_snake_case)]
@@ -190,6 +201,25 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     // One buffer for every row's tooltip. Cloning the `String` per row cost an
     // allocation and a copy per row per paint; a refcount bump costs neither.
     let home: Rc<str> = Rc::from(props.home.as_str());
+    // THE ONE PLACE THE RESTART AFFORDANCE IS DECIDED.
+    //
+    // `restart_offer` answers `Some` for a STAGED build and only when the
+    // operator has left the affordance switched on. Both halves live in
+    // `update.rs` rather than in this expression, because the setting is a
+    // contract and not a local `if`: it decides what is DRAWN and nothing
+    // else. The check that finds an update, the download that stages it and
+    // the swap that applies it on the next start never read it, so an
+    // operator who switches the affordance off is still updated — they have
+    // asked not to be told, not asked to stop.
+    //
+    // Resolved to an owned line here and not held as a borrow of the signal,
+    // so the read guard is dropped before the markup and the `onclick`
+    // closures below capture nothing from it.
+    let restart_to: Option<String> = crate::update::restart_offer(
+        &props.update_standing.read(),
+        st.daemon.settings.show_restart_to_update,
+    )
+    .map(crate::update::restart_line);
     // Why there is nothing to draw, computed only when there IS nothing to
     // draw. It walks every session, and on every paint that has rows the
     // answer would be thrown away.
@@ -687,6 +717,77 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         }
                     }
                 }
+
+                // WHAT THE BOTTOM OF THE PANEL IS FOR.
+                //
+                // Measured on a real workspace: three sessions in two
+                // projects fill 190px of a 764px scroller, so 75% of the
+                // widest column in the window is nothing at all. That is not
+                // a rounding error in a layout, it is the panel telling an
+                // operator with three agents that they are using a tool built
+                // for a list they do not have.
+                //
+                // Two ways to answer it. Growing the rows to fill is the
+                // wrong one: a row's height is a legibility decision taken
+                // against the two lines it holds, and stretching it to 200px
+                // to absorb a void produces a list whose row height depends
+                // on how many sessions you happen to be running. So the
+                // region carries something instead, and the only honest thing
+                // for it to carry is what goes there: sessions. It is drawn
+                // as the place a session is started, and it starts one.
+                //
+                // It is the LAST child of the scroller and not a floating
+                // panel, so it needs no measurement and has no state. With a
+                // full list it is `flex: 1 1 auto` against no free space,
+                // collapses to nothing and scrolls off the end of a list that
+                // is already longer than the panel. With a short list it
+                // takes exactly the height the sessions did not.
+                //
+                // It duplicates the footer's New session, and that is the
+                // trade taken deliberately: the footer's control is 32px of
+                // chrome an operator learns once, and this is 500px of panel
+                // that would otherwise say nothing. The label is hidden by a
+                // container query below one line's worth of room, so the
+                // duplication only exists when there is space that had no
+                // other use.
+                if !groups.is_empty() {
+                    button {
+                        class: "rg-sidebar__floor",
+                        r#type: "button",
+                        disabled: !ready,
+                        title: if ready { "Start a session here (Ctrl+Shift+N)" } else { "Not connected" },
+                        "aria-label": "Start a session",
+                        onclick: move |_| props.on_new_session.call(None),
+                        span { class: "rg-sidebar__floor-label", "Start a session" }
+                        span { class: "rg-sidebar__floor-hint", "Ctrl+Shift+N" }
+                    }
+                }
+            }
+
+            // The restart offer, between the list and the footer.
+            //
+            // Here rather than in the titlebar because the two say different
+            // things and only one of them is an interruption. The titlebar's
+            // chip means "there is a newer build, spend bandwidth"; this
+            // means "the bytes are already on disk and verified, and the next
+            // start runs them". The second is free, so it is a line the
+            // operator walks past until a moment that suits them, and it sits
+            // above the control they use most rather than in the band they
+            // read for the window's identity.
+            //
+            // Emitted only when there is something to restart into, so it is
+            // never a dead control, and it never appears in the 48px rail,
+            // where a sentence has nowhere to go.
+            if let Some(line) = restart_to.clone() {
+                button {
+                    class: "rg-sidebar__restart",
+                    r#type: "button",
+                    title: "The update is downloaded and verified. Restarting runs it; sessions keep running in the daemon.",
+                    "aria-label": "{crate::update::RESTART_TO_UPDATE}",
+                    onclick: move |_| props.on_restart.call(()),
+                    span { class: "rg-sidebar__restart-dot" }
+                    span { class: "rg-sidebar__restart-line", "{line}" }
+                }
             }
 
             // Bottom-leading, below the scroller: the product's most-used
@@ -1137,28 +1238,37 @@ fn click_kind(ctrl: bool, shift: bool) -> Click {
     }
 }
 
-/// Everything a row's tooltip says, in one string.
+/// Everything a row's hover detail says, in one string.
 ///
-/// Assembled here rather than in the markup so the exact text is testable. The
-/// status label's own tooltip already carries the state and its provenance;
-/// this one carries the things it cannot, and repeats nothing.
-fn row_tooltip(row: &SessionView, home: &str) -> String {
+/// Assembled here rather than in the markup so the exact text is testable.
+///
+/// It carries EVERY fact the row used to spread across four separate `title`
+/// attributes — the surface, the status pill, the disposition badge and the
+/// contest mark. That consolidation is the fix for the black rectangle: see
+/// `.rg-session__tip` in `sidebar.css` for why a row inside this panel may
+/// not ask the platform for a tooltip at all.
+///
+/// The state word comes from [`Pill`], not from `status_label`, so this
+/// string and the pill 8px above it cannot name one state two ways.
+fn row_tooltip(row: &SessionView, home: &str, pill: &Pill) -> String {
     let info = &row.info;
     let mut s = format!(
         "{}\n{}\n{} \u{2022} {}",
         inbox::row_title(info),
         vitrum_fmt::path::shorten_home_relative(&info.cwd, home, TOOLTIP_PATH_COLUMNS),
         AgentKind::of(&info.command).label(),
-        status_label(&info.status)
+        pill.word
     );
+    // How the state was decided. An inferred status and a probed one look
+    // identical apart from this sentence, and it is the one thing the pill's
+    // own tooltip carried that nothing else on the row says. It also answers
+    // the blocked question for every platform, including the one that cannot
+    // probe, so the row does not say it twice in two vocabularies.
+    s.push('\n');
+    s.push_str(inbox::source_note(pill.source));
     if attention_modifier(&info.attention).is_some() {
         s.push('\n');
         s.push_str(&attention_label(&info.attention));
-    } else if info.status.is_live()
-        && let Some(note) = waiting_note(&info.attention)
-    {
-        s.push('\n');
-        s.push_str(note);
     }
     s.push_str("\nRight-click for more");
     s
@@ -1283,7 +1393,23 @@ fn SessionRow(props: SessionRowProps) -> Element {
     } else {
         ""
     };
-    let tooltip = row_tooltip(row, &props.home);
+    let mut tooltip = row_tooltip(row, &props.home, &pill);
+    if let Some((files, peers)) = props.contested {
+        tooltip.push('\n');
+        tooltip.push_str(&contest_title(files, peers));
+    }
+    if let Some(badge) = disposition.as_ref() {
+        tooltip.push('\n');
+        tooltip.push_str(&badge.title);
+    }
+    if let Some(badge) = completion.as_ref() {
+        tooltip.push('\n');
+        tooltip.push_str(&badge.title);
+    }
+    if let Some(ticket) = parked.as_ref() {
+        tooltip.push('\n');
+        tooltip.push_str(&ticket.title);
+    }
     let dom_id = row_id(id);
     // A generated title is the command name, which is the same word on every
     // row a shell runs in: 60 real sessions produced 57 rows reading `bash`.
@@ -1303,7 +1429,6 @@ fn SessionRow(props: SessionRowProps) -> Element {
             class: "{class}",
             id: "{dom_id}",
             tabindex: 0,
-            title: "{tooltip}",
             onclick: move |e| {
                 let m = e.modifiers();
                 props.on_select.call((id, click_kind(m.ctrl() || m.meta(), m.shift())));
@@ -1349,7 +1474,6 @@ fn SessionRow(props: SessionRowProps) -> Element {
                     span { class: "rg-session__slot",
                         span {
                             class: "{pill.class}",
-                            title: "{pill.title}",
                             "aria-label": "{pill.word}",
                             // Off leaves the pill's box and its hue, which is
                             // exactly what the collapsed rail already draws:
@@ -1386,17 +1510,16 @@ fn SessionRow(props: SessionRowProps) -> Element {
                     // floated alone against the timestamp with the whole left
                     // half of the line empty. The most urgent thing a row can
                     // say belongs under the title, not in the gutter.
-                    if let Some((files, peers)) = props.contested {
+                    if let Some((files, _)) = props.contested {
                         span {
                             class: "rg-session__contest",
-                            title: "{contest_title(files, peers)}",
                             span { class: "rg-session__contest-mark" }
                             span { class: "rg-session__contest-count", "{files}" }
                         }
                     }
                     span { class: "rg-session__branch", "{branch}" }
                     if let Some(badge) = disposition {
-                        span { class: "{badge.class}", title: "{badge.title}",
+                        span { class: "{badge.class}",
                             if let Some(icon) = badge.icon {
                                 span { class: "rg-badge__icon", "{icon}" }
                             }
@@ -1404,7 +1527,7 @@ fn SessionRow(props: SessionRowProps) -> Element {
                         }
                     }
                     if let Some(badge) = completion {
-                        span { class: "{badge.class}", title: "{badge.title}",
+                        span { class: "{badge.class}",
                             if let Some(icon) = badge.icon {
                                 span { class: "rg-badge__icon", "{icon}" }
                             }
@@ -1425,7 +1548,6 @@ fn SessionRow(props: SessionRowProps) -> Element {
                             button {
                                 class: "rg-session__close",
                                 r#type: "button",
-                                title: "Terminate session",
                                 "aria-label": "Terminate session",
                                 onclick: move |e| {
                                     // Without this the click also lands on the
@@ -1445,7 +1567,7 @@ fn SessionRow(props: SessionRowProps) -> Element {
                 AgentGlyph { mark: agent_mark, hue: agent_hue }
                 span { class: "rg-session__title", "{title}" }
                 if let Some(badge) = completion {
-                    span { class: "{badge.class}", title: "{badge.title}",
+                    span { class: "{badge.class}",
                         if let Some(icon) = badge.icon {
                             span { class: "rg-badge__icon", "{icon}" }
                         }
@@ -1454,7 +1576,7 @@ fn SessionRow(props: SessionRowProps) -> Element {
                 }
                 span { class: "rg-session__slot",
                     if let Some(ticket) = parked {
-                        span { class: "{ticket.class}", title: "{ticket.title}",
+                        span { class: "{ticket.class}",
                             span { class: "rg-pill__word", "{ticket.text}" }
                         }
                     } else if props.fields.time {
@@ -1464,7 +1586,6 @@ fn SessionRow(props: SessionRowProps) -> Element {
                         button {
                             class: "rg-session__close",
                             r#type: "button",
-                            title: "Terminate session",
                             "aria-label": "Terminate session",
                             onclick: move |e| {
                                 e.stop_propagation();
@@ -1475,6 +1596,38 @@ fn SessionRow(props: SessionRowProps) -> Element {
                     }
                 }
             }
+
+            // THE ROW'S HOVER DETAIL, DRAWN BY US.
+            //
+            // This element replaces four `title` attributes: one on the row
+            // surface, one on the status pill, one on each badge, one on the
+            // contest mark and one on the close button. `title` is not a
+            // request for a tooltip, it is a request for a WINDOW: the engine
+            // hands it to the platform, which paints an override-redirect
+            // surface above the document that nothing in this stylesheet can
+            // reach. Two consequences, both observed on a real session.
+            //
+            // It is anchored to the POINTER and not to the row. Reorder the
+            // list under a stationary cursor — which happens whenever a
+            // project is pinned to the top or an agent changes state — and
+            // the surface stays exactly where it was, over rows it no longer
+            // describes, until the pointer moves and the engine recomputes
+            // it. Captured headless it is a black rectangle sitting across
+            // three rows for the whole of a reorder.
+            //
+            // And it is painted by the platform, so its colours are the
+            // desktop's tooltip colours and not this product's. On a host
+            // with no theme resolved it comes out pure black on a panel this
+            // design spent a file getting the value of.
+            //
+            // A span in the row is neither. It is a child of the thing it
+            // describes, so a reorder MOVES it; `:hover` on the row is
+            // recomputed by the same layout that moved the row, so no frame
+            // can show it detached; and it is painted by us in our own
+            // colours. It costs one node and one text node per row, which is
+            // the honest price and is why the string is assembled once above
+            // rather than per element.
+            span { class: "rg-session__tip", role: "tooltip", "{tooltip}" }
         }
     }
 }

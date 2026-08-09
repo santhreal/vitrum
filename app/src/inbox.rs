@@ -408,10 +408,29 @@ pub fn command_name(command: &str) -> &str {
 /// - It is what the rest of the product already calls a session. A
 ///   notification activates `session/7`; the row for it now reads `#7`.
 ///
+/// AND A SESSION WITH NO TITLE AT ALL IS NAMED HERE TOO. `title` is a plain
+/// string on the wire and the empty string is a legal value of it: the create
+/// request carries `title: None` whenever the operator leaves the field
+/// blank, and a daemon that has not yet observed a name sends `""` until it
+/// does. Passed through, that draws a row whose name element is present, laid
+/// out, and holding nothing — a line with an agent mark, a status pill and a
+/// blank where the session's identity goes, on every row shape and in every
+/// band. `ui/search.rs` already refused to do that and fell back to
+/// `Session {n}`; the sidebar, the row menu and the notification title all
+/// read this function instead, so all three drew the blank. The fallback goes
+/// here rather than at those four call sites because this is the one place a
+/// row's displayed name is decided.
+///
+/// Whitespace counts as absent. A name of three spaces is a blank row with
+/// extra steps.
+///
 /// Borrowed for a chosen title, which is the case that costs nothing, and
-/// allocated only for a generated one.
+/// allocated only for a generated or a missing one.
 #[must_use]
 pub fn row_title(info: &SessionInfo) -> Cow<'_, str> {
+    if info.title.trim().is_empty() {
+        return Cow::Owned(format!("Session #{}", info.id.0));
+    }
     if info.title == command_name(&info.command) {
         Cow::Owned(format!("{} #{}", info.title, info.id.0))
     } else {

@@ -76,17 +76,15 @@ fn the_list_is_populated_before_any_keystroke() {
         &st,
         &store_with(&[("claude", 7)]),
         &[agent("Codex", "codex")],
-        "/bin/bash",
         "/src/vitrum",
         "/home/u",
         2_000,
     );
     let shown: Vec<&str> = rows.iter().map(Intent::text).collect();
-    assert_eq!(shown, vec!["claude", "codex", "/bin/bash"]);
+    assert_eq!(shown, vec!["claude", "codex"]);
     assert_eq!(rows[0].place, "vitrum");
     assert_eq!(rows[0].band, Band::Recent);
     assert_eq!(rows[1].band, Band::Agent);
-    assert_eq!(rows[2].band, Band::Shell);
 }
 
 /// PATH discovery lands late on purpose, and must never move the row the
@@ -100,12 +98,11 @@ fn agents_arriving_late_never_displace_the_top_row() {
     let mut st = UiState::default();
     st.daemon.projects = vec![project(1, "vitrum", "/src/vitrum")];
     let store = store_with(&[("claude", 7)]);
-    let first = intents(&st, &store, &[], "", "/src/vitrum", "/home/u", 2_000);
+    let first = intents(&st, &store, &[], "/src/vitrum", "/home/u", 2_000);
     let later = intents(
         &st,
         &store,
         &[agent("Codex", "codex"), agent("Gemini CLI", "gemini")],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -135,7 +132,6 @@ fn a_query_matches_on_the_directory_alone() {
         &st,
         &LaunchStore::default(),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -162,7 +158,6 @@ fn a_query_matches_on_the_branch_alone() {
         &st,
         &LaunchStore::default(),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -192,7 +187,6 @@ fn two_terms_narrow_across_two_fields() {
         &st,
         &LaunchStore::default(),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -216,7 +210,6 @@ fn number_keys_map_to_the_visible_row_order() {
         &st,
         &store_with(&[("claude", 9), ("codex", 4), ("cargo test", 2)]),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -260,7 +253,6 @@ fn the_list_never_draws_a_row_without_a_number() {
         &st,
         &store_with(&history),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -538,7 +530,6 @@ fn anything_typed_is_still_launchable() {
         &st,
         &store_with(&[("claude", 3)]),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -588,7 +579,6 @@ fn a_rooted_command_with_arguments_is_a_command_not_a_directory() {
         &st,
         &store_with(&[("claude", 3)]),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -654,7 +644,6 @@ fn recents_here_outrank_agents_on_path() {
         &st,
         &store_with(&[("codex", 2)]),
         &[agent("Claude Code", "claude"), agent("Codex", "codex")],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -681,7 +670,6 @@ fn what_runs_elsewhere_ranks_below_what_runs_here() {
         &st,
         &LaunchStore::default(),
         &[agent("Claude Code", "claude")],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -714,7 +702,6 @@ fn a_repeated_command_in_one_place_is_offered_once() {
         &st,
         &LaunchStore::default(),
         &[],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,
@@ -745,7 +732,6 @@ fn a_saved_preset_is_a_row_with_its_own_name() {
         &st,
         &store,
         &[agent("Claude Code", "claude")],
-        "",
         "/src/vitrum",
         "/home/u",
         2_000,

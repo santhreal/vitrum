@@ -502,6 +502,13 @@ fn every_emitted_class_is_styled_somewhere() {
         "rg-sidebar__empty--no-matches",
         "rg-sidebar__footer",
         "rg-sidebar__resizer",
+        "rg-sidebar__floor",
+        "rg-sidebar__floor-label",
+        "rg-sidebar__floor-hint",
+        "rg-sidebar__restart",
+        "rg-sidebar__restart-dot",
+        "rg-sidebar__restart-line",
+        "rg-session__tip",
         "rg-attn-count",
         "rg-project",
         "rg-project--collapsed",
@@ -754,8 +761,12 @@ fn row_ids_are_derived_from_the_session_id() {
     assert_ne!(row_id(SessionId(1)), row_id(SessionId(2)));
 }
 
+/// Defect class: two names for one state on one row.
+///
 /// A healthy running session's tooltip must not claim anything about
-/// blocking when the daemon reported `waiting: Some(false)`.
+/// blocking when the daemon reported `waiting: Some(false)`, and it must
+/// use the pill's word. The row used to say "running" 8px under a pill
+/// reading "Working", which reads as two facts.
 #[test]
 fn a_working_session_tooltip_states_only_facts() {
     let r = row(4)
@@ -764,15 +775,15 @@ fn a_working_session_tooltip_states_only_facts() {
         .waiting(Some(false))
         .build();
     assert_eq!(
-        row_tooltip(&r, "/home/u"),
-        "review auth\n/src/vitrum\nshell \u{2022} running\nRight-click for more"
+        row_tooltip(&r, "/home/u", &Pill::of(&r)),
+        "review auth\n/src/vitrum\nshell \u{2022} Working\nthe OS reports it running, not blocked on the terminal\nRight-click for more"
     );
 }
 
-/// When the daemon cannot answer the blocking question, the row says so.
-/// Windows has no equivalent of the Linux and macOS foreground-process
-/// probe, and a shell that silently omitted the line would let a Windows
-/// user read "running" as "not blocked".
+/// When the daemon cannot answer the blocking question, the row says the
+/// state is a guess. Windows has no equivalent of the Linux and macOS
+/// foreground-process probe, and a row that omitted the sentence would let
+/// a Windows user read "Working" as "not blocked".
 #[test]
 fn an_unknowable_platform_says_it_cannot_tell() {
     let r = row(4)
@@ -781,14 +792,14 @@ fn an_unknowable_platform_says_it_cannot_tell() {
         .waiting(None)
         .build();
     assert_eq!(
-        row_tooltip(&r, "/home/u"),
-        "review auth\n/src/vitrum\nshell \u{2022} running\nthis platform cannot tell whether the agent is blocked\nRight-click for more"
+        row_tooltip(&r, "/home/u", &Pill::of(&r)),
+        "review auth\n/src/vitrum\nshell \u{2022} Working\nthis platform cannot probe the child, so this is a guess from recent output and may be wrong\nRight-click for more"
     );
 }
 
-/// An observed block must name what was observed, not guess why.
-/// "Blocked reading input" is a syscall fact; "waiting for approval" would
-/// be an inference only the agent can make.
+/// An observed block must name what was observed, not guess why. "Blocked
+/// reading the terminal" is a syscall fact; "waiting for approval" would be
+/// an inference only the agent can make.
 #[test]
 fn an_observed_block_names_the_observation() {
     let r = row(4)
@@ -797,8 +808,8 @@ fn an_observed_block_names_the_observation() {
         .waiting(Some(true))
         .build();
     assert_eq!(
-        row_tooltip(&r, "/home/u"),
-        "review auth\n/src/vitrum\nshell \u{2022} running\nblocked reading input - needs you\nRight-click for more"
+        row_tooltip(&r, "/home/u", &Pill::of(&r)),
+        "review auth\n/src/vitrum\nshell \u{2022} Ready\nthe OS reports it blocked reading the terminal\nblocked reading input - needs you\nRight-click for more"
     );
 }
 
@@ -813,8 +824,8 @@ fn an_exited_session_is_not_asked_whether_it_is_blocked() {
         .waiting(None)
         .build();
     assert_eq!(
-        row_tooltip(&r, "/home/u"),
-        "review auth\n/src/vitrum\nshell \u{2022} exited 0\nRight-click for more"
+        row_tooltip(&r, "/home/u", &Pill::of(&r)),
+        "review auth\n/src/vitrum\nshell \u{2022} Ready\nthe child process exited\nRight-click for more"
     );
 }
 
@@ -829,7 +840,7 @@ fn the_agent_label_lives_on_the_pill_not_the_row() {
         .waiting(Some(true))
         .hint(HintState::Approval, Some("run rm -rf build?"), NOW)
         .build();
-    assert!(!row_tooltip(&r, "/home/u").contains("rm -rf build"));
+    assert!(!row_tooltip(&r, "/home/u", &Pill::of(&r)).contains("rm -rf build"));
     assert!(Pill::of(&r).title.contains("agent says: run rm -rf build?"));
 }
 
@@ -1545,4 +1556,176 @@ fn alias_px(css: &str, name: &str) -> f64 {
         .and_then(|v| v.strip_suffix(')'))
         .unwrap_or_else(|| panic!("{name} is {value}, which is not an alias"));
     token_px(css, target)
+}
+
+/// WHY: three of five statuses shipped a pill with no dot, and the column
+/// went ragged.
+///
+/// `.rg-pill::before` used to be `display: none` with a single re-show on
+/// `.rg-pill--working`. The argument for that was about HUE — Working is the
+/// transient state and the only one that needs colour — and it was applied to
+/// GEOMETRY. The pill is a flex row of dot, word and aux, so a pill with no
+/// dot starts its word 12px further along than one with a dot, and a list
+/// mixing Working and Ready rows has two left edges and two pill widths
+/// against the straightest right edge in the panel.
+///
+/// The variant space is [`vitrum_model::ALL_STATUSES`], read at run time and
+/// never listed here, so a sixth state cannot be added without this test
+/// ruling on it. The modifier for each is asked of
+/// [`inbox::status_modifier`], which is the same function the markup calls,
+/// so the element this reasons about is the element that renders.
+///
+/// It reads the CASCADE and not one rule: a `display: none` reintroduced on
+/// any selector that can reach the mark — a modifier, the collapsed rail, a
+/// media query — is caught, because every `::before` rule whose key compound
+/// this element satisfies is collected and the last `display` wins.
+///
+/// Adding a sixth `SidebarStatus` turns the suite red twice over and by
+/// construction: [`inbox::status_modifier`] is an exhaustive match, so the
+/// crate stops compiling until the variant is named, and the first assertion
+/// here then fails until some stylesheet paints the modifier it was named
+/// with. Neither is a list anybody has to remember to update.
+///
+/// The mutations this catches: `.rg-pill::before { display: none }` with a
+/// re-show on `.rg-pill--working` alone, which is the shipped defect;
+/// `display: none` on `.rg-pill--ready::before` or on any other single
+/// modifier; a `display: inline` on one state's dot, which is a different
+/// box from the block every other state gets; and a new status whose
+/// modifier no sheet paints at all.
+///
+/// What it does NOT catch: a dot hidden by something other than `display`
+/// (`width: 0`, `content: none`, `opacity: 0`), or a rule in a stylesheet
+/// other than the two the pill is painted by.
+#[test]
+fn every_status_wears_a_dot() {
+    let sheets = [
+        ("sidebar.css", include_str!("../../../assets/sidebar.css")),
+        ("app.css", include_str!("../../app.css")),
+    ];
+
+    for status in vitrum_model::ALL_STATUSES {
+        let modifier = inbox::status_modifier(status);
+        // The element as the markup writes it: `class="rg-pill rg-pill--x"`.
+        let worn = ["rg-pill", modifier];
+
+        // Fail closed on a new state: a status nothing paints has no pill to
+        // put a dot on, whatever the base rule says.
+        assert!(
+            sheets
+                .iter()
+                .any(|(_, css)| selector_present(css, &format!(".{modifier}"))),
+            "{} is in ALL_STATUSES and no stylesheet paints .{modifier}",
+            status.label()
+        );
+
+        let mut winner: Option<(&str, String)> = None;
+        for (name, css) in sheets {
+            for (selector, display) in before_display_rules(css) {
+                if selector_matches(&selector, &worn) {
+                    winner = Some((name, display));
+                }
+            }
+        }
+        let (sheet, display) = winner.unwrap_or_else(|| {
+            panic!(
+                "no ::before rule reaches a {} pill, so the state has no dot \
+                 at all",
+                status.label()
+            )
+        });
+        assert_ne!(
+            display, "none",
+            "{} is hidden by a ::before rule in {sheet}: the pill's word \
+             starts 12px left of every state that kept its dot, and the \
+             status column reads as ragged",
+            status.label()
+        );
+        assert_eq!(
+            display,
+            "block",
+            "{}'s dot is `display: {display}`, which is neither the block \
+             every other state gets nor an intentional decision recorded \
+             here",
+            status.label()
+        );
+    }
+}
+
+/// Every `::before` rule in a sheet, as (selector, the `display` it sets).
+///
+/// In source order, which is cascade order for rules of equal specificity
+/// and is what makes "the last one wins" the right reading. Rules that set
+/// no `display` are skipped: they cannot turn the mark off.
+fn before_display_rules(css: &str) -> Vec<(String, String)> {
+    let css = without_comments(css);
+    let mut found = Vec::new();
+    for (at, _) in css.match_indices("::before") {
+        // Back to the start of the selector: the previous brace, either the
+        // end of the last rule or the start of an at-rule block.
+        let start = css[..at]
+            .rfind(['}', '{'])
+            .map_or(0, |brace| brace + 1);
+        let Some(open) = css[at..].find('{') else {
+            continue;
+        };
+        let selectors = css[start..at + open].trim().to_string();
+        let body_at = at + open + 1;
+        let Some(close) = css[body_at..].find('}') else {
+            continue;
+        };
+        let body = &css[body_at..body_at + close];
+        let Some((_, value)) = body.split_once("display:") else {
+            continue;
+        };
+        let Some((value, _)) = value.split_once(';') else {
+            continue;
+        };
+        for one in selectors.split(',') {
+            if one.contains("::before") {
+                found.push((one.trim().to_string(), value.trim().to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// Could this selector reach an element wearing exactly `classes`?
+///
+/// The KEY COMPOUND is what is tested — the part after the last combinator,
+/// with `::before` stripped — and an ancestor part is deliberately ignored
+/// rather than resolved. That is conservative in the direction this guard
+/// needs: a rule that hides the mark only inside the collapsed rail still
+/// counts as hiding it, which is exactly the block the fix deleted.
+fn selector_matches(selector: &str, classes: &[&str]) -> bool {
+    let key = selector
+        .rsplit([' ', '>', '+', '~'])
+        .next()
+        .unwrap_or(selector)
+        .replace("::before", "");
+    if key.is_empty() || !key.starts_with('.') {
+        return false;
+    }
+    key.split('.')
+        .filter(|part| !part.is_empty())
+        .all(|part| classes.contains(&part))
+}
+
+/// A stylesheet with its `/* */` comments removed.
+///
+/// Every rule in these files is preceded by a paragraph of prose that names
+/// the declarations it is arguing about, including the `display: none` this
+/// guard exists to find.
+fn without_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some((before, after)) = rest.split_once("/*") {
+        out.push_str(before);
+        out.push(' ');
+        match after.split_once("*/") {
+            Some((_, tail)) => rest = tail,
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
 }

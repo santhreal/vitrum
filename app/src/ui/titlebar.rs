@@ -41,6 +41,7 @@
 
 use dioxus::prelude::*;
 
+use crate::inbox::Pill;
 use crate::state::{ConnState, UiState, status_label};
 
 /// Left inset reserved for the macOS traffic lights, in CSS pixels.
@@ -106,7 +107,7 @@ pub fn context(st: &UiState) -> Context {
             secondary: vitrum_fmt::count::count_s(here as u64, "session"),
         };
     };
-    let Some(info) = st.session(id) else {
+    let Some(row) = st.row(id) else {
         // The focused id outlived its row for one paint, between a close and
         // the snapshot that prunes it. Saying so beats a blank bar.
         return Context {
@@ -114,6 +115,7 @@ pub fn context(st: &UiState) -> Context {
             secondary: "session closing".to_string(),
         };
     };
+    let info = &row.info;
     let project = st
         .daemon
         .projects
@@ -127,7 +129,23 @@ pub fn context(st: &UiState) -> Context {
     if let Some(b) = info.git_branch.as_deref() {
         parts.push(b.to_string());
     }
-    parts.push(status_label(&info.status));
+    // ONE VOCABULARY.
+    //
+    // This slot used to say `status_label`, which is the process word
+    // ("running"), while the sidebar row for the same session said the state
+    // word ("Working"). Two surfaces, 44px apart, naming one fact twice.
+    // `Pill::of` is the one resolution of a row's state and `inbox::status_word`
+    // is the one place that state becomes a word, so both surfaces read the
+    // same string and a synonym cannot enter one of them alone.
+    //
+    // The exit description sits BESIDE the word rather than instead of it,
+    // because it is a different fact: the word says Ready or Failed, the
+    // description says which failure. A live session gets the word only,
+    // since "running" is what the word already said.
+    parts.push(Pill::of(row).word.to_string());
+    if matches!(info.status, vitrum_proto::SessionStatus::Exited { .. }) {
+        parts.push(status_label(&info.status));
+    }
     Context {
         primary: info.title.clone(),
         secondary: parts.join("  \u{00b7}  "),
@@ -453,8 +471,69 @@ mod tests {
         assert_eq!(ctx.primary, "review auth");
         assert_eq!(
             ctx.secondary,
-            "vitrum  \u{00b7}  feat/auth  \u{00b7}  running"
+            "vitrum  \u{00b7}  feat/auth  \u{00b7}  Working"
         );
+    }
+
+    /// Defect class: one session state named two ways in one window.
+    ///
+    /// The titlebar read `state::status_label` while the sidebar pill read
+    /// [`crate::inbox::status_word`], so a running agent was "Working" in
+    /// the list and "running" in the bar for the same session at the same
+    /// instant. The invariant is checked at the surface, not at the helper:
+    /// whatever word the pill shows, the bar shows.
+    ///
+    /// Driven over [`vitrum_model::ALL_STATUSES`] read at run time, and the
+    /// coverage assertion at the end fails when a sixth state is added
+    /// without a case here, so the class cannot reopen one state at a time.
+    #[test]
+    fn the_bar_and_the_pill_name_a_state_the_same_way() {
+        use std::collections::HashSet;
+        use vitrum_model::{ALL_STATUSES, SidebarStatus};
+        use vitrum_proto::{AgentHint, HintState};
+
+        let mut covered: HashSet<SidebarStatus> = HashSet::new();
+        for declared in HintState::ALL
+            .into_iter()
+            .map(Some)
+            .chain(core::iter::once(None))
+        {
+            let mut info = session(7, "review auth", None, SessionStatus::Running);
+            match declared {
+                Some(hint) => {
+                    info.hint = Some(AgentHint {
+                        state: hint,
+                        label: None,
+                        received_at_ms: NOW,
+                    });
+                }
+                // The one state no hint can declare: the child died.
+                None => info.status = SessionStatus::Exited { code: Some(2) },
+            }
+
+            let mut st = state();
+            st.daemon.sessions = to_views(vec![info]);
+            st.open(SessionId(7), NOW);
+            let row = st.row(SessionId(7)).expect("the session is in the list");
+            let pill = crate::inbox::Pill::of(row);
+            covered.insert(pill.status);
+
+            let secondary = context(&st).secondary;
+            assert!(
+                secondary
+                    .split("  \u{00b7}  ")
+                    .any(|part| part == pill.word),
+                "the bar says {secondary:?}, the pill says {:?}",
+                pill.word
+            );
+        }
+
+        for status in ALL_STATUSES {
+            assert!(
+                covered.contains(&status),
+                "{status:?} is a state the bar can name freely: no case here produces it"
+            );
+        }
     }
 
     /// The status must never be drawn twice in this bar.
@@ -492,7 +571,7 @@ mod tests {
         let mut st = state();
         st.daemon.sessions = to_views(vec![session(7, "scratch", None, SessionStatus::Running)]);
         st.open(SessionId(7), NOW);
-        assert_eq!(context(&st).secondary, "vitrum  \u{00b7}  running");
+        assert_eq!(context(&st).secondary, "vitrum  \u{00b7}  Working");
     }
 
     /// A session in a project the client has not received yet must still show
@@ -510,7 +589,7 @@ mod tests {
         st.open(SessionId(7), NOW);
         let ctx = context(&st);
         assert_eq!(ctx.primary, "orphan");
-        assert_eq!(ctx.secondary, "exited 2");
+        assert_eq!(ctx.secondary, "Failed  \u{00b7}  exited 2");
     }
 
     /// Focus pointing at a session that no longer exists must produce a real

@@ -135,6 +135,41 @@ fn a_portal_that_never_starts_is_missing_rather_than_broken() {
     assert!(!absent("org.freedesktop.DBus.Error.InvalidArgs", None));
 }
 
+/// A portal with no Settings backend is a missing service, not a broken one.
+///
+/// WHY: `xdg-desktop-portal` with no backend installed owns the bus name and
+/// exports the object, then answers `UnknownMethod` with "No such interface
+/// `org.freedesktop.portal.Settings` on object at path
+/// /org/freedesktop/portal/desktop". That was a runtime error, so a headless
+/// machine and a minimally configured desktop both reported the portal as
+/// broken instead of reporting that nothing implements the interface. This is
+/// the sibling of the activation-timeout case above: same verdict, different
+/// way of discovering the capability is not there.
+///
+/// This does NOT assert the two-call rule in `map_call_error`, which needs
+/// `zbus::Error::MethodError` values that cannot be constructed here. What it
+/// defends is the name table.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_portal_without_a_settings_backend_is_missing_rather_than_broken() {
+    use crate::theme::linux::names_a_missing_interface as no_interface;
+
+    assert!(
+        no_interface("org.freedesktop.DBus.Error.UnknownMethod"),
+        "the error a backend-less portal actually returns"
+    );
+    assert!(no_interface("org.freedesktop.DBus.Error.UnknownInterface"));
+    assert!(no_interface("org.freedesktop.DBus.Error.UnknownObject"));
+
+    // A property that does not exist means the interface answered, so the
+    // portal is present and this key simply has no value. Reporting that as a
+    // missing service would hide a working portal.
+    assert!(!no_interface("org.freedesktop.DBus.Error.UnknownProperty"));
+    assert!(!no_interface("org.freedesktop.DBus.Error.AccessDenied"));
+    assert!(!no_interface("org.freedesktop.DBus.Error.ServiceUnknown"));
+    assert!(!no_interface("org.freedesktop.DBus.Error.TimedOut"));
+}
+
 /// A portal read gives up rather than blocking the caller for minutes.
 ///
 /// The classifier above returns the right answer, but only once the bus has

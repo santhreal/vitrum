@@ -175,6 +175,44 @@ fn portal_absent() -> Unavailable {
     ))
 }
 
+/// The portal answered, and does not carry the interface this reads.
+///
+/// Distinct from [`portal_absent`] because the corrective action is the same
+/// but the first clause of that message would be a lie: the portal is on the
+/// bus, and telling an operator to install what they are already running
+/// sends them to check the wrong thing.
+fn portal_without_settings() -> Unavailable {
+    Unavailable::service_missing(format!(
+        "xdg-desktop-portal is running ({DESTINATION}) but serves no \
+         {INTERFACE}; install a backend that implements it, such as \
+         xdg-desktop-portal-gtk or -kde"
+    ))
+}
+
+/// Whether a D-Bus error name means the object served no such interface.
+///
+/// A portal frontend with no backend owns the name and exports the object,
+/// then answers `UnknownMethod` for an interface nothing implements: the
+/// message is "No such interface `org.freedesktop.portal.Settings` on object
+/// at path /org/freedesktop/portal/desktop". That is the capability being
+/// absent, which is what
+/// [`crate::capability::UnavailableKind::ServiceMissing`] means and what makes
+/// it transient, rather than the portal being broken.
+///
+/// This does swallow a call to a method that genuinely does not exist, which
+/// would be our own bug rather than the machine's. The trade is deliberate:
+/// that bug is caught the first time anyone runs the theme suite against a
+/// working portal, while a headless or minimally configured desktop hits the
+/// real case on every launch.
+pub(crate) fn names_a_missing_interface(name: &str) -> bool {
+    matches!(
+        name,
+        "org.freedesktop.DBus.Error.UnknownMethod"
+            | "org.freedesktop.DBus.Error.UnknownInterface"
+            | "org.freedesktop.DBus.Error.UnknownObject"
+    )
+}
+
 /// Run `job` on its own thread and give up waiting after `timeout`.
 ///
 /// A call to an activatable name that never comes up does not fail: the bus
@@ -277,6 +315,17 @@ fn map_call_error(read_one: &zbus::Error, read: zbus::Error) -> Unavailable {
     };
     if missing(read_one) || missing(&read) {
         return portal_absent();
+    }
+    // Checked after absence, because a bus that never started the portal is a
+    // better thing to report than an interface that was never going to be
+    // there. Both calls must agree it is missing: `ReadOne` is the newer of
+    // the two and a portal old enough to serve only `Read` answers
+    // `UnknownMethod` for it while working perfectly.
+    let no_interface =
+        |e: &zbus::Error| matches!(e, zbus::Error::MethodError(name, _, _)
+            if names_a_missing_interface(name.as_str()));
+    if no_interface(read_one) && no_interface(&read) {
+        return portal_without_settings();
     }
     Unavailable::runtime_error(format!(
         "portal Settings unreadable: ReadOne failed with {read_one}, Read failed with {read}"

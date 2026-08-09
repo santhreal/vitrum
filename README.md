@@ -95,7 +95,7 @@ anywhere in the app.
 
 ## Status
 
-Pre-release, version 0.1.1. Linux is exercised end to end. macOS and Windows
+Pre-release, version 0.1.2. Linux is exercised end to end. macOS and Windows
 compile and are untested. Collision detection is Linux only.
 
 ## License

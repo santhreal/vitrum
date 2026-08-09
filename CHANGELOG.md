@@ -5,6 +5,8 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+## v0.1.2 - 2026-08-09
+
 ### Added
 
 - **The Windows executable carries the mark.** Explorer, the taskbar,

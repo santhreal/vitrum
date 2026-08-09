@@ -26,6 +26,30 @@ before 1.0 a minor bump may break things, and this file says when it does.
   pure function, so which face a character resolves through is answerable
   without a device or a rasterised glyph.
 - **`make fast`** runs the narrowest gate for one crate.
+- **A native terminal pane, behind the `native-pane` feature.** A GTK drawing
+  area in the shell's own toplevel, its X11 window handed to wgpu, painted
+  from `vitrum-grid`, with a toolkit-free key encoder. Off by default because
+  nothing hosts it yet: input method, selection, clipboard, search, scrollback
+  paging and Wayland are named in its module doc as the work between it and
+  replacing xterm.js. The argument for it is one parser and OSC 7 and OSC 133
+  semantics in Rust, not frame rate.
+- **The installer answers for what a real machine does to it.** No `curl` and
+  no `wget`, a proxy that needs a scheme, a download truncated mid-flight, a
+  captive portal page where the archive should be, a `SHA256SUMS` with no line
+  for this archive, an install directory it cannot write, a running `vitrum`
+  in the way, a shell whose PATH syntax is not `export`, a second install over
+  the first, and a missing system webview named with the package that supplies
+  it on eight distributions. Uninstall reads a manifest and removes only what
+  the installer wrote.
+- **Pictures are gated by machine, not by review.** Every image in the tree is
+  enumerated at run time and must be explained by a document; the description
+  must name an agent and a state; and neither the description nor the prose
+  around it may describe this product through a shell. An orphan image is a
+  defect on its own, because unreferenced is how a banned one ships.
+- **The JavaScript bill is published and capped.** Each remaining script is
+  listed with its byte count and what it still does. The file set is read from
+  the tree, so a new script is red until it is recorded, and a script that
+  grows past its recorded size is red too.
 
 ### Fixed
 
@@ -52,6 +76,21 @@ before 1.0 a minor bump may break things, and this file says when it does.
   rebuilding the release, so between those steps the tag an installer resolves
   had no assets. Nightly now builds a complete staging draft, checks every
   expected asset is on it, and swaps in one rename.
+- **Continuous integration runs at all.** Six of seven jobs asked for a
+  self-hosted runner label nobody ever registered, and a label with no machine
+  behind it does not fail: GitHub queues the job until it discards it a day
+  later. Six per push accumulated into 233 unservable jobs that starved the
+  servable ones, and the v0.1.0 release matrix died the same way on a retired
+  macOS image, which is why that tag carries no assets. Labels now come from a
+  repository variable that falls back to a hosted runner, and two guards — one
+  in the pipeline, one in the test suite — refuse a label the project has not
+  agreed on. The suite also parses every workflow, because a workflow that
+  does not parse produces a run with zero jobs, no annotation and no log.
+- **A tooltip no longer survives the row it belonged to.** A platform tooltip
+  is anchored to the pointer rather than the element, so reordering the
+  sidebar underneath one left an opaque rectangle lying across the rows in the
+  desktop's own colours. Nothing between the sidebar's body and its floor asks
+  the platform for a tooltip now.
 
 ### Changed
 
@@ -74,6 +113,11 @@ before 1.0 a minor bump may break things, and this file says when it does.
 - **The launcher offers agents, not a shell.** A row whose command is a shell
   argues this is a terminal multiplexer, which is a category where tmux and
   Zellij already win and where nothing this product does is visible.
+- **The pane prototype is deleted.** It existed to prove a wgpu surface can
+  live on a GTK drawing area inside the shell's own window, it proved it, and
+  the widget it justified now ships behind a feature. It also depended on GTK
+  unconditionally, so a workspace build on Windows or macOS failed on
+  `gobject-sys` before it reached this product's own code.
 
 ## v0.1.0 - 2026-08-09
 

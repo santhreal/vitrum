@@ -5,6 +5,8 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+## v0.1.1 - 2026-08-09
+
 ### Added
 
 - **The session socket lives in Rust.** The webview used to open the

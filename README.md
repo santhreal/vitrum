@@ -110,7 +110,7 @@ and a command. `Ctrl+S` in that dialog stores it as a preset.
 
 ## Status
 
-Pre-release, version 0.1.0. Linux is exercised end to end. macOS and Windows
+Pre-release, version 0.1.1. Linux is exercised end to end. macOS and Windows
 compile and are untested. Collision detection is Linux only.
 
 ## License

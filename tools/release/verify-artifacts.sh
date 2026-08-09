@@ -83,21 +83,23 @@ grep -qF "  $archive" "$serve/SHA256SUMS" ||
     die "SHA256SUMS has no entry for $archive"
 
 step "install through install.sh"
-# One substitution: the release base URL becomes this directory. Everything the
-# installer does with what it downloads is untouched.
-sed "s|^BASE=.*|BASE=\"file://$serve\"|" install.sh > "$scratch/install.sh"
-grep -q "^BASE=\"file://$serve\"\$" "$scratch/install.sh" ||
-    die 'could not repoint install.sh at the scratch release'
-# `sed` must have changed exactly one line and nothing else.
-[ "$(diff install.sh "$scratch/install.sh" | grep -c '^[<>]')" = 2 ] ||
-    die 'repointing install.sh changed more than the download base'
-ok 'install.sh copied with only its download base changed'
+# The shipped file, byte for byte, pointed at this directory through the knob
+# it documents. It used to be copied with `sed` rewriting a `BASE=` assignment,
+# which proved something about a copy rather than about the installer, and
+# which broke silently the day the installer grew `--base-url` and stopped
+# having that line at all: the verifier failed on its own patch while the real
+# installer was fine.
+#
+# A mirror has no releases API to ask, so `--base-url` requires an explicit
+# version. That is the same rule a user following the mirror instructions
+# meets, which is the point of exercising it here.
+ok 'the installer under test is the one in the tree, unmodified'
 
 run_installer() {
-    VITRUM_VERSION="$version" \
     VITRUM_INSTALL_DIR="$scratch/bin" \
+    VITRUM_BASE_URL="file://$serve" \
     VITRUM_NO_INTEGRATE=1 \
-        sh "$scratch/install.sh" 2>&1
+        sh install.sh "$version" 2>&1
 }
 
 rm -rf "$scratch/bin"
@@ -113,10 +115,20 @@ done
 ok "installed and ran both binaries at $version from the verified archive"
 
 step "the digest check refuses a tampered archive"
-# One byte, in the compressed payload rather than the gzip header, so the
-# refusal is the checksum's and not tar's.
+# A DIFFERENT, PERFECTLY VALID archive under the published name, rather than a
+# byte flipped inside the compressed payload. Flipping a payload byte breaks
+# the deflate stream, so the installer's integrity shape check refuses it as a
+# truncated download before the digest is ever computed, and the step passed
+# while proving nothing about the checksum. This is also the realistic attack:
+# a substituted archive is a well-formed one.
 cp "$serve/$archive" "$serve/$archive.good"
-printf 'x' | dd of="$serve/$archive" bs=1 seek=64 conv=notrunc status=none
+swap="$scratch/swap"
+rm -rf "$swap"
+mkdir -p "$swap"
+tar xzf "$serve/$archive.good" -C "$swap"
+printf 'not what was published\n' > "$swap/README"
+tar czf "$serve/$archive" -C "$swap" .
+rm -rf "$swap"
 rm -rf "$scratch/bin"
 if out=$(run_installer); then
     printf '%s\n' "$out" | sed 's/^/    /' >&2
@@ -130,12 +142,22 @@ ok 'refused, and installed nothing'
 mv "$serve/$archive.good" "$serve/$archive"
 
 step "the digest check refuses an archive SHA256SUMS does not cover"
-# A one-archive scratch release leaves this empty, and an empty SHA256SUMS is
-# exactly the shape a partial publish would produce, so `grep` finding nothing
-# is the case under test rather than a failure.
-grep -vF "$archive" "$serve/SHA256SUMS" > "$serve/SHA256SUMS.tmp" || true
+# A partial publish is a SHA256SUMS that covers the targets whose builds
+# finished and not the one you are installing, so that is what is written here:
+# this archive's line removed, another target's line in its place.
+#
+# Emptying the file instead — which is what a one-archive scratch release
+# produces if you only delete — tests a different refusal. The installer reads
+# an empty or non-digest first line as a captive portal answering on the
+# release's behalf, which is right, and which is not the missing-entry path
+# this step exists for.
 mv "$serve/SHA256SUMS" "$serve/SHA256SUMS.full"
-mv "$serve/SHA256SUMS.tmp" "$serve/SHA256SUMS"
+other="vitrum-${version}-aarch64-apple-darwin.tar.gz"
+sed "s|  $archive\$|  $other|" "$serve/SHA256SUMS.full" > "$serve/SHA256SUMS"
+grep -qF "  $other" "$serve/SHA256SUMS" ||
+    die 'the partial-publish fixture covers nothing at all'
+grep -qvF "  $archive" "$serve/SHA256SUMS" ||
+    die 'the partial-publish fixture still covers this archive'
 rm -rf "$scratch/bin"
 if out=$(run_installer); then
     printf '%s\n' "$out" | sed 's/^/    /' >&2

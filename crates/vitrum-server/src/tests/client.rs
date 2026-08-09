@@ -355,6 +355,13 @@ impl Client {
         self.closed = true;
     }
 
+    // The helpers from here to the end of this block drive a live child
+    // through its PTY, and the suites that do that — naming, observation and
+    // the three seam suites — are compiled off on Windows, where the PTY
+    // layer's burst behaviour is a known open defect. A helper with no caller
+    // is a dead-code error under the workspace's deny-warnings build, so each
+    // carries the same condition as the suites that call it rather than an
+    // allow that would also hide a genuinely orphaned one.
     /// Round-trip a `List` so everything sent before it has been processed.
     ///
     /// The daemon handles one connection's messages in order, so a reply to a
@@ -362,6 +369,7 @@ impl Client {
     /// what makes `Detach` — which acknowledges nothing — observable without a
     /// sleep: detach, barrier, and from then on any frame that arrives is a
     /// frame the detach failed to stop.
+    #[cfg(not(windows))]
     pub(crate) async fn barrier(&mut self) {
         let before = self.seen.ctl.len();
         self.send(ClientMsg::List).await;
@@ -374,12 +382,14 @@ impl Client {
     }
 
     /// Detach, and return only once the daemon has acted on it.
+    #[cfg(not(windows))]
     pub(crate) async fn detach(&mut self, session: SessionId) {
         self.send(ClientMsg::Detach { session }).await;
         self.barrier().await;
     }
 
     /// Rename, and return once the projection carrying the new name arrives.
+    #[cfg(not(windows))]
     pub(crate) async fn rename(&mut self, session: SessionId, title: &str) {
         let want = title.to_string();
         self.send(ClientMsg::Rename {
@@ -396,6 +406,7 @@ impl Client {
     }
 
     /// Send `data` to the child's PTY.
+    #[cfg(not(windows))]
     pub(crate) async fn input(&mut self, session: SessionId, data: &[u8]) {
         self.send(ClientMsg::Input {
             session,
@@ -405,6 +416,7 @@ impl Client {
     }
 
     /// The newest projection this client has for `session`, if any arrived.
+    #[cfg(not(windows))]
     pub(crate) fn projection(&self, session: SessionId) -> Option<&vitrum_proto::SessionInfo> {
         self.seen
             .ctl
@@ -421,6 +433,7 @@ impl Client {
     }
 
     /// Wait until `session`'s newest projection satisfies `f`.
+    #[cfg(not(windows))]
     pub(crate) async fn until_projection(
         &mut self,
         what: &str,
@@ -489,6 +502,9 @@ pub(crate) fn shell(script: &str) -> (String, Vec<String>) {
 ///
 /// The agent rules key on the command's BASENAME, so a test about them has to
 /// choose the program's name rather than inherit `sh`.
+///
+/// Compiled where the suites that use it are; see the note in `impl Client`.
+#[cfg(not(windows))]
 pub(crate) fn create_command(project: u64, command: &str, args: &[&str]) -> ClientMsg {
     ClientMsg::CreateSession {
         project_id: ProjectId(project),

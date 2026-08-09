@@ -285,7 +285,11 @@ jobs:
           sysroot=$(rustc --print sysroot)
           OBJDUMP=$(ls "$sysroot"/lib/rustlib/*/bin/llvm-objdump | head -1)
           export OBJDUMP
+          # `tar -C` does not create its destination; it fails with
+          # "Cannot open: No such file or directory" and takes the whole
+          # release matrix with it.
           rm -rf isa-check
+          mkdir -p isa-check
           archive="dist/vitrum-${{ needs.contract.outputs.version }}-${{ matrix.target }}.tar.gz"
           tar xzf "$archive" -C isa-check
           ./tools/release/check-isa.sh isa-check

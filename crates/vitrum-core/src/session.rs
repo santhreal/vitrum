@@ -23,6 +23,24 @@ use crate::scan::OutputScan;
 /// few syscalls rather than hundreds.
 const READ_CHUNK: usize = 32 * 1024;
 
+/// One allocation the reader hands out reads from.
+///
+/// Two things want this large. A big zeroed block comes straight from the
+/// kernel as untouched zero pages, so it costs no memset, while a 32 KiB one
+/// is served from the heap and is cleared byte by byte. And consecutive reads
+/// carved from one block are contiguous, which is what lets the coalescer
+/// rejoin a merged run in place instead of copying it: a run only copies when
+/// it straddles two arenas, so an arena comfortably larger than `FLUSH_BYTES`
+/// makes that the rare case.
+const READ_ARENA: usize = 1024 * 1024;
+
+/// Smallest remaining arena worth reading into before it is replaced.
+///
+/// A read is only as large as what is left, so leaving less than a whole
+/// `READ_CHUNK` in place would turn one syscall into several for the same
+/// bytes. The tail below this is dropped rather than read into.
+const READ_FLOOR: usize = READ_CHUNK;
+
 /// How long output may sit in the coalescing buffer before it is published.
 ///
 /// This is the whole reason a 0.4 MB/s firehose does not become thousands of
@@ -34,6 +52,13 @@ const FLUSH_WINDOW: Duration = Duration::from_millis(6);
 /// the full window and no single chunk grows unbounded.
 const FLUSH_BYTES: usize = 64 * 1024;
 
+/// Reads the coalescer takes from the channel in one wakeup.
+///
+/// Enough that a firehose is drained in a few passes and small enough that the
+/// vector behind it stays a fixed, tiny allocation. It bounds work per wakeup,
+/// not work per window: the loop goes round again while the window is open.
+const BATCH_READS: usize = 64;
+
 /// Whether the reader thread reaches end of stream on its own.
 ///
 /// On Unix it does: the master reports EOF once the child's last descriptor
@@ -42,6 +67,31 @@ const FLUSH_BYTES: usize = 64 * 1024;
 /// session holds its master, so the reader there stays parked until the
 /// session is closed and the exit has to be the end of the stream instead.
 const READER_REPORTS_EOF: bool = cfg!(not(windows));
+
+/// What every hosted child is told about the terminal it is attached to.
+///
+/// `TERM` because an unset or `dumb` value makes an agent drop to plain output;
+/// this is the whole reason a hosted TUI renders at all.
+///
+/// `COLORTERM` because the renderer is 24-bit end to end — the engine stores
+/// every cell as RGBA and `38;2;r;g;b` is parsed exactly — and the convention
+/// for saying so is this variable, not the `TERM` name. Without it agents
+/// quantise themselves to the 256-colour cube on purpose: Gemini CLI prints
+/// "True color (24-bit) support not detected" and dims its own output, and
+/// nothing about the pixels we can draw had changed. Advertising a capability
+/// we do not have would be worse than silence, so this is asserted against the
+/// engine rather than against a comment.
+///
+/// `TERM_PROGRAM` because agents branch on the host terminal for hyperlinks,
+/// image protocols and paste behaviour, and an unidentified host gets the
+/// conservative path. It is also what a bug report from an agent will name.
+pub(crate) const DEFAULT_TERM_ENV: [(&str, &str); 3] = [
+    ("TERM", "xterm-256color"),
+    // Taken from the engine rather than written here, so the promise and the
+    // code that has to keep it cannot drift apart.
+    ("COLORTERM", vitrum_vt::COLORTERM),
+    ("TERM_PROGRAM", "vitrum"),
+];
 
 /// How long a session must be quiet before its foreground process is worth
 /// asking about.
@@ -92,6 +142,66 @@ pub struct SessionSpec {
 pub struct OutputChunk {
     pub seq: u64,
     pub data: Bytes,
+}
+
+/// What one session's output path did, counted rather than timed.
+///
+/// Every field is a structural property of the pipeline, chosen so that a
+/// regression in it is a change in a whole number rather than a change in a
+/// duration:
+///
+/// - `reads` is PTY read syscalls that returned bytes. It divides the byte
+///   count into how many trips to the kernel it took.
+/// - `publishes` is coalesced runs handed to the broadcast channel, which is
+///   one wakeup per attached client each. This is what `FLUSH_WINDOW` and
+///   `FLUSH_BYTES` exist to hold down.
+/// - `wakeups` is how many times the coalescing task was scheduled to collect
+///   output. It is the difference between draining a channel and being woken
+///   once per item in it, and it is the one cost that grows with how SMALL a
+///   pty's reads are rather than with how much a session writes.
+/// - `staged_bytes` is bytes copied into the coalescer's staging buffer on
+///   their way to being published. A run that consists of a single read is
+///   published without being copied at all, so this stays BELOW the byte
+///   count; it reaching parity means the copy came back.
+/// - `parsed_bytes` is bytes the daemon walks itself, in the single scan that
+///   finds the bell, the agent hint, the title and the directory. Every one of
+///   these is parsed again by the client's own emulator, so it is the
+///   duplicated work in the design and worth being able to see. It must stay
+///   at one pass per published byte.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PumpCounts {
+    pub reads: u64,
+    pub publishes: u64,
+    pub wakeups: u64,
+    pub staged_bytes: u64,
+    pub parsed_bytes: u64,
+}
+
+/// The live counters behind [`PumpCounts`].
+///
+/// Relaxed throughout: each is a monotonic tally read for diagnosis, and no
+/// decision anywhere depends on two of them being consistent with each other
+/// at an instant. Ordering here would be paid on every 32 KiB read for an
+/// answer nobody asks.
+#[derive(Default)]
+struct PumpTally {
+    reads: AtomicU64,
+    publishes: AtomicU64,
+    wakeups: AtomicU64,
+    staged_bytes: AtomicU64,
+    parsed_bytes: AtomicU64,
+}
+
+impl PumpTally {
+    fn snapshot(&self) -> PumpCounts {
+        PumpCounts {
+            reads: self.reads.load(Ordering::Relaxed),
+            publishes: self.publishes.load(Ordering::Relaxed),
+            wakeups: self.wakeups.load(Ordering::Relaxed),
+            staged_bytes: self.staged_bytes.load(Ordering::Relaxed),
+            parsed_bytes: self.parsed_bytes.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Server-side state for one live or exited session.
@@ -176,27 +286,40 @@ pub(crate) struct Session {
     /// pid attributes another process's work to this session, which is worse
     /// than admitting we do not know.
     child_pid: Option<u32>,
+    /// What the output path actually did, in units nothing about it can fake.
+    ///
+    /// Wall clock cannot be asserted on: a loaded CI box makes any threshold
+    /// either flaky or meaningless. These four counters are the structural
+    /// shape of the path instead, and a change that reintroduces a copy, a
+    /// syscall, or a wakeup moves one of them whatever the machine is doing.
+    pump: PumpTally,
 }
 
 impl Session {
     /// Record and fan out one coalesced run of output.
-    fn publish(&self, data: &[u8], wants_operator: bool, hint: Option<&HintDeclaration>) {
+    ///
+    /// Takes the run by value. The bytes arrived from the reader in an
+    /// allocation nobody else owns, so handing that allocation to the
+    /// broadcast channel is a move; copying it out again would be a memcpy of
+    /// the entire stream to produce a second copy of what is already here.
+    fn publish(&self, data: Bytes, wants_operator: bool, hint: Option<&HintDeclaration>) {
         if data.is_empty() {
             return;
         }
+        self.pump.publishes.fetch_add(1, Ordering::Relaxed);
         let seq = {
             let mut sb = lock(&self.scrollback);
             let seq = sb.head_seq();
             // Scrollback is filled whether or not anyone is attached: sessions
             // must survive with no GUI connected, and history is the product.
-            sb.push(data);
+            sb.push(&data);
             seq
         };
 
-        // Skipping the Arc allocation when nothing is attached matters: the
-        // normal state of 20 agents is 19 unattached ones. A receiver that
-        // appears between this check and the send simply starts at the next
-        // chunk and backfills from scrollback, which is what it does anyway.
+        // Skipping the fan-out when nothing is attached matters: the normal
+        // state of 20 agents is 19 unattached ones. A receiver that appears
+        // between this check and the send simply starts at the next chunk and
+        // backfills from scrollback, which is what it does anyway.
         let watched = self.output.receiver_count() > 0;
 
         let now = now_ms();
@@ -240,10 +363,7 @@ impl Session {
         }
 
         if watched {
-            let _ = self.output.send(OutputChunk {
-                seq,
-                data: Bytes::copy_from_slice(data),
-            });
+            let _ = self.output.send(OutputChunk { seq, data });
         }
     }
 
@@ -441,10 +561,14 @@ impl SessionManager {
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
-        // Hosted agents render with escape sequences, so an unset or dumb TERM
-        // makes them fall back to plain output. The caller can override it.
-        if !spec.env.iter().any(|(k, _)| k == "TERM") {
-            cmd.env("TERM", "xterm-256color");
+        // What the terminal on the other end can do. Every one of these is
+        // overridable by the caller, which is why each is guarded rather than
+        // set unconditionally: a session started to reproduce a rendering bug
+        // needs to be able to lie about all three.
+        for (key, value) in DEFAULT_TERM_ENV {
+            if !spec.env.iter().any(|(k, _)| k == key) {
+                cmd.env(key, value);
+            }
         }
 
         let child = pair
@@ -519,9 +643,10 @@ impl SessionManager {
             killer: Mutex::new(killer),
             last_focus_ms: AtomicU64::new(0),
             child_pid,
+            pump: PumpTally::default(),
         });
 
-        let (raw_tx, raw_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (raw_tx, raw_rx) = mpsc::unbounded_channel::<BytesMut>();
         let (exit_tx, exit_rx) = oneshot::channel::<Option<i32>>();
 
         // Dedicated threads, not spawn_blocking: these loops live as long as
@@ -757,6 +882,15 @@ impl SessionManager {
         Some(self.get(id)?.probes.load(Ordering::Relaxed))
     }
 
+    /// What this session's output path has done so far.
+    ///
+    /// Diagnostic, and the only honest way to assert that the pipeline still
+    /// has the shape it was measured with: a duration says what this machine
+    /// managed today, a count says what the code does.
+    pub fn pump_counts(&self, id: SessionId) -> Option<PumpCounts> {
+        Some(self.get(id)?.pump.snapshot())
+    }
+
     /// Process id of this session's child, while that child is still live.
     ///
     /// `None` covers three distinct cases and deliberately collapses them,
@@ -871,7 +1005,7 @@ fn read_loop(
     session: Arc<Session>,
     mut reader: Box<dyn Read + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    out: mpsc::UnboundedSender<Bytes>,
+    out: mpsc::UnboundedSender<BytesMut>,
     exit: oneshot::Sender<Option<i32>>,
 ) {
     if let Err(e) = std::thread::Builder::new()
@@ -886,79 +1020,48 @@ fn read_loop(
         // ever answer and the session cannot report an exit code.
         tracing::warn!(error = %e, "no thread to reap the pty child");
     }
-    // The terminal engine lives on this thread and never leaves it. Two
-    // reasons, and both are load-bearing:
+    // Nothing is parsed here. This thread's whole job is to get bytes off the
+    // pty and into the coalescer, because it is the only thread that can, and
+    // anything else it does is time the child spends blocked on a full pty
+    // buffer.
     //
-    // - It is `!Send`. Parking it in the coalescing task would not compile,
-    //   and making it `Send` would mean paying for synchronisation nothing
-    //   needs, because exactly one thread ever writes to it.
-    // - Parsing is real work. Doing it on the async runtime would let one
-    //   session flooding output stall the timers every OTHER session's
-    //   coalescing window depends on.
-    //
-    // Scrollback is disabled outright. The daemon already keeps the bytes, and
-    // a second copy inside the engine would be the largest allocation per
-    // session for an answer nothing asks it: this engine exists to report what
-    // the program SAID, not to be scrolled.
-    let (cols, rows) = {
-        let info = read_lock(&session.info);
-        (info.cols, info.rows)
-    };
-    let mut vt = match vitrum_vt::Vt::new(vitrum_vt::VtOptions {
-        cols,
-        rows,
-        max_scrollback: 0,
-    }) {
-        Ok(vt) => Some(vt),
-        // A session that runs is worth more than one that is named well. The
-        // engine failing to allocate costs the title and nothing else.
-        Err(e) => {
-            tracing::warn!(session = session.id.0, error = %e, "no terminal engine for this session; titles will not follow the program");
-            None
-        }
-    };
+    // A full terminal engine used to live on this thread, fed every byte, and
+    // was read for exactly two strings: the window title and the reported
+    // working directory. Measured end to end through a real pty that parse was
+    // 57% of everything a session spent moving a megabyte, and the screen it
+    // maintained was never looked at -- the client renders from the raw bytes
+    // with an emulator of its own. Both strings now come out of the single
+    // scan the coalescer already makes over the same bytes, which is a state
+    // machine with five states instead of a terminal.
 
-    // BytesMut::split().freeze() hands ownership of each filled prefix without
-    // copying; the next resize reuses the same allocation for the next read.
-    let mut pool = BytesMut::with_capacity(READ_CHUNK);
+    // One zeroed arena, carved up by `split_to` and refilled only when what is
+    // left is too small to be worth a read. Each read hands its bytes on
+    // without a copy, and the bytes behind them are already initialised, so
+    // the loop pays one allocation per megabyte of output rather than one
+    // zero-fill per read.
+    //
+    // Per read was the old shape and it was expensive in exactly the case that
+    // matters. A pty hands back whatever the child has written so far, which
+    // measured a few hundred bytes under a firehose, so zero-filling a whole
+    // 32 KiB buffer before every read wrote about seventy times more memory
+    // than the session was producing.
+    //
+    // The read itself stays capped at `READ_CHUNK`: the point of the arena is
+    // contiguity and cheap zeroing, not a megabyte-deep syscall.
+    let mut pool = BytesMut::zeroed(READ_ARENA);
     loop {
-        pool.resize(READ_CHUNK, 0);
-        match reader.read(&mut pool[..]) {
+        if pool.len() < READ_FLOOR {
+            pool = BytesMut::zeroed(READ_ARENA);
+        }
+        // The floor above guarantees the arena still holds a whole chunk.
+        match reader.read(&mut pool[..READ_CHUNK]) {
             Ok(0) => break,
             Ok(n) => {
-                pool.truncate(n);
-                let chunk = pool.split().freeze();
-                // Hand the bytes over before doing anything else with them.
-                // Parsing is this thread's work and it is not free: feeding a
-                // 32 KiB read to the engine takes long enough that a child
-                // which exits mid-parse can be reaped, and everything still
-                // held here would be output the coalescer never learns exists.
-                // Cloning is a refcount bump on the same allocation, so the
-                // engine still parses the bytes that were sent, not a copy.
-                if out.send(chunk.clone()).is_err() {
+                session.pump.reads.fetch_add(1, Ordering::Relaxed);
+                let chunk = pool.split_to(n);
+                // Nothing else happens to the bytes on this thread.
+                if out.send(chunk).is_err() {
                     break;
-                }
-                if let Some(vt) = vt.as_mut() {
-                    vt.feed(&chunk);
-                    // A client learns a session changed when its observation
-                    // revision moves, so the revision has to move here. The
-                    // foreground probe would eventually push a fresh projection
-                    // on its own, but it reports children that have settled and
-                    // deliberately leaves a streaming session alone, which is
-                    // exactly the session most likely to be retitling itself
-                    // while it works. Saying so when the name changes costs one
-                    // watch send on a path that already decided something is
-                    // different.
-                    let mut changed = false;
-                    if let Some(title) = vt.events().take_title() {
-                        changed |= apply_engine_title(&session, &title);
-                    }
-                    if let Some(pwd) = vt.events().take_pwd() {
-                        changed |= apply_engine_pwd(&session, &pwd);
-                    }
-                    if changed {
-                        session.bump();
-                    }
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -1002,10 +1105,21 @@ fn write_loop(mut writer: Box<dyn Write + Send>, mut input: mpsc::UnboundedRecei
 /// Coalesce raw reads into a few large chunks, then publish them.
 async fn coalesce_loop(
     session: Arc<Session>,
-    mut raw: mpsc::UnboundedReceiver<Bytes>,
+    mut raw: mpsc::UnboundedReceiver<BytesMut>,
     exit: oneshot::Receiver<Option<i32>>,
 ) {
-    let mut buf = BytesMut::new();
+    // No staging buffer. Consecutive pty reads are consecutive slices of the
+    // reader's pool, so a run that merges several of them is rejoined in
+    // place: `try_unsplit` on adjacent halves of the same allocation only
+    // moves two indices. Copying them into a separate buffer, which is what
+    // this loop used to do, moved every byte of the firehose a second time
+    // for nothing.
+    //
+    // The fallback is the reader crossing into a fresh pool mid-run. That is
+    // the only case that copies, and `staged_bytes` counts exactly it.
+    // Reused for the lifetime of the session: one allocation, drained rather
+    // than rebuilt, so batching reads costs no allocation of its own.
+    let mut batch: Vec<BytesMut> = Vec::with_capacity(BATCH_READS);
     let mut scan = OutputScan::new();
     let mut hints: Vec<HintDeclaration> = Vec::new();
     // Armed once at spawn so a child that never writes a byte is still
@@ -1022,26 +1136,83 @@ async fn coalesce_loop(
         else {
             break;
         };
-        buf.clear();
-        buf.extend_from_slice(&first);
+        session.pump.wakeups.fetch_add(1, Ordering::Relaxed);
+        // The run is the reader's own allocation, extended in place while the
+        // window is open and handed to subscribers at the end of it. Nothing
+        // on this path copies the bytes.
+        let mut run = first;
+        let mut pending = run.len();
         let deadline = Instant::now() + FLUSH_WINDOW;
         let mut ended = false;
-        while buf.len() < FLUSH_BYTES {
-            match timeout_at(deadline, raw.recv()).await {
-                Ok(Some(more)) => buf.extend_from_slice(&more),
-                Ok(None) => {
-                    ended = true;
-                    break;
-                }
-                Err(_) => break,
+        // One timer for the whole window, and every read the channel already
+        // holds taken in one wakeup.
+        //
+        // Awaiting each read under its own `timeout_at` armed a timer and
+        // scheduled the task once per read, and a pty hands back a few hundred
+        // bytes at a time under load: measured, that was about 2500 timer
+        // registrations and 2500 wakeups for every megabyte, to publish
+        // sixteen runs.
+        let window = tokio::time::sleep_until(deadline);
+        tokio::pin!(window);
+        while pending < FLUSH_BYTES {
+            batch.clear();
+            let taken = tokio::select! {
+                // Biased so pending output always beats the deadline: bytes
+                // that are already here belong in this run rather than the next.
+                biased;
+                taken = raw.recv_many(&mut batch, BATCH_READS) => taken,
+                () = &mut window => break,
+            };
+            if taken == 0 {
+                ended = true;
+                break;
             }
+            session.pump.wakeups.fetch_add(1, Ordering::Relaxed);
+            for more in batch.drain(..) {
+                let len = more.len();
+                if let Err(more) = run.try_unsplit(more) {
+                    session
+                        .pump
+                        .staged_bytes
+                        .fetch_add(len as u64, Ordering::Relaxed);
+                    run.extend_from_slice(&more);
+                }
+            }
+            pending = run.len();
         }
+        let run = run.freeze();
         hints.clear();
-        let wants_operator = scan.scan(&buf, &mut hints);
+        session
+            .pump
+            .parsed_bytes
+            .fetch_add(run.len() as u64, Ordering::Relaxed);
+        let wants_operator = scan.scan(&run, &mut hints);
         // Only the last declaration in a run matters: an agent that says
         // `working` and then `ready` in the same burst has finished, and
         // publishing the intermediate state would flash a stale badge.
-        session.publish(&buf, wants_operator, hints.last());
+        session.publish(run, wants_operator, hints.last());
+        // A client learns a session changed when its observation revision
+        // moves, so the revision has to move here. The foreground probe would
+        // eventually push a fresh projection on its own, but it reports
+        // children that have settled and deliberately leaves a streaming
+        // session alone, which is exactly the session most likely to be
+        // retitling itself while it works. Saying so when the name changes
+        // costs one watch send on a path that already decided something is
+        // different.
+        //
+        // After the bytes, never before. What the program announced about
+        // itself is worth strictly less than the output it announced it in,
+        // and a client waiting on a chunk must not wait on a title lookup.
+        let mut changed = false;
+        if let Some(title) = scan.take_title() {
+            changed |= apply_engine_title(&session, &title);
+        }
+        if let Some(pwd) = scan.take_pwd() {
+            changed |= apply_engine_pwd(&session, &pwd);
+        }
+        if changed {
+            session.bump();
+        }
         // This burst may have changed what the foreground process is doing, so
         // the answer is worth taking again once it stops.
         settle_at = Some(Instant::now() + SETTLE_WINDOW);
@@ -1076,11 +1247,11 @@ async fn coalesce_loop(
 /// it.
 async fn next_read(
     session: &Session,
-    raw: &mut mpsc::UnboundedReceiver<Bytes>,
+    raw: &mut mpsc::UnboundedReceiver<BytesMut>,
     settle_at: &mut Option<Instant>,
     exit: &mut oneshot::Receiver<Option<i32>>,
     code: &mut Option<Option<i32>>,
-) -> Option<Bytes> {
+) -> Option<BytesMut> {
     loop {
         // Once the child is gone there is nothing left to classify, only the
         // bytes it already wrote.

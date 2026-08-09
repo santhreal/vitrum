@@ -1,7 +1,7 @@
 //! `vitrum-bench` command line.
 //!
 //! Argument parsing is by hand for the same reason the rest of the workspace
-//! does it: four subcommands with a dozen flags between them do not justify a
+//! does it: six subcommands with a dozen flags between them do not justify a
 //! dependency, and the error messages here can say what to do next.
 
 use std::future::Future;
@@ -12,19 +12,29 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use vitrum_bench::report::Report;
-use vitrum_bench::{fuzz, load, probe, profile, race, world};
+use vitrum_bench::{fuzz, load, pipeline, probe, profile, race, world};
+
+/// Allocations on the output path are part of what `pipeline` reports, and an
+/// allocator cannot be swapped in per workload. Counting is two relaxed adds
+/// per allocation, which is noise next to a syscall and is paid by a harness
+/// binary rather than by the daemon.
+#[global_allocator]
+static ALLOCATOR: pipeline::Counting = pipeline::Counting;
 
 const USAGE: &str = "\
-vitrum-bench: load, concurrency, fuzz and profiling harness for the vitrum daemon
+vitrum-bench: load, concurrency, fuzz, pipeline and profiling harness for the vitrum daemon
 
 Usage:
   vitrum-bench load    [--server URL] [--sessions N] [--lines N] [--drain SECS]
   vitrum-bench race    [--server URL] [--connections N] [--sessions N] [--renames N]
   vitrum-bench fuzz    [--server URL] [--cases N] [--seed N]
+  vitrum-bench pipeline [--megabytes N] [--fanout-megabytes N] [--sessions LIST]
+                       [--samples N] [--scrollback-bytes N]
   vitrum-bench probe   [--cases N] [--seed N] [--threads N]
   vitrum-bench world   [--server URL] [--windows N] [--sessions N] [--widest N]
                        [--burst-lines N] [--ssh-host HOST] [--settle SECS]
   vitrum-bench profile --pid PID [--duration SECS] [--interval SECS]
+  vitrum-bench emit    --bytes N | --idle SECS
 
 Common:
   --out DIR          where to write the report directory (default harness/out)
@@ -32,6 +42,11 @@ Common:
   --profile-pid PID  sample that process tree while the workload runs, and fold
                      the profile into the same report
   --interval SECS    sampling interval (default 0.5)
+  --sessions LIST    session counts `pipeline` measures, e.g. 1,8,32
+
+`pipeline` runs in this process against a real pty and a real SessionManager,
+so it takes no --server. It re-executes this binary as `emit`, which is the
+child under measurement and is not run by hand.
 
 Every run writes report.json and report.md into <out>/<workload>-<timestamp>/.
 Exit status is 1 when the run found a failure, so it can gate CI.
@@ -61,6 +76,18 @@ fn run() -> anyhow::Result<bool> {
     };
     if cmd == "--help" || cmd == "-h" || cmd == "help" {
         print!("{USAGE}");
+        return Ok(true);
+    }
+    // Before anything that could print: this process IS the terminal output
+    // under measurement, and a line of harness prose on that stream would be
+    // measured as if the child had written it.
+    if cmd == "emit" {
+        let flags = Flags::parse(args)?;
+        match (flags.u64_or("--bytes", 0)?, flags.u64_or("--idle", 0)?) {
+            (0, 0) => bail!("emit needs --bytes N or --idle SECS"),
+            (0, secs) => pipeline::idle(secs),
+            (bytes, _) => pipeline::emit(bytes as usize)?,
+        }
         return Ok(true);
     }
     let flags = Flags::parse(args)?;
@@ -118,6 +145,21 @@ fn run() -> anyhow::Result<bool> {
                 oracle_timeout: flags.secs_or("--oracle-timeout", 10.0)?,
             };
             runtime.block_on(profiled(profile_pid, interval, sampler_limit, fuzz::run(&spec)))?
+        }
+        "pipeline" => {
+            let spec = pipeline::PipelineSpec {
+                megabytes: flags.usize_or("--megabytes", 100)?,
+                fanout_megabytes: flags.usize_or("--fanout-megabytes", 8)?,
+                sessions: session_counts(&flags)?,
+                samples: flags.usize_or("--samples", 200)?,
+                scrollback_bytes: flags.usize_or("--scrollback-bytes", 10 * 1024 * 1024)?,
+            };
+            runtime.block_on(profiled(
+                profile_pid,
+                interval,
+                sampler_limit,
+                pipeline::run(&spec),
+            ))?
         }
         "probe" => {
             let spec = probe::ProbeSpec {
@@ -209,6 +251,35 @@ async fn profiled(
         }
     }
     Ok(report)
+}
+
+/// The session counts `pipeline` sweeps, as a comma separated list.
+///
+/// A list rather than a single number because the interesting result is the
+/// shape of the curve: one session says what the path costs, and thirty two
+/// says whether it costs the same each when they are all running at once.
+fn session_counts(flags: &Flags) -> anyhow::Result<Vec<usize>> {
+    let Some(raw) = flags.string("--sessions") else {
+        return Ok(vec![1, 8, 32]);
+    };
+    let mut counts = Vec::new();
+    for field in raw.split(',') {
+        let field = field.trim();
+        if field.is_empty() {
+            continue;
+        }
+        let n: usize = field
+            .parse()
+            .with_context(|| format!("bad --sessions entry `{field}`"))?;
+        if n == 0 {
+            bail!("--sessions entries must be at least 1");
+        }
+        counts.push(n);
+    }
+    if counts.is_empty() {
+        bail!("--sessions needs at least one count, e.g. 1,8,32");
+    }
+    Ok(counts)
 }
 
 /// `--name value` pairs, collected once so lookups do not depend on order.

@@ -26,7 +26,7 @@ mod scrollback;
 mod session;
 
 pub use scrollback::Scrollback;
-pub use session::{OutputChunk, SessionManager, SessionSpec, ViewerId};
+pub use session::{OutputChunk, PumpCounts, SessionManager, SessionSpec, ViewerId};
 
 #[cfg(test)]
 mod tests;

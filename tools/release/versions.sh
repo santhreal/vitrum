@@ -165,7 +165,16 @@ bump() {
     esac
     old=$(current)
 
-    rewrite Cargo.toml "0,/^version = \"$old\"$/s//version = \"$new\"/"
+    # `1,/re/` rather than `0,/re/`, and the pattern written out rather than
+    # reused as `s//`. Both of those are GNU extensions, and this script runs
+    # on the macOS runners, where BSD sed accepted the address, resolved the
+    # empty pattern to nothing, and substituted nothing. The internal
+    # dependency rewrites below use ordinary patterns and did apply, so a
+    # nightly bumped every `vitrum-* = { version = ... }` requirement and left
+    # the workspace version alone, and cargo then refused to resolve a
+    # workspace whose members demanded a version none of them carried.
+    rewrite Cargo.toml \
+        "1,/^version = \"$old\"$/s/^version = \"$old\"\$/version = \"$new\"/"
     for dep in $INTERNAL_DEPS; do
         rewrite Cargo.toml \
             "s|^\($dep = { path = \"[^\"]*\", version = \)\"$old\"|\1\"$new\"|"

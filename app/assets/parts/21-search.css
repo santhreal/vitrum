@@ -126,49 +126,30 @@
 
 /* -- Header ------------------------------------------------------------- */
 
+/* `.rg-sheet__head` carries the flex row, the centring and the
+ * space-between; those three lines were restated here and are gone. What is
+ * left is what this head genuinely needs and the shared one does not have:
+ * a floor of one control's height, so the band does not collapse to the cap
+ * height of its title, and a gap for the day the title grows a count. */
 .rg-search__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: var(--rg-space-3);
   min-height: var(--rg-control-h);
 }
 
-/* The one place that says what this surface searches. The field below it
- * says how to use it and the line under that says what came back. */
-.rg-search__title {
-  color: var(--rg-fg);
-  font-size: var(--rg-text-15);
-  font-weight: var(--rg-weight-semibold);
-  line-height: var(--rg-lead-title);
-  letter-spacing: var(--rg-track-title);
-}
-
-/* Escape and a click on the backdrop both dismiss, and neither is visible.
- * This is the one dismissal an operator can see, which is why it survives a
- * pass that deleted every other repeated control on the sheet. */
-.rg-search__close {
-  flex: 0 0 auto;
-  height: var(--rg-control-h);
-  padding: 0 var(--rg-space-3);
-  border: 1px solid transparent;
-  border-radius: var(--rg-radius-sm);
-  background-color: transparent;
-  color: var(--rg-fg-muted);
-  font-size: var(--rg-text-11);
-  cursor: pointer;
-}
-
-.rg-search__close:hover {
-  background-color: var(--rg-row-hover);
-  border-color: var(--rg-border-strong);
-  color: var(--rg-fg);
-}
-
-.rg-search__close:focus-visible {
-  outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
-  outline-offset: var(--rg-focus-offset);
-}
+/* The title is `.rg-sheet__title`, which after 11-type.css resolves to the
+ * same size, weight, leading and tracking this file used to declare for
+ * itself. It was a private copy that happened to agree, which is the state a
+ * shared style is in right before the two drift.
+ *
+ * Escape and a click on the backdrop both dismiss and neither is visible, so
+ * the Close button is the one dismissal an operator can see — and it was
+ * drawn with a transparent fill, a transparent border and muted ink, which
+ * is the exact defect `.rg-btn-inline` was introduced to close everywhere
+ * else (16-controls.css: "IT HAD NO RESTING MATERIAL AT ALL"). Two sheets
+ * away, in the shortcuts overlay, the same word in the same corner is a
+ * bordered control. This one was the last copy that missed the pass; it now
+ * uses the shared button, so it gets the resting material, the hover, the
+ * press and the focus ring from one place. */
 
 /* -- The field ---------------------------------------------------------- */
 

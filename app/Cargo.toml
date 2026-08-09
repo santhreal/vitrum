@@ -103,6 +103,32 @@ tar = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 
+# The native pane's dependencies, all optional and all behind `native-pane`.
+#
+# Off by default on purpose. The pane is not hosted by the shell yet, and
+# turning it on drags `wgpu` and a Vulkan backend into every build of the
+# client for code nothing calls. The change that adopts the pane flips the
+# default; until then `cargo build -p vitrum` is exactly what it was.
+#
+# gdk and glib are the versions gtk 0.18 above already re-exports, so this
+# adds two crate names and no new compilation. `wgpu` is pinned to the version
+# `vitrum-grid` uses, so one device and one set of types cross the boundary.
+gdk = { version = "0.18", optional = true }
+glib = { version = "0.18", optional = true }
+vitrum-grid = { workspace = true, optional = true }
+wgpu = { version = "29", default-features = false, features = [
+    "std",
+    "vulkan",
+    "gles",
+    "wgsl",
+], optional = true }
+pollster = { version = "1.0", optional = true }
+
+[features]
+# The GPU terminal pane. See `app/src/pane/mod.rs` for what it still lacks
+# before it can replace xterm.js.
+native-pane = ["dep:gdk", "dep:glib", "dep:vitrum-grid", "dep:wgpu", "dep:pollster"]
+
 # Server-side rendering, tests only. The search module had 25 green tests that
 # exercised pure functions and stylesheet text, and not one of them built the
 # markup: a panic in the RSX, or a highlight computed correctly and then

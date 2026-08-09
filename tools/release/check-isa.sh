@@ -30,10 +30,9 @@
 #
 # The two builds prove the distinction. Pinned to `baseline` and unpinned, the
 # static library carries the same 3662 AVX2 instructions and differs only in
-# AVX-512: 0 against 5581. So AVX2 in these artifacts is dispatched, and
-# anything above it is the build having read the builder's CPU. A gate set at
-# the true baseline would fire on every build ever made here, and a gate that
-# always fires is a gate somebody deletes.
+# AVX-512: 0 against 5581. So AVX2 in these artifacts is dispatched. A gate set
+# at the true baseline would fire on every build ever made here, and a gate
+# that always fires is a gate somebody deletes.
 #
 # WHAT THIS CONCEDES
 #
@@ -46,6 +45,14 @@
 # It also cannot tell guarded code from unguarded code. It approximates: if a
 # binary contains above-floor vector code and executes no CPUID at all, there
 # is nothing that could be doing the guarding, and that is reported.
+#
+# Above the floor is therefore not proof of host detection, and this gate has
+# already found the other kind. `rav1e`, an AV1 encoder reached through
+# `image`'s default features, put 278 CPUID-dispatched AVX-512 instructions in
+# vitrum.exe: code that would not have faulted anywhere. The finding was still
+# correct, because the dependency had no business being linked, but a reader
+# who assumes a lost pin will go looking in the wrong place. The failure text
+# at the bottom describes both, and the symbol table separates them.
 
 set -eu
 
@@ -191,11 +198,23 @@ else
     cat >&2 <<'EOF'
 
 A published binary carries instructions the CPU floor does not promise, so it
-will SIGILL on a machine without them. This almost always means a build let a
-compiler detect the builder's CPU instead of being told the target. Check that
-the pinned target and CPU reach every compiler in the build, including the ones
-run by build scripts, and confirm by re-running this rather than by reading the
-flags.
+will SIGILL on a machine without them. There are two causes, and the symbol
+table above tells them apart.
+
+The hits are spread across everything: a build let a compiler detect the
+builder's CPU instead of being told the target. Check that the pinned target
+and CPU reach every compiler in the build, including the ones run by build
+scripts, and confirm by re-running this rather than by reading the flags.
+
+The hits sit in one dependency: it ships above-floor code of its own and
+dispatches it from CPUID, so it will not actually SIGILL. Decide whether that
+dependency belongs in the binary at all. `rav1e`, an AV1 encoder reached
+through `image`'s default features, put 278 AVX-512 instructions in vitrum.exe
+this way, and the answer was that a terminal multiplexer does not ship a video
+encoder.
+
+A stripped PE has no symbols to attribute to, so on Windows the table collapses
+to `.text` and the delta between the two shipped binaries is the better signal.
 EOF
 fi
 

@@ -11,8 +11,8 @@
 
 
 vitrum runs agent TUIs in one window: Claude Code, Codex, Gemini CLI, veyyon,
-or any other command. Each session gets a row in a sidebar showing the agent,
-the project directory, and the state.
+opencode. Each session gets a row in a sidebar showing the agent, the project
+directory, and the state.
 
 | | |
 |---|---|

@@ -2,11 +2,14 @@
 //!
 //! Shape of the process:
 //!
-//! - Rust owns all UI state, in exactly one [`UiState`] signal, and encodes
-//!   every control-plane message.
-//! - JavaScript (`bootstrap.js`) owns the WebSocket and the xterm.js instance.
-//!   PTY bytes never cross into Rust: they go from the socket into the terminal
-//!   with one header strip and no trip through an IPC channel.
+//! - Rust owns all UI state, in exactly one [`UiState`] signal, encodes every
+//!   control-plane message, and owns the session WebSocket: connect,
+//!   reconnect, sequence continuity, the backlog splice and the reassembly of
+//!   a character split across two frames all live in [`socket`].
+//! - JavaScript (`bootstrap.js`) owns the xterm.js instance and nothing else
+//!   that has a session id or a byte offset in it. PTY bytes reach it as an
+//!   `ArrayBuffer` over a wry asset route, already decoded and already in
+//!   order, so nothing on that path is base64 and nothing is re-parsed.
 //! - Scrollback lives on the server. This process holds one terminal grid and
 //!   nothing else, so its memory is flat whether the user runs one agent or
 //!   twenty.
@@ -36,6 +39,7 @@ mod instance;
 mod keymap;
 mod keys;
 mod launch;
+mod socket;
 mod state;
 mod sync;
 mod termpalette;
@@ -59,7 +63,9 @@ use vitrum_dioxus_desktop::tao::event::{Event as WryEvent, WindowEvent};
 use vitrum_dioxus_desktop::tao::event_loop::EventLoopBuilder;
 use vitrum_dioxus_desktop::tao::monitor::MonitorHandle;
 use vitrum_dioxus_desktop::tao::window::{Window, WindowBuilder};
-use vitrum_dioxus_desktop::{Config, DesktopContext, WindowCloseBehaviour, use_wry_event_handler};
+use vitrum_dioxus_desktop::{
+    Config, DesktopContext, WindowCloseBehaviour, use_asset_handler, use_wry_event_handler,
+};
 use vitrum_fmt::TimeFormat;
 use vitrum_os::AppPaths;
 use vitrum_os::deeplink::DeepLink;
@@ -308,27 +314,95 @@ fn decorate(window: WindowBuilder) -> WindowBuilder {
         .with_fullsize_content_view(true)
 }
 
-/// Handle on the JavaScript bridge.
+/// Handle on both halves of the client's outside world.
 ///
-/// `Eval` is `Copy`, so this is a plain value that event handlers can capture
-/// without cloning or reference counting.
+/// `Eval` is `Copy` and `CopyValue` is `Copy`, so this stays a plain value that
+/// event handlers capture without cloning or reference counting.
+///
+/// Two transports, one handle, deliberately. The eval channel now carries only
+/// what the DOM alone can do; everything with a byte offset or a session id in
+/// it goes through [`socket::Net`]. Handlers should not have to know which,
+/// and a second handle threaded beside this one would be a second thing every
+/// call site could forget to pass.
 #[derive(Clone, Copy)]
 struct Bridge {
     eval: Eval,
+    net: CopyValue<socket::Net>,
 }
 
 impl Bridge {
+    /// Ask the webview to do something only the DOM can do.
     fn cmd(&self, c: BridgeCmd) {
         if let Err(e) = self.eval.send(&c) {
             tracing::error!("bridge command dropped: {e}");
         }
     }
 
-    /// Encode and send a control-plane message.
+    /// Encode and send a control-plane message to the daemon.
     fn msg(&self, m: &ClientMsg) {
-        self.cmd(BridgeCmd::Send {
-            text: wire::encode(m),
+        // `CopyValue` is `Copy`, and its write guard needs a mutable handle.
+        // Taking a local copy keeps every bridge method on `&self`, which is
+        // what a component holding one can offer.
+        let mut net = self.net;
+        net.write().send(wire::encode(m));
+    }
+
+    /// Open, or reopen, the session socket.
+    fn connect(&self, url: String) {
+        let mut net = self.net;
+        net.write().connect(url);
+    }
+
+    /// Which socket generation is current, so a dying one's events can be
+    /// discarded rather than allowed to overwrite the new one's state.
+    fn epoch(&self) -> u64 {
+        self.net.peek().epoch()
+    }
+
+    /// Point the pane at `session`, or clear it.
+    fn focus(&self, session: Option<SessionId>) {
+        let mut net = self.net;
+        net.write().drive(|stream, ops| stream.focus(session, ops));
+    }
+
+    /// Claim the pane for a page-back, once the request has actually gone out.
+    fn arm_page_back(&self) {
+        let mut net = self.net;
+        net.write().stream.arm_page_back();
+    }
+
+    /// Paint history, then the live frames buffered behind it.
+    fn backfill(
+        &self,
+        session: SessionId,
+        from_seq: u64,
+        resume_seq: u64,
+        bytes: Vec<u8>,
+        jump_seq: Option<u64>,
+        keep_view: bool,
+    ) {
+        let mut net = self.net;
+        net.write().drive(move |stream, ops| {
+            stream.backfill(session, from_seq, resume_seq, bytes, jump_seq, keep_view, ops);
         });
+    }
+
+    /// One decoded data frame from the socket.
+    fn output(&self, session: SessionId, seq: u64, data: Vec<u8>) {
+        let mut net = self.net;
+        net.write().drive(move |stream, ops| stream.output(session, seq, data, ops));
+    }
+
+    /// Fixture mode's substitute for a session: literal lines, no socket.
+    fn banner(&self, lines: &[String]) {
+        let mut net = self.net;
+        net.write().drive(|stream, ops| stream.banner(lines, ops));
+    }
+
+    /// Anything the pane needs the operator told, drained.
+    fn notices(&self) -> Vec<String> {
+        let mut net = self.net;
+        net.write().stream.take_notices()
     }
 }
 
@@ -500,8 +574,68 @@ fn App() -> Element {
         Err(_) => update::Standing::Current,
     });
 
-    let bridge = use_hook(|| Bridge {
-        eval: document::eval(BOOTSTRAP_JS),
+    // The socket, and the receiver its task talks to this window over. Built
+    // in a hook so the runtime handle captured inside `Net::new` is the UI
+    // thread's, which is where dioxus-desktop's multi-threaded runtime is in
+    // context.
+    // `Rc`, because `use_hook` hands back a clone of its state on every render
+    // and an `UnboundedReceiver` is not `Clone`. The `Option` is what makes
+    // taking it once safe.
+    let (bridge, socket_rx) = use_hook(|| {
+        let (net, rx) = socket::Net::new();
+        let bridge = Bridge {
+            eval: document::eval(BOOTSTRAP_JS),
+            net: CopyValue::new(net),
+        };
+        (bridge, std::rc::Rc::new(std::cell::RefCell::new(Some(rx))))
+    });
+
+    // The route the webview pulls pane bytes from.
+    //
+    // Registered before anything can focus a session, because the queue parks
+    // the webview's request rather than dropping it: bytes pushed before the
+    // first `fetch` arrives are held, not lost.
+    use_asset_handler(socket::PANE_ROUTE, {
+        let pane = bridge.net.peek().pane.clone();
+        move |_request, responder| pane.borrow_mut().serve(responder)
+    });
+
+    // Everything the socket has to say, on the UI thread.
+    //
+    // A second pump beside the eval one rather than a select over both. They
+    // are independent sources with independent lifetimes — the eval channel
+    // lives as long as the window and a socket is replaced on every reconnect
+    // — and joining them would make a dead socket able to stall DOM events.
+    use_future(move || {
+        let taken = socket_rx.borrow_mut().take();
+        async move {
+            // `use_future`'s closure is `FnMut`. A second call finds the
+            // receiver already taken, which is nothing to do rather than a
+            // reason to panic.
+            let Some(mut rx) = taken else {
+                return;
+            };
+            while let Some((epoch, event)) = rx.recv().await {
+                // A superseded socket's dying words must not overwrite the
+                // live one's state. This is the Rust half of the handler
+                // detach `bootstrap.js` did before closing a socket.
+                if epoch != bridge.epoch() {
+                    continue;
+                }
+                on_socket_event(
+                    event,
+                    bridge,
+                    st,
+                    attached,
+                    opts,
+                    pending_terminate,
+                    pending_open,
+                    reconnect,
+                );
+                claim_link(bridge, st, attached, pending_link, opts);
+                claim_launch(bridge, st, attached, pending_open, opts);
+            }
+        }
     });
 
     // Everything the window itself has to say. There is no timer behind any of
@@ -1326,7 +1460,7 @@ fn App() -> Element {
                         tab,
                         on_tab: move |t| st.write().set_settings_tab(t),
                         on_reconnect: move |url: String| {
-                            bridge.cmd(BridgeCmd::Connect { url });
+                            bridge.connect(url);
                             attached.set(None);
                         },
                         on_dismiss: move |()| dismiss(st),

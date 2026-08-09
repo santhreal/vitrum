@@ -30,16 +30,12 @@ pub(crate) fn reconcile(
 
     // Resets the grid and starts buffering live frames until the backfill
     // lands, so history and live output cannot interleave.
-    bridge.cmd(BridgeCmd::Focus {
-        session: want.map(|s| s.0),
-    });
+    bridge.focus(want);
 
     if let Some(next) = want {
         if opts.fixture {
             if let Some(info) = st.peek().session(next) {
-                bridge.cmd(BridgeCmd::Banner {
-                    lines: fixture::transcript(info),
-                });
+                bridge.banner(&fixture::transcript(info));
             }
         } else {
             let (cols, rows, scrollback_lines, intent) = {
@@ -131,6 +127,10 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
         before_seq: BEFORE_SEQ_HEAD,
         max_bytes,
     });
+    // Only now, and never before the request went out. Arming on the gesture
+    // instead would leave the pane buffering live output forever for a
+    // request the two guards above declined to send.
+    bridge.arm_page_back();
 }
 
 /// Open the session a `vitrum://session/N` handoff named, once the daemon has
@@ -220,6 +220,87 @@ pub(crate) fn notify_transitions(st: Signal<UiState>, before: &[vitrum_model::Se
         if ui::settings::should_notify(&read.daemon.settings.notifications, notable.kind, focused) {
             ui::settings::notify_now(&notable.notification());
         }
+    }
+}
+
+/// Show whatever the pane needs the operator told.
+///
+/// [`socket::PaneStream`] raises a notice rather than logging or panicking
+/// when the byte stream disagrees with itself: a gap in the offsets, history
+/// evicted before it could be painted, a backfill abandoned under pressure.
+/// Each one means what is on screen is not the whole transcript, and an
+/// operator reading an agent's output has to know that.
+///
+/// Only the FIRST is shown when several arrive at once. A flash is one line
+/// and the second notice would replace the first before it could be read; the
+/// rest go to the log, where a bug report can find them.
+pub(crate) fn flush_notices(bridge: Bridge, mut st: Signal<UiState>) {
+    let notices = bridge.notices();
+    let Some(first) = notices.first() else {
+        return;
+    };
+    for extra in &notices[1..] {
+        tracing::warn!("pane: {extra}");
+    }
+    st.write().window.flash = Some(Flash::error(first.clone()));
+}
+
+/// Everything the session socket has to say, in the vocabulary the rest of the
+/// client already reacts to.
+///
+/// The control-plane and lifecycle cases are forwarded to
+/// [`on_bridge_event`] unchanged, deliberately: whether a `Welcome` was
+/// observed by a WebSocket in JavaScript or by a tokio task in this process
+/// must not change what the client does with it, and two reducers is two
+/// answers to that question.
+///
+/// Output is the one case that is not a [`BridgeEvent`], because it never
+/// reaches the reducer at all. It goes to the pane state machine and from
+/// there to the webview over the binary route, which is the whole point of
+/// moving the socket: the hot path does not touch UI state, does not mark a
+/// signal dirty and does not cause a paint.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn on_socket_event(
+    ev: socket::SocketEvent,
+    bridge: Bridge,
+    st: Signal<UiState>,
+    attached: Signal<Option<SessionId>>,
+    opts: Options,
+    pending_terminate: Signal<Vec<SessionId>>,
+    pending_open: Signal<Option<PendingLaunch>>,
+    reconnect: Signal<u32>,
+) {
+    let forward = |ev: BridgeEvent| {
+        on_bridge_event(
+            ev,
+            bridge,
+            st,
+            attached,
+            opts,
+            pending_terminate,
+            pending_open,
+            reconnect,
+        );
+    };
+    match ev {
+        socket::SocketEvent::Output { session, seq, data } => {
+            bridge.output(session, seq, data);
+            flush_notices(bridge, st);
+        }
+        socket::SocketEvent::Server(msg) => forward(BridgeEvent::Server { msg: *msg }),
+        socket::SocketEvent::Open => forward(BridgeEvent::Conn {
+            state: ConnEvent::Open,
+            detail: None,
+        }),
+        socket::SocketEvent::Closed(detail) => forward(BridgeEvent::Conn {
+            state: ConnEvent::Closed,
+            detail: Some(detail),
+        }),
+        socket::SocketEvent::Error(detail) => forward(BridgeEvent::Conn {
+            state: ConnEvent::Error,
+            detail: Some(detail),
+        }),
+        socket::SocketEvent::Bad(detail) => forward(BridgeEvent::Bad { detail }),
     }
 }
 
@@ -315,15 +396,15 @@ pub(crate) fn on_bridge_event(
                     jump_seq,
                     keep_view,
                     more,
-                } => bridge.cmd(BridgeCmd::Backfill {
-                    session: session.0,
-                    from_seq: from_seq.to_string(),
-                    resume_seq: resume_seq.to_string(),
-                    bytes,
-                    jump_seq: jump_seq.map(|s| s.to_string()),
-                    keep_view,
-                    more,
-                }),
+                } => {
+                    // `more` never leaves this process now: whether the daemon
+                    // holds older bytes is a fact about the daemon, and the
+                    // only thing that reads it is `page_back` below. It is
+                    // already recorded on `window.history` by `apply`.
+                    let _ = more;
+                    bridge.backfill(session, from_seq, resume_seq, bytes, jump_seq, keep_view);
+                    flush_notices(bridge, st);
+                }
                 Reaction::Refill { .. } => {
                     // Full detach and re-attach. Splicing across a reported gap
                     // is exactly what the byte-offset seq exists to prevent.
@@ -370,9 +451,50 @@ pub(crate) fn on_bridge_event(
                 w.window.cols = cols;
                 w.window.rows = rows;
             }
+            // Telling the daemon is this side's job now. The webview used to
+            // put a `resize` on the socket itself, which meant it had to know
+            // which session was attached; it no longer does, and a resize
+            // addressed to a session the pane stopped showing was a real way
+            // to reflow somebody else's grid.
+            let focused = st.peek().window.focused;
+            if let Some(session) = focused
+                && !opts.fixture
+            {
+                bridge.msg(&ClientMsg::Resize {
+                    session,
+                    cols,
+                    rows,
+                });
+            }
         }
 
-        BridgeEvent::PageBack { session } => page_back(bridge, st, SessionId(session)),
+        // Bytes the terminal grid captured: a keystroke, a paste, or a raw
+        // 8-bit reply. Addressed here rather than in the webview for the same
+        // reason the resize above is: only this side knows which session the
+        // pane is attached to, so a keystroke cannot be addressed to a session
+        // the pane stopped showing while the event was in flight.
+        BridgeEvent::Input { data } => {
+            let focused = st.peek().window.focused;
+            if let Some(session) = focused
+                && !opts.fixture
+            {
+                bridge.msg(&ClientMsg::Input { session, data });
+            }
+        }
+
+        // Unguarded on the webview's side by design: whether there is more
+        // history, and whether a request is already in flight, are both known
+        // here and nowhere else.
+        //
+        // The focus is READ OUT before the call, never held across it.
+        // `page_back` writes the state signal, and a read guard still alive
+        // over that write is a panic rather than a stale value.
+        BridgeEvent::PageBack => {
+            let focused = st.peek().window.focused;
+            if let Some(session) = focused {
+                page_back(bridge, st, session);
+            }
+        }
 
         // Through the custom dispatcher, not straight to `on_key`. It
         // consults the operator's own bindings first, so a chord they rebound
@@ -465,7 +587,7 @@ pub(crate) fn schedule_reconnect(
                 .settings
                 .resolved_daemon_url(opts.server)
                 .to_string();
-            bridge.cmd(BridgeCmd::Connect { url });
+            bridge.connect(url);
         }
     });
 }

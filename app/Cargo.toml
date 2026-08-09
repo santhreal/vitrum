@@ -68,9 +68,25 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-# `time` only: the one-shot that retires a transient notice. The runtime
-# itself is dioxus-desktop's; nothing here starts one.
-tokio = { version = "1", default-features = false, features = ["time"] }
+# The session socket lives in this process now, so the client needs the same
+# runtime pieces the daemon does: `net` and `io-util` for the TCP stream under
+# the WebSocket, `rt` and `sync` for the task that owns it and the channels it
+# talks to the UI thread over, `macros` for the select in that task's loop, and
+# `time` for the one-shot that retires a transient notice. The runtime itself
+# is still dioxus-desktop's; nothing here starts one.
+tokio = { version = "1", default-features = false, features = [
+    "time",
+    "rt",
+    "sync",
+    "macros",
+    "net",
+    "io-util",
+] }
+# The client half of the same WebSocket implementation the daemon serves with,
+# so there is one framing, one close-code vocabulary and one ping answerer
+# across both ends rather than a browser's and a crate's.
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 anyhow = { workspace = true }
 ureq = { workspace = true }
 semver = { workspace = true }

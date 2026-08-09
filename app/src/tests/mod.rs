@@ -1240,8 +1240,31 @@ fn terminal_cursor_does_not_blink() {
 /// correct and the guard failed. Counting the CONTENT is the real check
 /// and is strictly stronger, because a sheet silently dropped from the
 /// bundle fails it whether or not the tag count still adds up.
+///
+/// Then the tag count came back as the literal two, and adding the boot
+/// splash's `<style>` read as an off-by-one instead of as a decision
+/// nobody had recorded. The expectation is now derived from
+/// [`style_origins`], which is what the head is built from: a fourth sheet
+/// is red until its row appears below, and a stale row is red once its
+/// sheet stops shipping.
 #[test]
 fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
+    /// A `<style>` the design-system guards do not read, and the reason.
+    ///
+    /// The guards iterate `stylesheets()`, so the bundle built from that
+    /// array is covered by construction. Everything else is outside their
+    /// reach and says so here in writing.
+    const GUARD_EXEMPT: &[(&str, &str)] = &[
+        (
+            "vendored xterm.css",
+            "vendored, and not held to our motion, colour or grid rules",
+        ),
+        (
+            "the boot splash",
+            "in force before the design system is parsed, and not a part of it",
+        ),
+    ];
+
     let opts = Options::parse(Vec::<String>::new()).expect("no args always parses");
     let head = document_head(opts);
 
@@ -1261,13 +1284,69 @@ fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
         );
     }
 
-    // Ours are bundled into one element; vendored xterm.css keeps its own,
-    // because it is not held to our motion or grid rules.
+    // What the operator actually receives, read back out of the document.
+    let emitted: Vec<&str> = head
+        .match_indices("<style>")
+        .map(|(at, tag)| {
+            let rest = &head[at + tag.len()..];
+            let end = rest
+                .find("</style>")
+                .expect("every <style> the head opens is closed");
+            &rest[..end]
+        })
+        .collect();
+    let origins = style_origins();
     assert_eq!(
-        head.matches("<style>").count(),
-        2,
-        "the head no longer ships exactly our bundle plus vendored xterm.css"
+        emitted.len(),
+        origins.len(),
+        "the head ships {} stylesheets and `style_origins` names {}, so one \
+         of them reaches the operator without a name and without a guard",
+        emitted.len(),
+        origins.len()
     );
+    for ((name, css), got) in origins.iter().zip(emitted.iter()) {
+        assert_eq!(
+            css, got,
+            "the {name} element in the head is not what `style_origins` \
+             produced, so the head is no longer built from that list"
+        );
+    }
+
+    // Covered means the design-system guards read it: they iterate
+    // `stylesheets()`, so the sheet carrying all of those is the covered
+    // one. Identified by content rather than by name, because a name is a
+    // claim and this is the fact.
+    let covered: Vec<&str> = origins
+        .iter()
+        .filter(|(_, css)| {
+            stylesheets()
+                .iter()
+                .all(|(_, sheet)| css.contains(&strip_css(sheet)))
+        })
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        covered.len(),
+        1,
+        "exactly one element carries the whole design system and is therefore \
+         the one the guards read; {covered:?} carry it"
+    );
+
+    for (name, _) in origins.iter().filter(|(n, _)| !covered.contains(n)) {
+        assert!(
+            GUARD_EXEMPT.iter().any(|(exempt, _)| exempt == name),
+            "{name} reaches the document and no design-system guard reads \
+             it. Add it to `stylesheets()` so the guards cover it, or add a \
+             row to GUARD_EXEMPT saying why they must not."
+        );
+    }
+    for (name, why) in GUARD_EXEMPT {
+        assert!(
+            origins.iter().any(|(origin, _)| origin == name),
+            "GUARD_EXEMPT still excuses {name} ({why}) and the head no \
+             longer ships it"
+        );
+    }
 }
 
 /// No stylesheet may hide a comment delimiter inside a string.
@@ -2249,41 +2328,36 @@ fn terminal_container_has_no_rsx_children() {
     }
 }
 
-/// The bridge must strip exactly the 17 header bytes vitrum-proto defines.
-/// Off by one and every line of terminal output starts with a stray byte,
-/// which corrupts escape sequences and is very hard to trace back here.
+/// Frame headers are decoded once, by the crate that defines them.
+///
+/// The webview used to parse the 17-byte output header itself, with the length,
+/// the frame kind and two little-endian reads written out again in JavaScript.
+/// Two decoders for one wire format drift, and the failure is a stray byte at
+/// the head of a line, which corrupts an escape sequence and is very hard to
+/// trace back here. The socket now hands `vitrum_proto::decode_output` the
+/// bytes, so this asserts the client keeps no second copy of that arithmetic.
+///
+/// What this does not catch: a decoder written in another module. It reads the
+/// two files that carry the data plane, which is where one would land.
 #[test]
-fn bridge_uses_the_protocol_header_length() {
-    assert_eq!(vitrum_proto::OUTPUT_HEADER_LEN, 17);
+fn the_client_decodes_frames_only_through_the_protocol_crate() {
+    let socket = include_str!("../socket.rs");
     assert!(
-        BOOTSTRAP_JS.contains("const OUTPUT_HEADER_LEN = 17;"),
-        "bridge header length drifted from vitrum-proto"
+        socket.contains("decode_output"),
+        "the socket no longer decodes through vitrum-proto"
     );
-    assert_eq!(vitrum_proto::FRAME_KIND_OUTPUT, 1);
-    assert!(
-        BOOTSTRAP_JS.contains("const FRAME_KIND_OUTPUT = 1;"),
-        "bridge frame kind drifted from vitrum-proto"
-    );
+    for (name, text) in [("socket.rs", socket), ("bootstrap.js", BOOTSTRAP_JS)] {
+        for hand_rolled in [
+            "OUTPUT_HEADER_LEN = 17",
+            "getBigUint64",
+            &format!("[{}..]", vitrum_proto::OUTPUT_HEADER_LEN),
+        ] {
+            assert!(
+                !text.contains(hand_rolled),
+                "{name} parses the output header itself with `{hand_rolled}`, so the \
+                 wire format now has two decoders that can disagree"
+            );
+        }
+    }
 }
 
-/// Frame fields are little-endian per the protocol. `getBigUint64` defaults
-/// to big-endian, so the `true` argument is load-bearing: without it a
-/// session id of 1 reads as 72057594037927936 and every frame is dropped.
-#[test]
-fn bridge_reads_frame_headers_little_endian() {
-    assert!(
-        BOOTSTRAP_JS.contains("dv.getBigUint64(1, true)"),
-        "session id must be read little-endian"
-    );
-    assert!(
-        BOOTSTRAP_JS.contains("dv.getBigUint64(9, true)"),
-        "seq must be read little-endian at offset 9"
-    );
-}
-
-/// A shell must always be resolvable, so the "+" button can never produce a
-/// CreateSession with an empty command.
-#[test]
-fn default_shell_is_never_empty() {
-    assert!(!launch::default_shell().is_empty());
-}

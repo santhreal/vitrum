@@ -6,56 +6,32 @@
 //
 // Division of labour, which is the whole point of the file:
 //
-//   * The WebSocket lives here, not in Rust. PTY output is the hot path and it
-//     is arbitrary bytes. Handing it to Rust would mean pushing it back through
-//     a JSON IPC channel to reach the terminal, which is a base64 pass, a
-//     parse, and two copies per chunk on the busiest path in the product.
-//     Binary frames go straight from the socket into xterm.js.
-//   * Control-plane JSON is forwarded verbatim to Rust, which owns all state.
-//     This file holds no session list, no tab list, and no scrollback.
-//   * Keystrokes and resizes are encoded here rather than round-tripped
-//     through Rust, to keep typing latency off a two-hop IPC path. Their exact
-//     JSON shape is pinned by tests in wire.rs.
+//   * There is no WebSocket here. It lives in `app/src/socket.rs` and owns
+//     connect, reconnect, close codes, sequence continuity, the backlog splice
+//     and the reassembly of a character split across two frames. This file
+//     receives frames that are already decoded and already in order.
+//   * Pane bytes arrive over a wry asset route as an `ArrayBuffer`, not over
+//     the eval channel. That channel is JSON, JSON strings must be valid
+//     UTF-8, and PTY output is arbitrary bytes.
+//   * What is left is what only the DOM can do or only the DOM can see: the
+//     terminal emulator itself, focus, the clipboard, the fit addon's
+//     geometry, chords, and the keystrokes the grid captures. This file holds
+//     no session id, no byte offset, no session list and no scrollback.
 //
 // Nothing here animates, polls, or sets an interval. Every wakeup is caused by
-// a socket message, a DOM event, or a command from Rust.
-
-const OUTPUT_HEADER_LEN = 17;
-const FRAME_KIND_OUTPUT = 1;
-
-// Cap on live bytes held while waiting for a backfill to land. Past this the
-// backfill is abandoned and the buffer is flushed: a stalled repaint must not
-// turn into unbounded client memory just because an agent is chatty.
-const PENDING_CAP = 1 << 20;
+// a pane update, a DOM event, or a command from Rust.
 
 const state = {
-  ws: null,
   term: null,
   fit: null,
   // Set once a mount has failed, so the failure is reported once instead of
-  // retried on every command. Declared here rather than assigned onto the
+  // retried on every pane op. Declared here rather than assigned onto the
   // object later: one hidden class for the life of the window.
   termMountFailed: false,
-  // Session whose output is being painted, or null. Frames for anything else
-  // are dropped on arrival: only the focused pane renders.
-  focus: null,
-  // True between a focus change and its backfill landing.
-  backfilling: false,
-  // Set when PENDING_CAP was hit, so the late backfill is discarded instead of
-  // painted after the live bytes that already went to the grid.
-  dropBackfill: false,
-  pending: [],
-  pendingBytes: 0,
-  // Whether the daemon holds history older than what is painted. Pushed by
-  // Rust with each backfill; without it every arrival at the top of the buffer
-  // would ask for more and be told there is none.
-  more: false,
-  // True between a page-back request and its repaint, so holding the wheel at
-  // the top sends one request rather than one per tick.
-  paging: false,
   // Logical lines between the top visible line and the end of the buffer,
-  // captured when a page-back is requested. The repaint adds history above, so
-  // this is what puts the operator back on the line they were reading.
+  // captured when a page-back is reported. The repaint adds history above, so
+  // this is what puts the operator back on the line they were reading. It
+  // stays on this side because counting wrapped rows needs the grid.
   keepLineFromEnd: 0,
 };
 
@@ -150,14 +126,28 @@ function themeChanged(before, after) {
 
 // Resolve once #rg-term is in the DOM. A MutationObserver, not a poll: it is
 // woken by the DOM mutation itself and disconnects on the first hit.
+//
+// This is also the moment the first real frame is up, so it is where the
+// loading screen comes down. `#rg-term` is rendered by the app's root, so its
+// arrival means the client has connected, the state has loaded and Dioxus has
+// committed a tree — there is something to look at. Taking the screen down on
+// the bridge's own start instead would uncover a document that is still empty.
+function firstFrame() {
+  if (window.__vitrum_bootDone) window.__vitrum_bootDone();
+}
+
 function waitForContainer() {
   const found = document.getElementById("rg-term");
-  if (found) return Promise.resolve(found);
+  if (found) {
+    firstFrame();
+    return Promise.resolve(found);
+  }
   return new Promise((resolve) => {
     const mo = new MutationObserver(() => {
       const el = document.getElementById("rg-term");
       if (el) {
         mo.disconnect();
+        firstFrame();
         resolve(el);
       }
     });
@@ -261,14 +251,13 @@ function mount(el) {
   // nothing and wakes for nothing. That matters here because the whole product
   // is built on 0% idle CPU.
   //
-  // Three guards, each for a different way this becomes a loop. `state.more`
-  // stops asking when the daemon has nothing older. `state.paging` stops the
-  // second request while the first is still in flight, which is what holding
-  // the wheel at the top would otherwise do. `state.focus` stops a request for
-  // a session this pane is no longer showing.
+  // No guards. Whether there is older history, whether a request is already
+  // in flight, and which session this pane is showing are all Rust's to know
+  // now, and were three pieces of session state this file had to hold to
+  // answer. What is left is the gesture and the one measurement only this side
+  // can take.
   term.onScroll((ydisp) => {
-    if (ydisp !== 0 || !state.more || state.paging || state.focus === null) return;
-    state.paging = true;
+    if (ydisp !== 0) return;
     // Where the operator is reading, as a distance from the end of the buffer,
     // so the repaint can put them back on it. The top visible row may be the
     // middle of a wrapped line; counting logical starts from the bottom is the
@@ -280,10 +269,7 @@ function mount(el) {
       if (line && !line.isWrapped) back++;
     }
     state.keepLineFromEnd = back;
-    // Buffer live frames from here, so nothing is written to a grid that is
-    // about to be reset and repainted from history.
-    state.backfilling = true;
-    dioxus.send({ ev: "pageBack", session: state.focus });
+    dioxus.send({ ev: "pageBack" });
   });
 
   // Geometry changes are driven by layout, not by a timer, and a fit only runs
@@ -321,31 +307,31 @@ function mount(el) {
 
   // Fires only when cols/rows actually change, so this cannot feed back into
   // itself through a re-render.
+  //
+  // Only reported, never sent. Telling the daemon is Rust's, because only Rust
+  // knows which session this pane is attached to, and a resize addressed to a
+  // session the pane stopped showing while the event was in flight would
+  // reflow somebody else's grid.
   term.onResize(({ cols, rows }) => {
     dioxus.send({ ev: "resize", cols, rows });
-    if (state.focus !== null) {
-      wsSend({ t: "resize", session: state.focus, cols, rows });
-    }
   });
 
   const encoder = new TextEncoder();
   term.onData((s) => {
-    if (state.focus === null) return;
     // A plain loop, not `Array.from`: that walks the typed array through the
     // iterator protocol and allocates a step result per byte. One keystroke
     // would not care. A paste is thousands of bytes and does.
     const u = encoder.encode(s);
     const data = new Array(u.length);
     for (let i = 0; i < u.length; i++) data[i] = u[i];
-    wsSend({ t: "input", session: state.focus, data });
+    dioxus.send({ ev: "input", data });
   });
   // Raw 8-bit responses (mouse reports, DEC replies) arrive here as a string of
   // code units 0..255, not as UTF-8 text.
   term.onBinary((s) => {
-    if (state.focus === null) return;
     const data = new Array(s.length);
     for (let i = 0; i < s.length; i++) data[i] = s.charCodeAt(i) & 0xff;
-    wsSend({ t: "input", session: state.focus, data });
+    dioxus.send({ ev: "input", data });
   });
 
   refit("initial fit failed");
@@ -626,191 +612,35 @@ function copyText(text) {
 }
 
 // --------------------------------------------------------------------------
-// Socket
+// The pane route
 // --------------------------------------------------------------------------
-
-function wsSend(obj) {
-  const ws = state.ws;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify(obj));
-}
-
-function connect(url) {
-  if (state.ws) {
-    // Drop handlers before closing so the old socket's onclose does not
-    // overwrite the new socket's state with a stale "disconnected".
-    state.ws.onopen = state.ws.onclose = state.ws.onerror = state.ws.onmessage = null;
-    try {
-      state.ws.close();
-    } catch (_) {
-      /* already closing */
-    }
-  }
-  let ws;
-  try {
-    ws = new WebSocket(url);
-  } catch (e) {
-    dioxus.send({ ev: "conn", state: "error", detail: `${url}: ${e}` });
-    return;
-  }
-  ws.binaryType = "arraybuffer";
-  state.ws = ws;
-
-  ws.onopen = () => dioxus.send({ ev: "conn", state: "open" });
-  ws.onerror = () =>
-    dioxus.send({ ev: "conn", state: "error", detail: `cannot reach ${url}` });
-  // A close code is a protocol number, not a sentence. `code 1006` on the
-  // sidebar banner tells an operator nothing; it is the WebSocket code for a
-  // connection that dropped without a close frame, which is what happens when
-  // the daemon dies or the socket is cut. The ones worth naming are named, and
-  // anything unrecognised still prints its number rather than being flattened
-  // into a vague sentence: an unknown failure must stay identifiable.
-  const CLOSE_REASONS = {
-    1000: "the daemon closed the connection",
-    1001: "the daemon is shutting down",
-    1006: "the connection dropped",
-    1011: "the daemon hit an internal error",
-    1012: "the daemon is restarting",
-  };
-  ws.onclose = (e) => {
-    if (state.ws === ws) state.ws = null;
-    const known = CLOSE_REASONS[e.code];
-    const why = e.reason
-      ? `${e.reason} (code ${e.code})`
-      : known || `the connection closed with code ${e.code}`;
-    dioxus.send({ ev: "conn", state: "closed", detail: why });
-  };
-  ws.onmessage = (e) => {
-    if (typeof e.data === "string") {
-      let msg;
-      try {
-        msg = JSON.parse(e.data);
-      } catch (err) {
-        report(`control frame is not JSON: ${err}`);
-        return;
-      }
-      dioxus.send({ ev: "server", msg });
-      return;
-    }
-    onFrame(new Uint8Array(e.data));
-  };
-}
-
-// One buffer from many, in order.
 //
-// Used only where frames genuinely arrive in bulk: the splice after a focus,
-// and the overflow flush. On the live path they do not, and coalescing there
-// was measured and removed. `vitrum-core` publishes a session's output at most
-// once per 6 ms or per 64 KB (`FLUSH_WINDOW`, `FLUSH_BYTES`), and `pump_output`
-// sends one WebSocket frame per published chunk, so a window sees on the order
-// of 167 output frames a second. xterm costs 0.13 us per `write` call, measured
-// against the vendored bundle, so batching those saves about 0.02 ms a second
-// and cost 0.064 us on every chunk to get. The bulk paths are the opposite
-// shape: 201 writes collapsing to 1, all at once, on a path the operator is
-// waiting on.
+// The WebSocket used to be here. It is now `app/src/socket.rs`, which owns
+// connect, reconnect, the close-code vocabulary, sequence continuity, the
+// backlog splice and the reassembly of a character split across two frames.
+// What is left on this side is a pull: the bytes Rust has already decided to
+// paint, in the order it decided to paint them.
 //
-// The parts are views into the socket's own message buffers and are never
-// mutated, so this copy is the only one made. Joining cannot corrupt a
-// multi-byte character split across two frames: the bytes are concatenated in
-// arrival order, so the sequence is intact before xterm's decoder sees it.
-// Verified against the real parser, which produces an identical grid for the
-// same bytes written one at a time or in one call.
-function join(parts, total) {
-  const all = new Uint8Array(total);
-  let at = 0;
-  for (const part of parts) {
-    all.set(part, at);
-    at += part.length;
-  }
-  return all;
-}
-
-// Data plane. Header is [kind:u8][session:u64 LE][seq:u64 LE], per vitrum-proto.
-function onFrame(u8) {
-  if (u8.length < OUTPUT_HEADER_LEN) {
-    report(`data frame is ${u8.length} bytes, need at least ${OUTPUT_HEADER_LEN}`);
-    return;
-  }
-  if (u8[0] !== FRAME_KIND_OUTPUT) {
-    report(`unknown frame kind ${u8[0]}`);
-    return;
-  }
-  // Nothing focused, or nothing built to paint into: neither case needs the
-  // header decoded at all. A window is attached to whatever the daemon says it
-  // is attached to, so with twenty agents running these are frequent.
-  if (state.focus === null || !state.term) return;
-
-  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-  const session = Number(dv.getBigUint64(1, true));
-  if (session !== state.focus) return;
-  const payload = u8.subarray(OUTPUT_HEADER_LEN);
-  if (payload.length === 0) return;
-
-  if (state.backfilling) {
-    // Kept as BigInt, and read only here: a byte offset is a u64 and the splice
-    // against the backfill must be exact to the byte or the grid is corrupted
-    // mid escape sequence. The live path never uses the offset, so on the hot
-    // path it is not decoded.
-    state.pending.push({ seq: dv.getBigUint64(9, true), data: payload });
-    state.pendingBytes += payload.length;
-    if (state.pendingBytes > PENDING_CAP) {
-      // Give up on ordering the repaint rather than grow without bound. The
-      // live bytes are what the user actually needs to see.
-      const parts = [];
-      for (const f of state.pending) parts.push(f.data);
-      const joined = join(parts, state.pendingBytes);
-      state.pending.length = 0;
-      state.pendingBytes = 0;
-      state.backfilling = false;
-      state.dropBackfill = true;
-      state.term.write(joined);
-      report("backfill buffer overflowed; painted live output without history");
-    }
-    return;
-  }
-  state.term.write(payload);
-}
+// The first path segment is what `dioxus-desktop`'s `desktop_handler` matches
+// a registered asset handler on, and it must stay equal to
+// `socket::PANE_ROUTE`.
+const PANE_ROUTE = "/vitrum-pane";
 
 // --------------------------------------------------------------------------
-// Commands from Rust
+// Applying pane operations
 // --------------------------------------------------------------------------
-
-function focusSession(session) {
-  state.focus = session;
-  state.pending.length = 0;
-  state.pendingBytes = 0;
-  state.dropBackfill = false;
-  state.backfilling = session !== null;
-  if (state.term) {
-    // Full reset, not clear: the previous session may have left the grid in
-    // alternate-screen mode, with a scroll region set, or with SGR state
-    // pending, and any of those would corrupt the incoming repaint.
-    state.term.reset();
-  }
-}
-
-// Count newlines in `parts` strictly after byte `from`, across the whole
-// painted stream.
 //
-// Counting from the END rather than from the start is deliberate. xterm trims
-// its buffer from the TOP once the scrollback limit is reached, so a logical
-// line index counted forwards stops matching the buffer as soon as more
-// history is painted than the buffer holds. The distance from the last line is
-// stable under that trim.
-function logicalLinesAfter(parts, from) {
-  let seen = 0;
-  let lines = 0;
-  for (const part of parts) {
-    const end = seen + part.length;
-    if (end > from) {
-      const start = from > seen ? from - seen : 0;
-      for (let i = start; i < part.length; i++) if (part[i] === 0x0a) lines++;
-    }
-    seen = end;
-  }
-  return lines;
-}
+// Everything that touches the grid arrives here, in one stream, in the order
+// Rust emitted it. There is no second channel into the terminal on purpose: a
+// reset that overtook the write it was meant to precede would clear the
+// repaint it was clearing FOR.
 
+// `[tag:u8][len:u32 LE][payload]`, repeated. Mirrors `socket::encode_ops`.
+const OP_WRITE = 0;
+const OP_RESET = 1;
+const OP_SCROLL_FROM_END = 2;
+const OP_SCROLL_KEEP = 3;
+const OP_HEADER_LEN = 5;
 // The buffer row that starts the logical line `back` lines from the last one.
 //
 // Walks bottom-up counting rows that are NOT continuations, because one
@@ -830,110 +660,105 @@ function rowOfLineFromEnd(term, back) {
   return 0;
 }
 
-// History arrives base64 rather than as a JSON array of numbers. The array
-// form measured 3.6 bytes of JSON per payload byte, and `JSON.parse` had to
-// build one JS number per history byte before this could copy them out; at the
-// 2 MiB backfill ceiling that is two million transient numbers in a process
-// twenty windows share.
+// Put the viewport on the logical line `back` lines from the end.
 //
-// `atob` gives a binary string, so the copy out is still a loop, but it is a
-// loop over a string of known length writing into a right-sized buffer, with
-// no per-byte allocation.
-function fromBase64(text) {
-  let binary;
-  try {
-    binary = atob(text);
-  } catch (err) {
-    report(`history payload is not valid base64: ${err}`);
-    return new Uint8Array(0);
-  }
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-  return out;
+// `write("", cb)` is how xterm says "once the parser queue has drained". The
+// parser runs asynchronously, so the buffer is not final the instant a write
+// returns and scrolling before it drains lands on the wrong row. It is the
+// documented callback, not a timer.
+//
+// `lift` is a third of a screen of context above the line, for a search hit
+// that would otherwise sit on the very top edge with nothing after it visible.
+function scrollToLineFromEnd(term, back, lift) {
+  term.write("", () => {
+    const row = rowOfLineFromEnd(term, back);
+    term.scrollToLine(Math.max(0, row - (lift ? Math.floor(term.rows / 3) : 0)));
+  });
 }
 
-function applyBackfill(session, fromSeqText, resumeSeqText, bytes, jumpSeqText, keepView, more) {
-  if (session !== state.focus || !state.term) return;
-  if (state.dropBackfill) {
-    state.dropBackfill = false;
-    return;
-  }
-  // A page-back is a REPAINT of a bigger window ending at the same head, so
-  // the grid has to be cleared first. On an attach `focusSession` has already
-  // reset it and this is a no-op that costs one call.
-  if (keepView) state.term.reset();
-  // Painted as one write. The history and the live frames that overlap it are
-  // consecutive bytes of one stream with nothing between them, so there is no
-  // reason for xterm to decode and reflow them in pieces.
-  const parts = [];
-  let total = 0;
-  if (bytes.length) {
-    const hist = fromBase64(bytes);
-    parts.push(hist);
-    total += hist.length;
-  }
-
-  // Splice by byte offset. Attach starts the live stream at the head as of the
-  // attach; the backfill was computed at the head as of the scrollback request.
-  // The two overlap by exactly the bytes the child emitted in between, and the
-  // offset is the only thing that says how many.
-  //
-  // The reverse can also happen: after a reported gap the bytes between the
-  // backfill and the first live frame may have been evicted from the server's
-  // ring, so `resume` lands BELOW the oldest buffered frame. The grid was reset
-  // before this ran, so painting the frames anyway is correct rather than a
-  // splice at the wrong offset, but the hole is real history the operator will
-  // never see and it gets said out loud.
-  const resume = BigInt(resumeSeqText);
-  let hole = 0n;
-  for (const f of state.pending) {
-    const end = f.seq + BigInt(f.data.length);
-    if (end <= resume) continue;
-    if (f.seq > resume && hole === 0n) hole = f.seq - resume;
-    const skip = f.seq < resume ? Number(resume - f.seq) : 0;
-    const part = skip ? f.data.subarray(skip) : f.data;
-    parts.push(part);
-    total += part.length;
-  }
-  if (total > 0) {
-    state.term.write(parts.length === 1 ? parts[0] : join(parts, total));
-  }
-  if (hole > 0n) {
-    report(`${hole} bytes of history were evicted before they could be painted`);
-  }
-  state.pending.length = 0;
-  state.pendingBytes = 0;
-  state.backfilling = false;
-  state.more = !!more;
-  state.paging = false;
-
-  // Land on the searched line. The offset is absolute in the session's stream
-  // and the painted region starts at `fromSeq`, so the difference is where the
-  // hit sits in what was just written. Out of range means the daemon returned
-  // less than was asked for, in which case scrolling anywhere would be a
-  // guess, so the viewport is left at the bottom.
-  if (jumpSeqText != null) {
-    const at = BigInt(jumpSeqText) - BigInt(fromSeqText);
-    if (at >= 0n && at < BigInt(total)) {
-      // `write` is asynchronous in xterm: the parser runs on a queue, so the
-      // buffer is not final until it drains. The callback form is the
-      // documented way to wait for it and is not a timer.
-      state.term.write("", () => {
-        const back = logicalLinesAfter(parts, Number(at));
-        const row = rowOfLineFromEnd(state.term, back);
-        // A third of a screen above, so the hit has context rather than
-        // sitting on the top edge.
-        state.term.scrollToLine(Math.max(0, row - Math.floor(state.term.rows / 3)));
-      });
+// Apply one batch of pane operations.
+//
+// The bytes are the socket's own, carried here as an ArrayBuffer and never
+// decoded: a multi-byte character split across two frames was made whole in
+// Rust and nothing on this path can split it again.
+function applyOps(buf) {
+  if (!ensureTerm()) return;
+  const term = state.term;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let at = 0;
+  while (at + OP_HEADER_LEN <= buf.length) {
+    const tag = buf[at];
+    const len = dv.getUint32(at + 1, true);
+    const from = at + OP_HEADER_LEN;
+    const end = from + len;
+    if (end > buf.length) {
+      report(`pane op ${tag} claims ${len} bytes and only ${buf.length - from} are here`);
+      return;
     }
-  } else if (keepView) {
-    // The operator was reading a line and asked for what came before it. The
-    // repaint added history ABOVE, so the same content is now further down;
-    // put them back on it rather than at the bottom of a bigger buffer.
-    state.term.write("", () => {
-      const row = rowOfLineFromEnd(state.term, state.keepLineFromEnd || 0);
-      state.term.scrollToLine(Math.max(0, row));
-    });
+    at = end;
+    switch (tag) {
+      case OP_WRITE:
+        if (len) term.write(buf.subarray(from, end));
+        break;
+      case OP_RESET:
+        // Full reset, not clear: the previous session may have left the grid
+        // in alternate-screen mode, with a scroll region set, or with SGR
+        // state pending, and any of those would corrupt the incoming repaint.
+        term.reset();
+        break;
+      case OP_SCROLL_FROM_END:
+        scrollToLineFromEnd(term, dv.getUint32(from, true), true);
+        break;
+      case OP_SCROLL_KEEP:
+        // The operator was reading a line and asked for what came before it.
+        // The repaint added history ABOVE, so the same content is now further
+        // down. The distance was captured when the gesture was reported,
+        // because only this side can count wrapped rows.
+        scrollToLineFromEnd(term, state.keepLineFromEnd || 0, false);
+        break;
+      default:
+        report(`unknown pane op ${tag}`);
+        return;
+    }
+  }
+  if (at !== buf.length) {
+    report(`pane op stream ended with ${buf.length - at} bytes of header`);
+  }
+}
+
+// Pull pane bytes from Rust, forever.
+//
+// A long poll over a wry asset route, not a timer and not a poll loop: the
+// request parks in `socket::PaneQueue` until there is something to say, and a
+// new one opens the instant it is answered. An idle window has exactly one
+// request outstanding and wakes for nothing, which is the same idle cost the
+// WebSocket had when it lived in this file.
+//
+// The route rather than the eval channel because that channel is JSON, JSON
+// strings must be valid UTF-8, and PTY output is arbitrary bytes: it could
+// only cross base64-encoded, which is a 4/3 size tax plus an `atob` and a
+// per-byte copy on the hottest path in the product.
+async function panePump() {
+  await ready;
+  for (;;) {
+    let buf;
+    try {
+      const res = await fetch(PANE_ROUTE);
+      buf = new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      // The route is how the pane is painted at all, so losing it is not
+      // something to retry quietly in a loop that would spin.
+      report(`the pane route stopped answering, so this pane is now blind: ${e}`);
+      return;
+    }
+    // An empty body is a superseded request, which happens when a page is
+    // replaced. Ask again rather than treating it as an end.
+    if (buf.length === 0) continue;
+    try {
+      applyOps(buf);
+    } catch (e) {
+      report(`pane update failed: ${e}`);
+    }
   }
 }
 
@@ -1018,38 +843,6 @@ function ensureTerm() {
 
 function handle(cmd) {
   switch (cmd.cmd) {
-    case "connect":
-      connect(cmd.url);
-      break;
-    case "send": {
-      const ws = state.ws;
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(cmd.text);
-      break;
-    }
-    // The three that need a terminal build one on first use.
-    case "focus":
-      ensureTerm();
-      focusSession(cmd.session);
-      break;
-    case "backfill":
-      ensureTerm();
-      applyBackfill(
-        cmd.session,
-        cmd.fromSeq,
-        cmd.resumeSeq,
-        cmd.bytes,
-        cmd.jumpSeq,
-        cmd.keepView,
-        cmd.more,
-      );
-      break;
-    case "banner":
-      if (ensureTerm() && state.term) {
-        state.backfilling = false;
-        state.term.reset();
-        state.term.write(cmd.lines.join("\r\n"));
-      }
-      break;
     case "focusDom":
       focusDom(cmd.selector);
       break;
@@ -1074,26 +867,18 @@ function handle(cmd) {
 // a fit addon and a renderer that nothing had written to.
 //
 // So we wait for the container and then stop. `ensureTerm` builds the terminal
-// the first time a command actually needs one.
+// the first time a pane op actually needs one.
 const ready = waitForContainer();
 
-// Only the commands that cannot run before `#rg-term` is in the document wait
-// for it.
-//
-// `connect` is deliberately not one of them. Every command used to wait, which
-// put the socket to the daemon, and so the session list, behind the first
-// render landing in the DOM, for a command that needs no element at all.
-//
-// Three comparisons rather than a `Set`: commands are rare and startup is not,
-// and building the set measured on the synchronous startup path.
-function needsContainer(cmd) {
-  return cmd === "focus" || cmd === "backfill" || cmd === "banner";
-}
+// Nothing on the eval channel waits for the container any more: `focusDom`
+// takes a selector that may name anything in the document, and `clipboard`
+// touches no element at all. The pane pump is the one thing that needs a
+// terminal, and it awaits `ready` itself.
+panePump();
 
 for (;;) {
   const cmd = await dioxus.recv();
   try {
-    if (needsContainer(cmd.cmd)) await ready;
     handle(cmd);
   } catch (e) {
     report(`bridge command ${cmd && cmd.cmd} failed: ${e}`);

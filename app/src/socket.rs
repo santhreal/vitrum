@@ -212,10 +212,19 @@ pub(crate) struct PaneStream {
 }
 
 impl PaneStream {
+    /// The session the pane is pointed at.
+    ///
+    /// Test-only: production reads the focus through the state signal that set
+    /// it, and a second reader of the same fact in the shipped build is how
+    /// the two drift. Without the attribute this is a dead function, and this
+    /// crate builds with warnings denied.
+    #[cfg(test)]
     pub(crate) fn focused(&self) -> Option<SessionId> {
         self.focus
     }
 
+    /// Whether a page-back request is outstanding. Test-only, as above.
+    #[cfg(test)]
     pub(crate) fn paging(&self) -> bool {
         self.paging
     }

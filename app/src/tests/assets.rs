@@ -170,6 +170,54 @@ fn tree() -> Vec<String> {
     out
 }
 
+/// Is this directory a build cache?
+///
+/// `target` is only cargo's default name. a target-directory override puts one wherever the
+/// caller says, and a build tree holds fixtures whose bytes sniff as pictures,
+/// which would report a build as an undescribed asset. Every cache cargo
+/// writes carries the standard `CACHEDIR.TAG` with its signature line, so the
+/// directory declares itself and the walker does not have to guess a name.
+fn is_a_cache(dir: &Path) -> bool {
+    std::fs::read(dir.join("CACHEDIR.TAG"))
+        .is_ok_and(|tag| tag.starts_with(b"Signature: 8a477f597d28d172789f06886806bc55"))
+}
+
+/// A build tree declares itself, whatever it is called.
+///
+/// Without this the gate depended on the build living in a directory named
+/// `target`, and a run with a target-directory override inside a checkout
+/// puts a few hundred megabytes of fixtures where the walker reads them. The
+/// first one whose bytes sniff as a picture is reported as an undescribed
+/// asset, which is a red suite nobody can act on.
+#[test]
+fn a_build_tree_is_not_a_place_this_repository_publishes_pictures() {
+    let scratch = std::env::temp_dir().join(format!(
+        "vitrum-assets-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("a scratch directory");
+
+    assert!(
+        !is_a_cache(&scratch),
+        "an ordinary directory is not a build cache"
+    );
+    std::fs::write(
+        scratch.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n# created by cargo\n",
+    )
+    .expect("the tag is writable");
+    assert!(is_a_cache(&scratch), "a tagged directory is a build cache");
+
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        !is_a_cache(&repo()),
+        "the repository root is not a build cache, and skipping it would make \
+         every test in this file vacuous"
+    );
+}
+
 fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -178,7 +226,7 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
         if path.is_dir() {
-            if !SKIP.contains(&name.as_str()) {
+            if !SKIP.contains(&name.as_str()) && !is_a_cache(&path) {
                 walk(&path, root, out);
             }
             continue;

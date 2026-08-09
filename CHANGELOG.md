@@ -98,7 +98,19 @@ before 1.0 a minor bump may break things, and this file says when it does.
   issue forms, a pull request template, and Dependabot.
 - A `cargo-deny` policy and the CI job that enforces it, so a dependency whose
   license conflicts with the dual license fails the build.
-- `make`: `gate`, `measure`, `readme-perf`, `readme-perf-check`, `package`.
+- `make`: `gate`, `measure`, `perf-tables`, `perf-tables-check`, `package`,
+  `release`, `release-dry-run`, `release-check`, `verify-artifacts`.
+- **A release is one command.** `make release VERSION=x.y.z` bumps the version
+  at every site, rolls this file, commits and annotates the tag, and pushes
+  nothing. `make release-dry-run` performs the whole cut in a throwaway clone
+  and proves the working tree came back byte-identical.
+- **A nightly channel.** One moving prerelease tag, so the installer's latest
+  lookup passes over it, versioned `<next patch>-nightly.<date>.<commit>` so it
+  sorts after the last stable and `vitrum --version` does not repeat it.
+- **`COLORTERM` is a constant in the crate that honours it.** An agent reads
+  the variable to decide whether to emit 24-bit colour, and one test now
+  asserts both the published value and that colours off the 256-colour cube
+  reach a cell unquantised.
 
 ## v0.1.0 - 2026-08-05
 

@@ -5,6 +5,66 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+### Added
+
+- **The session socket lives in Rust.** The webview used to open the
+  WebSocket, parse the 17-byte output header, track sequence numbers, splice
+  backlog against buffered live frames and reassemble characters split across
+  two frames. Every one of those is a protocol guarantee written twice, once
+  in `vitrum-proto` and once in JavaScript, and two decoders for one wire
+  format drift. Rust owns them now and the webview renders decoded pane
+  operations.
+- **Column widths come from the engine that lays out the pane.**
+  `vitrum-grid` classified characters with its own copy of the East Asian
+  Width tables while libghostty laid out the same characters, and a character
+  the engine gave two columns and the grid counted as one shifted every later
+  column on the line. The width tests now feed codepoints to libghostty and
+  take their samples from what it reports, so the case list cannot go stale
+  when the engine's Unicode data moves.
+- **Fonts fall back.** A codepoint the primary face lacks resolves through a
+  chain built from the font database, monospaced faces first. The chain is a
+  pure function, so which face a character resolves through is answerable
+  without a device or a rasterised glyph.
+- **`make fast`** runs the narrowest gate for one crate.
+
+### Fixed
+
+- **A contiguous run of output no longer reports missing history.** The
+  backlog splice measured every buffered frame against the resume offset,
+  which is only the right question for the first one, so the second frame of
+  any healthy run was announced to the operator as evicted history. A false
+  hole is worse than a silent one: it says the transcript has bytes missing
+  when it does not, and gives nobody a way to check.
+- **A session with no title draws a whole row.** The fallback lives at the one
+  owner rather than at the four call sites that each drew the blank: the row,
+  its tip, the row menu and the notification.
+- **The nightly tag never holds nothing.** The channel moved its tag before
+  rebuilding the release, so between those steps the tag an installer resolves
+  had no assets. Nightly now builds a complete staging draft, checks every
+  expected asset is on it, and swaps in one rename.
+
+### Changed
+
+- **The replay engine is the terminal engine.** `vitrum-replay` parsed with
+  `vte` behind a hand-written translation onto a cell grid while the daemon
+  parsed the same bytes with Ghostty, so the replay of a session was not the
+  session. `vte` is gone from the tree. Six behaviours changed and each is
+  asserted rather than tolerated, including that a 24-bit colour channel above
+  255 truncates to its low eight bits and that the sixteen ANSI colours are
+  Ghostty's theme.
+- **The flush window and the read chunk carry their arguments.** A lone write
+  ends on the idle flush, so a keystroke pays 300 microseconds rather than the
+  6 millisecond cap; at 181 MB/s a run reaches the byte cap in 0.35
+  milliseconds, so the clock only governs children producing under about 11
+  MB/s. The read chunk is argued from the line discipline's 4096-byte bound,
+  which is why raising it buys no syscalls.
+- **One owner per primitive.** The data plane leaves the `vitrum-proto` crate
+  root for its own module, and three duplicated helpers — a millisecond clock,
+  a seeded RNG, a scrollback corpus — collapse to one each.
+- **The launcher offers agents, not a shell.** A row whose command is a shell
+  argues this is a terminal multiplexer, which is a category where tmux and
+  Zellij already win and where nothing this product does is visible.
+
 ## v0.1.0 - 2026-08-09
 
 ### Added

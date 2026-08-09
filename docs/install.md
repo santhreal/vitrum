@@ -23,6 +23,18 @@ Default install directory:
 | Linux, macOS | `~/.local/bin` |
 | Windows | `%LOCALAPPDATA%\vitrum\bin` |
 
+## Requirements
+
+| | |
+|---|---|
+| Linux | a WebKit runtime: `libwebkit2gtk-4.1` on Debian and Ubuntu, `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch |
+| macOS, Windows | nothing extra |
+
+Published x86-64 builds target the base instruction set, so they run on any
+x86-64 processor. They do not use AVX2 or AVX-512 even where the processor
+has them. A build you make yourself may target your own processor and fail
+with `SIGILL` on an older one.
+
 ## Options
 
 ```sh
@@ -48,14 +60,35 @@ desktop are both wrong.
 vitrum update
 ```
 
-It verifies the new archive the same way the installer does, and it replaces
+It verifies the new archive the same way the installer does, and it stages
 both binaries or neither.
 
-The new client runs after you restart the window. The daemon keeps running the
-old code until it is restarted, and restarting it ends every session it holds.
-Do that when the agents are idle.
+A staged update is applied the next time `vitrum` starts. The running client
+is never replaced underneath itself, so an update cannot break the window you
+are working in. The sidebar shows that a restart will take the new build;
+Settings hides that mark for anyone who would rather not see it, and hiding it
+does not stop updates being checked for, staged or applied.
+
+The daemon keeps running the old code until it is restarted, and restarting it
+ends every session it holds. Do that when the agents are idle.
 
 `vitrum --version` prints the version the running binary was built at.
+
+## Channels
+
+| Channel | Gets |
+|---|---|
+| stable | published releases, in order |
+| nightly | a build of `main`, replaced whenever `main` changes |
+
+Stable is the default. A nightly carries the next patch version with a date
+and a commit, such as `0.1.1-nightly.20260809.f4f494e`, so `vitrum --version`
+names the build rather than repeating the last release.
+
+Nightly moves forward onto a stable release once that release is newer than
+the nightly you are running. It is never rolled back to an older stable.
+
+To leave nightly for a specific stable build, install that version directly.
 
 ## Pinning a version, and rolling back
 

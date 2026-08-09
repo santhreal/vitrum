@@ -1,0 +1,42 @@
+# Where this fork came from and exactly how it differs.
+#
+# Same contract as vendor/UPSTREAM.toml: this file is the definition of the
+# fork, not a description of it. `tools/upstream/check.sh --fork
+# vendor-ghostty-vt-sys` downloads the pristine crate and fails if the real
+# divergence is not the divergence listed here, in either direction. A change
+# made without recording it fails, and a recorded divergence that has become
+# dead fails too, which is what tells you it can be dropped.
+
+[upstream]
+crate = "libghostty-vt-sys"
+version = "0.2.1"
+
+# Only `build.rs` is compared, because it is the only file this fork touches.
+# `src/` is 4068 lines of generated bindings carried verbatim; comparing it
+# costs nothing and catches an accidental edit, so it is included.
+compare = "build.rs src"
+
+[[divergence]]
+file = "build.rs"
+reason = """
+The reason the fork exists. Upstream passes `-Dtarget` to zig only when TARGET
+differs from HOST, leaving a native build to auto-detect the builder's CPU.
+Every published target here is built natively on a runner of the same
+architecture, so the shipped instruction set was whatever that runner had.
+
+The failure is sharper than "it shipped AVX-512". Ghostty vendors highway,
+which compiles one kernel per instruction set and selects between them at run
+time from CPUID. Host detection on a Zen 5 machine put AVX-512 instructions
+inside the AVX2 kernel: `ghostty::N_AVX2::CodepointWidth` uses `%k` mask
+registers. A CPU with AVX2 and without AVX-512 passes the CPUID check for that
+kernel, calls it, and takes SIGILL. That is every Intel desktop part since
+Rocket Lake. Measured: 5581 AVX-512 instructions unpinned, 0 pinned, with the
+AVX2 count identical at 3662 either way.
+
+The fork passes `-Dtarget` unconditionally and adds `-Dcpu=baseline`, so the
+floor is the architecture's lowest model on all four published targets and is
+never read from the machine doing the build. `tools/release/check-isa.sh`
+disassembles the published binaries and fails above AVX2, so the pin cannot be
+silently lost.
+"""
+upstreamable = true

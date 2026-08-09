@@ -95,6 +95,8 @@ Pushing the tag starts `.github/workflows/release.yml`. It:
   published targets, and refuses a runner whose host triple is not the target
   it is building;
 - refuses a set of archives that is not exactly those four;
+- disassembles every binary in every archive and refuses anything above the
+  CPU floor, on the runner that built it and again over all four together;
 - writes one `SHA256SUMS` over all four;
 - uploads everything to a draft, confirms the draft holds every asset, and
   only then publishes it.
@@ -107,6 +109,45 @@ installs half of itself.
 
 The source tarball GitHub generates for the tag is separate and automatic; it
 is what the README's `curl` line fetches for people building from source.
+
+## The CPU floor
+
+A published binary must run on every machine its triple claims. That is not
+automatic. A compiler asked to build for the machine it is running on emits
+instructions that machine has, and every published target here is built on a
+runner of its own architecture, so a build that detects rather than obeys makes
+the instruction set of a release a property of the runner.
+
+`libghostty-vt-sys` did exactly that: it passed `-Dtarget` to zig only when
+cross-compiling. Built on this project's desktop, the terminal library carried
+5581 AVX-512 instructions; pinned, it carries none.
+
+The damage is not that AVX-512 shipped. Ghostty vendors highway, which
+compiles one kernel per instruction set and picks between them at run time
+from CPUID. Host detection put AVX-512 instructions *inside the AVX2 kernel*:
+the symbol is `ghostty::N_AVX2::CodepointWidth`, and it uses `%k` mask
+registers. A machine with AVX2 and no AVX-512 — every Intel desktop part since
+Rocket Lake, including the one this was found on — passes the CPUID check for
+that kernel, calls it, and dies with `SIGILL` on the first character it draws.
+
+The build pins zig to `-Dcpu=baseline` on all four targets. Raising that needs
+a measurement showing what it buys and a note of which CPUs it drops.
+
+`tools/release/check-isa.sh` disassembles binaries and fails on anything above
+AVX2 on x86-64 or armv8.2-a on aarch64. That floor is above the pin on purpose.
+Dispatching libraries — highway and simdutf in the terminal engine, memchr and
+its relatives in the Rust tree — carry AVX2 kernels in every build, pinned or
+not, and never run them on a machine that cannot. The pinned and unpinned
+libraries carry the same 3662 AVX2 instructions and differ only in AVX-512, so
+AVX2 is what dispatch looks like and anything above it is what host detection
+looks like. A gate at the true baseline would fire on every build ever made
+here, and a gate that always fires gets deleted.
+
+It runs on each builder, again over all four archives before the draft is
+promoted, and inside `make verify-artifacts`. It gates the artifact rather than
+the flag, because a flag can be dropped in a refactor and nothing says so,
+while the disassembly is what the user receives. Run it by hand with
+`make check-isa` after `make package`.
 
 ## Nightly
 

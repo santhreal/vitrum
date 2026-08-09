@@ -211,7 +211,43 @@ refuses 'a branch that is not main' tools/release/cut.sh "$new"
 ok 'every refusal left the clone untouched'
 
 step "cut v$new"
-( cd "$repo" && tools/release/cut.sh "$new" ) | sed 's/^/  /'
+# Piping the cut into `sed` would report sed's exit status, not the cut's, and
+# a cut that made the commit and the tag and then died in its closing output
+# would rehearse as a pass. Capture, check, then print.
+if ( cd "$repo" && tools/release/cut.sh "$new" ) > "$work/cut.log" 2>&1; then
+    sed 's/^/  /' "$work/cut.log"
+else
+    status=$?
+    sed 's/^/  /' "$work/cut.log"
+    die "the cut exited $status after making the commit and the tag"
+fi
+ok 'the cut exited 0'
+
+# The closing block is the only part of a cut that runs after the commit and
+# the tag, so a fault there is the most expensive one: the release exists and
+# the command still reports failure. It is also a heredoc, which means an
+# unset or misspelled variable in it is invisible until it runs. Assert it
+# renders, in full, with the exact commands an operator is about to paste.
+push_line="  git push origin main tag v$new"
+grep -qxF "$push_line" "$work/cut.log" ||
+    die "the cut never printed '$push_line'"
+ok "it printed the push:$push_line"
+
+# A first or forward cut made the commit, so undoing it removes the tag and the
+# commit. A resume made only the tag. Printing the wrong one of these two is a
+# data-loss instruction, not a typo.
+expected_undo="  git tag -d v$new && git reset --hard HEAD~1"
+last=$(sed -e '/./!d' -e '$!d' "$work/cut.log")
+[ "$last" = "$expected_undo" ] ||
+    die "the cut's last line is [$last], expected [$expected_undo]"
+ok "it printed the undo:$last"
+
+# An unexpanded '$' in that output is a variable that did not resolve. Under
+# `set -u` an unset one aborts the cut outright; this catches the rest.
+if grep -n '\$' "$work/cut.log"; then
+    die 'the cut printed an unexpanded variable'
+fi
+ok 'no unexpanded variables in the cut output'
 
 step "artifacts"
 subject=$(git -C "$repo" log -1 --format=%s)
@@ -287,6 +323,63 @@ notes_via_workflow=$(awk -v v="## v$new" '
 ' "$repo/CHANGELOG.md" | sed -e '/./,$!d')
 [ -n "$notes_via_workflow" ] || die 'the workflow matcher finds no notes for this tag'
 ok 'the workflow release-notes matcher finds the section'
+
+step "resume an interrupted cut"
+# A cut writes the commit and then the tag. Killed between the two it leaves a
+# clean tree, a bumped workspace, a rolled changelog and no tag — and an empty
+# Unreleased section, which is why re-running it must not demand one. This
+# rehearses that window by removing the tag from the finished cut above, which
+# reproduces the state exactly.
+head_before=$(git -C "$repo" rev-parse HEAD)
+log_before=$(git -C "$repo" rev-list --count HEAD)
+changelog_before=$(sha256sum < "$repo/CHANGELOG.md" | cut -d' ' -f1)
+git -C "$repo" tag -d "v$new" >/dev/null
+
+( cd "$repo" && tools/release/cut.sh "$new" ) > "$work/resume.log" 2>&1 ||
+    { sed 's/^/  /' "$work/resume.log"; die 'the resume was refused'; }
+sed 's/^/  /' "$work/resume.log"
+
+grep -q 'resuming: the tag is all that is left to make' "$work/resume.log" ||
+    die 'the cut did not recognise the interrupted state'
+ok 'recognised the release commit and resumed'
+
+# The three assertions that separate a resume from a second cut: no new commit,
+# no second changelog section, and the tag back on the commit that was already
+# there. A resume that quietly re-ran the bump would still end with a tag.
+[ "$(git -C "$repo" rev-list --count HEAD)" = "$log_before" ] ||
+    die 'the resume added a commit'
+[ "$(git -C "$repo" rev-parse HEAD)" = "$head_before" ] ||
+    die 'the resume moved HEAD'
+ok 'no new commit, HEAD unmoved'
+
+[ "$(sha256sum < "$repo/CHANGELOG.md" | cut -d' ' -f1)" = "$changelog_before" ] ||
+    die 'the resume rewrote CHANGELOG.md'
+[ "$(grep -c "^## v$new " "$repo/CHANGELOG.md")" = 1 ] ||
+    die 'the resume opened a second section'
+ok 'CHANGELOG.md byte-identical, still one section'
+
+[ -z "$(git -C "$repo" status --porcelain)" ] || die 'the resume left the clone dirty'
+[ "$(git -C "$repo" cat-file -t "v$new")" = tag ] ||
+    die 'the resume did not make an annotated tag'
+[ "$(git -C "$repo" rev-parse "v$new^{commit}")" = "$head_before" ] ||
+    die 'the resumed tag is not on the release commit'
+resumed_notes=$(git -C "$repo" tag -l "v$new" --format='%(contents:body)')
+[ -n "$resumed_notes" ] || die 'the resumed tag carries no notes'
+ok 'annotated tag rebuilt on the same commit, notes intact, tree clean'
+
+# Undoing a resume must not offer to throw away a commit the resume did not
+# make. That instruction, followed, would delete the release. Assert the whole
+# line rather than the absence of `reset --hard`, so the tail is proven to
+# render on this path too and not merely to omit one phrase.
+resume_last=$(sed -e '/./!d' -e '$!d' "$work/resume.log")
+[ "$resume_last" = "  git tag -d v$new" ] ||
+    die "the resume's last line is [$resume_last], expected [  git tag -d v$new]"
+ok "the undo it prints deletes the tag only:$resume_last"
+
+if grep -n '\$' "$work/resume.log"; then
+    die 'the resume printed an unexpanded variable'
+fi
+ok 'no unexpanded variables in the resume output'
 
 step "unwind"
 rm -rf "$work"

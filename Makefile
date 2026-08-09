@@ -15,7 +15,8 @@ MEMORY_RUNS ?= harness/out/memory-20260806T192242Z harness/out/memory-20260806T1
 IDLE_RUN ?= harness/out/idle-cpu-20260806T192751Z
 
 .PHONY: help build test clippy gate lanes plan perf-tables perf-tables-check \
-	measure package release release-dry-run release-check verify-artifacts clean
+	measure package release release-dry-run release-check verify-artifacts \
+	check-isa clean
 
 help:
 	@echo 'build              release build of every crate, warnings fatal'
@@ -27,6 +28,7 @@ help:
 	@echo 'perf-tables-check  fail if those tables are stale (CI runs this)'
 	@echo 'package            build the release archive and verify its checksum'
 	@echo 'verify-artifacts   build the archive and install it through install.sh'
+	@echo 'check-isa          disassemble built binaries; fail above the CPU floor'
 	@echo 'release-check      every version literal and target triple agrees'
 	@echo 'release-dry-run    rehearse a cut in a scratch clone; VERSION=x.y.z'
 	@echo 'release            cut it here: bump, changelog, commit, tag; VERSION=x.y.z'
@@ -101,6 +103,11 @@ release-dry-run:
 release-check:
 	tools/release/versions.sh check
 	tools/release/targets.sh check
+
+# Takes the archive that `package` built. Given no argument it checks `dist`,
+# which is where that archive lands.
+check-isa:
+	./tools/release/check-isa.sh $(if $(DIR),$(DIR),dist)
 
 verify-artifacts:
 	./tools/release/verify-artifacts.sh

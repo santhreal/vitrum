@@ -171,6 +171,20 @@ jobs:
       - name: a release cut rehearses cleanly
         run: make release-dry-run VERSION="$(tools/release/versions.sh current)"
 
+      # Each vendored fork is only as honest as its UPSTREAM.toml. This fails
+      # on a change made to a fork without recording it, on a recorded
+      # divergence that has become dead, and when upstream publishes a version
+      # newer than the one a fork tracks.
+      #
+      # `vendor-ghostty-vt-sys` exists to keep a compiler from reading the
+      # builder's CPU. An unrecorded edit there is how that pin gets lost, and
+      # losing it ships a binary that dies with SIGILL on a class of machine
+      # nobody here owns.
+      - name: the vendored forks are exactly what they declare
+        run: |
+          sh tools/upstream/check.sh
+          sh tools/upstream/check.sh --fork vendor-ghostty-vt-sys
+
   # What a mac would tell us about a compile error, without a mac.
   #
   # Nearly every way this workspace breaks on macOS is a compile error in

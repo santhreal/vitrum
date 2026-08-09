@@ -145,7 +145,7 @@ below are stated rather than discovered.
   opens Appearance composites nothing. The seven named terminal palettes were
   already there; this is the surface behind them.
 
-### Known gaps
+### Not in this release
 
 - **Collision detection is Linux only.** On macOS and Windows it reports that
   this build has no watcher for the platform rather than reporting that nothing

@@ -300,8 +300,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: the README tables match their snapshot
-        run: make readme-perf-check
+      - name: the performance tables match their snapshot
+        run: make perf-tables-check
 
   # Licenses and advisories. vitrum is dual licensed MIT OR Apache-2.0, and a
   # dependency that is neither is a licensing problem for everyone downstream,

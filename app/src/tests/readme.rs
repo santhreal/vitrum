@@ -161,12 +161,12 @@ fn every_advertised_shortcut_exists() {
     }
 }
 
-/// The README's platform gaps match what the code actually does.
+/// The stated platform gap matches what the code does.
 ///
-/// Collision detection has a real watcher on Linux and an honest refusal
-/// everywhere else. If a watcher lands for another platform and the README
-/// still calls it Linux-only, the most useful thing in the product stays
-/// hidden behind a sentence saying it does not work.
+/// Collision detection has a real watcher on Linux and a refusal everywhere
+/// else. If a watcher lands for another platform and the page still calls it
+/// Linux-only, the most useful thing in the product stays hidden behind a
+/// sentence saying it does not work.
 #[test]
 fn the_stated_platform_gap_is_the_real_one() {
     let readme = include_str!("../../../README.md");
@@ -176,23 +176,26 @@ fn the_stated_platform_gap_is_the_real_one() {
     );
 }
 
-/// The remote instructions name the thing that actually keeps agents alive.
+/// The remote instructions name the thing that keeps agents alive.
 ///
-/// A daemon started as a child of an SSH session dies with the session, and
-/// takes every PTY with it. `enable-linger` is what stops that, and it is
-/// the single line between "your agents survive a disconnect" and "your
-/// agents die when you close the laptop". A README that documents the
-/// tunnel and omits it is worse than one that documents neither.
+/// A daemon started as a child of an SSH session dies with the session and
+/// takes every PTY with it. `loginctl enable-linger` is the one line between
+/// sessions surviving a disconnect and sessions dying when the laptop closes.
+///
+/// Pinned to `docs/remote.md`, which owns the instructions. It used to be
+/// pinned to the README, which is how a systemd unit, an SSH tunnel and a
+/// survival table ended up on the front page: the README was the only file
+/// any test looked at, so every checkable claim was written there.
 #[test]
 fn the_remote_instructions_keep_the_daemon_alive() {
-    let readme = include_str!("../../../README.md");
+    let remote = include_str!("../../../docs/remote.md");
     assert!(
-        readme.contains("loginctl enable-linger"),
+        remote.contains("loginctl enable-linger"),
         "the remote setup does not enable lingering, so logging out kills \
          every agent"
     );
     assert!(
-        readme.contains("packaging/vitrum-server.service"),
+        remote.contains("packaging/vitrum-server.service"),
         "the remote setup does not install the unit it ships"
     );
     // The unit exists and starts the daemon by the name we install.
@@ -204,19 +207,23 @@ fn the_remote_instructions_keep_the_daemon_alive() {
     );
 }
 
-/// The README states the limit it cannot engineer around.
+/// Both pages state the limit that cannot be engineered around.
 ///
 /// Sessions do not survive the daemon, because the PTYs are its children.
-/// Every other row of the survival table is a promise this build keeps; if
-/// that one is ever dropped from the docs while it is still true, the
-/// product is claiming durability it does not have.
+/// The README claims the durability, so the README carries the exception;
+/// `docs/remote.md` carries the survival table it is a row of. A rewrite that
+/// drops either one leaves the product claiming durability it does not have.
 #[test]
-fn the_readme_admits_that_losing_the_daemon_loses_the_sessions() {
-    let readme = include_str!("../../../README.md");
-    assert!(
-        readme.contains("every session dies") || readme.contains("do not survive"),
-        "the README no longer states that sessions die with the daemon"
-    );
+fn losing_the_daemon_loses_the_sessions_on_every_page_that_promises_otherwise() {
+    for (name, text) in [
+        ("README.md", include_str!("../../../README.md")),
+        ("docs/remote.md", include_str!("../../../docs/remote.md")),
+    ] {
+        assert!(
+            text.contains("every session dies") || text.contains("do not survive"),
+            "{name} no longer states that sessions die with the daemon"
+        );
+    }
 }
 
 /// The README promises no package that does not exist, and no install that
@@ -293,6 +300,72 @@ fn the_documented_install_verifies_what_it_downloads() {
     );
 }
 
+/// Installing is one command, and the installer does the whole job.
+///
+/// The README used to promise a one-command install and then carry three
+/// platform blocks that wrote a desktop entry, edited `PATH` and defined an
+/// alias by hand. Anything an operator has to paste after the install command
+/// is work the installer refused to do, and it lands on the front page because
+/// there is nowhere else for it to go.
+///
+/// So the capability is asserted in the scripts, and its absence is asserted
+/// in the README. Moving a launcher entry back into prose fails here.
+#[test]
+fn the_installer_finishes_the_install() {
+    let sh = include_str!("../../../install.sh");
+    let ps1 = include_str!("../../../install.ps1");
+
+    for (script, text, needles) in [
+        (
+            "install.sh",
+            sh,
+            [
+                "vitrum.desktop",           // Linux launcher entry
+                "vitrum.app",               // macOS bundle
+                "alias vu=",                // the update shortcut
+                "export PATH=",             // PATH, persisted
+                "--no-integrate",           // and an opt out for images
+            ],
+        ),
+        (
+            "install.ps1",
+            ps1,
+            [
+                "vitrum.lnk",
+                "CreateShortcut",
+                "function vu",
+                "SetEnvironmentVariable('Path'",
+                "NoIntegrate",
+            ],
+        ),
+    ] {
+        for needle in needles {
+            assert!(
+                text.contains(needle),
+                "{script} never writes `{needle}`, so installing leaves that \
+                 step for the operator to paste"
+            );
+        }
+    }
+
+    let readme = include_str!("../../../README.md");
+    for pasted in [
+        "[Desktop Entry]",
+        "update-desktop-database",
+        "CFBundleIdentifier",
+        "CreateShortcut",
+        "alias vu=",
+        "function vu",
+        "export PATH=",
+    ] {
+        assert!(
+            !readme.contains(pasted),
+            "the README asks the operator to paste `{pasted}`, which the \
+             installer already does"
+        );
+    }
+}
+
 /// Every image the README shows is in the repository, and none is a picture
 /// of a shell.
 ///
@@ -349,15 +422,15 @@ fn every_image_the_readme_shows_exists_and_is_not_a_shell() {
 
 /// The generated performance regions are present, closed, and filled.
 ///
-/// Every number under "What it costs to run" is written by
+/// Every number in `docs/performance.md` is written by
 /// `harness/readme_perf.py` from `harness/reports/readme-perf.json`, and CI
-/// re-renders them to catch a stale table. That check cannot fire if the markers
-/// themselves are gone: a rewrite that deletes a region, or closes it with the
-/// wrong name, leaves nothing to compare and passes. So the markers are asserted
-/// here, where an ordinary `cargo test` sees them.
+/// re-renders them to catch a stale table. That check cannot fire if the
+/// markers are gone: a rewrite that deletes a region, or closes it with the
+/// wrong name, leaves nothing to compare and passes. So the markers are
+/// asserted here, where an ordinary `cargo test` sees them.
 #[test]
 fn the_generated_performance_regions_are_intact() {
-    let readme = include_str!("../../../README.md");
+    let doc = include_str!("../../../docs/performance.md");
     let snapshot = include_str!("../../../harness/reports/readme-perf.json");
 
     assert!(
@@ -369,17 +442,55 @@ fn the_generated_performance_regions_are_intact() {
     for region in ["footprint", "idle"] {
         let open = format!("<!-- BENCH:{region}:start -->");
         let close = format!("<!-- BENCH:{region}:end -->");
-        let at = readme
+        let at = doc
             .find(&open)
-            .unwrap_or_else(|| panic!("the README has no {open}"));
-        let end = readme[at..]
-            .find(&close)
-            .unwrap_or_else(|| panic!("the README opens BENCH:{region} and never closes it"));
-        let body = &readme[at + open.len()..at + end];
+            .unwrap_or_else(|| panic!("docs/performance.md has no {open}"));
+        let end = doc.find(&close).unwrap_or_else(|| {
+            panic!("docs/performance.md opens BENCH:{region} and never closes it")
+        });
+        let body = &doc[at + open.len()..end];
         assert!(
             body.contains('|') && body.contains("Reproduce:"),
             "BENCH:{region} holds no table and no reproduction command; run \
-             `make readme-perf`"
+             `make perf-tables`"
         );
     }
+}
+
+/// Every local document the README links to exists.
+///
+/// The README is a landing page: what the product is, how to install it, and
+/// links to everything else. That shape only works while the links resolve,
+/// and a moved page is invisible to a compiler. Derived by scanning the link
+/// targets rather than from a list, so a page added to the table is checked
+/// without anyone remembering to check it.
+#[test]
+fn every_document_the_readme_links_to_exists() {
+    let readme = include_str!("../../../README.md");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the workspace root");
+
+    let mut checked = 0;
+    for target in readme
+        .split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+    {
+        // Anchors and URLs are somebody else's problem; local paths are ours.
+        if target.starts_with('#') || target.contains("://") {
+            continue;
+        }
+        let path = target.split('#').next().unwrap_or(target);
+        assert!(
+            root.join(path).exists(),
+            "the README links to {path}, which is not in the repository"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 8,
+        "only {checked} local links were found in the README; the page no \
+         longer links out to the documentation it moved its detail into"
+    );
 }

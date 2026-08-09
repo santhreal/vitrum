@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Turn measurement runs into the README's performance tables.
+"""Turn measurement runs into the performance tables in docs/performance.md.
 
-The numbers in a README rot silently. Nobody notices that a figure describes a
-build from three months ago, because prose carries no provenance and no way to
-check it. So the tables are not written by hand at all:
+Numbers in prose rot silently: a figure describes a build from three months ago
+and nothing says so. So the tables are not written by hand:
 
     harness/run.sh memory 1                     # measure, on a real host
     harness/run.sh memory 20
     harness/run.sh idle-cpu 60 20
-    make readme-perf                            # snapshot, then inject
-    make readme-perf-check                      # what CI runs
+    make perf-tables                            # snapshot, then inject
+    make perf-tables-check                      # what CI runs
 
 `snapshot` reads the free-form `report.txt` that each run leaves in
 `harness/out/<run>/` and writes one JSON file with the numbers and the host
 they came from. `render` turns that JSON into the regions marked
-`<!-- BENCH:<name>:start -->` in README.md, either writing them (`--inject`)
-or failing if they are stale (`--check`).
+`<!-- BENCH:<name>:start -->` in docs/performance.md, either writing them
+(`--inject`) or failing if they are stale (`--check`).
 
 The check mode is the point. A hand-edited table, a snapshot nobody
 regenerated, and a number invented in prose all fail the same way, in CI,
@@ -34,7 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT = ROOT / "harness" / "reports" / "readme-perf.json"
-README = ROOT / "README.md"
+DOC = ROOT / "docs" / "performance.md"
 SCHEMA = "vitrum-footprint-v1"
 
 
@@ -294,7 +293,7 @@ def render_footprint(snap: dict) -> str:
     lines += [
         "",
         "Reproduce: `harness/run.sh memory 1` and `harness/run.sh memory 20`, "
-        "then `make readme-perf`.",
+        "then `make perf-tables`.",
     ]
     return "\n".join(lines)
 
@@ -326,7 +325,7 @@ def render_idle(snap: dict) -> str:
         f"column.",
         "",
         f"Reproduce: `harness/run.sh idle-cpu {idle['seconds']} {idle['windows']}`, "
-        "then `make readme-perf`.",
+        "then `make perf-tables`.",
     ]
     return "\n".join(lines)
 
@@ -344,10 +343,10 @@ def region_bounds(text: str, name: str) -> tuple[int, int]:
     end = f"<!-- BENCH:{name}:end -->"
     at = text.find(start)
     if at < 0:
-        raise ReportError(f"README.md has no {start}")
+        raise ReportError(f"{DOC.name} has no {start}")
     close = text.find(end, at)
     if close < 0:
-        raise ReportError(f"README.md opens BENCH:{name} and never closes it")
+        raise ReportError(f"{DOC.name} opens BENCH:{name} and never closes it")
     return at + len(start), close
 
 
@@ -385,18 +384,18 @@ def cmd_render(args: argparse.Namespace) -> int:
     if snap.get("schema") != SCHEMA:
         print(
             f"{args.snapshot} is schema {snap.get('schema')!r}, this tool writes "
-            f"{SCHEMA!r}; regenerate it with `make readme-perf`",
+            f"{SCHEMA!r}; regenerate it with `make perf-tables`",
             file=sys.stderr,
         )
         return 1
 
-    readme = Path(args.readme)
-    before = readme.read_text()
+    doc = Path(args.doc)
+    before = doc.read_text()
     after = apply(before, rendered(snap))
 
     if args.check:
         if before == after:
-            print(f"{len(RENDERERS)} region(s) in {readme.name} match the snapshot")
+            print(f"{len(RENDERERS)} region(s) in {doc.name} match the snapshot")
             return 0
         stale = [
             name
@@ -404,18 +403,18 @@ def cmd_render(args: argparse.Namespace) -> int:
             if apply(before, {name: block}) != before
         ]
         print(
-            f"{readme.name} is out of date in: {', '.join(stale)}\n"
+            f"{doc.name} is out of date in: {', '.join(stale)}\n"
             f"The tables are generated from {Path(args.snapshot).name}. Run "
-            f"`make readme-perf` and commit the result; do not edit a BENCH "
+            f"`make perf-tables` and commit the result; do not edit a BENCH "
             f"region by hand.",
             file=sys.stderr,
         )
         return 1
 
-    readme.write_text(after)
+    doc.write_text(after)
     print(
         f"{'updated' if before != after else 'unchanged'}: "
-        f"{', '.join(sorted(RENDERERS))} in {readme.name}"
+        f"{', '.join(sorted(RENDERERS))} in {doc.name}"
     )
     return 0
 
@@ -433,11 +432,11 @@ def main(argv: list[str]) -> int:
     snap.add_argument("--out", default=str(SNAPSHOT))
     snap.set_defaults(func=cmd_snapshot)
 
-    render = sub.add_parser("render", help="inject or check the README regions")
+    render = sub.add_parser("render", help="inject or check the generated regions")
     render.add_argument("--snapshot", default=str(SNAPSHOT))
-    render.add_argument("--readme", default=str(README))
+    render.add_argument("--doc", default=str(DOC))
     render.add_argument(
-        "--check", action="store_true", help="fail if the README is stale"
+        "--check", action="store_true", help="fail if the tables are stale"
     )
     render.set_defaults(func=cmd_render)
 

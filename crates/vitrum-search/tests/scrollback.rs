@@ -7,6 +7,10 @@
 
 use vitrum_search::{ContextLine, Haystack, Pattern, Query, search};
 
+mod corpus;
+
+use corpus::mixed_scrollback;
+
 /// What a haystack's chunk list looks like: a slice of byte slices.
 ///
 /// Named because the bare type is unreadable inline and every multi-session
@@ -652,37 +656,6 @@ fn invalid_utf8_in_a_session_does_not_break_the_search() {
     // up to its newline, and nothing in it was dropped or transcoded.
     assert_eq!(hit.visible, &data[..data.len() - "\nnext\n".len()]);
     assert_eq!(hit.visible, hit.line);
-}
-
-/// Scrollback with the awkward shapes mixed in, deterministic for a line count.
-///
-/// Colour on one line in three, an OSC title, a blank line, a very long line.
-/// A corpus of plain ASCII would exercise neither the stripping path nor the
-/// straddle path and would prove nothing about either.
-fn mixed_scrollback(lines: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(lines * 72);
-    for index in 0..lines {
-        match index % 8 {
-            0 => {
-                out.extend_from_slice(b"   Compiling vitrum-search v0.1.0 (crates/vitrum-search)\n")
-            }
-            1 => out.extend_from_slice(
-                b"\x1b[1;32m    Finished\x1b[0m dev profile in 1.79s, no diagnostics\n",
-            ),
-            2 => {
-                out.extend_from_slice(b"\x1b[2mdebug\x1b[0m ring wrote 4096 bytes at seq 918273\n")
-            }
-            3 => out.extend_from_slice(b"\n"),
-            4 => out.extend_from_slice(b"\x1b]0;vitrum - session 7\x07plain line after a title\n"),
-            5 => out.extend_from_slice(
-                b"a much longer line than the others, carrying a stack frame: \
-                  at core::iter::adapters::map::Map<I,F> as core::iter::traits\n",
-            ),
-            6 => out.extend_from_slice(b"warning: unused variable `index`\n"),
-            _ => out.extend_from_slice(b"test chunks::tests::empty_chunks_are_skipped ... ok\n"),
-        }
-    }
-    out
 }
 
 /// Locks out chunking changing a single reported offset. Where the ring seam

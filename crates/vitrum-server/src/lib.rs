@@ -44,6 +44,19 @@ pub const DEFAULT_PORT: u16 = 7737;
 /// actually scrolls back through. tmux costs about 23 MB for the same.
 pub const DEFAULT_SCROLLBACK_BYTES: usize = 10 * 1024 * 1024;
 
+/// Unix milliseconds, the clock every timestamp the daemon stamps is read from.
+///
+/// One reading site for the crate. The overlap watcher ages its pending opens
+/// against the same epoch a collision report is stamped with, so the two have
+/// to agree on what a clock that reads before the epoch means; they did so by
+/// coincidence, as two identical private copies, until this became the one.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Accept clients until the listener fails.
 ///
 /// Connections share the hub and nothing else: dropping one never disturbs a

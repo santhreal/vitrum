@@ -21,6 +21,7 @@ use vitrum_proto::{ClientMsg, ServerMsg, SessionId};
 
 use crate::client::Client;
 use crate::report::Report;
+use crate::rng::Rng;
 use crate::stats::Latencies;
 
 #[derive(Debug, Clone)]
@@ -31,35 +32,6 @@ pub struct FuzzSpec {
     /// How long the oracle connection may take to answer before the daemon is
     /// called wedged.
     pub oracle_timeout: Duration,
-}
-
-/// Deterministic generator. Xorshift64*, which is enough for choosing shapes and
-/// bytes and is reproducible from the seed printed in every report.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        // A zero state is a fixed point for xorshift, so it would emit zero
-        // forever and every case would be identical.
-        Self(if seed == 0 { 0x9E3779B97F4A7C15 } else { seed })
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n.max(1) as u64) as usize
-    }
-
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
-    }
 }
 
 /// Values that have historically broken JSON handlers and terminal servers.

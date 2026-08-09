@@ -31,9 +31,11 @@
 //!   a shared buffer, a lazily-initialized table, a thread-unsafe cache — is
 //!   a defect this catches that no single-threaded fuzzer can.
 //!
-//! The generator follows the same philosophy as the wire [`fuzz`](crate::fuzz)
-//! workload: a small xorshift64* rather than a crate, because a fuzz run that
-//! cannot be replayed is an anecdote. The seed is in the report.
+//! The generator is [`crate::rng::Rng`], shared with the wire
+//! [`fuzz`](crate::fuzz) workload: a small xorshift64* rather than a crate,
+//! because a fuzz run that cannot be replayed is an anecdote, and one
+//! recurrence for both workloads is what makes a seed mean the same thing in
+//! either report. The seed is in the report.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
@@ -50,6 +52,7 @@ use vitrum_search::query::Query;
 use vitrum_model::hint::{HintParser, parse_payload};
 
 use crate::report::Report;
+use crate::rng::Rng;
 
 /// How many bytes a hostile input may claim before the probe calls it a
 /// memory-exhaustion attempt. Every target's output must stay under
@@ -75,36 +78,6 @@ impl Default for ProbeSpec {
             cases: 200_000,
             seed: 1,
             threads: 4,
-        }
-    }
-}
-
-/// Deterministic generator. Xorshift64*, identical in spirit to the wire
-/// fuzz workload's Rng so a seed means the same thing everywhere.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(if seed == 0 { 0x9E3779B97F4A7C15 } else { seed })
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n.max(1) as u64) as usize
-    }
-
-    fn bytes(&mut self, out: &mut [u8]) {
-        for chunk in out.chunks_mut(8) {
-            let word = self.next().to_le_bytes();
-            chunk.copy_from_slice(&word[..chunk.len()]);
         }
     }
 }

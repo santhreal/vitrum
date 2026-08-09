@@ -27,6 +27,7 @@ pub mod profile;
 pub mod pipeline;
 pub mod probe;
 pub mod race;
+mod rng;
 pub mod report;
 pub mod world;
 pub mod stats;

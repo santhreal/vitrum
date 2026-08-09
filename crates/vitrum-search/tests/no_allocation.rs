@@ -33,6 +33,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use vitrum_search::matcher::Matcher;
 use vitrum_search::{Haystack, Query, Sweep, search_with};
 
+mod corpus;
+
+use corpus::mixed_scrollback;
+
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 static COUNTING: AtomicBool = AtomicBool::new(false);
@@ -94,38 +98,6 @@ fn measure(body: impl FnOnce()) -> Cost {
     }
 }
 
-/// Scrollback with the awkward shapes mixed in: plain lines, SGR-coloured
-/// lines, an OSC title, a long line and an empty one.
-///
-/// Colour matters here — a coloured line takes the stripping path, which has
-/// its own scratch buffers, and those are exactly what a naive implementation
-/// would reallocate every line.
-fn scrollback(lines: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(lines * 72);
-    for index in 0..lines {
-        match index % 8 {
-            0 => {
-                out.extend_from_slice(b"   Compiling vitrum-search v0.1.0 (crates/vitrum-search)\n")
-            }
-            1 => out.extend_from_slice(
-                b"\x1b[1;32m    Finished\x1b[0m dev profile in 1.79s, no diagnostics\n",
-            ),
-            2 => {
-                out.extend_from_slice(b"\x1b[2mdebug\x1b[0m ring wrote 4096 bytes at seq 918273\n")
-            }
-            3 => out.extend_from_slice(b"\n"),
-            4 => out.extend_from_slice(b"\x1b]0;vitrum - session 7\x07plain line after a title\n"),
-            5 => out.extend_from_slice(
-                b"a much longer line than the others, carrying a stack frame: \
-                  at core::iter::adapters::map::Map<I,F> as core::iter::traits\n",
-            ),
-            6 => out.extend_from_slice(b"warning: unused variable `index`\n"),
-            _ => out.extend_from_slice(b"test chunks::tests::empty_chunks_are_skipped ... ok\n"),
-        }
-    }
-    out
-}
-
 /// Locks out any per-line allocation in the scan. A regression here is
 /// invisible in a unit test and fatal in a live search box: 52 million
 /// allocations per keystroke across twenty sessions.
@@ -134,8 +106,8 @@ fn scanning_does_not_allocate_per_line() {
     const SMALL: usize = 100_000;
     const LARGE: usize = 200_000;
 
-    let small = scrollback(SMALL);
-    let large = scrollback(LARGE);
+    let small = mixed_scrollback(SMALL);
+    let large = mixed_scrollback(LARGE);
     let small_slice: &[u8] = &small;
     let large_slice: &[u8] = &large;
 

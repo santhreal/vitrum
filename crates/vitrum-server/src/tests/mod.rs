@@ -17,5 +17,11 @@ mod observation;
 mod project_registry;
 mod rename;
 mod scrollback_rpc;
+#[cfg(not(windows))]
+mod seam_status;
+#[cfg(not(windows))]
+mod seam_stream;
+#[cfg(not(windows))]
+mod seam_title;
 mod search_rpc;
 mod wire;

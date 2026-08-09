@@ -31,3 +31,8 @@ rustix = { version = "1", default-features = false, features = ["std", "fs"] }
 # on an answer the probe can only give where the kernel permits it, and that
 # question has one definition, in the crate that owns the probe.
 vitrum-core = { workspace = true, features = ["test-support"] }
+# The client's own state machine. The integration suites in `src/tests/seam_*`
+# assert what a CLIENT resolves from a projection that came off the socket, and
+# resolving it any other way here would be a second, divergent copy of the rule
+# the app actually ships.
+vitrum-model = { workspace = true }

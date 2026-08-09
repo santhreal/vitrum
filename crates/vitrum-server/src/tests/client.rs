@@ -354,6 +354,98 @@ impl Client {
         }
         self.closed = true;
     }
+
+    /// Round-trip a `List` so everything sent before it has been processed.
+    ///
+    /// The daemon handles one connection's messages in order, so a reply to a
+    /// later message proves an earlier one has already been applied. That is
+    /// what makes `Detach` — which acknowledges nothing — observable without a
+    /// sleep: detach, barrier, and from then on any frame that arrives is a
+    /// frame the detach failed to stop.
+    pub(crate) async fn barrier(&mut self) {
+        let before = self.seen.ctl.len();
+        self.send(ClientMsg::List).await;
+        self.until("the list that closes this barrier", |s| {
+            s.ctl[before..]
+                .iter()
+                .any(|m| matches!(m, ServerMsg::Sessions { .. }))
+        })
+        .await;
+    }
+
+    /// Detach, and return only once the daemon has acted on it.
+    pub(crate) async fn detach(&mut self, session: SessionId) {
+        self.send(ClientMsg::Detach { session }).await;
+        self.barrier().await;
+    }
+
+    /// Rename, and return once the projection carrying the new name arrives.
+    pub(crate) async fn rename(&mut self, session: SessionId, title: &str) {
+        let want = title.to_string();
+        self.send(ClientMsg::Rename {
+            session,
+            title: want.clone(),
+        })
+        .await;
+        self.until("the renamed projection", move |s| {
+            s.updates()
+                .iter()
+                .any(|i| i.id == session && i.title == want)
+        })
+        .await;
+    }
+
+    /// Send `data` to the child's PTY.
+    pub(crate) async fn input(&mut self, session: SessionId, data: &[u8]) {
+        self.send(ClientMsg::Input {
+            session,
+            data: data.to_vec(),
+        })
+        .await;
+    }
+
+    /// The newest projection this client has for `session`, if any arrived.
+    pub(crate) fn projection(&self, session: SessionId) -> Option<&vitrum_proto::SessionInfo> {
+        self.seen
+            .ctl
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                ServerMsg::SessionCreated(info) | ServerMsg::SessionUpdated(info)
+                    if info.id == session =>
+                {
+                    Some(info)
+                }
+                _ => None,
+            })
+    }
+
+    /// Wait until `session`'s newest projection satisfies `f`.
+    pub(crate) async fn until_projection(
+        &mut self,
+        what: &str,
+        session: SessionId,
+        f: impl Fn(&vitrum_proto::SessionInfo) -> bool,
+    ) -> vitrum_proto::SessionInfo {
+        self.until(what, |s| {
+            s.ctl
+                .iter()
+                .rev()
+                .find_map(|m| match m {
+                    ServerMsg::SessionCreated(info) | ServerMsg::SessionUpdated(info)
+                        if info.id == session =>
+                    {
+                        Some(info)
+                    }
+                    _ => None,
+                })
+                .is_some_and(&f)
+        })
+        .await;
+        self.projection(session)
+            .expect("the loop above only exits once a projection matched")
+            .clone()
+    }
 }
 
 /// A create request running `script` in the platform shell from a real directory.
@@ -390,5 +482,76 @@ pub(crate) fn shell(script: &str) -> (String, Vec<String>) {
             "sh".to_string(),
             vec!["-c".to_string(), script.to_string()],
         )
+    }
+}
+
+/// A create request running `command` with `args` verbatim, no shell in front.
+///
+/// The agent rules key on the command's BASENAME, so a test about them has to
+/// choose the program's name rather than inherit `sh`.
+pub(crate) fn create_command(project: u64, command: &str, args: &[&str]) -> ClientMsg {
+    ClientMsg::CreateSession {
+        project_id: ProjectId(project),
+        cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+        command: command.to_string(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        cols: 80,
+        rows: 24,
+        title: None,
+    }
+}
+
+/// A directory holding a shell under some other program's name.
+///
+/// `AgentKind::of` keys on the command's basename and the daemon really
+/// executes that command, so proving an agent rule across the wire needs a real
+/// executable that really is called `codex`. A symlink to `/bin/sh` is one: the
+/// rule sees `codex`, and the child is a shell that can emit the escape the
+/// test is about. The technique is `vitrum-core`'s `agent_title.rs`; it is
+/// repeated here rather than shared because that module is `#[cfg(test)]` in
+/// another crate and has no exported form.
+///
+/// Unix only: there is no symlink-to-`cmd.exe` equivalent that keeps a usable
+/// `-c` interface, and every escape-driven test in this suite is Unix only for
+/// the reason `naming.rs` gives.
+#[cfg(not(windows))]
+pub(crate) struct FakeAgent {
+    dir: PathBuf,
+    command: String,
+}
+
+#[cfg(not(windows))]
+impl FakeAgent {
+    /// A shell installed under `name`, in a directory unique to this instance.
+    ///
+    /// Unique per instance rather than per name: several cases here run the
+    /// same agent name at the same time under one test binary, and a shared
+    /// directory makes them race for the same symlink.
+    pub(crate) fn named(name: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "vitrum-seam-agent-{}-{seq}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let command = dir.join(name);
+        std::os::unix::fs::symlink("/bin/sh", &command).expect("symlink a shell under the name");
+        FakeAgent {
+            dir,
+            command: command.to_string_lossy().into_owned(),
+        }
+    }
+
+    /// A create request running `script` through this fake agent.
+    pub(crate) fn create(&self, project: u64, script: &str) -> ClientMsg {
+        create_command(project, &self.command, &["-c", script])
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for FakeAgent {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

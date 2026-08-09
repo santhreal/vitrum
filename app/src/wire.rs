@@ -1,19 +1,72 @@
 //! Control-plane encoding and the Rust <-> JavaScript bridge vocabulary.
 //!
-//! Two transports, deliberately split, matching `vitrum-proto`:
+//! Two transports, deliberately split, matching `vitrum-proto`, and both of
+//! them now terminate in Rust:
 //!
-//! - Control plane: JSON text frames. Encoded here, in Rust, so there is one
-//!   tested definition of every message the client sends.
-//! - Data plane: binary frames of raw PTY bytes. Those never enter this
-//!   process's Rust half at all. The bridge strips the 17-byte header in
-//!   JavaScript and hands the payload straight to xterm.js, because routing a
-//!   firehose of arbitrary bytes through a JSON IPC channel would cost a
-//!   base64 pass, a parse, and a copy per chunk.
+//! - Control plane: JSON text frames. Encoded here so there is one tested
+//!   definition of every message the client sends, and put on the socket by
+//!   [`crate::socket`].
+//! - Data plane: binary frames of raw PTY bytes. Parsed in
+//!   [`crate::socket`], which strips the 17-byte header, checks the offset is
+//!   contiguous and hands the payload to the pane. It reaches the webview
+//!   over a binary route rather than this JSON channel, because JSON strings
+//!   must be valid UTF-8 and a firehose of arbitrary bytes could only cross
+//!   as base64.
 //!
-//! The two exceptions are keystrokes and resizes, which the bridge builds
-//! itself to keep them off the two-hop round trip through Rust. Their exact
-//! JSON shape is pinned by tests here so the JavaScript cannot drift from
-//! `vitrum-proto`.
+//! What is left in this file is the vocabulary of the eval channel, which now
+//! carries only what the DOM alone can do or alone can see: focus, the
+//! clipboard, the fit addon's geometry, a chord, and the keystrokes the
+//! terminal grid captures. [`BridgeEvent::Server`] and [`BridgeEvent::Conn`]
+//! are in the same enum without crossing that channel: they are built in
+//! `socket.rs` so one reducer handles everything that can move the client's
+//! state, whichever half of the process observed it.
+//!
+//! # The bill still owed before `app/src/vendor/xterm.js` can be deleted
+//!
+//! The socket is gone from JavaScript; the terminal is not. Every item below
+//! is a capability the vendored bundle still provides and nothing in this
+//! repository yet replaces, so deleting the file today leaves a blank pane.
+//! It is written here rather than in a tracker because this module is the
+//! ledger of what still crosses the boundary, and the list shrinks as
+//! [`BridgeCmd`] and [`BridgeEvent`] shrink.
+//!
+//! 1. **VT parsing of the painted stream.** `PaneOp::Write` hands the pane raw
+//!    PTY bytes and xterm's parser is what turns them into cells: SGR, cursor
+//!    motion, erase, scroll regions, alternate screen, OSC, DECSET. `vitrum-vt`
+//!    already parses this exact grammar for the daemon's own screen model, so
+//!    the work is not writing a parser but pointing the client at that one.
+//! 2. **The grid and its scrollback.** Wrapping, reflow on resize, trimming
+//!    from the top at the buffer limit, and the wrapped-vs-logical line
+//!    distinction that `PaneOp::ScrollFromEnd` and `PaneOp::ScrollKeep` both
+//!    depend on. `vitrum-grid` is the crate that would own it.
+//! 3. **Rendering.** A DOM renderer and an optional WebGL one, plus the
+//!    twenty-slot ANSI palette, font family and size, line height, letter
+//!    spacing and transparency that `window.__vitrum_applyTerm` pushes into
+//!    them. Nothing in this process draws a cell.
+//! 4. **Cell metrics and fit.** The addon measures a character box against the
+//!    element's content box to propose cols and rows, which is what
+//!    [`BridgeEvent::Resize`] reports and what sizes the PTY. A Rust renderer
+//!    would own the metric; until then the geometry is the DOM's.
+//! 5. **Keyboard, IME and paste capture.** xterm's hidden textarea is what
+//!    produces [`BridgeEvent::Input`], including dead keys, composition and
+//!    multi-kilobyte pastes. Replacing it means owning IME in a webview or
+//!    leaving the webview entirely.
+//! 6. **Application-mode replies.** `onBinary` carries mouse reports and DEC
+//!    responses as raw 8-bit sequences. They travel on the same
+//!    [`BridgeEvent::Input`] as a keystroke, but only because the emulator
+//!    generated them; nothing here knows the modes that make a child ask.
+//! 7. **Selection and copy.** Click-drag selection, word and line selection,
+//!    and the text extraction behind them are the bundle's. The clipboard WRITE
+//!    is already ours ([`BridgeCmd::Clipboard`]); what is selected is not.
+//! 8. **Viewport control.** `scrollToLine`, the viewport row, and the
+//!    `onScroll` notification that becomes [`BridgeEvent::PageBack`] when the
+//!    operator reaches the top. `PaneOp::ScrollFromEnd` deliberately ships a
+//!    LOGICAL line distance precisely because only the bundle can turn it into
+//!    a buffer row.
+//!
+//! Items 1, 2 and 8 are one piece of work and the crates for it exist. Items 3
+//! to 7 are a renderer and an input surface, which is the decision this
+//! repository has not made yet.
 
 use serde::{Deserialize, Serialize};
 use vitrum_proto::{ClientMsg, ServerMsg};
@@ -70,18 +123,19 @@ const _: () = assert!(
 
 /// Hard ceiling on one backfill, in bytes.
 ///
-/// This budget crosses the Rust -> JavaScript bridge as base64 inside a JSON
-/// string. It used to cross as a JSON array of integers, which measured 3.25
-/// bytes of JSON per payload byte and, worse, made `JSON.parse` build a
+/// This budget arrives base64 inside a `ScrollbackChunk`, is decoded once in
+/// this process, and reaches the webview as the raw bytes over the pane route
+/// in [`crate::socket`]. It used to cross the bridge a second time as base64
+/// inside a JSON string, and before that as a JSON array of integers, which
+/// measured 3.25 bytes of JSON per payload byte and made `JSON.parse` build a
 /// transient JavaScript array before anything could copy it into the grid:
 /// measured in JavaScriptCore at 46 MiB of resident memory for a 2 MiB
 /// backfill, because the engine boxes every element. Twenty windows share one
 /// `WebKitWebProcess`, so an attach may not spike that process without bound.
-/// Base64 is 1.33 bytes per payload byte, decodes 10x faster, and allocates
-/// nothing beyond the buffer the grid receives.
 ///
-/// The latency matters on its own too: live frames queue in `bootstrap.js`
-/// against a 1 MiB `PENDING_CAP` while the backfill is in flight, and a
+/// The latency matters on its own too: live frames queue in
+/// [`crate::socket::PaneStream`] against a 1 MiB
+/// [`crate::socket::PENDING_CAP`] while the backfill is in flight, and a
 /// backfill slow enough to overflow that queue is discarded outright, costing
 /// the operator all history rather than some.
 ///
@@ -176,7 +230,7 @@ pub fn encode(msg: &ClientMsg) -> String {
     serde_json::to_string(msg).expect("ClientMsg is always serializable")
 }
 
-/// Socket lifecycle as the bridge observes it.
+/// Socket lifecycle, as [`crate::socket`] observes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnEvent {
@@ -185,11 +239,16 @@ pub enum ConnEvent {
     Error,
 }
 
-/// Everything the bridge reports back to Rust.
+/// Everything that can move the client's state, from either half of the
+/// process.
+///
+/// [`Self::Server`] and [`Self::Conn`] are built in [`crate::socket`] and
+/// never cross the eval channel. The rest are the webview's, because each one
+/// reports something only the DOM can observe.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "ev", rename_all = "camelCase")]
 pub enum BridgeEvent {
-    /// A control-plane text frame, already parsed from JSON by the bridge.
+    /// A control-plane text frame, parsed off the session socket.
     Server { msg: ServerMsg },
     /// Socket opened, closed, or refused.
     Conn {
@@ -199,6 +258,19 @@ pub enum BridgeEvent {
     },
     /// Terminal geometry after the fit addon measured the container.
     Resize { cols: u16, rows: u16 },
+    /// Bytes the terminal grid captured: a keystroke, a paste, or a raw 8-bit
+    /// response such as a mouse report or a DEC reply.
+    ///
+    /// No session: the webview no longer knows which one is attached, and
+    /// Rust does. That is the point of the split — one owner for the
+    /// attachment means a keystroke cannot be addressed to a session the pane
+    /// stopped showing while the event was in flight.
+    ///
+    /// An array of integers rather than base64, because this is the small
+    /// direction: a keystroke is one to four bytes and the largest realistic
+    /// payload is a paste. The tax that made base64 worth it on output does
+    /// not exist here.
+    Input { data: Vec<u8> },
     /// A chord the shell handles. Raw string; validated by
     /// [`crate::keymap::KeyAction::parse`].
     Key { action: String },
@@ -208,73 +280,28 @@ pub enum BridgeEvent {
     /// and a "Copied" notice for a copy that did not happen is a lie the user
     /// only discovers when they paste.
     Copied { ok: bool, text: String },
-    /// The operator scrolled to the top of the painted history and there is
-    /// more behind it.
+    /// The operator scrolled to the top of the painted history.
     ///
-    /// Sent once per arrival at the top, not per wheel tick: paging is a
-    /// deliberate act and a repeat while a request is already in flight would
-    /// stack repaints. The bridge suppresses the repeat; Rust does not have to
-    /// debounce.
-    PageBack { session: u64 },
-    /// The bridge could not make sense of something: a malformed frame, a
-    /// missing library, a lost WebGL context. Surfaced, never swallowed.
+    /// Sent on every arrival at the top, and deliberately unguarded: whether
+    /// there is more history to ask for, and whether a request is already in
+    /// flight, are both Rust's to know now. The webview reports the gesture
+    /// and nothing else.
+    PageBack,
+    /// The webview could not make sense of something: a missing library, a
+    /// lost WebGL context, a pane route that stopped answering. Surfaced,
+    /// never swallowed.
     Bad { detail: String },
 }
 
-/// Everything Rust asks the bridge to do.
+/// Everything Rust asks the webview to do.
+///
+/// Short, and getting shorter. Nothing that touches the terminal grid is here
+/// any more: those travel as [`crate::socket::PaneOp`]s over the pane route,
+/// in one order, because two channels into one pane is two orderings and a
+/// reset that overtook its write would clear the repaint it was clearing for.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeCmd {
-    /// Open (or reopen) the WebSocket. Only ever sent on startup or on an
-    /// explicit user retry; there is no automatic reconnect loop.
-    Connect { url: String },
-    /// Send a pre-encoded control-plane text frame.
-    Send { text: String },
-    /// Point the single terminal at `session`, reset the grid, and start
-    /// buffering live frames until the backfill lands. `None` clears the pane.
-    Focus { session: Option<u64> },
-    /// Paint history, then flush buffered live frames from `resume_seq`.
-    ///
-    /// `resume_seq` and `from_seq` are decimal strings: a byte offset is a u64
-    /// and JSON numbers are f64, which silently rounds above 2^53.
-    ///
-    /// `from_seq` is the stream offset of the FIRST painted byte. The bridge
-    /// needs it to turn a search hit's absolute byte offset into a position
-    /// inside the buffer it just painted; without it a hit offset is a number
-    /// with no frame of reference.
-    ///
-    /// `jump_seq` asks the grid to scroll to that absolute offset once the
-    /// paint lands, which is what makes a search hit land on its line instead
-    /// of wherever the head-anchored history happened to stop.
-    ///
-    /// `keep_view` is set when this repaint is a page-back: the operator is
-    /// looking at a line and asked for more history above it, so the viewport
-    /// must stay on that line rather than snapping to the bottom.
-    ///
-    /// `more` is the daemon saying it still holds bytes older than `from_seq`.
-    /// The bridge needs it so reaching the top of the buffer only asks for
-    /// more when there IS more; without it every scroll to the top would ask,
-    /// and every ask that could not be answered would flash a notice.
-    Backfill {
-        session: u64,
-        from_seq: String,
-        resume_seq: String,
-        /// History as base64, decoded by `atob` in `bootstrap.js`.
-        ///
-        /// Serde's default for `Vec<u8>` is an array of decimal integers, which
-        /// measures 3.6 bytes of JSON per payload byte and makes `JSON.parse`
-        /// build one transient JavaScript number per history byte before
-        /// anything can copy it into the grid. Base64 is 4/3 and decodes
-        /// straight into a `Uint8Array`.
-        #[serde(with = "vitrum_proto::b64::bytes")]
-        bytes: Vec<u8>,
-        jump_seq: Option<String>,
-        keep_view: bool,
-        more: bool,
-    },
-    /// Write literal text into the terminal. Used only by fixture mode, which
-    /// has no server to produce bytes.
-    Banner { lines: Vec<String> },
     /// Move DOM focus to the first element matching `selector`. Focus is a DOM
     /// operation with no virtual-DOM equivalent, so it has to be asked for
     /// explicitly.
@@ -291,15 +318,15 @@ mod tests {
     use crate::ui::settings::SCROLLBACK_STEPS;
     use vitrum_proto::{PROTOCOL_VERSION, ProjectId, SessionId, SessionStatus};
 
-    /// Pins the exact JSON the bridge builds for a keystroke.
+    /// Pins the exact JSON the client sends for a keystroke.
     ///
-    /// Keystrokes are the one message JavaScript encodes itself, to keep typing
-    /// off a two-hop IPC round trip. That means `bootstrap.js` hardcodes this
-    /// shape. If serde's tagging, casing, or field order ever changes, this
-    /// test fails and the JavaScript must be updated in the same commit;
-    /// without it the client would type into a server that ignores it.
+    /// The webview no longer builds this. It reports the captured bytes as a
+    /// [`BridgeEvent::Input`] with no session on it, and `sync.rs` addresses
+    /// them to whatever the pane is actually attached to. What is pinned here
+    /// is the wire shape the daemon reads, which is the same claim it always
+    /// was: a casing slip means the client types into a server that ignores it.
     #[test]
-    fn input_frame_matches_the_shape_bootstrap_js_builds() {
+    fn input_frame_matches_the_shape_the_daemon_reads() {
         let got = encode(&ClientMsg::Input {
             session: SessionId(7),
             data: vec![104, 105],
@@ -307,10 +334,11 @@ mod tests {
         assert_eq!(got, r#"{"t":"input","session":7,"data":[104,105]}"#);
     }
 
-    /// Pins the resize shape for the same reason: the fit addon builds it in
-    /// JavaScript, so the Rust definition is the only place it is checked.
+    /// Pins the resize shape, for the same reason and by the same route: the
+    /// fit addon measures the box and reports cols and rows, and this side
+    /// decides which session they belong to.
     #[test]
-    fn resize_frame_matches_the_shape_bootstrap_js_builds() {
+    fn resize_frame_matches_the_shape_the_daemon_reads() {
         let got = encode(&ClientMsg::Resize {
             session: SessionId(7),
             cols: 120,
@@ -597,37 +625,15 @@ mod tests {
     /// Pins the command envelope the bridge switches on. A renamed field here
     /// makes the bridge silently ignore the command, which looks like a dead
     /// click rather than an error.
+    ///
+    /// The list is now two commands long, and that is the assertion with the
+    /// most in it. `connect`, `send`, `focus`, `backfill` and `banner` all used
+    /// to be here; every one of them is a byte offset, a socket or a grid, and
+    /// each is now owned by [`crate::socket`]. A variant reappearing on this
+    /// channel is a second owner for the pane, so the count is pinned as hard
+    /// as the shapes are.
     #[test]
     fn bridge_commands_serialize_to_the_shape_bootstrap_js_switches_on() {
-        assert_eq!(
-            serde_json::to_string(&BridgeCmd::Connect {
-                url: DEFAULT_WS_URL.into()
-            })
-            .unwrap(),
-            r#"{"cmd":"connect","url":"ws://127.0.0.1:7737"}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&BridgeCmd::Send {
-                text: r#"{"t":"list"}"#.into()
-            })
-            .unwrap(),
-            r#"{"cmd":"send","text":"{\"t\":\"list\"}"}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&BridgeCmd::Focus { session: Some(9) }).unwrap(),
-            r#"{"cmd":"focus","session":9}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&BridgeCmd::Focus { session: None }).unwrap(),
-            r#"{"cmd":"focus","session":null}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&BridgeCmd::Banner {
-                lines: vec!["hi".into()]
-            })
-            .unwrap(),
-            r#"{"cmd":"banner","lines":["hi"]}"#
-        );
         assert_eq!(
             serde_json::to_string(&BridgeCmd::FocusDom {
                 selector: "#rg-filter".into()
@@ -644,44 +650,41 @@ mod tests {
         );
     }
 
-    /// Every byte offset must cross the bridge as a string. As a JSON number a
-    /// byte offset past 2^53 rounds, and the splice that decides how many
-    /// leading bytes of a live frame to drop would then be wrong by up to a
-    /// kilobyte, corrupting the terminal mid-escape-sequence.
+    /// No byte offset, and no PTY payload, may cross the eval channel at all.
     ///
-    /// `from_seq` and `jump_seq` carry the same hazard for the same reason:
-    /// the bridge subtracts them to locate a search hit inside the bytes it
-    /// just painted, and a rounded subtrahend puts the operator on the wrong
-    /// line with no sign anything went wrong.
+    /// WHY: this replaces `backfill_offsets_cross_as_strings`, which pinned the
+    /// decimal-string encoding that kept a u64 offset from rounding through
+    /// JSON's f64. The hazard it guarded is now structurally absent — the
+    /// splice arithmetic happens in [`crate::socket::PaneStream`] on real
+    /// `u64`s — and the way it comes back is a variant being added here for
+    /// convenience. So the guard is the absence, derived from the shipped
+    /// source rather than from a list someone has to remember to update.
+    ///
+    /// What this does NOT catch: an offset smuggled inside `FocusDom`'s
+    /// selector or `Clipboard`'s text, which are operator-facing strings and
+    /// reach no arithmetic.
     #[test]
-    fn backfill_offsets_cross_as_strings() {
-        let cmd = BridgeCmd::Backfill {
-            session: 5,
-            from_seq: (u64::MAX - 4).to_string(),
-            resume_seq: (u64::MAX - 1).to_string(),
-            bytes: vec![1, 2, 255],
-            jump_seq: Some((u64::MAX - 3).to_string()),
-            keep_view: true,
-            more: true,
-        };
-        assert_eq!(
-            serde_json::to_string(&cmd).unwrap(),
-            r#"{"cmd":"backfill","session":5,"fromSeq":"18446744073709551611","resumeSeq":"18446744073709551614","bytes":"AQL/","jumpSeq":"18446744073709551612","keepView":true,"more":true}"#
-        );
-        // The common case: an attach, which asks for neither.
-        let plain = BridgeCmd::Backfill {
-            session: 5,
-            from_seq: "0".to_string(),
-            resume_seq: "3".to_string(),
-            bytes: vec![],
-            jump_seq: None,
-            keep_view: false,
-            more: false,
-        };
-        assert_eq!(
-            serde_json::to_string(&plain).unwrap(),
-            r#"{"cmd":"backfill","session":5,"fromSeq":"0","resumeSeq":"3","bytes":"","jumpSeq":null,"keepView":false,"more":false}"#
-        );
+    fn no_offset_or_payload_crosses_the_eval_channel() {
+        // This file, read at compile time. `include_str!` is textual, so a
+        // module reading its own source is one file read and no recursion.
+        let src: &str = include_str!("wire.rs");
+        let at = src
+            .find("pub enum BridgeCmd {")
+            .expect("BridgeCmd was renamed or moved out of wire.rs");
+        let body = &src[at..];
+        let end = body
+            .find("\n}\n")
+            .expect("BridgeCmd is no longer a brace-delimited enum");
+        let body = &body[..end];
+
+        for banned in ["seq", "bytes", "Vec<u8>", "session"] {
+            assert!(
+                !body.contains(banned),
+                "`{banned}` is back in BridgeCmd, so the pane has two owners \
+                 again and a u64 offset is crossing a channel that types it as \
+                 an f64"
+            );
+        }
     }
 
     /// Every scrollback step the settings sheet offers must ask the daemon for
@@ -872,12 +875,17 @@ mod tests {
     fn the_backfill_request_crosses_the_wire_as_max_bytes() {
         /// One screen of dense output, measured on the corpus.
         const DENSE_SCREEN: u64 = 20 * 1024;
-        /// Bytes of JSON per payload byte. `BridgeCmd::Backfill` carries the
-        /// history to JavaScript as an array of integers, measured at 3.6x on
-        /// a real coloured stream and rounded up.
-        const JSON_PER_BYTE: u64 = 4;
-        /// What one `JSON.parse` on a tab switch may cost the shared process.
-        const JSON_BUDGET: u64 = 8 * 1024 * 1024;
+        /// Bytes delivered to the web process per payload byte. One, now: the
+        /// backfill crosses as an `ArrayBuffer` over
+        /// [`crate::socket::PANE_ROUTE`]. It used to be a base64 string inside
+        /// a JSON command, and before that an array of integers at a measured
+        /// 3.6x, which is what the ceiling below was sized against. The
+        /// multiplier stays in the assertion rather than being deleted with the
+        /// encoding, because the ceiling has to remain affordable if anything
+        /// ever puts a text encoding back on this path.
+        const WEBVIEW_BYTES_PER_BYTE: u64 = 1;
+        /// What one tab switch may hand the process every window shares.
+        const WEBVIEW_BUDGET: u64 = 8 * 1024 * 1024;
 
         let text = encode(&ClientMsg::Scrollback {
             session: SessionId(5),
@@ -895,10 +903,10 @@ mod tests {
             "a backfill that cannot fill three screens leaves the pane looking truncated"
         );
         assert!(
-            u64::from(BACKFILL_CEILING_BYTES) * JSON_PER_BYTE <= JSON_BUDGET,
-            "the largest backfill ships {} MB of JSON into the one web process \
-             every window shares",
-            u64::from(BACKFILL_CEILING_BYTES) * JSON_PER_BYTE / (1024 * 1024)
+            u64::from(BACKFILL_CEILING_BYTES) * WEBVIEW_BYTES_PER_BYTE <= WEBVIEW_BUDGET,
+            "the largest backfill ships {} MB into the one web process every \
+             window shares",
+            u64::from(BACKFILL_CEILING_BYTES) * WEBVIEW_BYTES_PER_BYTE / (1024 * 1024)
         );
     }
 }

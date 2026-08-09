@@ -1638,38 +1638,64 @@ fn a_card_is_one_height_whatever_it_carries() {
     }
 }
 
-/// A fixed-basis flex column must also floor its `min-width`, or it is not
-/// fixed at all.
+/// A chord column must be bounded at BOTH ends, or one long chord takes the
+/// description column's space or its left edge.
 ///
-/// The shortcuts sheet lays each row out as `[chord][description]` with
-/// `.rg-keys__chord { flex: 0 0 11.5rem }`. That basis alone did NOT hold
-/// the column: a flex item defaults to `min-width: auto`, which floors it
-/// at its own min-content width, so the two widest chords in the sheet
-/// (`Ctrl+Shift+Tab / Ctrl+Shift+PageUp` and `Ctrl+K / Ctrl+Shift+F`)
-/// outgrew the basis and pushed their descriptions right. Measured on the
-/// running binary, the Tabs column had descriptions starting at x=588 for
-/// every row except one at x=638: a left-edge ladder in a design whose
-/// stated rule is one left edge per column.
+/// The rows that pair a chord with a description exist in two layouts and
+/// this asserts the bound in each, because the defect below has already been
+/// shipped once in the flex one.
 ///
-/// The bug is invisible until a chord grows, so a future chord rename can
-/// reintroduce it silently. This asserts the floor is declared.
+/// FLEX, in `ui/settings.rs`'s Advanced diagnostics table and
+/// `ui/keybinds.rs`: `.rg-keys__chord { flex: 0 0 11.5rem }`. That basis
+/// alone did NOT hold the column, because a flex item defaults to
+/// `min-width: auto`, which floors it at its own min-content width. The two
+/// widest chords in the shortcuts sheet (`Ctrl+Shift+Tab /
+/// Ctrl+Shift+PageUp` and `Ctrl+K / Ctrl+Shift+F`) outgrew the basis and
+/// pushed their descriptions right: measured on the running binary, one
+/// column had every description at x=588 and one at x=638, a left-edge
+/// ladder in a design whose stated rule is one left edge per column. The
+/// `min-width: 0` floor is the fix and it is invisible until a chord grows,
+/// so a future chord rename can reintroduce it silently.
+///
+/// GRID, in the shortcuts sheet: 18-dialog.css makes `.rg-keys__group` a
+/// two-column grid and dissolves the row into it. Here `minmax(0, 11.5rem)`
+/// carries both bounds in one track — the 0 is the same floor the flex
+/// layout spells `min-width`, and the 11.5rem is a CAP rather than a spend,
+/// so a group of short chords hands the slack to its descriptions instead of
+/// wrapping them four lines deep. The dissolve is asserted too: without
+/// `display: contents` on the row, each row is a single grid item and the
+/// template governs nothing.
 #[test]
-fn the_chord_column_cannot_push_the_description_column() {
+fn the_chord_column_cannot_push_or_starve_the_description_column() {
     let css = strip_css_comments(&all_css());
+    // Only where the selector BEGINS a rule. `.rg-keys__row {` is a
+    // substring of `.rg-keys__group .rg-keys__row {`, and the last assertion
+    // here is precisely that those two blocks say different things, so a
+    // plain substring search would compare the scoped rule against itself.
+    let block = |selector: &str| -> Vec<&str> {
+        css.match_indices(selector)
+            .filter(|(at, _)| {
+                css[..*at]
+                    .trim_end_matches([' ', '\t'])
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| c == '\n' || c == '}')
+            })
+            .map(|(at, _)| {
+                let rest = &css[at..];
+                &rest[..rest.find('}').expect("unterminated rule")]
+            })
+            .collect()
+    };
+
     // `.rg-keys__chord` is declared in more than one sheet (type sets its
-    // font, spacing sets its padding). The block under test is the one
-    // that establishes the column, so select by the basis it declares
-    // rather than by taking the first match.
-    let bodies: Vec<&str> = css
-        .match_indices(".rg-keys__chord {")
-        .map(|(at, _)| {
-            let rest = &css[at..];
-            &rest[..rest.find('}').expect("unterminated rule")]
-        })
-        .collect();
+    // font, spacing sets its padding). The block under test is the one that
+    // establishes the column, so select by the basis it declares rather than
+    // by taking the first match.
+    let bodies = block(".rg-keys__chord {");
     assert!(
         !bodies.is_empty(),
-        ".rg-keys__chord no longer exists; the shortcuts sheet was restructured"
+        ".rg-keys__chord no longer exists; the chord rows were restructured"
     );
     let column = bodies
         .iter()
@@ -1681,6 +1707,38 @@ fn the_chord_column_cannot_push_the_description_column() {
          chord wider than 11.5rem will shove its description off the column's \
          left edge again: {column}"
     );
+
+    let group = block(".rg-keys__group {")
+        .into_iter()
+        .find(|b| b.contains("grid-template-columns"))
+        .expect("no .rg-keys__group block declares a grid template");
+    assert!(
+        group.contains("grid-template-columns: minmax(0, 11.5rem) minmax(0, 1fr)"),
+        "the shortcuts sheet's chord track lost a bound. minmax(0, 11.5rem) \
+         floors it so a long chord wraps inside its own column, and caps it so \
+         a group of short chords does not reserve 184px it cannot use: {group}"
+    );
+
+    let row = block(".rg-keys__group .rg-keys__row {")
+        .into_iter()
+        .next()
+        .expect("the shortcuts row is not dissolved into its group's grid");
+    assert!(
+        row.contains("display: contents"),
+        "without display: contents a row is one grid item and the chord \
+         template governs nothing: {row}"
+    );
+
+    // The same class outside a group is still a flex line and must stay one:
+    // ui/settings.rs builds the Advanced diagnostics table from bare
+    // `.rg-keys__row` elements with no `.rg-keys__group` around them.
+    for body in block(".rg-keys__row {") {
+        assert!(
+            !body.contains("display: contents"),
+            "an unscoped .rg-keys__row dissolves the settings diagnostics \
+             table into the sheet around it: {body}"
+        );
+    }
 }
 
 /// The comment stripper itself must work, or the animation check below

@@ -483,10 +483,14 @@ pub fn Search(props: SearchProps) -> Element {
                 aria_label: "Search scrollback",
                 onclick: move |e| e.stop_propagation(),
 
-                div { class: "rg-search__head",
-                    span { class: "rg-search__title", "Search scrollback" }
+                div { class: "rg-sheet__head rg-search__head",
+                    span { class: "rg-sheet__title", "Search scrollback" }
+                    // The same control, in the same corner, as the one on
+                    // the shortcuts sheet. It was a private `.rg-search__close`
+                    // that rendered as bare text next to a bordered button two
+                    // sheets away; 21-search.css says what that cost.
                     button {
-                        class: "rg-search__close",
+                        class: "rg-btn-inline",
                         r#type: "button",
                         onclick: move |_| props.on_dismiss.call(()),
                         "Close"

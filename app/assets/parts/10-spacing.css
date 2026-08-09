@@ -430,9 +430,12 @@
   border-radius: var(--rg-radius-sm);
 }
 
-.rg-window-controls {
-  margin-left: var(--rg-space-2);
-}
+/* `.rg-window-controls` is not restated here. It carried `margin-left:
+ * var(--rg-space-2)`, which is the same 8 app.css already declares on the
+ * same selector, and 14-chrome.css zeroes it there for the reason argued in
+ * that file. Two copies of a value plus one reset is a rule whose resolved
+ * value cannot be read in any single place; there is now one declaration and
+ * one reset. */
 
 /* 48, was 46. Full band height and flush to the corner, so a fast diagonal
  * throw of the pointer cannot miss close. */

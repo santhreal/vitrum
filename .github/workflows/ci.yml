@@ -265,12 +265,19 @@ jobs:
       # The allowlist is the point rather than the labels in it: a new label
       # of any kind — a typo, a self-hosted name, a retired image, an image
       # that does not exist yet — is red until someone adds it deliberately.
-      # It cannot see through `vars.CI_RUNNER`, which is a repository setting
-      # and not a file; that label is the one thing here still taken on trust.
+      #
+      # `vars.CI_RUNNER` is a repository setting rather than a file, so the
+      # scan below cannot see it. It is passed in and held to the same list,
+      # which catches the realistic failure — a variable set to a label nobody
+      # registered, or misspelled — from a job on a runner GitHub always has.
+      # What it still cannot prove is that a machine answering to that label
+      # is online right now; only a job landing on one shows that.
       - name: every runner label is one a runner answers to
+        env:
+          CI_RUNNER: ${{ vars.CI_RUNNER }}
         run: |
           set -eu
-          allowed=" ubuntu-latest macos-latest macos-15-intel windows-latest "
+          allowed=" ubuntu-latest macos-latest macos-15-intel windows-latest vitrum "
 
           # Three ways a label reaches a runner: a bare `runs-on` scalar, an
           # operand of `&&`/`||` in a `runs-on` expression (which is how the
@@ -303,6 +310,21 @@ jobs:
                 ;;
             esac
           done
+
+          # The variable, when the repository sets one. Unset is legal and is
+          # the hosted fallback the expression already spells out.
+          if [ -n "${CI_RUNNER:-}" ]; then
+            case "$allowed" in
+              *" $CI_RUNNER "*) echo "ok       $CI_RUNNER (CI_RUNNER)" ;;
+              *)
+                echo "::error::the CI_RUNNER repository variable is '$CI_RUNNER', which is not a label this repository has agreed on. Every job that reads it will queue forever rather than fail. Fix the variable, or add the label here once a runner answers to it."
+                bad=1
+                ;;
+            esac
+          else
+            echo "ok       CI_RUNNER unset: jobs fall back to ubuntu-latest"
+          fi
+
           exit $bad
 
   # What a mac would tell us about a compile error, without a mac.

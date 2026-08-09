@@ -586,8 +586,7 @@ mod chrome_offer;
 
 /// The mark belongs on the launcher, not in the window.
 ///
-/// Documented in `assets/logo/README.md`; enforced here, because a rule that
-/// lives only in a document is a rule that survives exactly until somebody
-/// wants a splash of brand in the titlebar.
+/// Enforced here rather than written down, because the document it used to
+/// live in was `assets/logo/README.md` and that directory no longer exists.
 #[cfg(test)]
 mod where_the_mark_may_appear;

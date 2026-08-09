@@ -6,7 +6,6 @@
 //! to reach the next function is a file nobody reads twice.
 
 mod actions;
-mod assets;
 mod integrations;
 mod platform_build;
 mod readme;

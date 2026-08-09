@@ -1,8 +1,16 @@
 //! The mark belongs on the launcher, not in the window.
 //!
-//! Documented in `assets/logo/README.md`; enforced here, because a rule that
-//! lives only in a document is a rule that survives exactly until somebody
-//! wants a splash of brand in the titlebar.
+//! It may appear in two places: the launcher, and a loading screen. It may
+//! not appear anywhere in the window chrome, and
+//! [`the_mark_stays_out_of_the_window`] is what stops it.
+//!
+//! The rule used to be written down in `assets/logo/README.md`, with a test
+//! asserting that document still explained it, on the reasoning that a test
+//! failing with a rule nobody can find just gets deleted. That directory is
+//! gone now, along with every picture this repository published, and it took
+//! the explanation with it. So the rule is stated here instead, next to the
+//! only thing that enforces it, where it cannot be separated from the failure
+//! it causes.
 
 /// Every user interface source, and the stylesheet they share.
 const UI_SOURCES: &[(&str, &str)] = &[
@@ -58,33 +66,9 @@ fn the_mark_stays_out_of_the_window() {
     assert!(
         found.is_empty(),
         "the mark may appear on the launcher and on a loading screen, and \
-         nowhere else inside the application. See assets/logo/README.md. \
+         nowhere else inside the application. See this module's doc comment. \
          Found:\n  {}",
         found.join("\n  ")
     );
 }
 
-/// The rule is written down where someone editing the mark will see it.
-///
-/// A test that fails with a rule nobody can find just gets deleted. This
-/// asserts the explanation exists next to the asset, so the failure above
-/// has somewhere to send the reader.
-#[test]
-fn the_rule_is_documented_beside_the_asset() {
-    let doc = include_str!("../../../assets/logo/README.md");
-    assert!(
-        doc.contains("Where it may not appear"),
-        "assets/logo/README.md no longer states where the mark is banned"
-    );
-    assert!(
-        doc.contains("the_mark_stays_out_of_the_window"),
-        "the doc no longer points at the test that enforces it, so a \
-         failing test has nowhere to send the reader"
-    );
-    for place in ["launcher", "loading screen"] {
-        assert!(
-            doc.contains(place),
-            "the doc no longer names {place} as an allowed place"
-        );
-    }
-}

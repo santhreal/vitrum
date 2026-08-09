@@ -34,28 +34,55 @@ preset, bind a key, fire it. The suite does not open a window.
 
 In this order, refusing before it edits anything:
 
-1. Refuses a dirty tree, a branch other than `main`, a version that is not
-   greater than the current one, a tag that already exists, and an empty
-   `## Unreleased`.
+1. Refuses a dirty tree, a branch other than `main`, an empty `## Unreleased`,
+   anything that is not a plain `x.y.z`, and a tag that already exists here or
+   on `origin`. The remote is asked with `git ls-remote`; a remote that cannot
+   be reached is a refusal, not an assumption.
 2. Bumps every version literal: `Cargo.toml`, `Cargo.lock` and `README.md`.
-   `tools/release/versions.sh` owns that list and checks it.
+   `tools/release/versions.sh` owns that list, derives it from the manifests,
+   and checks it.
 3. Renames `## Unreleased` to `## v<version> - <date>` and opens a fresh empty
    one.
-4. Commits exactly those four files as `Release v<version>`.
+4. Commits exactly the files it changed as `Release v<version>`.
 5. Makes an annotated tag `v<version>` carrying the release notes.
 6. Prints the push command, and the two commands that undo it.
 
 Nothing is pushed. That is the only step you take by hand, because it is the
 only one that cannot be taken back.
 
+### The first release of a version
+
+Every version must increase, with one exception: the version the workspace
+already carries, while its tag exists neither here nor on `origin`. Requiring
+an increase there would mean the tool choosing the number — a tree that says
+`0.1.0` in `Cargo.toml` and in `README.md` would have to ship `0.1.1` because
+nothing had been tagged yet.
+
+So `make release VERSION=<current>` is legal exactly once. It skips the bump,
+because there is nothing to bump, and commits the changelog alone. Once the
+tag exists it is refused, and refused on the tag rather than on the version,
+so it cannot become a way to re-cut something already published.
+
+If `CHANGELOG.md` already carries a section for that version, written before
+the tag existed, the `## Unreleased` body is merged into it — newest first,
+redated to the day of the cut — rather than opening a second heading for the
+same version. Two headings for one version would be read as one, and every
+reader takes the first.
+
 ## What `make release-dry-run` does
 
-Everything above, in a clone of this repository in a temporary directory, and
-then it deletes the clone. It asserts the commit, the tag, the bumped
-literals and the rolled changelog section, breaks each version literal in turn
-to confirm the check catches it, and drives every refusal `make release` owes
-you. It digests this working tree before and after and fails if they differ,
-so a dry run that reports success has proved it changed nothing.
+Everything above, in a clone of this repository in a temporary directory
+pointed at a scratch remote, and then it deletes the clone. It asserts the
+commit, the tag, the bumped literals and the rolled changelog section, breaks
+each version literal in turn to confirm the check catches it, and drives every
+refusal `make release` owes you including both halves of the tag guard.
+
+It captures what a cut can touch before and after — the four release files,
+the git ref and index state, and the temporary names this tooling is the only
+writer of — and fails if any of it moved. It deliberately does not guard the
+rest of the tree: this tree is shared, and a check that aborts because another
+lane saved a file is a check that gets switched off. Anything else that moved
+is reported and is not a failure.
 
 CI runs it on every push.
 

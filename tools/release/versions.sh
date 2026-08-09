@@ -20,19 +20,63 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
 
-# Every workspace member whose version is `version.workspace = true`. `vendor`
-# and `vendor-pty` are forks pinned to the upstream release they fork and are
-# deliberately absent.
-MEMBERS='vitrum vitrum-proto vitrum-core vitrum-server vitrum-grid vitrum-vt
-vitrum-replay vitrum-model vitrum-fmt vitrum-os vitrum-search vitrum-bench'
+die() { printf 'versions: %s\n' "$*" >&2; exit 1; }
+
+# Both lists below are read out of the manifests at run time rather than typed
+# here. A hardcoded list of crates goes stale the first time somebody adds one,
+# and it goes stale silently: the new crate's version simply stops being
+# checked, which is the same as having no check for it. Adding a member now
+# extends the guard by itself.
+
+# Every workspace member whose manifest says `version.workspace = true`, and so
+# moves when the workspace version moves. `vendor` and `vendor-pty` are forks
+# pinned to the upstream release they fork; they carry their own literal
+# version and drop out of this list on that basis rather than by name.
+workspace_members() {
+    awk '
+        /^\[workspace\]/ { in_ws = 1; next }
+        /^\[/ { in_ws = 0 }
+        in_ws && /^members = \[/ { in_list = 1; next }
+        in_list && /^\]/ { in_list = 0; next }
+        in_list { gsub(/[ \t",]/, ""); if ($0 != "") print }
+    ' Cargo.toml
+}
+
+members() {
+    workspace_members | while read -r dir; do
+        manifest="$dir/Cargo.toml"
+        [ -f "$manifest" ] || die "workspace member $dir has no Cargo.toml"
+        grep -q '^version.workspace = true' "$manifest" || continue
+        name=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | head -1)
+        [ -n "$name" ] || die "$manifest has no package name"
+        printf '%s\n' "$name"
+    done
+}
 
 # The internal dependencies in `[workspace.dependencies]` that carry a literal
 # version beside their path, because `cargo package` refuses a path-only
 # dependency and cargo has no `version.workspace = true` for that table.
-INTERNAL_DEPS='vitrum-proto vitrum-core vitrum-grid vitrum-vt vitrum-model
-vitrum-replay vitrum-fmt vitrum-os vitrum-search'
+#
+# Only the ones that resolve to a member from `members` above. The vendored
+# forks are declared the same way and their literal is the upstream release
+# they fork, which must not move with this workspace; being absent from that
+# list is what excludes them, rather than their names being written down here.
+internal_deps() {
+    sed -n 's/^\([a-z0-9-]*\) = { path = "[^"]*", version = "[^"]*".*/\1/p' Cargo.toml |
+        while read -r dep; do
+            for m in $MEMBERS; do
+                if [ "$dep" = "$m" ]; then
+                    printf '%s\n' "$dep"
+                    break
+                fi
+            done
+        done
+}
 
-die() { printf 'versions: %s\n' "$*" >&2; exit 1; }
+MEMBERS=$(members)
+INTERNAL_DEPS=$(internal_deps)
+[ -n "$MEMBERS" ] || die 'no workspace member uses version.workspace = true'
+[ -n "$INTERNAL_DEPS" ] || die 'no internal dependency carries a version literal'
 
 current() {
     v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)

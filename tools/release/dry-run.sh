@@ -6,8 +6,15 @@
 # Every step `tools/release/cut.sh` performs runs here, including the commit
 # and the tag, against a clone of this repository in a temporary directory.
 # Nothing is created in this working tree, and the proof is not an assertion in
-# the script's prose: the tree is digested before and after and the two digests
-# must match, `git status --porcelain` included.
+# the script's prose: the footprint a cut could leave is captured before and
+# after and the two must match.
+#
+# That footprint is deliberately narrow. This tree is shared, six other lanes
+# write to it while this runs, and a check that aborts because someone else
+# saved a file in another crate is a check that gets switched off. So it
+# guards exactly what a cut touches — the four release files, the git ref and
+# index state, and the temporary files this tooling is the only writer of —
+# and merely reports anything else that moved.
 #
 # It also drives each refusal `cut.sh` owes you — dirty tree, wrong branch, a
 # version that does not increase, an existing tag, an empty Unreleased — and
@@ -25,13 +32,35 @@ ok() { printf '  ok  %s\n' "$*"; }
 [ $# -eq 1 ] || die 'usage: tools/release/dry-run.sh <version>'
 new=${1#v}
 
-# Tracked and untracked-but-not-ignored content, plus the porcelain status.
-# Ignored paths are excluded on purpose: `target/` and `dist/` change whenever
-# anything is built and are not part of the tree a dry run must preserve.
-digest() {
-    git status --porcelain
-    git ls-files -z | sort -z | xargs -0 sha256sum
-    git ls-files -o --exclude-standard -z | sort -z | xargs -0 sha256sum
+# The files `cut.sh` edits, the git state it changes, and the temporary names
+# only this tooling ever writes. A change to any of these during a dry run is
+# this script's fault and nobody else's.
+footprint() {
+    for f in $(sites) CHANGELOG.md; do
+        if [ -e "$f" ]; then sha256sum "$f"; else printf 'absent  %s\n' "$f"; fi
+    done
+    printf 'HEAD %s\n' "$(git rev-parse HEAD)"
+    printf 'branch %s\n' "$(git rev-parse --abbrev-ref HEAD)"
+    printf 'tags %s\n' "$(git tag -l | LC_ALL=C sort | tr '\n' ' ')"
+    printf 'staged %s\n' "$(git diff --cached --name-only | LC_ALL=C sort | tr '\n' ' ')"
+    printf 'strays %s\n' "$(strays | tr '\n' ' ')"
+}
+
+# `sites` is asked of the same script the cut asks, so a fourth release file
+# joins this guard the moment it joins the cut.
+sites() { tools/release/versions.sh sites; }
+
+# Temporary files this tooling writes and always moves into place. One left
+# behind in this tree means a script ran outside the clone.
+strays() {
+    git ls-files -o --exclude-standard |
+        grep -E '(\.versions\.tmp|\.roll\.tmp)$|(^|/)NOTES\.md$' || true
+}
+
+# Everything else, reported and never fatal: whatever the other lanes are
+# doing is theirs.
+neighbourhood() {
+    git status --porcelain | LC_ALL=C sort
 }
 
 # The clone carries HEAD, which is where a release is cut from. The release
@@ -52,15 +81,18 @@ refuses() {
 
 step "before"
 before=$(mktemp)
-digest > "$before"
+before_neighbours=$(mktemp)
+footprint > "$before"
+neighbourhood > "$before_neighbours"
 before_sum=$(sha256sum < "$before" | cut -d' ' -f1)
-printf '  status --porcelain:\n'
-git status --porcelain | sed 's/^/    /'
-printf '  tree digest: %s\n' "$before_sum"
+sed 's/^/    /' "$before"
+printf '  footprint: %s\n' "$before_sum"
+printf '  %s other paths dirty in this shared tree, not guarded\n' \
+    "$(wc -l < "$before_neighbours" | tr -d ' ')"
 
 work=$(mktemp -d)
 repo="$work/repo"
-trap 'rm -rf "$work" "$before"' EXIT HUP INT TERM
+trap 'rm -rf "$work" "$before" "$before_neighbours"' EXIT HUP INT TERM
 
 step "clone"
 git clone --quiet --no-hardlinks . "$repo"
@@ -80,8 +112,25 @@ git -C "$repo" -c user.name=dry-run -c user.email=dry-run@invalid \
 [ -z "$(git -C "$repo" status --porcelain)" ] || die 'the clone is not clean'
 ok "clone at $(git -C "$repo" rev-parse --short HEAD), tree clean"
 
+# The clone's `origin` is this shared working tree, whose tags change while a
+# dry run is going. `cut.sh` asks the remote whether a tag is published, and
+# that question needs a deterministic answer, so the clone is pointed at an
+# empty scratch remote instead. It is a real remote reached with a real
+# `git ls-remote`, so the guard is exercised rather than skipped, and the tag
+# can be published to it below to exercise the other side of the guard.
+git init --quiet --bare "$work/origin.git"
+git -C "$repo" remote set-url origin "$work/origin.git"
+git -C "$repo" tag -l | while read -r t; do git -C "$repo" tag -d "$t" >/dev/null; done
+ok "origin repointed at a scratch remote with no tags"
+
 old=$(cd "$repo" && tools/release/versions.sh current)
 unreleased=$(cd "$repo" && tools/release/changelog.sh unreleased)
+# A first release may be cutting a version whose section was written before the
+# tag existed. That section has to survive the cut, under the newly dated
+# heading and below the Unreleased content, and there must be exactly one of
+# it afterwards.
+pre_section=$(cd "$repo" && tools/release/changelog.sh notes "$new" 2>/dev/null) ||
+    pre_section=
 
 step "version sites"
 ( cd "$repo" && tools/release/versions.sh selftest ) | sed 's/^/  /'
@@ -121,13 +170,36 @@ git -C "$repo" checkout --quiet -- .
     die 'the nightly bump left the clone dirty'
 ok 'clone restored'
 
+# Which cut this is. Cutting the version the workspace already carries is the
+# first release of that version and is legal exactly while its tag exists
+# nowhere; everything else must increase. There is no rewind: the first-release
+# path is the one the very next release takes, so faking a predecessor would
+# rehearse the wrong thing.
+if [ "$new" = "$old" ]; then
+    mode=first
+    ok "v$new is the current version and untagged: rehearsing a first release"
+else
+    ahead=$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -1)
+    [ "$ahead" = "$new" ] ||
+        die "$new is below the current $old; that is not a release to rehearse"
+    mode=forward
+    ok "v$new is above the current $old: rehearsing a forward cut"
+fi
+
 step "refusals"
-refuses 'a version that does not increase' tools/release/cut.sh "$old"
+refuses 'a version below the current one' tools/release/cut.sh 0.0.1
 refuses 'a non-version argument' tools/release/cut.sh not-a-version
+refuses 'a prerelease version' tools/release/cut.sh 9.9.9-rc.1
 refuses 'no version at all' tools/release/cut.sh
-( cd "$repo" && git tag v999.0.0 )
-refuses 'a tag that already exists' tools/release/cut.sh 999.0.0
-( cd "$repo" && git tag -d v999.0.0 >/dev/null )
+
+# The tag guard, from both sides. A first release is legal only while the tag
+# exists nowhere, so both places it could exist are made to hold it in turn.
+( cd "$repo" && git tag "v$new" )
+refuses 'a version already tagged here' tools/release/cut.sh "$new"
+( cd "$repo" && git push --quiet origin "refs/tags/v$new" && git tag -d "v$new" >/dev/null )
+refuses 'a version already published on the remote' tools/release/cut.sh "$new"
+( cd "$repo" && git push --quiet --delete origin "refs/tags/v$new" )
+
 echo scratch > "$repo/.dirty"
 refuses 'a dirty tree' tools/release/cut.sh "$new"
 rm -f "$repo/.dirty"
@@ -135,36 +207,27 @@ rm -f "$repo/.dirty"
 refuses 'a branch that is not main' tools/release/cut.sh "$new"
 ( cd "$repo" && git checkout --quiet main && git branch --quiet -D not-main )
 [ -z "$(git -C "$repo" status --porcelain)" ] || die 'refusals left the clone dirty'
+[ -z "$(git -C "$repo" tag -l)" ] || die 'a refusal left a tag behind'
 ok 'every refusal left the clone untouched'
-
-# Rehearsing the version the tree already carries is the common case the day a
-# release is cut, and `cut.sh` is right to refuse it against a real tree. The
-# clone is instead rewound to the state that preceded it: the workspace drops
-# to 0.0.0 and the section already published under this version is renamed to
-# match, so the cut runs forward into it exactly as it did the first time.
-ahead=$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -1)
-if [ "$ahead" != "$new" ] || [ "$old" = "$new" ]; then
-    step "rewind"
-    ( cd "$repo" && tools/release/versions.sh bump 0.0.0 >/dev/null )
-    sed "s/^## v$new - /## v0.0.0 - /" "$repo/CHANGELOG.md" > "$work/cl"
-    mv "$work/cl" "$repo/CHANGELOG.md"
-    git -C "$repo" -c user.name=dry-run -c user.email=dry-run@invalid \
-        commit --quiet -a -m "dry run: rewind to before v$new"
-    ok "clone rewound to 0.0.0 so v$new is a forward cut"
-fi
 
 step "cut v$new"
 ( cd "$repo" && tools/release/cut.sh "$new" ) | sed 's/^/  /'
 
 step "artifacts"
-
-
 subject=$(git -C "$repo" log -1 --format=%s)
 [ "$subject" = "Release v$new" ] || die "commit subject is '$subject'"
 ok "commit subject: $subject"
 
+# A first release moves no version literal, because the workspace already
+# carries the version being released, so its commit is the changelog alone.
+# Asserting the same four files for both modes would let a silent bump on the
+# first-release path through.
 touched=$(git -C "$repo" show --name-only --format= HEAD | LC_ALL=C sort | tr '\n' ' ')
-expected='CHANGELOG.md Cargo.lock Cargo.toml README.md '
+if [ "$mode" = first ]; then
+    expected='CHANGELOG.md '
+else
+    expected='CHANGELOG.md Cargo.lock Cargo.toml README.md '
+fi
 [ "$touched" = "$expected" ] ||
     die "commit touched [$touched], expected [$expected]"
 ok "commit touched exactly: $touched"
@@ -188,12 +251,31 @@ heading=$(grep -E "^## v$new - [0-9]{4}-[0-9]{2}-[0-9]{2}\$" "$repo/CHANGELOG.md
     die "CHANGELOG.md has no dated '## v$new' heading"
 ok "CHANGELOG.md heading: $heading"
 
-rolled=$(cd "$repo" && tools/release/changelog.sh notes "$new")
-[ "$rolled" = "$unreleased" ] ||
-    die 'the released section is not the Unreleased body it came from'
-ok "released notes are the $(printf '%s' "$unreleased" | wc -l | tr -d ' ')-line Unreleased body, unchanged"
+# Exactly one. Two headings for one version is the failure the merge exists to
+# prevent, and every reader of this file takes the first one it finds.
+headings=$(grep -c "^## v$new " "$repo/CHANGELOG.md")
+[ "$headings" = 1 ] || die "CHANGELOG.md has $headings sections for v$new"
+ok "exactly one section for v$new"
 
+rolled=$(cd "$repo" && tools/release/changelog.sh notes "$new")
+if [ -n "$pre_section" ]; then
+    expected=$(printf '%s\n\n%s' "$unreleased" "$pre_section")
+    [ "$rolled" = "$expected" ] ||
+        die 'the merged section is not the Unreleased body above the one that was there'
+    ok "released notes are the $(printf '%s' "$unreleased" | wc -l | tr -d ' ')-line Unreleased body above the $(printf '%s' "$pre_section" | wc -l | tr -d ' ')-line section that predated the tag"
+else
+    [ "$rolled" = "$unreleased" ] ||
+        die 'the released section is not the Unreleased body it came from'
+    ok "released notes are the $(printf '%s' "$unreleased" | wc -l | tr -d ' ')-line Unreleased body, unchanged"
+fi
+
+# Once the tag exists a first release is no longer available, which is the
+# guard that keeps `VERSION=<current>` from becoming a way to re-cut a
+# published version. It must refuse on the tag, not on the version ordering.
 refuses 'a second cut of the same version' tools/release/cut.sh "$new"
+grep -q "tag v$new already exists here" "$work/refuse.log" ||
+    die 'the second cut was refused for the wrong reason'
+ok "and it refused on the tag, not on the version"
 refuses 'an empty Unreleased section' tools/release/changelog.sh unreleased
 
 # The publish step reads the file with the same matcher; if it cannot find the
@@ -208,23 +290,39 @@ ok 'the workflow release-notes matcher finds the section'
 
 step "unwind"
 rm -rf "$work"
-trap 'rm -f "$before"' EXIT HUP INT TERM
+trap 'rm -f "$before" "$before_neighbours"' EXIT HUP INT TERM
 ok 'scratch clone removed'
 
 step "after"
 after=$(mktemp)
-digest > "$after"
+after_neighbours=$(mktemp)
+footprint > "$after"
+neighbourhood > "$after_neighbours"
 after_sum=$(sha256sum < "$after" | cut -d' ' -f1)
-printf '  status --porcelain:\n'
-git status --porcelain | sed 's/^/    /'
-printf '  tree digest: %s\n' "$after_sum"
+sed 's/^/    /' "$after"
+printf '  footprint: %s\n' "$after_sum"
 
 if [ "$before_sum" != "$after_sum" ]; then
-    diff "$before" "$after" >&2 || true
-    rm -f "$after"
-    die 'the working tree changed'
+    diff --label before --label after -u "$before" "$after" >&2 || true
+    rm -f "$after" "$after_neighbours"
+    printf '\nOne of the four files a cut edits, or the git state, moved while\n' >&2
+    printf 'this ran. Either a release script wrote outside its clone, or\n' >&2
+    printf 'another lane touched a release file — Cargo.lock in particular\n' >&2
+    printf 'moves whenever someone adds a dependency or a workspace member.\n' >&2
+    printf 'The diff above says which. Re-run to tell the two apart: a script\n' >&2
+    printf 'bug reproduces, a neighbour does not.\n' >&2
+    die 'a file a cut edits changed while the dry run was going'
 fi
-rm -f "$after"
 
-printf '\ndry run of v%s passed; the working tree is byte-identical (%s)\n' \
+# Reported, never fatal. Six lanes write to this tree; their edits are not a
+# dry run failure, and treating them as one is how a check gets switched off.
+if ! cmp -s "$before_neighbours" "$after_neighbours"; then
+    printf '\n  other lanes changed the tree while this ran, outside the\n'
+    printf '  release footprint and not a failure:\n'
+    diff --label before --label after -u \
+        "$before_neighbours" "$after_neighbours" | sed -n '4,$p' | sed 's/^/    /'
+fi
+rm -f "$after" "$after_neighbours"
+
+printf '\ndry run of v%s passed; the release footprint is byte-identical (%s)\n' \
     "$new" "$before_sum"

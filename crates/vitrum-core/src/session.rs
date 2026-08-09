@@ -19,8 +19,34 @@ use tokio::time::{Instant, timeout_at};
 use crate::Scrollback;
 use crate::scan::OutputScan;
 
-/// Size of one blocking PTY read. Large enough that a firehose is drained in a
-/// few syscalls rather than hundreds.
+/// Size of one blocking PTY read.
+///
+/// This is a ceiling on a read, not a promise about one, and now that the
+/// engine and the staging copy are both gone it is the second lever on a path
+/// whose remaining cost is syscalls: the pipeline benchmark reports about 2100
+/// reads per megabyte, which is an average read of roughly 500 bytes.
+///
+/// The bound that produces that number is the kernel's, not this constant's.
+/// A pty master is read through the `N_TTY` line discipline, whose receive
+/// buffer `N_TTY_BUF_SIZE` is 4096 bytes, so one `read` cannot return more
+/// than 4 KiB however large a slice it is handed; under a firehose it returns
+/// far less than that, because the reader is draining the ring about as fast
+/// as the child fills it and a read gets only what accumulated since the last
+/// one.
+///
+/// So raising this buys nothing. Reads per megabyte fall only if more bytes
+/// are waiting per read, and the ways to arrange that are a reader that
+/// deliberately lags, which spends latency to buy throughput, or a different
+/// kernel interface. Lowering it is the change that can hurt: a chunk under
+/// 4 KiB splits a full line-discipline buffer across several syscalls in
+/// exactly the case where the kernel had a large read to give.
+///
+/// The size is therefore set by the two other things it controls. It is the
+/// arena's `READ_FLOOR`, so a tail shorter than this is abandoned rather than
+/// read into, which wastes at most 32 KiB of a 1 MiB arena. And it is what a
+/// Windows pseudoconsole may return in one go, where there is no line
+/// discipline and a read is bounded only by what the pipe holds. 32 KiB is
+/// large enough to matter there and costs 3% of an arena here.
 const READ_CHUNK: usize = 32 * 1024;
 
 /// One allocation the reader hands out reads from.
@@ -41,12 +67,71 @@ const READ_ARENA: usize = 1024 * 1024;
 /// bytes. The tail below this is dropped rather than read into.
 const READ_FLOOR: usize = READ_CHUNK;
 
-/// How long output may sit in the coalescing buffer before it is published.
+/// The longest a byte may sit in the coalescing buffer.
 ///
-/// This is the whole reason a 0.4 MB/s firehose does not become thousands of
-/// broadcast wakeups per second. The timer is armed only while bytes are
-/// actually pending, so an idle session costs zero wakeups and zero CPU.
+/// This is the whole reason a firehose does not become thousands of broadcast
+/// wakeups per second. It is a ceiling, not a schedule: a run that goes quiet
+/// is published before this, and only a child that keeps writing holds a run
+/// open all the way to it. The timer is armed only while a run is open, so an
+/// idle session costs zero wakeups and zero CPU.
+///
+/// # What it costs a byte
+///
+/// A byte waits until whichever deadline ends its run, and the cap is only one
+/// of the two. A lone write ends on `FLUSH_IDLE`, so an echoed keystroke's
+/// share of this constant is the 300 µs gap and not 6 ms. A run held open by
+/// continuing output is bounded by the cap, and a byte arriving uniformly
+/// inside such a run waits `FLUSH_WINDOW / 2`, so 3 ms on average and 6 ms at
+/// worst.
+///
+/// The cap also governs only a middle band of rates. At the measured
+/// single-session throughput of 181 MB/s a run reaches `FLUSH_BYTES` in about
+/// 0.35 ms, so a firehose is published on bytes and never meets the clock at
+/// all; the sessions whose runs end on the cap are those writing under about
+/// 11 MB/s, which is `FLUSH_BYTES` divided by this window.
+///
+/// Measured interactive p50 for the whole path — write, pty, line-discipline
+/// echo, read, coalesce, scan, broadcast — is 7.14 ms. That is larger than the
+/// entire cap, so the cap cannot be most of it, and for the single echoed byte
+/// that sample writes the coalescer's own contribution is the idle gap rather
+/// than this window. Where the rest of that 7 ms goes is not visible from
+/// these counters, and it is not a reason to move this constant: per-stage
+/// timestamps on one sample are what would settle it.
+///
+/// # Why not smaller
+///
+/// A publish is a broadcast send, a scrollback insert and a frame for every
+/// attached client. In the band where the clock governs, publishes scale as
+/// the reciprocal of this window, so halving it doubles that bill across every
+/// streaming session at once — and buys output whose arrival nobody can
+/// perceive being 3 ms earlier. Twenty agents each writing a steady kilobyte
+/// of log is where the doubling is paid.
+///
+/// # Why a constant rather than an adaptive window
+///
+/// An adaptive window would have to earn its complexity on evidence this loop
+/// does not currently collect. It would need to observe, per session and
+/// cheaply enough not to cost a timestamp per read: the distribution of gaps
+/// between reads, so it can predict whether another read is coming before the
+/// deadline instead of discovering it afterwards; how many clients are
+/// attached, because that is the multiplier on every publish it saves; and
+/// whether any of them is a viewer a human is actually looking at, because a
+/// background session gains nothing from a short window.
+///
+/// `FLUSH_IDLE` is already the cheap one-sample form of the first of those,
+/// and it took the keystroke off the cap without measuring anything. What is
+/// left — whether a session may hold bytes for longer than 6 ms when nobody is
+/// watching it — is a policy about attention rather than a tuning parameter,
+/// and it needs the attention signal to exist first.
 const FLUSH_WINDOW: Duration = Duration::from_millis(6);
+
+/// How long a run waits for more output before giving up on it.
+///
+/// Set below the gap between two reads of a child that is still writing and
+/// far below the cap, so a firehose still batches to the cap while an echoed
+/// keystroke, which is one read and then silence, is published as soon as the
+/// silence is established rather than at the end of a fixed window.
+const FLUSH_IDLE: Duration = Duration::from_micros(300);
 
 /// Publish early once this much output is pending, so a burst is not delayed by
 /// the full window and no single chunk grows unbounded.
@@ -168,6 +253,11 @@ pub struct OutputChunk {
 ///   these is parsed again by the client's own emulator, so it is the
 ///   duplicated work in the design and worth being able to see. It must stay
 ///   at one pass per published byte.
+/// - `arenas` is reader-side allocations: one 1 MiB `READ_ARENA` block, taken
+///   when the previous one is too short to read into again. It is the whole
+///   allocation cost of the byte path, because nothing downstream of it
+///   allocates per read or per run, so it stays at about one per megabyte of
+///   output.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PumpCounts {
     pub reads: u64,
@@ -175,6 +265,11 @@ pub struct PumpCounts {
     pub wakeups: u64,
     pub staged_bytes: u64,
     pub parsed_bytes: u64,
+    pub arenas: u64,
+    /// Runs published because the child stopped writing.
+    pub idle_flushes: u64,
+    /// Runs published because they had been open for the whole cap.
+    pub capped_flushes: u64,
 }
 
 /// The live counters behind [`PumpCounts`].
@@ -190,6 +285,9 @@ struct PumpTally {
     wakeups: AtomicU64,
     staged_bytes: AtomicU64,
     parsed_bytes: AtomicU64,
+    arenas: AtomicU64,
+    idle_flushes: AtomicU64,
+    capped_flushes: AtomicU64,
 }
 
 impl PumpTally {
@@ -200,6 +298,9 @@ impl PumpTally {
             wakeups: self.wakeups.load(Ordering::Relaxed),
             staged_bytes: self.staged_bytes.load(Ordering::Relaxed),
             parsed_bytes: self.parsed_bytes.load(Ordering::Relaxed),
+            arenas: self.arenas.load(Ordering::Relaxed),
+            idle_flushes: self.idle_flushes.load(Ordering::Relaxed),
+            capped_flushes: self.capped_flushes.load(Ordering::Relaxed),
         }
     }
 }
@@ -1049,9 +1150,11 @@ fn read_loop(
     // The read itself stays capped at `READ_CHUNK`: the point of the arena is
     // contiguity and cheap zeroing, not a megabyte-deep syscall.
     let mut pool = BytesMut::zeroed(READ_ARENA);
+    session.pump.arenas.fetch_add(1, Ordering::Relaxed);
     loop {
         if pool.len() < READ_FLOOR {
             pool = BytesMut::zeroed(READ_ARENA);
+            session.pump.arenas.fetch_add(1, Ordering::Relaxed);
         }
         // The floor above guarantees the arena still holds a whole chunk.
         match reader.read(&mut pool[..READ_CHUNK]) {
@@ -1142,7 +1245,19 @@ async fn coalesce_loop(
         // on this path copies the bytes.
         let mut run = first;
         let mut pending = run.len();
-        let deadline = Instant::now() + FLUSH_WINDOW;
+        // Two deadlines, and the run ends at whichever comes first.
+        //
+        // `cap` bounds how long a byte may wait, which is what a fixed window
+        // was for. `quiet` ends the run as soon as the child stops writing,
+        // which is what a fixed window got wrong: an echoed keystroke is one
+        // read followed by silence, and waiting the whole window for a second
+        // read that is never coming charged interactive typing the price of
+        // batching a firehose.
+        //
+        // Nothing polls. Both deadlines are timers, and a timer only exists
+        // while a run is open, so a session with no output arms nothing and an
+        // idle daemon does no work at all.
+        let cap = Instant::now() + FLUSH_WINDOW;
         let mut ended = false;
         // One timer for the whole window, and every read the channel already
         // holds taken in one wakeup.
@@ -1152,8 +1267,9 @@ async fn coalesce_loop(
         // bytes at a time under load: measured, that was about 2500 timer
         // registrations and 2500 wakeups for every megabyte, to publish
         // sixteen runs.
-        let window = tokio::time::sleep_until(deadline);
+        let window = tokio::time::sleep_until((Instant::now() + FLUSH_IDLE).min(cap));
         tokio::pin!(window);
+        let mut hit_cap = false;
         while pending < FLUSH_BYTES {
             batch.clear();
             let taken = tokio::select! {
@@ -1179,6 +1295,19 @@ async fn coalesce_loop(
                 }
             }
             pending = run.len();
+            // Output is still arriving, so hold the run open for another idle
+            // gap, but never past the cap.
+            let now = Instant::now();
+            if now >= cap {
+                hit_cap = true;
+                break;
+            }
+            window.as_mut().reset((now + FLUSH_IDLE).min(cap));
+        }
+        if hit_cap || Instant::now() >= cap {
+            session.pump.capped_flushes.fetch_add(1, Ordering::Relaxed);
+        } else if pending < FLUSH_BYTES && !ended {
+            session.pump.idle_flushes.fetch_add(1, Ordering::Relaxed);
         }
         let run = run.freeze();
         hints.clear();

@@ -597,5 +597,28 @@ jobs:
       # installer will.
       - name: what an installer now sees
         run: |
-          gh release view "$TAG" --json tagName,isDraft,isPrerelease,isLatest
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease
           gh release view "$TAG" --json assets --jq '.assets[].name'
+
+          # `isLatest` is not a field `gh release view` has, so this step had
+          # never run to completion: it exited 1 listing the fields that do
+          # exist, and it did that after every leg of the matrix had built.
+          #
+          # What it meant to ask is what `/releases/latest` resolves to, which
+          # is the endpoint both installers use when no version is given. Ask
+          # the endpoint. It is the same question an installer asks, and unlike
+          # a field it cannot be right while the endpoint is wrong.
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
+            --jq .tag_name 2>/dev/null || echo none)
+          echo "releases/latest resolves to: $latest"
+
+          # A stable must be the answer. A nightly must never be, or `vitrum
+          # update` walks a stable installation onto a prerelease.
+          if [ "$CHANNEL" = stable ] && [ "$latest" != "$TAG" ]; then
+            echo "published stable $TAG but /releases/latest is $latest" >&2
+            exit 1
+          fi
+          if [ "$CHANNEL" = nightly ] && [ "$latest" = "$TAG" ]; then
+            echo "nightly $TAG became /releases/latest; it must not" >&2
+            exit 1
+          fi

@@ -13,6 +13,11 @@
 //! ships only a regular face, the bitmap is emboldened or sheared instead of
 //! silently rendering upright, because a terminal that ignores SGR 1 and SGR 3
 //! is a terminal that lies about its output.
+//!
+//! The fallback chain is built by [`fallback_chain`], which reads only the
+//! font database: no device, no window, and no parsed face. Faces along it are
+//! parsed lazily, the first time a character reaches them, so a stack that
+//! never draws a CJK codepoint never pays for the CJK font.
 
 use std::collections::HashMap;
 
@@ -251,9 +256,37 @@ struct StyleSlot {
     synth_italic: bool,
 }
 
-/// Lazily parsed fallback face.
+/// One face in the fallback chain, in the order it will be tried.
+///
+/// The chain is data, not behaviour: [`fallback_chain`] builds it from a
+/// `fontdb::Database` alone, so what a given font set resolves to can be
+/// asserted without a GPU, a window, or a rasterised pixel.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FallbackEntry {
+    /// Database id of the face, so a caller can read its bytes or query it.
+    pub id: fontdb::ID,
+    /// The face's first family name. This is what a log line names.
+    pub family: String,
+    /// Whether the face declares itself monospaced. Monospaced faces come
+    /// first in the chain, because a proportional face borrowed for one
+    /// missing character still has to sit inside a fixed cell.
+    pub monospaced: bool,
+}
+
+/// Where the glyph for a character comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Coverage {
+    /// One of the primary family's own faces has it.
+    Primary,
+    /// The face at this index of [`FontStack::fallback_chain`] has it.
+    Fallback(usize),
+    /// Nothing in the stack has it, so it draws as a hollow box.
+    Missing,
+}
+
+/// Lazily parsed fallback face, parallel to [`FontStack::fallback_chain`].
 enum FallbackFace {
-    Unloaded(fontdb::ID),
+    Unloaded,
     Failed,
     Loaded(Box<fontdue::Font>),
 }
@@ -267,7 +300,11 @@ pub struct FontStack {
     size_px: f32,
     family: String,
     db: fontdb::Database,
-    fallbacks: Vec<FallbackFace>,
+    /// The fallback chain in try order. `chain[i]` describes the face that
+    /// `fallback_faces[i]` parses to, so the order that can be inspected is
+    /// the order rasterisation really walks.
+    chain: Vec<FallbackEntry>,
+    fallback_faces: Vec<FallbackFace>,
     /// `char` to fallback index, or `None` when no face in the chain has it.
     resolved: HashMap<char, Option<usize>>,
 }
@@ -279,7 +316,7 @@ impl core::fmt::Debug for FontStack {
             .field("size_px", &self.size_px)
             .field("metrics", &self.metrics)
             .field("faces", &self.fonts.len())
-            .field("fallback_candidates", &self.fallbacks.len())
+            .field("fallback_chain", &self.chain.len())
             .finish()
     }
 }
@@ -365,7 +402,9 @@ impl FontStack {
             styles[style.index()] = slot;
         }
 
-        let fallbacks = fallback_candidates(&db, regular_id, &family, config.max_fallback_faces);
+        let chain = fallback_chain(&db, regular_id, &family, config.max_fallback_faces);
+        let fallback_faces: Vec<FallbackFace> =
+            chain.iter().map(|_| FallbackFace::Unloaded).collect();
 
         Ok(Self {
             fonts,
@@ -374,7 +413,8 @@ impl FontStack {
             size_px: config.size_px,
             family,
             db,
-            fallbacks,
+            chain,
+            fallback_faces,
             resolved: HashMap::new(),
         })
     }
@@ -424,7 +464,8 @@ impl FontStack {
             size_px,
             family,
             db: fontdb::Database::new(),
-            fallbacks: Vec::new(),
+            chain: Vec::new(),
+            fallback_faces: Vec::new(),
             resolved: HashMap::new(),
         })
     }
@@ -452,6 +493,29 @@ impl FontStack {
     pub fn has_real_face(&self, style: FontStyle) -> bool {
         let slot = self.styles[style.index()];
         !slot.synth_bold && !slot.synth_italic
+    }
+
+    /// The fallback chain, in the order faces are tried.
+    ///
+    /// Empty for a stack built from caller-supplied bytes, which has no
+    /// database to search.
+    #[must_use]
+    pub fn fallback_chain(&self) -> &[FallbackEntry] {
+        &self.chain
+    }
+
+    /// Which face in the stack covers `ch`.
+    ///
+    /// Parses fallback faces lazily, exactly as rasterisation does, and caches
+    /// the answer, so asking twice costs one search.
+    pub fn coverage(&mut self, ch: char) -> Coverage {
+        if self.fonts.iter().any(|font| font.has_glyph(ch)) {
+            return Coverage::Primary;
+        }
+        match self.resolve_fallback(ch) {
+            Some(i) => Coverage::Fallback(i),
+            None => Coverage::Missing,
+        }
     }
 
     /// Rasterise `ch` in `style`, positioned relative to the cell's top-left
@@ -490,12 +554,12 @@ impl FontStack {
 
         let font = match font_kind {
             FontRef::Primary(i) => &self.fonts[i],
-            FontRef::Fallback(i) => match &self.fallbacks[i] {
+            FontRef::Fallback(i) => match &self.fallback_faces[i] {
                 FallbackFace::Loaded(font) => font.as_ref(),
                 // `resolve_fallback` only returns indices it has loaded, so
                 // this is unreachable in practice; drawing the box beats
                 // panicking if that ever stops being true.
-                FallbackFace::Unloaded(_) | FallbackFace::Failed => return self.tofu(columns),
+                FallbackFace::Unloaded | FallbackFace::Failed => return self.tofu(columns),
             },
         };
 
@@ -528,14 +592,16 @@ impl FontStack {
             return *hit;
         }
         let mut found = None;
-        for i in 0..self.fallbacks.len() {
-            if let FallbackFace::Unloaded(id) = self.fallbacks[i] {
-                self.fallbacks[i] = match load_face(&self.db, id, &self.family, self.size_px) {
+        for i in 0..self.fallback_faces.len() {
+            if matches!(self.fallback_faces[i], FallbackFace::Unloaded) {
+                let id = self.chain[i].id;
+                let parsed = match load_face(&self.db, id, &self.chain[i].family, self.size_px) {
                     Ok((font, _)) => FallbackFace::Loaded(Box::new(font)),
                     Err(_) => FallbackFace::Failed,
                 };
+                self.fallback_faces[i] = parsed;
             }
-            if let FallbackFace::Loaded(font) = &self.fallbacks[i]
+            if let FallbackFace::Loaded(font) = &self.fallback_faces[i]
                 && font.has_glyph(ch)
             {
                 found = Some(i);
@@ -729,12 +795,17 @@ fn cell_metrics(
 
 /// Faces worth trying when the primary family lacks a glyph: other monospaced
 /// faces first, then everything else, capped at `limit`.
-fn fallback_candidates(
+///
+/// Pure. The chain is a function of the database, the primary face, and the
+/// limit, and nothing here parses a face or touches a device, so a caller can
+/// assert the whole chain on a machine with no display.
+#[must_use]
+pub fn fallback_chain(
     db: &fontdb::Database,
     regular_id: fontdb::ID,
     family: &str,
     limit: usize,
-) -> Vec<FallbackFace> {
+) -> Vec<FallbackEntry> {
     let mut mono = Vec::new();
     let mut rest = Vec::new();
     for face in db.faces() {
@@ -744,18 +815,18 @@ fn fallback_candidates(
         if face.families.iter().any(|(name, _)| name == family) {
             continue;
         }
-        if face.monospaced {
-            &mut mono
-        } else {
-            &mut rest
-        }
-        .push(face.id);
+        let entry = FallbackEntry {
+            id: face.id,
+            family: face
+                .families
+                .first()
+                .map_or_else(|| String::from("<unknown>"), |(name, _)| name.clone()),
+            monospaced: face.monospaced,
+        };
+        let bucket = if face.monospaced { &mut mono } else { &mut rest };
+        bucket.push(entry);
     }
-    mono.into_iter()
-        .chain(rest)
-        .take(limit)
-        .map(FallbackFace::Unloaded)
-        .collect()
+    mono.into_iter().chain(rest).take(limit).collect()
 }
 
 /// Double-strike embolden: OR the bitmap with itself shifted one pixel right.

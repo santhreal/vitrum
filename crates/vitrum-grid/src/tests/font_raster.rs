@@ -1,10 +1,74 @@
 //! Face discovery, cell metrics, and glyph bitmaps.
 
+use std::collections::HashSet;
+
 use crate::font::{
-    DEFAULT_FAMILIES, FontConfig, FontError, FontStack, FontStyle, MAX_SIZE_PX, RasterGlyph,
+    Coverage, DEFAULT_FAMILIES, FallbackEntry, FontConfig, FontError, FontStack, FontStyle,
+    MAX_SIZE_PX, RasterGlyph, fallback_chain,
 };
 use crate::cell::Attrs;
 use crate::tests::support::{TEST_PX, config_at, fonts, fonts_at, system_db};
+
+/// The id `fontdb` gives the primary face of `family`.
+fn primary_id(db: &fontdb::Database, family: &str) -> fontdb::ID {
+    db.query(&fontdb::Query {
+        families: &[fontdb::Family::Name(family)],
+        weight: fontdb::Weight::NORMAL,
+        stretch: fontdb::Stretch::Normal,
+        style: fontdb::Style::Normal,
+    })
+    .expect("the discovered family must resolve back to a face id")
+}
+
+/// Whether the face `id` maps `ch`, read straight out of its cmap.
+///
+/// Deliberately not routed through [`FontStack`]: a fallback test that asked
+/// the stack whether the stack was right would pass no matter what the chain
+/// resolved to.
+fn face_covers(db: &fontdb::Database, id: fontdb::ID, ch: char) -> bool {
+    db.with_face_data(id, |data, index| {
+        ttf_parser::Face::parse(data, index).is_ok_and(|face| face.glyph_index(ch).is_some())
+    })
+    .unwrap_or(false)
+}
+
+/// Up to `limit` codepoints the face `id` maps, in cmap order.
+fn face_codepoints(db: &fontdb::Database, id: fontdb::ID, limit: usize) -> Vec<char> {
+    let mut out = Vec::new();
+    db.with_face_data(id, |data, index| {
+        let Ok(face) = ttf_parser::Face::parse(data, index) else {
+            return;
+        };
+        let Some(cmap) = face.tables().cmap else {
+            return;
+        };
+        for subtable in cmap.subtables {
+            if !subtable.is_unicode() {
+                continue;
+            }
+            subtable.codepoints(|cp| {
+                if out.len() < limit
+                    && let Some(ch) = char::from_u32(cp)
+                {
+                    out.push(ch);
+                }
+            });
+        }
+    });
+    out
+}
+
+/// Every codepoint any face of `family` maps.
+///
+/// This is the set [`FontStack::coverage`] calls `Coverage::Primary`, gathered
+/// from the font files rather than from the stack, and gathered once so the
+/// caller does not reopen a face per character.
+fn family_codepoints(db: &fontdb::Database, family: &str) -> HashSet<char> {
+    db.faces()
+        .filter(|face| face.families.iter().any(|(name, _)| name == family))
+        .flat_map(|face| face_codepoints(db, face.id, usize::MAX))
+        .collect()
+}
 
 /// Discovery must produce a face and report which family it picked.
 ///
@@ -665,4 +729,125 @@ fn a_caller_supplied_face_synthesizes_all_four_styles() {
         regular.width
     );
     assert_eq!(italic.height, regular.height, "shearing must not change height");
+}
+
+/// The fallback chain must be a pure function of the font database: bounded by
+/// the configured limit, free of the primary family, and monospace first.
+///
+/// The chain is what a CJK codepoint reaches when the terminal font has no
+/// glyph for it. A chain that included the primary family would spend its
+/// whole budget re-asking the face that already said no, and a chain that put
+/// proportional faces first would borrow a variable-advance glyph while a
+/// monospaced face with the same coverage sat further down.
+///
+/// What this does not catch: whether any installed face covers a particular
+/// script. That is the font set's business, and the test below checks the
+/// resolution path instead.
+#[test]
+fn the_fallback_chain_skips_the_primary_family_and_tries_monospace_first() {
+    let db = system_db();
+    let family = fonts().family().to_owned();
+    let id = primary_id(&db, &family);
+
+    let chain = fallback_chain(&db, id, &family, 6);
+    assert!(
+        !chain.is_empty(),
+        "a system font set with more than one family must offer a fallback"
+    );
+    assert!(chain.len() <= 6, "the limit must bound the chain: {chain:?}");
+    for entry in &chain {
+        assert_ne!(entry.id, id, "the primary face must not be its own fallback");
+        assert_ne!(
+            entry.family, family,
+            "a face from the primary family must not be in the chain"
+        );
+    }
+
+    let first_proportional = chain.iter().position(|entry| !entry.monospaced);
+    if let Some(split) = first_proportional {
+        assert!(
+            chain[split..].iter().all(|entry| !entry.monospaced),
+            "monospaced faces must all precede proportional ones: {chain:?}"
+        );
+    }
+
+    assert!(
+        fallback_chain(&db, id, &family, 0).is_empty(),
+        "a zero budget must parse no faces at all"
+    );
+    assert_eq!(
+        fallback_chain(&db, id, &family, 6),
+        chain,
+        "the same database must produce the same chain every time"
+    );
+
+    let built: Vec<FallbackEntry> = FontStack::from_database(db.clone(), &FontConfig {
+        max_fallback_faces: 6,
+        ..config_at(TEST_PX)
+    })
+    .expect("discovery must succeed")
+    .fallback_chain()
+    .to_vec();
+    assert_eq!(
+        built, chain,
+        "the stack must carry the chain this function builds, not another one"
+    );
+}
+
+/// A codepoint the primary face lacks must resolve to a fallback face that
+/// really covers it.
+///
+/// This is the CJK-tofu defect: with no chain past the primary face, every
+/// character the terminal font omits draws as an identical hollow box, so a
+/// line of Japanese renders as one repeated square. The character under test
+/// is taken from the installed faces' own cmaps rather than named here, so the
+/// test keeps meaning on a machine with a different font set and cannot go
+/// stale against a hardcoded codepoint.
+///
+/// What this does not catch: how the glyph is placed or rasterised. It proves
+/// only that the chain reaches a face with the coverage.
+#[test]
+fn a_codepoint_the_primary_face_lacks_resolves_to_a_covering_fallback_face() {
+    let db = system_db();
+    let mut stack = fonts();
+    let family = stack.family().to_owned();
+    let covered = family_codepoints(&db, &family);
+    let chain = stack.fallback_chain().to_vec();
+    assert!(!chain.is_empty(), "the stack must have a fallback chain");
+
+    // A codepoint the primary family has is not a fallback case, so it is
+    // skipped rather than failed. `Coverage::Missing` is not skipped: that is
+    // the chain refusing to resolve, which is the defect under test.
+    let hit = chain
+        .iter()
+        .take(4)
+        .flat_map(|entry| face_codepoints(&db, entry.id, 2048))
+        .filter(|ch| !covered.contains(ch))
+        .find(|ch| stack.coverage(*ch) != Coverage::Primary);
+    let Some(ch) = hit else {
+        panic!(
+            "no face in the chain covers anything {family} lacks, so this font \
+             set cannot exercise fallback at all"
+        );
+    };
+
+    match stack.coverage(ch) {
+        Coverage::Fallback(index) => {
+            let entry = &chain[index];
+            assert!(
+                face_covers(&db, entry.id, ch),
+                "the chain resolved U+{:04X} to {}, which does not map it",
+                u32::from(ch),
+                entry.family
+            );
+            assert_ne!(
+                entry.family, family,
+                "the primary family must never be the answer to a fallback"
+            );
+        }
+        other => panic!(
+            "U+{:04X} is absent from {family} but resolved to {other:?}",
+            u32::from(ch)
+        ),
+    }
 }

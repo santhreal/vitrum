@@ -19,7 +19,17 @@ yanked = "deny"
 # a vulnerability this tree is not exposed to, with the advisory id and a
 # sentence saying why.
 unmaintained = "none"
-ignore = []
+ignore = [
+    # RUSTSEC-2024-0429: `glib::VariantStrIter`'s `Iterator` implementation
+    # passes `&p` to a C function that writes through it, which recent
+    # compilers may discard. glib 0.18 is what gtk3 binds, which is what tao
+    # and wry bind, which is the toolkit this application's window is; nothing
+    # here can move to glib 0.19 before wry does. Nothing in this workspace
+    # constructs a `VariantStrIter` or iterates a `VariantStrIter`: the only
+    # glib this product calls directly is the native pane's `MainContext` and
+    # `ObjectExt` on a drawing area. Re-check when wry moves.
+    "RUSTSEC-2024-0429",
+]
 
 [licenses]
 version = 2

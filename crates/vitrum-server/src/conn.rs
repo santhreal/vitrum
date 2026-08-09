@@ -16,6 +16,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::hub::Hub;
+use crate::now_ms;
 use crate::search;
 
 /// Outbound frames queued per connection.
@@ -603,12 +604,4 @@ async fn write_loop(
         }
     }
     let _ = sink.close().await;
-}
-
-/// Unix milliseconds, for stamping a collision report.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }

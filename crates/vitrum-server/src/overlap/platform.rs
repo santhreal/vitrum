@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use vitrum_proto::{Credit, SessionId};
 
+use crate::now_ms;
 use super::{Publish, Tracked, Watcher};
 
 /// Directories watched per session before the walk gives up.
@@ -522,13 +523,6 @@ fn children_of(pid: u32) -> Vec<u32> {
         out.extend(text.split_ascii_whitespace().filter_map(|s| s.parse::<u32>().ok()));
     }
     out
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// `remember_open` for the unit tests, which have no inotify fd.

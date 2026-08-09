@@ -49,7 +49,7 @@ trap cleanup EXIT HUP INT TERM
 
 usage() {
     cat <<'EOF'
-Install vitrum, a terminal for running many coding agents at once.
+Install vitrum, one interface for every agent TUI you have running.
 
 Usage:
   sh install.sh [VERSION] [options]

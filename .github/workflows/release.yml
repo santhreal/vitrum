@@ -24,10 +24,13 @@ name: release
 #    are confirmed to be on it.
 #
 # Re-running either channel on a tag that already has a release is expected and
-# safe: the release is put back into draft and stripped of its assets before
-# anything is uploaded, so a re-run replaces the release rather than adding a
-# second copy of each asset beside the first. Nightly relies on exactly that,
-# every night.
+# safe, and the two channels get there differently. A stable re-run puts its
+# release back into draft and strips its assets first, because the tag is
+# fixed and nobody can install a draft. Nightly cannot do that: `nightly` is
+# the tag an operator installs from at any hour, and emptying its release for
+# the length of four uploads is a window where that tag has no assets. So a
+# nightly builds a complete draft on a staging tag and swaps it onto `nightly`
+# at the end, which is why the tag holds one build and never holds none.
 on:
   push:
     # Both a tag push and a main push land here. Which channel a run is, and
@@ -50,6 +53,17 @@ on:
 
 permissions:
   contents: write
+
+# One run at a time per tag. Moving the nightly tag and swapping its release
+# is a short sequence of API calls, and two runs doing it at once — the 06:17
+# schedule and a push that lands beside it — can interleave into a release
+# whose tag names the other run's commit. A stable tag is pushed once, so this
+# only ever queues a re-run behind the run it is repeating. Nothing is
+# cancelled: a cancelled run is a run that stopped between the tag move and
+# the swap.
+concurrency:
+  group: release-${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'nightly' }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -285,6 +299,13 @@ jobs:
       CHANNEL: ${{ needs.contract.outputs.channel }}
       TAG: ${{ needs.contract.outputs.tag }}
       VERSION: ${{ needs.contract.outputs.version }}
+      # Where the assets are uploaded, which is not always where they are
+      # published. A stable is built in a draft on its own tag; a nightly is
+      # built in a draft on a staging tag and retagged onto `nightly` once it
+      # is complete. The staging name is a draft's `tag_name` and never a git
+      # ref: GitHub creates the ref when a release is published, and this one
+      # is renamed before that happens.
+      RELEASE_TAG: ${{ needs.contract.outputs.channel == 'nightly' && 'nightly-staging' || needs.contract.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -390,30 +411,14 @@ jobs:
           fi
           cat NOTES.md
 
-      # Nightly is one moving tag, so the tag is repointed at the commit being
-      # published before the release is touched. A release whose tag still
-      # names last night's commit hands every downloader a build that does not
-      # match the source it claims.
-      - name: move the nightly tag
-        if: env.CHANNEL == 'nightly'
-        run: |
-          repo="${{ github.repository }}"
-          if gh api "repos/$repo/git/ref/tags/$TAG" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$repo/git/refs/tags/$TAG" \
-              -f sha="$GITHUB_SHA" -F force=true >/dev/null
-            echo "moved $TAG to $GITHUB_SHA"
-          else
-            gh api -X POST "repos/$repo/git/refs" \
-              -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
-            echo "created $TAG at $GITHUB_SHA"
-          fi
-
-      # A re-run must replace the release, not append to it. Putting it back
-      # into draft first means a client cannot see a half-rebuilt release, and
-      # deleting the assets means an archive from an earlier attempt under a
-      # name this run no longer produces cannot survive into the new release.
-      # Every nightly is a re-run in this sense.
-      - name: reset any existing release to an empty draft
+      # A stable re-run must replace its release, not append to it. Putting it
+      # back into draft first means a client cannot see a half-rebuilt
+      # release, and deleting the assets means an archive from an earlier
+      # attempt under a name this run no longer produces cannot survive into
+      # the new release. The tag is fixed and already points at this commit,
+      # so there is nothing to move.
+      - name: reset an existing stable release to an empty draft
+        if: env.CHANNEL == 'stable'
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             echo "no release for $TAG yet"
@@ -426,9 +431,27 @@ jobs:
               gh release delete-asset "$TAG" "$name" --yes
             done
 
+      # Nightly does the opposite: it does not touch the published `nightly`
+      # release at all until the replacement is complete. `nightly` is a tag
+      # someone installs from at an arbitrary hour, and stripping its assets
+      # up front would leave it holding none for as long as four uploads take.
+      #
+      # The staging draft is deleted rather than reused, for the reason a
+      # stable re-run strips its assets: a leftover from a failed run can hold
+      # an archive under a version this run no longer produces.
+      - name: discard a leftover nightly staging draft
+        if: env.CHANNEL == 'nightly'
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --yes
+            echo "deleted a leftover $RELEASE_TAG draft"
+          else
+            echo "no leftover $RELEASE_TAG draft"
+          fi
+
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ env.TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.CHANNEL == 'stable' && env.TAG || format('nightly {0}', github.sha) }}
           body_path: NOTES.md
           # Uploaded as a draft. Nothing below publishes it until every asset
@@ -444,7 +467,8 @@ jobs:
       # it actually holds, which is what a client will ask.
       - name: the draft holds every asset
         run: |
-          gh release view "$TAG" --json assets --jq '.assets[].name' | sort > on-release
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' |
+            sort > on-release
           for target in $TARGETS; do
             echo "vitrum-$VERSION-$target.tar.gz"
           done > expected
@@ -456,14 +480,57 @@ jobs:
           }
           cat on-release
 
-      # `--prerelease --latest=false` is what keeps a nightly out of
-      # `/releases/latest`, which is the endpoint both installers resolve when
-      # no version is given.
-      - name: publish
+      # The swap, and the only part of a nightly an operator can observe.
+      # Everything above left the published `nightly` release as last night
+      # made it; what follows is three calls with a complete draft already in
+      # hand.
+      #
+      #  1. the git tag moves to this commit, so the tag and the sources the
+      #     archives were built from agree;
+      #  2. the previous release is deleted while its replacement is still a
+      #     draft, so `nightly` is never a published release whose assets came
+      #     from another commit — `gh release delete` leaves the tag alone,
+      #     which is why the move comes first;
+      #  3. the draft is renamed onto `nightly` and published in one edit, so
+      #     the release appears with every asset already on it.
+      #
+      # The gap where the tag has no release is that one rename, not four
+      # uploads. It also fixes retention at one build: there is one nightly
+      # release because the old one is deleted as the new one lands, and
+      # rolling off a bad nightly is installing a stable, not fetching an
+      # older nightly, because there is no older nightly to fetch.
+      - name: swap the nightly release in
+        if: env.CHANNEL == 'nightly'
         run: |
-          if [ "$CHANNEL" = stable ]; then
-            gh release edit "$TAG" --draft=false --prerelease=false --latest
+          repo="${{ github.repository }}"
+          if gh api "repos/$repo/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$repo/git/refs/tags/$TAG" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            echo "moved $TAG to $GITHUB_SHA"
           else
-            gh release edit "$TAG" --draft=false --prerelease --latest=false
+            gh api -X POST "repos/$repo/git/refs" \
+              -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+            echo "created $TAG at $GITHUB_SHA"
           fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+            echo "deleted the previous $TAG release"
+          fi
+          gh release edit "$RELEASE_TAG" --tag "$TAG" \
+            --draft=false --prerelease --latest=false
+
+      # `--latest` is what makes a stable the release `/releases/latest`
+      # resolves to, which is the endpoint both installers use when no version
+      # is given. The nightly was published by the swap above with
+      # `--prerelease --latest=false`, which is what keeps it out of that
+      # endpoint and out of `vitrum update`.
+      - name: publish the stable release
+        if: env.CHANNEL == 'stable'
+        run: gh release edit "$TAG" --draft=false --prerelease=false --latest
+
+      # Both channels end here, asking the release the same question an
+      # installer will.
+      - name: what an installer now sees
+        run: |
           gh release view "$TAG" --json tagName,isDraft,isPrerelease,isLatest
+          gh release view "$TAG" --json assets --jq '.assets[].name'

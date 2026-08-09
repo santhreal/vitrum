@@ -7,6 +7,7 @@ mod helpers;
 mod hint_session;
 mod manager_registry;
 mod output_scan;
+mod pty_burst_exit;
 mod pty_capacity;
 mod pty_detached;
 mod pty_escapes;

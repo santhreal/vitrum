@@ -297,23 +297,25 @@ fn runner_labels(text: &str) -> Vec<String> {
         }
         let value = value.trim();
         if value.contains("${{") {
+            // Only an operand of `&&` or `||` can be the label the expression
+            // settles on. Reading every quoted string instead invites the
+            // opposite mistake: `'pull_request'` and a repository path are
+            // quoted too, and filtering them out by shape is what let
+            // `'vitrum'` — a bare word, and the label that starved this
+            // queue — pass as prose.
             let mut rest = value;
-            while let Some(open) = rest.find('\'') {
-                let after = &rest[open + 1..];
-                let Some(close) = after.find('\'') else { break };
-                let quoted = &after[..close];
-                // An operand that names a runner looks like a label; the other
-                // quoted strings in these expressions are event names and
-                // repository paths, which carry no hyphen or a slash.
-                if quoted.contains('-')
-                    && !quoted.contains('/')
-                    && quoted
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
-                {
-                    labels.push(quoted.to_string());
+            while let Some(operator) = rest.find("&&").into_iter().chain(rest.find("||")).min() {
+                let after = &rest[operator + 2..];
+                let Some(open) = after.find(|c: char| !c.is_whitespace()) else {
+                    break;
+                };
+                if after[open..].starts_with('\'') {
+                    let quoted = &after[open + 1..];
+                    if let Some(close) = quoted.find('\'') {
+                        labels.push(quoted[..close].to_string());
+                    }
                 }
-                rest = &after[close + 1..];
+                rest = after;
             }
         } else if let Some(list) = value.strip_prefix('[') {
             for item in list.trim_end_matches(']').split(',') {
@@ -366,10 +368,15 @@ fn every_runner_label_is_one_a_runner_answers_to() {
     );
 }
 
-/// The extractor sees a label in each shape a workflow writes it.
+/// The extractor sees a label in each shape a workflow writes it, including a
+/// bare word.
 ///
 /// Without this, the guard above passes on a matcher that quietly stopped
-/// matching, which is indistinguishable from having no guard.
+/// matching, which is indistinguishable from having no guard. The bare word is
+/// the case that matters: the first version of this extractor skipped any
+/// operand without a hyphen, on the theory that a label looks like
+/// `ubuntu-latest`, and so read `'vitrum'` — the exact label that starved this
+/// repository's queue — as prose and passed.
 #[test]
 fn a_runner_label_is_found_in_every_shape() {
     let text = concat!(
@@ -387,6 +394,8 @@ fn a_runner_label_is_found_in_every_shape() {
         "      matrix:\n",
         "        include:\n",
         "          - os: ubuntu-latest\n",
+        "  five:\n",
+        "    runs-on: ${{ github.event_name != 'pull_request' && 'vitrum' || 'ubuntu-latest' }}\n",
     );
     let mut found = runner_labels(text);
     found.sort();
@@ -397,6 +406,7 @@ fn a_runner_label_is_found_in_every_shape() {
             "macos-15-intel".to_string(),
             "macos-latest".to_string(),
             "ubuntu-latest".to_string(),
+            "vitrum".to_string(),
             "windows-latest".to_string(),
         ],
         "the extractor missed a shape a workflow really writes"

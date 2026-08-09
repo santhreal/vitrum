@@ -5,6 +5,8 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+## v0.1.0 - 2026-08-09
+
 ### Added
 
 - **Claude Code can now declare Approval, so the sidebar shows it.**
@@ -113,8 +115,6 @@ before 1.0 a minor bump may break things, and this file says when it does.
   the variable to decide whether to emit 24-bit colour, and one test now
   asserts both the published value and that colours off the 256-colour cube
   reach a cell unquantised.
-
-## v0.1.0 - 2026-08-05
 
 First public release. Pre-1.0: it runs, it is used daily on Linux, and the gaps
 below are stated rather than discovered.

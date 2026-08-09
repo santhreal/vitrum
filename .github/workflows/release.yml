@@ -251,6 +251,23 @@ jobs:
             exit 1
           }
 
+      # Fail on the runner that produced it. The publish job checks all four
+      # again, but by then four builds have run and the job that has the
+      # evidence — this runner's toolchain and its CPU — has exited. This is
+      # also the check that names which runner emitted the bad instructions.
+      - name: the archive runs on every CPU its triple promises
+        shell: bash
+        run: |
+          rustup component add llvm-tools
+          sysroot=$(rustc --print sysroot)
+          OBJDUMP=$(ls "$sysroot"/lib/rustlib/*/bin/llvm-objdump | head -1)
+          export OBJDUMP
+          rm -rf isa-check
+          archive="dist/vitrum-${{ needs.contract.outputs.version }}-${{ matrix.target }}.tar.gz"
+          tar xzf "$archive" -C isa-check
+          ./tools/release/check-isa.sh isa-check
+          rm -rf isa-check
+
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
@@ -307,6 +324,34 @@ jobs:
             exit 1
           fi
           ls -l
+
+      # Disassemble all four archives before anything is uploaded. This is the
+      # last point where every published artifact exists in one place, and it
+      # is the only check that looks at what a user receives rather than at the
+      # flags that were supposed to produce it.
+      #
+      # It runs here as well as on each builder because a per-target check only
+      # ever proves the target that ran it, and a release is all four or none.
+      # llvm-objdump reads Mach-O and PE as happily as ELF, so one Linux runner
+      # can disassemble every archive; GNU objdump on this image cannot.
+      - name: llvm-objdump
+        run: rustup component add llvm-tools
+
+      - name: no archive carries instructions above the CPU floor
+        run: |
+          sysroot=$(rustc --print sysroot)
+          OBJDUMP=$(ls "$sysroot"/lib/rustlib/*/bin/llvm-objdump | head -1)
+          export OBJDUMP
+          "$OBJDUMP" --version
+          cd staged
+          for archive in *.tar.gz; do
+            echo "== $archive"
+            rm -rf unpacked
+            mkdir unpacked
+            tar xzf "$archive" -C unpacked
+            ../tools/release/check-isa.sh unpacked
+            rm -rf unpacked
+          done
 
       # One SHA256SUMS covering every platform, written here rather than by
       # each builder, because each builder only ever sees its own archive. The

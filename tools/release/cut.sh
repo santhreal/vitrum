@@ -171,6 +171,13 @@ notes=$(tools/release/changelog.sh notes "$new")
 printf 'v%s\n\n%s\n' "$new" "$notes" | git tag -a "v$new" -F -
 git --no-pager tag -l "v$new" --format='  %(refname:short)  %(contents:subject)'
 
+# A resume did not make the commit, so it must not offer to throw it away.
+if [ "$mode" = resume ]; then
+    undo=
+else
+    undo=' && git reset --hard HEAD~1'
+fi
+
 step "next"
 cat <<EOF
 Nothing has been pushed. Publish with:

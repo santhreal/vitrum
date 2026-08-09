@@ -1,0 +1,50 @@
+# A fork of `libghostty-vt-sys` 0.2.1, vendored for one build-script change.
+#
+# Upstream passes `-Dtarget` to zig only when TARGET differs from HOST, which
+# leaves a native build letting zig read the builder's CPU. Every published
+# target of this project is built natively, so the instruction set of a release
+# became a property of whichever machine produced it. See UPSTREAM.toml for the
+# divergence and README.md for how to absorb a newer upstream.
+#
+# This is applied through `[patch.crates-io]`, which is enough for the binaries
+# this project publishes because they are built from this repository. It does
+# not reach someone running `cargo install vitrum`: a registry build ignores
+# the patch and gets upstream's build script. Closing that too means forking
+# `libghostty-vt` as well, to point its dependency here under a new name, and
+# is worth doing only if upstream declines the fix.
+
+[package]
+name = "libghostty-vt-sys"
+version = "0.2.1"
+description = "Raw FFI bindings for libghostty-vt, forked for vitrum to pin the target CPU."
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/santhreal/vitrum"
+links = "ghostty-vt"
+build = "build.rs"
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+default = ["vendored"]
+vendored = []
+pkg-config = ["dep:pkg-config"]
+link-dynamic = []
+bindgen-tool = ["dep:bindgen", "dep:libc", "dep:heck"]
+kitty-graphics = []
+
+[dependencies]
+bindgen = { version = "0.72.1", optional = true }
+libc = { version = "0.2", optional = true }
+heck = { version = "0.5", optional = true }
+
+[build-dependencies]
+pkg-config = { version = "0.3", optional = true }
+
+[[bin]]
+name = "gen-bindings"
+path = "tools/gen_bindings.rs"
+required-features = ["bindgen-tool"]

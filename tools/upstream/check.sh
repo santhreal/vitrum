@@ -1,30 +1,38 @@
 #!/bin/sh
-# Check the vendored dioxus-desktop fork against upstream.
+# Check a vendored fork against the crate it was forked from.
 #
 # Answers two questions a fork has to keep answering or it rots:
 #
-#   1. Is the divergence still exactly what `vendor/UPSTREAM.toml` claims?
+#   1. Is the divergence still exactly what the fork's UPSTREAM.toml claims?
 #   2. Has upstream released a version newer than the one we forked?
 #
-# The first catches a change made to `vendor/src` without recording why, and a
-# recorded divergence that has quietly become dead. The second is the absorption
-# trigger: it is the only thing that will ever tell you to go and merge.
+# The first catches a change made to the fork without recording why, and a
+# recorded divergence that has quietly become dead. The second is the
+# absorption trigger: it is the only thing that will ever tell you to go and
+# merge.
 #
 # Needs network. Run it from anywhere; paths resolve against the repository.
 #
-#   sh tools/upstream/check.sh              check the fork
-#   sh tools/upstream/check.sh --patches D  also write each divergence to D/
+#   sh tools/upstream/check.sh                      check vendor/
+#   sh tools/upstream/check.sh --fork DIR           check another fork
+#   sh tools/upstream/check.sh --patches D          also write divergences to D/
 #
-# `--patches` is step one of an absorption: it extracts what this fork changed,
+# The forks in this repository are `vendor` (dioxus-desktop) and
+# `vendor-ghostty-vt-sys`. Each names what to compare in its own UPSTREAM.toml
+# `compare` key, so a fork whose only change is a build script is checked as
+# closely as one that changes library code.
+#
+# `--patches` is step one of an absorption: it extracts what the fork changed,
 # as patches against the release it forked, so the changes can be replayed onto
-# a newer one. Reproducing `vendor/src` from pristine upstream plus those
-# patches is exactly what the procedure in vendor/README.md does.
+# a newer one. Reproducing the fork from pristine upstream plus those patches
+# is exactly what the procedure in its README.md does.
 #
 # Exit 0 clean, 1 drift or a newer upstream, 2 the check itself could not run.
 
 set -eu
 
 patches=""
+fork="vendor"
 while [ $# -gt 0 ]; do
   case "$1" in
     --patches)
@@ -32,17 +40,20 @@ while [ $# -gt 0 ]; do
       [ $# -gt 0 ] || { echo "--patches needs a directory" >&2; exit 2; }
       patches="$1"
       ;;
+    --fork)
+      shift
+      [ $# -gt 0 ] || { echo "--fork needs a directory" >&2; exit 2; }
+      fork="$1"
+      ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-manifest="$root/vendor/UPSTREAM.toml"
-vendored="$root/vendor/src"
+manifest="$root/$fork/UPSTREAM.toml"
 
 [ -f "$manifest" ] || { echo "no $manifest" >&2; exit 2; }
-[ -d "$vendored" ] || { echo "no $vendored" >&2; exit 2; }
 
 crate=$(sed -n 's/^crate *= *"\(.*\)"/\1/p' "$manifest" | head -1)
 version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$manifest" | head -1)
@@ -61,18 +72,37 @@ curl -sSL --fail --max-time 120 "$url" -o "$work/c.crate" \
 tar xzf "$work/c.crate" -C "$work" \
   || { echo "could not extract $crate-$version.crate" >&2; exit 2; }
 
-pristine="$work/$crate-$version/src"
-[ -d "$pristine" ] || { echo "the published crate has no src/" >&2; exit 2; }
+# `compare` names what is checked, relative to the crate root, space separated.
+# A fork that changes a build script rather than library code has to be able to
+# say so; hardcoding `src` would leave that change unchecked, which is the one
+# thing this script exists to prevent.
+compare=$(sed -n 's/^compare *= *"\(.*\)"/\1/p' "$manifest" | head -1)
+[ -n "$compare" ] || compare="src"
+crate_root="$work/$crate-$version"
 
-# What actually differs, as paths relative to the crate root so they read the
-# same way as the `file =` entries in the manifest.
-diff -rq "$pristine" "$vendored" 2>/dev/null \
-  | sed -n "s|^Files $pristine/\(.*\) and .* differ$|src/\1|p" \
-  | sort > "$work/actual"
+: > "$work/actual"
+extra=""
+for path in $compare; do
+  pristine="$crate_root/$path"
+  vendored="$root/$fork/$path"
+  [ -e "$pristine" ] || { echo "the published crate has no $path" >&2; exit 2; }
+  [ -e "$vendored" ] || { echo "no $vendored" >&2; exit 2; }
 
-# `Only in` lines are a file added or deleted rather than edited. Either is a
-# divergence the manifest cannot express, so it is always a failure.
-extra=$(diff -rq "$pristine" "$vendored" 2>/dev/null | grep '^Only in' || true)
+  if [ -d "$pristine" ]; then
+    # Paths are printed relative to the crate root so they read the same way as
+    # the `file =` entries in the manifest.
+    diff -rq "$pristine" "$vendored" 2>/dev/null \
+      | sed -n "s|^Files $pristine/\(.*\) and .* differ\$|$path/\1|p" \
+      >> "$work/actual"
+    # `Only in` lines are a file added or deleted rather than edited. Either is
+    # a divergence the manifest cannot express, so it is always a failure.
+    found=$(diff -rq "$pristine" "$vendored" 2>/dev/null | grep '^Only in' || true)
+    [ -z "$found" ] || extra=$(printf '%s\n%s' "$extra" "$found")
+  elif ! cmp -s "$pristine" "$vendored"; then
+    printf '%s\n' "$path" >> "$work/actual"
+  fi
+done
+sort -o "$work/actual" "$work/actual"
 
 sed -n 's/^file *= *"\(.*\)"/\1/p' "$manifest" | sort > "$work/declared"
 
@@ -88,7 +118,7 @@ fi
 undeclared=$(comm -23 "$work/actual" "$work/declared")
 if [ -n "$undeclared" ]; then
   echo
-  echo "FAIL: diverges from upstream but is not in vendor/UPSTREAM.toml:"
+  echo "FAIL: diverges from upstream but is not in $fork/UPSTREAM.toml:"
   echo "$undeclared" | sed 's/^/  /'
   echo "  Record why, or revert it to upstream."
   status=1
@@ -97,7 +127,7 @@ fi
 dead=$(comm -13 "$work/actual" "$work/declared")
 if [ -n "$dead" ]; then
   echo
-  echo "FAIL: declared in vendor/UPSTREAM.toml but no longer differs:"
+  echo "FAIL: declared in $fork/UPSTREAM.toml but no longer differs:"
   echo "$dead" | sed 's/^/  /'
   echo "  Drop the entry. A dead divergence makes the real ones harder to see."
   status=1
@@ -139,7 +169,7 @@ elif [ "$latest" = "$version" ]; then
   echo "up to date: $latest is the newest stable release"
 else
   echo "FAIL: upstream is at $latest and this fork is at $version"
-  echo "  Absorb it: see the procedure in vendor/README.md."
+  echo "  Absorb it: see the procedure in $fork/README.md."
   status=1
 fi
 

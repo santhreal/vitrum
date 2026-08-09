@@ -64,6 +64,18 @@ for bin in vitrum vitrum-server; do
 done
 ok 'the archive carries vitrum and vitrum-server at its root'
 
+step "the archive carries nothing above the CPU floor"
+# Disassemble what is inside the archive rather than what is in target/. This
+# is the artifact a user receives, it is the only thing that proves the pin
+# survived the build, and it is the check that would have caught a build script
+# compiling for the builder's CPU instead of the target's.
+isa="$scratch/isa"
+rm -rf "$isa"
+mkdir -p "$isa"
+tar xzf "$serve/$archive" -C "$isa"
+tools/release/check-isa.sh "$isa" || die 'the archive is not portable to its own target'
+rm -rf "$isa"
+
 # The installer builds the archive name from the version and the host triple.
 # If those two rules ever drift apart the entry lookup below fails, which is
 # the same failure a user would get, so it is worth asserting here by name.

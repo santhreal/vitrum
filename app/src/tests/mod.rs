@@ -1279,10 +1279,6 @@ fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
             "vendored xterm.css",
             "vendored, and not held to our motion, colour or grid rules",
         ),
-        (
-            "the boot splash",
-            "in force before the design system is parsed, and not a part of it",
-        ),
     ];
 
     let opts = Options::parse(Vec::<String>::new()).expect("no args always parses");

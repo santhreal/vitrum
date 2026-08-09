@@ -125,28 +125,14 @@ function themeChanged(before, after) {
 
 // Resolve once #rg-term is in the DOM. A MutationObserver, not a poll: it is
 // woken by the DOM mutation itself and disconnects on the first hit.
-//
-// This is also the moment the first real frame is up, so it is where the
-// loading screen comes down. `#rg-term` is rendered by the app's root, so its
-// arrival means the client has connected, the state has loaded and Dioxus has
-// committed a tree — there is something to look at. Taking the screen down on
-// the bridge's own start instead would uncover a document that is still empty.
-function firstFrame() {
-  if (window.__vitrum_bootDone) window.__vitrum_bootDone();
-}
-
 function waitForContainer() {
   const found = document.getElementById("rg-term");
-  if (found) {
-    firstFrame();
-    return Promise.resolve(found);
-  }
+  if (found) return Promise.resolve(found);
   return new Promise((resolve) => {
     const mo = new MutationObserver(() => {
       const el = document.getElementById("rg-term");
       if (el) {
         mo.disconnect();
-        firstFrame();
         resolve(el);
       }
     });

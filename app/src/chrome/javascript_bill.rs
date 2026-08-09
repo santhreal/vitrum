@@ -25,11 +25,10 @@ use std::path::PathBuf;
 /// welcome; shrinking and updating the row is the whole ritual.
 ///
 /// Paths are relative to the repository root and use `/` on every platform.
-const BILL: [(&str, usize); 6] = [
+const BILL: [(&str, usize); 5] = [
     ("app/src/vendor/xterm.js", 289_441),
     ("app/src/vendor/addon-webgl.js", 100_856),
-    ("app/src/bootstrap.js", 36_105),
-    ("app/src/loading.js", 2_864),
+    ("app/src/bootstrap.js", 35_572),
     ("vendor/src/js/native_eval.js", 1_675),
     ("app/src/vendor/addon-fit.js", 1_497),
 ];

@@ -103,7 +103,8 @@ fn the_document_head_is_built_once_and_shared() {
          until the mount-time push landed"
     );
     assert!(
-        first.contains("window.__vitrum_bootDelayMs="),
-        "the head lost the boot splash's timer"
+        !first.contains("__vitrum_boot"),
+        "a boot splash is back in the document; the mark is the window's to \
+         draw, on a surface that exists 600 ms before the webview has one"
     );
 }

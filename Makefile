@@ -14,7 +14,8 @@ PROBE_RUN ?= harness/out/probe-20260806T035911Z
 MEMORY_RUNS ?= harness/out/memory-20260806T192242Z harness/out/memory-20260806T192658Z
 IDLE_RUN ?= harness/out/idle-cpu-20260806T192751Z
 
-.PHONY: help build test clippy gate lanes plan perf-tables perf-tables-check measure package clean
+.PHONY: help build test clippy gate lanes plan perf-tables perf-tables-check \
+	measure package release release-dry-run release-check verify-artifacts clean
 
 help:
 	@echo 'build              release build of every crate, warnings fatal'
@@ -25,6 +26,10 @@ help:
 	@echo 'perf-tables        snapshot the harness runs and inject docs/performance.md'
 	@echo 'perf-tables-check  fail if those tables are stale (CI runs this)'
 	@echo 'package            build the release archive and verify its checksum'
+	@echo 'verify-artifacts   build the archive and install it through install.sh'
+	@echo 'release-check      every version literal and target triple agrees'
+	@echo 'release-dry-run    rehearse a cut in a scratch clone; VERSION=x.y.z'
+	@echo 'release            cut it here: bump, changelog, commit, tag; VERSION=x.y.z'
 	@echo 'lanes              every worktree, what is uncommitted, what is unpushed'
 	@echo 'plan               group open pull requests into non-overlapping waves'
 	@echo
@@ -75,6 +80,30 @@ perf-tables-check:
 package:
 	./packaging/build-release-asset.sh
 	cd dist && sha256sum -c SHA256SUMS
+
+# One command per release, and no prompt in any of them.
+#
+# `release` stops with the tag made and nothing pushed, because the push is
+# the step that cannot be taken back. `release-dry-run` does the whole thing
+# in a throwaway clone and proves this tree came out byte-identical, so it is
+# the one to run first and it costs nothing to run again.
+VERSION ?=
+need-version = test -n '$(VERSION)' || { echo 'usage: make $@ VERSION=x.y.z' >&2; exit 1; }
+
+release:
+	@$(need-version)
+	@tools/release/cut.sh '$(VERSION)'
+
+release-dry-run:
+	@$(need-version)
+	@tools/release/dry-run.sh '$(VERSION)'
+
+release-check:
+	tools/release/versions.sh check
+	tools/release/targets.sh check
+
+verify-artifacts:
+	./tools/release/verify-artifacts.sh
 
 clean:
 	$(CARGO) clean

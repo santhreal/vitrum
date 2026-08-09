@@ -1,0 +1,68 @@
+#!/bin/sh
+# The published target triples, and the check that everything agrees on them.
+#
+#   tools/release/targets.sh list    print the four triples
+#   tools/release/targets.sh check   fail if any file names a different set
+#
+# Four files have an opinion about which platforms a release carries: the build
+# matrix in `.github/workflows/release.yml`, the `uname` mapping in
+# `install.sh`, the architecture gate in `install.ps1`, and `update.rs` inside
+# the app. A triple that exists in the matrix and not in an installer is an
+# asset nobody downloads; a triple in an installer and not in the matrix is a
+# 404 at the end of a `curl | sh`. Neither shows up until someone runs the
+# installer on that platform, which is after the release is published.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$root"
+
+TARGETS='aarch64-apple-darwin
+x86_64-apple-darwin
+x86_64-pc-windows-msvc
+x86_64-unknown-linux-gnu'
+
+die() { printf 'targets: %s\n' "$*" >&2; exit 1; }
+
+sorted() { LC_ALL=C sort -u; }
+
+# Every triple the file names, whatever syntax it names it in.
+found_in() {
+    grep -oE '(aarch64|x86_64|i686|armv7)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9]+)?' "$1" |
+        sorted
+}
+
+want=$(printf '%s\n' "$TARGETS" | sorted)
+# The two installers split the set between them by platform: `install.sh` runs
+# on Linux and macOS, `install.ps1` on Windows. Each is checked against its own
+# half, and the halves are cut out of the one list above rather than typed
+# twice, so a fifth target joins whichever installer it belongs to or fails.
+want_windows=$(printf '%s\n' "$want" | grep windows | sorted)
+want_posix=$(printf '%s\n' "$want" | grep -v windows | sorted)
+
+compare() {
+    file=$1
+    expect=$2
+    what=$3
+    got=$(found_in "$file")
+    [ "$got" = "$expect" ] || {
+        printf 'targets: %s names a different set:\n' "$file" >&2
+        printf '%s\n' "$expect" > "$tmp"
+        printf '%s\n' "$got" | diff --label published --label "$file" -u "$tmp" - >&2
+        die "$file disagrees with the published target set"
+    }
+    printf 'targets: %s names %s\n' "$file" "$what"
+}
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+case "${1:-check}" in
+    list) printf '%s\n' "$TARGETS" ;;
+    check)
+        compare .github/workflows/release.yml "$want" 'every published target'
+        compare install.sh "$want_posix" 'every Linux and macOS target'
+        compare install.ps1 "$want_windows" 'every Windows target'
+        printf 'targets: %s\n' "$(printf '%s' "$want" | tr '\n' ' ')"
+        ;;
+    *) die "unknown command: $1" ;;
+esac

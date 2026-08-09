@@ -1,105 +1,119 @@
 # Cutting a release
 
-A release is a **git tag**, a **GitHub release** pointing at it, and one
-`tar.gz` per platform with a `SHA256SUMS` beside them. `vitrum update` refuses
-a release that publishes no sums, so the archives are not optional. Building
-from the source tarball GitHub generates for the tag stays the documented way
-to install the first time, and the README says so.
+A release is a git tag, a GitHub release pointing at it, and one `tar.gz` per
+platform with a `SHA256SUMS` beside them. `install.sh`, `install.ps1` and
+`vitrum update` all refuse an archive the sums do not cover, so a release
+without them installs for nobody.
 
-Why a tag rather than `main`: `main` carries whatever is in flight. A tag is a
-state that was tested as a whole, and `vitrum --version` reports the crate
-version it was cut at, so an operator can always say which build they are on.
-
-## Before tagging
-
-Run all of it. Each line has to be clean, not nearly clean.
+Two commands do the whole thing.
 
 ```sh
-cargo build --release --workspace     # zero warnings
-cargo test  --release --workspace     # zero failures
-cargo clippy --release --workspace    # advisory; fix real bugs, ignore style
+make release-dry-run VERSION=0.1.1   # rehearse it; changes nothing
+make release VERSION=0.1.1           # do it here, stopping before the push
 ```
 
-Then the two platforms you are not sitting at. CI builds them with
-`-D warnings`, so a test helper that is only called on Linux fails the build
-there while passing here. Checking never links, so both run locally:
+`make release` prints the push that publishes it. Run that, and
+`.github/workflows/release.yml` does the rest.
+
+## Before you cut
 
 ```sh
-RUSTFLAGS="-D warnings" cargo check --profile release \
-  --target x86_64-pc-windows-gnu --workspace --all-targets
-RUSTFLAGS="-D warnings" cargo check --profile release \
-  --target aarch64-apple-darwin --all-targets \
-  -p vitrum-core -p vitrum-os -p vitrum-server -p vitrum-proto \
-  -p vitrum-fmt -p vitrum-grid -p vitrum-model -p vitrum-replay
+make gate            # release build and test of every crate, warnings fatal
+make release-check   # every version literal and target triple agrees
 ```
 
-macOS omits the `vitrum` binary because `objc2`'s build script wants the Apple
-SDK. That one is still first compiled by CI.
+Write the release into `CHANGELOG.md` under `## Unreleased`, including the
+gaps. `make release` refuses an empty Unreleased section, because a release
+whose known gaps are discovered by the first user is a release that should
+have said them.
 
-Then check by hand, because no test can:
+Then launch it and use it. Start two sessions, switch between them, save a
+preset, bind a key, fire it. The suite does not open a window.
 
-1. **`CHANGELOG.md` describes this version**, including its gaps. A release
-   whose known gaps are discovered by the first user is a release that should
-   have said them.
-2. **Launch it and use it.** Start two sessions, switch between them, save a
-   preset, bind a key, fire it. The suite does not open a window.
-3. **Follow the README's own install block** on a clean machine or a scratch
-   `$HOME`. The instructions are the product for anybody who has not run it.
+## What `make release` does
 
-## Bumping the version
+In this order, refusing before it edits anything:
 
-The version lives in **one** place, `Cargo.toml` at the workspace root. Every
-other mention derives from it or is pinned to it by a test:
+1. Refuses a dirty tree, a branch other than `main`, a version that is not
+   greater than the current one, a tag that already exists, and an empty
+   `## Unreleased`.
+2. Bumps every version literal: `Cargo.toml`, `Cargo.lock` and `README.md`.
+   `tools/release/versions.sh` owns that list and checks it.
+3. Renames `## Unreleased` to `## v<version> - <date>` and opens a fresh empty
+   one.
+4. Commits exactly those four files as `Release v<version>`.
+5. Makes an annotated tag `v<version>` carrying the release notes.
+6. Prints the push command, and the two commands that undo it.
 
-- `vitrum --version` reads `CARGO_PKG_VERSION`.
-- `the_readme_downloads_the_version_this_crate_is` fails if the README's
-  tarball URL, git tag or unpack directory names a different version.
-- The macOS bundle's `CFBundleShortVersionString` is in the README's install
-  block and is checked by eye.
+Nothing is pushed. That is the only step you take by hand, because it is the
+only one that cannot be taken back.
 
-So: change `Cargo.toml`, run `cargo test`, and fix what it names.
+## What `make release-dry-run` does
 
-```sh
-# 1. bump
-$EDITOR Cargo.toml            # version = "0.1.0"
-$EDITOR CHANGELOG.md          # rename the unreleased heading, date it
-cargo test --release --workspace   # this tells you every place that drifted
+Everything above, in a clone of this repository in a temporary directory, and
+then it deletes the clone. It asserts the commit, the tag, the bumped
+literals and the rolled changelog section, breaks each version literal in turn
+to confirm the check catches it, and drives every refusal `make release` owes
+you. It digests this working tree before and after and fails if they differ,
+so a dry run that reports success has proved it changed nothing.
 
-# 2. commit and tag, staging only the files you changed
-git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit --only -m "Release v0.1.0" -- Cargo.toml Cargo.lock CHANGELOG.md
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin main --tags
-```
+CI runs it on every push.
 
 ## Publishing
 
-`vitrum update` installs a prebuilt archive, so a release without one leaves
-every existing install unable to update itself. Build the asset on each
-platform you publish for, on that platform, because the binaries link against
-the system webview and are not cross-compiled.
+Pushing the tag starts `.github/workflows/release.yml`. It:
 
-```sh
-sh packaging/build-release-asset.sh
-```
+- refuses a tag whose version is not the workspace version, before building;
+- builds `vitrum-<version>-<target>.tar.gz` on the runner for each of the four
+  published targets, and refuses a runner whose host triple is not the target
+  it is building;
+- refuses a set of archives that is not exactly those four;
+- writes one `SHA256SUMS` over all four;
+- uploads everything to a draft, confirms the draft holds every asset, and
+  only then publishes it.
 
-That writes `dist/vitrum-<version>-<target>.tar.gz` and appends its digest to
-`dist/SHA256SUMS`. Collect both from every platform into one `dist` before the
-next step, so a single `SHA256SUMS` lists every archive.
-
-```sh
-gh release create v0.1.0 \
-  --title "v0.1.0" \
-  --notes-file <(sed -n '/^## v0.1.0/,/^## v/p' CHANGELOG.md | sed '$d') \
-  dist/vitrum-*.tar.gz dist/SHA256SUMS
-```
+Re-running it on the same tag is safe: it puts the release back into draft and
+removes its assets before uploading, so a re-run replaces the release instead
+of adding a second copy of every file. A run that dies partway leaves an
+unpublished draft, which installs for nobody, rather than a release that
+installs half of itself.
 
 The source tarball GitHub generates for the tag is separate and automatic; it
 is what the README's `curl` line fetches for people building from source.
 
-The updater refuses a release that has no `SHA256SUMS`, so uploading the
-archives without it publishes an update nobody can install. That refusal is
-deliberate: an unverified archive becomes the program the operator runs.
+## Nightly
+
+The same workflow publishes a nightly on a schedule and on every push to main
+that changes a crate, the app or the packaging. You do nothing to cut one.
+
+It is one moving tag, `nightly`, repointed at the commit it was built from,
+marked prerelease so `/releases/latest` walks past it. Its assets are replaced
+in place on every run and its notes name the commit.
+
+A nightly's version is a semver prerelease of the next patch, so `0.1.0` in
+`Cargo.toml` publishes `0.1.1-nightly.<date>.<sha>`. It sorts above the last
+release and below the next one, the archive name is the workspace version as
+always, and `vitrum --version` says which nightly a binary is:
+
+```sh
+tools/release/versions.sh nightly
+```
+
+To install one, name the tag. To leave the channel, install a stable version;
+`docs/install.md` covers pinning.
+
+## Verifying without publishing
+
+```sh
+make verify-artifacts
+```
+
+Builds the archive for this host with `packaging/build-release-asset.sh`,
+writes `SHA256SUMS` the way the publish job writes it, serves both over
+`file://`, and installs them with `install.sh` — the shipped script, with only
+its download base repointed. Then it corrupts one byte and removes the
+`SHA256SUMS` entry and requires the installer to refuse both, so the digest
+check is exercised rather than assumed.
 
 ## After publishing
 
@@ -109,8 +123,8 @@ built it before, and you will not find out any other way.
 
 ```sh
 cd "$(mktemp -d)"
-curl -L https://github.com/santhreal/vitrum/archive/refs/tags/v0.1.0.tar.gz | tar xz
-cd vitrum-0.1.0
+curl -L https://github.com/santhreal/vitrum/archive/refs/tags/v0.1.1.tar.gz | tar xz
+cd vitrum-0.1.1
 cargo build --release --locked
 ./target/release/vitrum --version
 ```

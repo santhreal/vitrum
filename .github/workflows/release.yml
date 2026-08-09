@@ -1,29 +1,161 @@
 name: release
 
-# Tagging `v0.1.0` publishes `v0.1.0`. Nothing else does.
+# Two channels, one pipeline.
 #
-# `vitrum update` downloads `vitrum-<version>-<target>.tar.gz` and refuses a
-# release whose `SHA256SUMS` does not cover it, so the job that collects the
-# per-platform archives into one checksum file is not a convenience: without it
-# every client refuses the release.
+#  - stable: pushing `v0.1.0` publishes `v0.1.0`, forever, marked latest.
+#  - nightly: a schedule, and every push to main that changes something a
+#    build reads, publish to one moving `nightly` tag, marked prerelease so
+#    the "latest release" lookup both installers use walks past it.
+#
+# Both build the same four archives with the same script and publish the same
+# `SHA256SUMS` shape, because `install.sh`, `install.ps1` and `vitrum update`
+# know one asset layout: `vitrum-<version>-<target>.tar.gz` from the release,
+# refused unless that release's `SHA256SUMS` covers it by that exact name.
+# Three things follow, and every one of them is a step below rather than a
+# convention:
+#
+#  - the version in the archive name comes from `Cargo.toml`, the version in a
+#    stable URL comes from the tag, and a release where those differ is a 404
+#    for every client, so the tag and the workspace version are compared first;
+#  - `SHA256SUMS` is written once, over all four archives, by the job that has
+#    all four, because a builder only ever sees its own;
+#  - a release with some of its assets is worse than no release, so everything
+#    is uploaded to a draft and the draft is published only after the assets
+#    are confirmed to be on it.
+#
+# Re-running either channel on a tag that already has a release is expected and
+# safe: the release is put back into draft and stripped of its assets before
+# anything is uploaded, so a re-run replaces the release rather than adding a
+# second copy of each asset beside the first. Nightly relies on exactly that,
+# every night.
 on:
   push:
+    # Both a tag push and a main push land here. Which channel a run is, and
+    # whether a main push is worth a build at all, is decided in `contract`:
+    # a `paths` filter here would apply to the tag push too, and a release
+    # commit that touches only CHANGELOG.md would silently not publish.
     tags: ["v*"]
-  # Re-running a failed publish must not need a second tag.
+    branches: [main]
+  schedule:
+    # After the working day in every timezone this is developed in, so a
+    # nightly is a build of a finished day rather than of a half-landed one.
+    - cron: "17 6 * * *"
+  # Re-running a failed publish must not need a second tag. Leave the input
+  # empty to force a nightly instead.
   workflow_dispatch:
     inputs:
       tag:
-        description: the existing tag to build
-        required: true
+        description: an existing v* tag to rebuild; empty for a nightly
+        required: false
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # The published platforms. `tools/release/targets.sh check` fails when this
+  # set, the matrix below, `install.sh` and `install.ps1` stop agreeing.
+  TARGETS: >-
+    aarch64-apple-darwin
+    x86_64-apple-darwin
+    x86_64-pc-windows-msvc
+    x86_64-unknown-linux-gnu
 
 jobs:
+  # Cheap, and it runs before four cold release builds rather than after them.
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      channel: ${{ steps.channel.outputs.channel }}
+      tag: ${{ steps.channel.outputs.tag }}
+      build: ${{ steps.channel.outputs.build }}
+      version: ${{ steps.channel.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # A main push needs the previous commit to see what it changed.
+          fetch-depth: ${{ (inputs.tag || startsWith(github.ref, 'refs/tags/')) && 1 || 0 }}
+
+      - name: channel
+        id: channel
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          version=$(./tools/release/versions.sh current)
+          if [ -n "$INPUT_TAG" ] || [ "${GITHUB_REF%%/v*}" = refs/tags ]; then
+            channel=stable
+            tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+            build=true
+          else
+            channel=nightly
+            tag=nightly
+            build=true
+            # The archive name is the workspace version on both channels, and
+            # for a nightly the workspace is moved to a semver prerelease of
+            # the next patch before the build. So the name stays
+            # `vitrum-<workspace version>-<target>.tar.gz` with no second
+            # naming scheme, the version sorts strictly between the last
+            # stable and the next one, `vitrum --version` says which nightly a
+            # binary is, and the update channel can tell two nightlies apart
+            # from the asset name alone.
+            version=$(./tools/release/versions.sh nightly)
+            # A push to main that changed nothing a build reads is not worth
+            # four cold release builds. A schedule always builds, and so does
+            # the first push after a force-push, where there is no range to
+            # compare against.
+            if [ "$GITHUB_EVENT_NAME" = push ] &&
+               git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then
+              changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" |
+                grep -E '^(app/|crates/|vendor/|vendor-pty/|packaging/|Cargo\.(toml|lock)$)' || true)
+              if [ -z "$changed" ]; then
+                build=false
+                echo "no crate, app or packaging change since $BEFORE; skipping"
+              else
+                echo "changed:"
+                echo "$changed"
+              fi
+            fi
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "$channel $tag, version $version, build=$build"
+
+      # A tag whose version is not the workspace version publishes archives
+      # named for one version under a URL naming another. Every installer
+      # builds that URL from the tag, so every installer 404s, and the release
+      # looks fine on the releases page. Nightly has no such tag to disagree
+      # with: its URL names `nightly` and its archives name the workspace.
+      - name: the tag and the workspace version must agree
+        if: steps.channel.outputs.channel == 'stable'
+        run: |
+          tag="${{ steps.channel.outputs.tag }}"
+          version="${tag#v}"
+          declared="${{ steps.channel.outputs.version }}"
+          if [ "$version" != "$declared" ]; then
+            echo "tag $tag carries version $version, Cargo.toml says $declared" >&2
+            exit 1
+          fi
+
+      - name: every version literal agrees
+        run: ./tools/release/versions.sh check
+
+      - name: the installers and the matrix agree on the targets
+        run: ./tools/release/targets.sh check
+
+      # The publish job reads the same section with the same matcher. Failing
+      # here costs five minutes; failing there costs four release builds.
+      - name: CHANGELOG.md has a section for this tag
+        if: steps.channel.outputs.channel == 'stable'
+        run: ./tools/release/changelog.sh notes "${{ steps.channel.outputs.version }}"
+
   build:
+    needs: contract
+    if: needs.contract.outputs.build == 'true'
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     # A cold release build of the whole workspace on the slowest runner, with
@@ -78,17 +210,46 @@ jobs:
           echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
           echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
 
-      # The script names the archive from the host triple, which is the same
-      # rule the updater uses to look for it. Cross-compiling is not attempted:
-      # both binaries link against the platform's own webview and PTY.
-      - name: build the archive
-        if: runner.os != 'Windows'
-        run: ./packaging/build-release-asset.sh
-
-      - name: build the archive
-        if: runner.os == 'Windows'
+      # The nightly version is decided once, in `contract`, so all four
+      # archives carry the same one rather than four different timestamps.
+      # Writing it into the workspace here is what puts it into the archive
+      # name — which is always the workspace version — and into
+      # `vitrum --version`. Nothing commits it; the checkout is thrown away
+      # with the runner.
+      - name: the nightly version
+        if: needs.contract.outputs.channel == 'nightly'
         shell: bash
-        run: ./packaging/build-release-asset.sh
+        run: |
+          ./tools/release/versions.sh bump "${{ needs.contract.outputs.version }}"
+          git --no-pager diff --stat
+
+      # The script names the archive from the host triple, which is the same
+      # rule the installers use to look for it. Cross-compiling is not
+      # attempted: both binaries link against the platform's own webview and
+      # PTY, so the runner's host triple has to be the target being published.
+      # If GitHub ever changes what an image is, this says so instead of
+      # publishing an archive under a name nothing asks for.
+      #
+      # Windows defaults to pwsh, so the shell is named rather than assumed.
+      - name: build the archive
+        shell: bash
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "${{ matrix.os }} is $host, not ${{ matrix.target }}" >&2
+            exit 1
+          fi
+          case " $TARGETS " in
+            *" ${{ matrix.target }} "*) ;;
+            *) echo "${{ matrix.target }} is not a published target" >&2; exit 1 ;;
+          esac
+          ./packaging/build-release-asset.sh
+          want="dist/vitrum-${{ needs.contract.outputs.version }}-${{ matrix.target }}.tar.gz"
+          test -f "$want" || {
+            echo "expected $want, got:" >&2
+            ls dist >&2
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v7
         with:
@@ -97,11 +258,16 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [contract, build]
     runs-on: ubuntu-latest
     # It downloads four archives and creates a release. Anything longer is a
     # stuck upload.
     timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ needs.contract.outputs.channel }}
+      TAG: ${{ needs.contract.outputs.tag }}
+      VERSION: ${{ needs.contract.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -112,8 +278,41 @@ jobs:
           path: staged
           merge-multiple: true
 
+      # `needs: build` already fails on a builder that errored. This catches
+      # the other shape: four jobs that all succeeded and produced three
+      # archives, or one archive under a name no installer will ask for.
+      - name: exactly the published archives arrived
+        run: |
+          cd staged
+          missing=
+          for target in $TARGETS; do
+            name="vitrum-$VERSION-$target.tar.gz"
+            test -f "$name" || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "no archive for:$missing" >&2
+            ls -l >&2
+            exit 1
+          fi
+          extra=$(ls *.tar.gz | while read -r f; do
+            keep=
+            for target in $TARGETS; do
+              [ "$f" = "vitrum-$VERSION-$target.tar.gz" ] && keep=1
+            done
+            [ -n "$keep" ] || echo "$f"
+          done)
+          if [ -n "$extra" ]; then
+            echo "archives nothing will download:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
+          ls -l
+
       # One SHA256SUMS covering every platform, written here rather than by
-      # each builder, because each builder only ever sees its own archive.
+      # each builder, because each builder only ever sees its own archive. The
+      # names in it are the plain archive names, which is what both installers
+      # match against literally, and the file is the same shape on both
+      # channels so nothing downstream has to know which one it came from.
       - name: checksums
         run: |
           cd staged
@@ -121,25 +320,105 @@ jobs:
           cat SHA256SUMS
           sha256sum -c SHA256SUMS
 
-      # The notes are the section of CHANGELOG.md for this version, which is
+      # Stable notes are the section of CHANGELOG.md for this version, which is
       # the same text the in-app dialog shows after an update. Two sources
       # would drift, and the one users read is the file.
+      #
+      # A nightly has no section, because it is not a version. Its notes name
+      # the commit it was built from, which is the only thing anybody needs
+      # from a build that will be replaced tomorrow.
       - name: release notes
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          awk -v v="## ${tag}" '
-            $0 ~ "^"v {found=1; next}
-            found && /^## v/ {exit}
-            found {print}
-          ' CHANGELOG.md > NOTES.md
-          test -s NOTES.md || { echo "CHANGELOG.md has no section for $tag"; exit 1; }
+          if [ "$CHANNEL" = stable ]; then
+            ./tools/release/changelog.sh notes "$VERSION" > NOTES.md
+          else
+            {
+              printf 'Unreleased build of `main`, replaced on every nightly.\n\n'
+              printf -- '- commit `%s` — %s\n' \
+                "$(git rev-parse --short HEAD)" "$(git log -1 --format=%s)"
+              printf -- '- built %s\n' "$(date -u +'%Y-%m-%d %H:%M UTC')"
+              printf -- '- version `%s`, ahead of the last release\n\n' "$VERSION"
+              printf 'Not a release. `install.sh`, `install.ps1` and `vitrum update`\n'
+              printf 'ask for the latest release and skip this one, because it is\n'
+              printf 'marked prerelease. Install it by naming the tag.\n'
+            } > NOTES.md
+          fi
           cat NOTES.md
+
+      # Nightly is one moving tag, so the tag is repointed at the commit being
+      # published before the release is touched. A release whose tag still
+      # names last night's commit hands every downloader a build that does not
+      # match the source it claims.
+      - name: move the nightly tag
+        if: env.CHANNEL == 'nightly'
+        run: |
+          repo="${{ github.repository }}"
+          if gh api "repos/$repo/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$repo/git/refs/tags/$TAG" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            echo "moved $TAG to $GITHUB_SHA"
+          else
+            gh api -X POST "repos/$repo/git/refs" \
+              -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+            echo "created $TAG at $GITHUB_SHA"
+          fi
+
+      # A re-run must replace the release, not append to it. Putting it back
+      # into draft first means a client cannot see a half-rebuilt release, and
+      # deleting the assets means an archive from an earlier attempt under a
+      # name this run no longer produces cannot survive into the new release.
+      # Every nightly is a re-run in this sense.
+      - name: reset any existing release to an empty draft
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "no release for $TAG yet"
+            exit 0
+          fi
+          gh release edit "$TAG" --draft
+          gh release view "$TAG" --json assets --jq '.assets[].name' |
+            while read -r name; do
+              echo "removing $name"
+              gh release delete-asset "$TAG" "$name" --yes
+            done
 
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.CHANNEL == 'stable' && env.TAG || format('nightly {0}', github.sha) }}
           body_path: NOTES.md
+          # Uploaded as a draft. Nothing below publishes it until every asset
+          # is confirmed present, so a failed upload leaves an unpublished
+          # draft rather than a release that installs half of itself.
+          draft: true
           files: |
             staged/*.tar.gz
             staged/SHA256SUMS
           fail_on_unmatched_files: true
+
+      # The upload action reports success per file; this asks the release what
+      # it actually holds, which is what a client will ask.
+      - name: the draft holds every asset
+        run: |
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort > on-release
+          for target in $TARGETS; do
+            echo "vitrum-$VERSION-$target.tar.gz"
+          done > expected
+          echo SHA256SUMS >> expected
+          sort -o expected expected
+          diff expected on-release || {
+            echo "the draft does not hold exactly the release's assets" >&2
+            exit 1
+          }
+          cat on-release
+
+      # `--prerelease --latest=false` is what keeps a nightly out of
+      # `/releases/latest`, which is the endpoint both installers resolve when
+      # no version is given.
+      - name: publish
+        run: |
+          if [ "$CHANNEL" = stable ]; then
+            gh release edit "$TAG" --draft=false --prerelease=false --latest
+          else
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          fi
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,isLatest

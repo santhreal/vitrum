@@ -33,6 +33,15 @@ const FLUSH_WINDOW: Duration = Duration::from_millis(6);
 /// the full window and no single chunk grows unbounded.
 const FLUSH_BYTES: usize = 64 * 1024;
 
+/// Whether the reader thread reaches end of stream on its own.
+///
+/// On Unix it does: the master reports EOF once the child's last descriptor
+/// closes, so the raw channel closing IS end of output and is worth waiting
+/// for. A Windows pseudoconsole keeps the read side open for as long as the
+/// session holds its master, so the reader there stays parked until the
+/// session is closed and the exit has to be the end of the stream instead.
+const READER_REPORTS_EOF: bool = cfg!(not(windows));
+
 /// How long a session must be quiet before its foreground process is worth
 /// asking about.
 ///
@@ -124,6 +133,17 @@ pub(crate) struct Session {
     /// Raised when the operator does something the probe's last answer may not
     /// survive, so a settled session is re-examined without a periodic tick.
     activity: Notify,
+    /// Raised once by `close`, so a discarded session reaches a terminal state
+    /// without depending on the master reporting EOF.
+    ///
+    /// Linux does not need it: the kernel hangs the controlling terminal up
+    /// when the session leader exits, so a backgrounded grandchild still
+    /// holding the slave cannot hold the stream open, which was measured
+    /// rather than assumed. That guarantee is the tty layer's, not POSIX's,
+    /// and `close` is where the operator has already said the session is
+    /// finished, so it does not wait to find out whether this kernel offers
+    /// it.
+    closed: Notify,
     /// Queue to the dedicated writer thread. Input is queued rather than
     /// written inline because a child that has stopped reading its stdin makes
     /// a PTY write block indefinitely, which would wedge a runtime worker.
@@ -490,6 +510,7 @@ impl SessionManager {
             resizes: AtomicU64::new(0),
             probes: AtomicU64::new(0),
             activity: Notify::new(),
+            closed: Notify::new(),
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(killer),
             last_focus_ms: AtomicU64::new(0),
@@ -799,7 +820,9 @@ impl SessionManager {
     /// Kill the session's child and drop the session from the registry.
     ///
     /// The PTY and its threads unwind on their own once the child dies and the
-    /// master reports EOF, so this never blocks on the child.
+    /// master reports EOF, so this never blocks on the child. The coalescer is
+    /// told outright that the session is gone, rather than left waiting for an
+    /// EOF whose timing belongs to the platform. See `Session::closed`.
     pub fn close(&self, id: SessionId) -> anyhow::Result<()> {
         let s = self
             .sessions
@@ -812,6 +835,7 @@ impl SessionManager {
         if let Err(e) = lock(&s.killer).kill() {
             tracing::debug!(session = s.id.0, error = %e, "kill on close");
         }
+        s.closed.notify_one();
         Ok(())
     }
 
@@ -834,10 +858,11 @@ impl SessionManager {
 /// only ends when the session is closed. Waiting for it before reporting the
 /// exit is what left every Windows session running forever.
 ///
-/// Output still precedes the exit. The coalescer drains this channel after the
-/// code arrives and only finishes once it has gone quiet, so the ordering is
-/// enforced where the bytes are published instead of by which thread stops
-/// first.
+/// Output still precedes the exit. The coalescer keeps draining this channel
+/// after the code arrives, so the ordering is enforced where the bytes are
+/// published instead of by which thread stops first. Where this loop can end
+/// on its own it drains to real end of stream; where it cannot, the exit plus
+/// a quiet window is the end. See `READER_REPORTS_EOF`.
 fn read_loop(
     session: Arc<Session>,
     mut reader: Box<dyn Read + Send>,
@@ -897,8 +922,20 @@ fn read_loop(
         match reader.read(&mut pool[..]) {
             Ok(0) => break,
             Ok(n) => {
+                pool.truncate(n);
+                let chunk = pool.split().freeze();
+                // Hand the bytes over before doing anything else with them.
+                // Parsing is this thread's work and it is not free: feeding a
+                // 32 KiB read to the engine takes long enough that a child
+                // which exits mid-parse can be reaped, and everything still
+                // held here would be output the coalescer never learns exists.
+                // Cloning is a refcount bump on the same allocation, so the
+                // engine still parses the bytes that were sent, not a copy.
+                if out.send(chunk.clone()).is_err() {
+                    break;
+                }
                 if let Some(vt) = vt.as_mut() {
-                    vt.feed(&pool[..n]);
+                    vt.feed(&chunk);
                     // A client learns a session changed when its observation
                     // revision moves, so the revision has to move here. The
                     // foreground probe would eventually push a fresh projection
@@ -918,11 +955,6 @@ fn read_loop(
                     if changed {
                         session.bump();
                     }
-                }
-                pool.truncate(n);
-                let chunk = pool.split().freeze();
-                if out.send(chunk).is_err() {
-                    break;
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -1047,13 +1079,28 @@ async fn next_read(
 ) -> Option<Bytes> {
     loop {
         // Once the child is gone there is nothing left to classify, only the
-        // bytes it already wrote. Quiet is what ends the session, because the
-        // channel closing cannot be waited for: on Windows the pseudoconsole
-        // outlives the child and the reader stays parked until the session is
-        // closed.
+        // bytes it already wrote.
         if code.is_some() {
-            // A timeout and a closed channel mean the same thing here: no more
-            // bytes are coming.
+            if READER_REPORTS_EOF {
+                // Park on the channel until the reader closes it. A child
+                // exiting says nothing about how much it wrote on the way out:
+                // a whole burst can still be sitting in the pty buffer, or in
+                // the reader's hands, when the exit is reaped. Ending the
+                // stream on a stopwatch instead of on end of stream threw all
+                // of it away, which is how a shell printing a few kilobytes
+                // and exiting published nothing at all.
+                //
+                // Biased so a pending chunk always beats the close: a session
+                // being discarded still publishes what it already read.
+                tokio::select! {
+                    biased;
+                    chunk = raw.recv() => return chunk,
+                    () = session.closed.notified() => return None,
+                }
+            }
+            // A Windows pseudoconsole never closes the channel while the
+            // session holds its master, so quiet after the exit is the only
+            // end of output there is.
             return timeout_at(Instant::now() + FLUSH_WINDOW, raw.recv())
                 .await
                 .unwrap_or_default();

@@ -25,11 +25,11 @@ the project directory, and the state.
 `Ctrl+Shift+Down` selects the next session in one of the blocked states.
 
 <p align="center">
-  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher: recent agents per project and the agents installed on this machine" width="900" />
+  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over a sidebar of codex and gemini sessions, some ready, one waiting for approval, one failed, one snoozed: recent agents per project, and the agents installed on this machine" width="900" />
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over a populated sidebar" width="900" />
+  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over a sidebar of codex and gemini sessions: several ready, one waiting for approval, one failed, one snoozed" width="900" />
 </p>
 
 Sessions run in a daemon. Closing the window, or updating vitrum, does not stop

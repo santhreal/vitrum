@@ -64,6 +64,10 @@ struct HarnessProps {
 fn Harness(props: HarnessProps) -> Element {
     let state = use_signal(|| props.initial.clone());
     let millis = use_signal(|| NOW as i64);
+    // Nothing staged: the restart band is not what this file measures, and
+    // an extra band on every paint is one more thing the row count has to
+    // be read past.
+    let update_standing = use_signal(crate::update::Standing::default);
     CLOCK.with(|c| c.set(Some(millis)));
     STATE.with(|c| c.set(Some(state)));
     let clock = crate::clock::render_clock(millis(), 0);
@@ -73,6 +77,7 @@ fn Harness(props: HarnessProps) -> Element {
             clock,
             home: "/home/u".to_string(),
             server: "127.0.0.1:7717",
+            update_standing,
             on_select: move |_: (SessionId, Click)| {},
             on_close_session: move |_: SessionId| {},
             on_toggle_project: move |_: GroupKey| {},
@@ -89,6 +94,7 @@ fn Harness(props: HarnessProps) -> Element {
             on_resize_start: move |_: f64| {},
             on_resize_nudge: move |_: f64| {},
             on_settings: move |()| {},
+            on_restart: move |()| {},
         }
     }
 }

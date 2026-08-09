@@ -199,7 +199,7 @@ pub(super) fn AboutPanel(props: AboutPanelProps) -> Element {
                     UpdateUi::Answer(crate::update::Status::Ready(a)) =>
                         format!("vitrum {} is available. You have {current}.", a.version),
                     UpdateUi::Installed(v) =>
-                        format!("Updated to {v}. {}", crate::update::AFTER_INSTALL),
+                        format!("Staged {v}. {}", crate::update::AFTER_INSTALL),
                     UpdateUi::Failed(why) => why,
                 }
             }

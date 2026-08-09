@@ -374,9 +374,34 @@
 }
 
 /* The grid. Was 4 top, 0 right, 0 bottom, 8 left, which is four independent
- * decisions and the reason the terminal's text hugged the sidebar seam. */
+ * decisions and the reason the terminal's text hugged the sidebar seam. Then
+ * it was --rg-inset on all four sides, which is one decision and still put
+ * the first row of output 16px under a 40px band of chrome — close enough to
+ * flush that the transcript read as a continuation of the titlebar.
+ *
+ * It is now 24 top and 8 bottom, spelled as --rg-space-6 and --rg-space-2
+ * rather than as 1.5rem and 0.5rem. A literal length here is off the scale
+ * by construction the first time somebody nudges it, and it is also the one
+ * declaration in this file whose value the PTY can feel, so it is the last
+ * place a number should be free to be anything. The pair is load-bearing:
+ * THE AXIS TOTALS MAY NOT CHANGE. xterm's fit addon sizes the grid from the
+ * measured element's CONTENT box, so the rows it proposes are
+ * floor((paneHeight - paddingTop - paddingBottom) / cellHeight) and the cols
+ * are the same arithmetic across. Those depend on the SUM of each axis and
+ * on nothing else, so moving 8px from the bottom of the pane to the top is
+ * provably invisible to the PTY: same sum, same floor, same rows, same
+ * Resize on the wire. Adding 8px instead would have taken a row from the
+ * agent on some pane heights and not others, which is the class of change
+ * that gets made for a visual reason and is discovered as a wrapped line.
+ *
+ * `ui/terminal.rs::pane_padding_never_changes_the_grid_the_pty_gets` reads
+ * THIS declaration back — it holds no copy of the numbers — checks every
+ * side is a token rather than a literal, resolves the vars, and re-runs the
+ * fit arithmetic against the four-sided --rg-inset this replaced, over a
+ * sweep of pane and cell sizes. An edit that changes either axis sum makes
+ * that test say which invariant you broke and how many rows the agent lost. */
 .rg-terminal {
-  padding: var(--rg-inset);
+  padding: var(--rg-space-6) var(--rg-inset) var(--rg-space-2);
 }
 
 /* The seam. The sidebar's own hairline plus --rg-inset on each side of it. */

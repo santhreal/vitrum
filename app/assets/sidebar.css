@@ -808,6 +808,12 @@
 /* -- Scroller ------------------------------------------------------------ */
 
 .rg-sidebar__body {
+  /* A COLUMN, so the last child can be told to take what the list did not.
+   * Block flow has no way to say that: `height: 100%` on a trailing element
+   * inside a scroller measures the scroller, not the space left in it, and
+   * overflows by exactly the height of the list above it. */
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -821,6 +827,84 @@
    * scrolling layer with no background of its own paints white until its
    * content arrives. Matches `.rg-sidebar`, whose fill this covers. */
   background-color: var(--rg-surface);
+}
+
+/* -- The floor -----------------------------------------------------------
+ *
+ * The bottom of the panel when the list does not reach it. See
+ * `ui/sidebar.rs` for the argument; this is the geometry.
+ *
+ * `flex: 1 1 auto` with a zero basis and `min-height: 0`, which is the whole
+ * mechanism: against a list that already overflows there is no free space to
+ * take, so it is zero tall and costs nothing, and against three sessions in
+ * a 764px scroller it is 570px of panel with a purpose. No measurement, no
+ * signal, no state.
+ *
+ * `container-type: size` plus the query below is what keeps it honest at the
+ * in-between heights. A label half-clipped by a region that is 20px tall is
+ * worse than no region, so the words appear only once there is room for
+ * them and the region is otherwise an empty surface.
+ *
+ * The dashed border is doing real work rather than decorating: it says the
+ * area is a place rather than a panel, which is the same convention every
+ * drop target uses, and it does it without a fill that would make the
+ * bottom two thirds of the sidebar a second colour. */
+.rg-sidebar__floor {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rg-space-1);
+  min-height: 0;
+  margin-top: var(--rg-space-3);
+  padding: 0;
+  border: 1px dashed var(--rg-border);
+  border-radius: var(--rg-radius-md);
+  background-color: transparent;
+  color: var(--rg-fg-subtle);
+  font-family: var(--rg-font-ui);
+  font-size: var(--rg-text-xs);
+  cursor: pointer;
+  overflow: hidden;
+  container-type: size;
+}
+
+.rg-sidebar__floor:hover:not(:disabled) {
+  border-color: var(--rg-accent);
+  color: var(--rg-fg-muted);
+}
+
+.rg-sidebar__floor:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.rg-sidebar__floor-label,
+.rg-sidebar__floor-hint {
+  display: none;
+}
+
+.rg-sidebar__floor-hint {
+  font-family: var(--rg-font-mono);
+  font-size: var(--rg-text-10);
+}
+
+/* One line of prose plus its shortcut needs 56px of the region's own height
+ * before either is worth drawing. Below that the region is a border and
+ * nothing else, which is the honest rendering of "there is a little space
+ * here" and never a clipped word. */
+@container (min-height: 56px) {
+  .rg-sidebar__floor-label,
+  .rg-sidebar__floor-hint {
+    display: block;
+  }
+}
+
+/* The 48px rail has no room for a sentence and no room for a region that
+ * would push the footer around. */
+.rg-sidebar--collapsed .rg-sidebar__floor {
+  display: none;
 }
 
 .rg-sidebar__body::-webkit-scrollbar {
@@ -838,6 +922,65 @@
 
 .rg-sidebar__body::-webkit-scrollbar-thumb:hover {
   background-color: var(--rg-scroll-thumb-hover);
+}
+
+/* -- The restart offer ---------------------------------------------------
+ *
+ * A staged build, waiting for a start it does not get to choose. Between the
+ * scroller and the footer, `flex: 0 0 auto` like the footer itself, so it
+ * takes its own band and the list above it loses that much scroll rather
+ * than the offer floating over rows.
+ *
+ * It is NOT an alert. The bytes are down and verified and the operator loses
+ * nothing by ignoring it for a week, so it wears the accent as a 6px mark
+ * and text at the muted weight, and it does not take the accent as a fill.
+ * A filled band here would be the loudest thing in the panel and it would be
+ * loud about the one piece of news that costs nothing to defer.
+ *
+ * No motion. `17-motion.css` forbids anything that repeats, and a pulse on a
+ * permanent band is the definition of that. */
+.rg-sidebar__restart {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--rg-space-2);
+  width: 100%;
+  padding: var(--rg-space-2) var(--rg-content-inset);
+  border: 0;
+  border-top: 1px solid var(--rg-border);
+  background-color: transparent;
+  color: var(--rg-fg-muted);
+  font-family: var(--rg-font-ui);
+  font-size: var(--rg-text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rg-sidebar__restart:hover {
+  background-color: var(--rg-row-hover);
+  color: var(--rg-fg);
+}
+
+.rg-sidebar__restart-dot {
+  flex: 0 0 auto;
+  width: var(--rg-dot-size);
+  height: var(--rg-dot-size);
+  border-radius: var(--rg-radius-full);
+  background-color: var(--rg-accent);
+}
+
+/* One line, and the version is the end of it, so an ellipsis at a narrow
+ * width eats the number rather than the verb. */
+.rg-sidebar__restart-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The 48px rail has no room for the sentence and the dot alone would be an
+ * unexplained mark in a column of status dots. */
+.rg-sidebar--collapsed .rg-sidebar__restart {
+  display: none;
 }
 
 /* -- Footer --------------------------------------------------------------
@@ -1331,6 +1474,78 @@
 
 .rg-session:hover {
   background-color: var(--rg-row-hover);
+}
+
+/* -- The row's hover detail ----------------------------------------------
+ *
+ * The panel that replaced the row's `title` attributes. See
+ * `ui/sidebar.rs::SessionRow` for why a session row may not ask the platform
+ * for a tooltip: the short version is that `title` paints a window this
+ * stylesheet cannot reach, anchored to the pointer rather than to the row,
+ * so a reorder under a stationary cursor leaves it stranded over rows it no
+ * longer describes.
+ *
+ * It is a CHILD of the row and positioned against it, so the same layout
+ * that moves a row moves this, and `:hover` is recomputed by that layout. A
+ * frame in which the row has moved and the panel has not cannot exist,
+ * because there is no second surface to be out of date.
+ *
+ * `display: none` and not opacity: an always-present box would take hit
+ * tests over the rows below it, and `pointer-events: none` alone still
+ * leaves the engine compositing twenty invisible panels.
+ *
+ * No transition. It appears on hover, and 17-motion.css's rule is that a
+ * fade under a moving cursor reads as lag. */
+.rg-session__tip {
+  display: none;
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + var(--rg-space-1));
+  right: 0;
+  left: 0;
+  padding: var(--rg-space-2) var(--rg-space-3);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-md);
+  background-color: var(--rg-surface-overlay);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-xs);
+  font-weight: var(--rg-weight-normal);
+  line-height: 1.5;
+  /* The string is assembled with newlines in `row_tooltip`, which is the
+   * shape a `title` wanted. Kept, because the first line is the session and
+   * the rest are facts about it, and reflowing them into a paragraph loses
+   * that. */
+  white-space: pre-line;
+  /* It describes the row under the cursor; it must never become the thing
+   * under the cursor. */
+  pointer-events: none;
+}
+
+/* The row clips its own content to its radius, which would clip this too.
+ * Lifted only while the panel is up, so the twenty rows that are not hovered
+ * keep the clip and the containment that goes with it. The stacking position
+ * is on the ROW rather than on the panel because a z-index inside an
+ * overflow-hidden box is still inside it. */
+.rg-session:hover,
+.rg-session:focus-visible,
+.rg-session:focus-within {
+  z-index: 5;
+  overflow: visible;
+}
+
+.rg-session:hover > .rg-session__tip,
+.rg-session:focus-visible > .rg-session__tip {
+  display: block;
+}
+
+/* The collapsed rail is 48px wide and this panel is a paragraph. There is
+ * nowhere for it to go that is not on top of the terminal, so the rail does
+ * without it; the rail's rows keep their dot, which is what that width is
+ * for. */
+.rg-sidebar--collapsed .rg-session:hover > .rg-session__tip,
+.rg-sidebar--collapsed .rg-session:focus-visible > .rg-session__tip {
+  display: none;
 }
 
 /* -- The recede mechanism ------------------------------------------------
@@ -1870,24 +2085,32 @@
  * the bottom of this file: that list works by element name and this is not
  * an element.
  *
- * Off by default and switched on per state. `display: none` rather than a
- * zero width, so the 4px gap leaves with it and a Ready pill is its word and
- * nothing else rather than its word behind 4px of nothing. */
+ * EVERY STATE, and that is a fix rather than the original intent. The mark
+ * used to be switched on for Working alone, on the argument that Working is
+ * the only transient state and the only one that needs colour on a row. That
+ * argument is about hue and it was applied to geometry, which is a different
+ * thing: the pill is a flex row of dot, word and aux, so a pill with no dot
+ * starts its word 12px further along than one with a dot. In a list where a
+ * Working row sits above a Ready row the two words do not share a left edge
+ * and the two pills do not share a width, so the column reads as ragged
+ * against a right edge that is otherwise the straightest line in the panel.
+ *
+ * The hue argument survives intact and is unchanged: `15-rows.css` gives
+ * Ready the subtle foreground and Working the muted one, so those two marks
+ * are grey, and the three states that carry a hue put it on their mark
+ * through `currentColor`. Every state has a dot; not every dot has a colour.
+ *
+ * No `display: none` branch is left anywhere in this file, and
+ * `sidebar/tests.rs::every_status_wears_a_dot` iterates the status enum at
+ * run time to keep it that way. */
 .rg-pill::before {
   content: "";
-  display: none;
+  display: block;
   flex: 0 0 auto;
   width: var(--rg-dot-size);
   height: var(--rg-dot-size);
   border-radius: var(--rg-radius-full);
   background-color: currentColor;
-}
-
-/* Working, and only Working while the panel is open. The collapsed rail at
- * the bottom of this file turns the same dot on for every state, because
- * down there the word is hidden and the dot is all that is left. */
-.rg-pill--working::before {
-  display: block;
 }
 
 /* Only on a slim row, where the actions genuinely share this cell. A card's
@@ -2024,16 +2247,12 @@
 
 /* THE ONE THING THE RAIL STILL SAYS.
  *
- * With the word gone the dot is the whole status, so it is on for every
- * state here and not just for Working. It needs no markup and no entry in
- * the list above, because it is a pseudo-element: that is the second reason
- * the mark is drawn rather than set as a character, and it is why this
- * block is four declarations instead of a hide-and-re-show pair.
+ * The dot is the whole of a collapsed row's status, and the base rule above
+ * already puts one on every state, so the rail needs no override: the block
+ * that re-showed it here is gone along with the `display: none` it existed
+ * to undo.
  *
  * Hues come from the row layer, which owns every colour a row spends. */
-.rg-sidebar--collapsed .rg-pill::before {
-  display: block;
-}
 
 /* Nothing is left on the line but the dot, so the slot stops right-aligning
  * and centres in the 48px column with it. */

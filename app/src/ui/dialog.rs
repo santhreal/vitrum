@@ -120,8 +120,6 @@ pub enum Band {
     Agent,
     /// Running, but not in this project.
     Elsewhere,
-    /// The login shell.
-    Shell,
     /// Exactly what was typed, when nothing else matches it.
     Typed,
 }
@@ -210,9 +208,18 @@ impl Intent {
 ///
 /// The command dimension comes straight out of [`launch::command_suggestions`]
 /// with an empty query, which is already the operator's ranked history
-/// followed by the agents really on `PATH` followed by the login shell. This
-/// function adds the two things that function cannot know: WHERE, and the
-/// sessions the daemon already has running.
+/// followed by the agents really on `PATH`. This function adds the two things
+/// that function cannot know: WHERE, and the sessions the daemon already has
+/// running.
+///
+/// NO SHELL ROW. The list used to end with the login shell, so a fresh
+/// profile on a machine with no agent installed opened the launcher on a
+/// single row reading `/bin/bash`. That is a launcher for a terminal
+/// multiplexer, and any screenshot of this surface shipped the claim; see
+/// `AGENTS.md`, "Demos show agents, not shell output". A shell is still
+/// launchable — type it, and `Band::Typed` takes it exactly as written —
+/// because running one is ordinary. Offering it is the product arguing for
+/// itself in the wrong category.
 ///
 /// `detected` may be empty. That is the normal state for the first few
 /// milliseconds a launcher is open, and the reason agents sit below recents:
@@ -221,7 +228,6 @@ pub fn intents(
     st: &UiState,
     store: &LaunchStore,
     detected: &[Detected],
-    shell: &str,
     here: &str,
     home: &str,
     now_ms: u64,
@@ -233,12 +239,10 @@ pub fn intents(
 
     let mut recent: Vec<Intent> = Vec::new();
     let mut agents: Vec<Intent> = Vec::new();
-    let mut shells: Vec<Intent> = Vec::new();
-    for s in launch::command_suggestions(store, detected, shell, "", now_ms, SUGGEST_MAX) {
+    for s in launch::command_suggestions(store, detected, "", now_ms, SUGGEST_MAX) {
         let band = match s.source {
             CommandSource::History => Band::Recent,
             CommandSource::Detected => Band::Agent,
-            CommandSource::Shell => Band::Shell,
         };
         let row = Intent::new(
             s.line,
@@ -250,9 +254,8 @@ pub fn intents(
             None,
         );
         match band {
-            Band::Recent => recent.push(row),
             Band::Agent => agents.push(row),
-            _ => shells.push(row),
+            _ => recent.push(row),
         }
     }
 
@@ -324,7 +327,6 @@ pub fn intents(
     out.extend(presets);
     out.extend(agents);
     out.extend(away);
-    out.extend(shells);
 
     // One row per thing that can be launched. Twenty agents in one repo would
     // otherwise put twenty identical rows in front of the operator, and each
@@ -682,7 +684,7 @@ pub fn primary_of(
     home: &str,
     now_ms: u64,
 ) -> Primary {
-    let rows = intents(st, store, &[], "", here, home, now_ms);
+    let rows = intents(st, store, &[], here, home, now_ms);
     let Some(top) = rows.into_iter().find(|i| i.band.launchable_now()) else {
         return Primary::Choose("Nothing has been launched here yet.".to_string());
     };
@@ -960,7 +962,6 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
     // environment reads; no directory walk and no `PATH` walk.
     let store = use_signal(launch::load_launch_store);
     let home = use_signal(launch::user_home);
-    let shell = use_signal(launch::default_shell);
     let opened_ms = use_signal(launch::now_ms);
 
     // The one unbounded read on this surface. Five `PATH` lookups, each across
@@ -1051,7 +1052,6 @@ pub fn NewSessionDialog(props: NewSessionProps) -> Element {
             &st,
             &store.read(),
             agents,
-            &shell.read(),
             &here.read(),
             &home.read(),
             opened_ms(),

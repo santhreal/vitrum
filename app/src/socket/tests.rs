@@ -243,6 +243,49 @@ fn history_evicted_between_the_backfill_and_the_live_bytes_is_named() {
     );
 }
 
+/// A hole is measured against the painted stream, not against the resume
+/// offset, so contiguous frames after the splice report nothing.
+///
+/// WHY: this is a regression. The splice asked each buffered frame whether it
+/// started above `resume_seq`, which is only the right question for the first
+/// one: every later frame of a healthy run starts above it by exactly the
+/// bytes its predecessors carried, and each was reported as evicted history.
+/// A false hole is worse than a silent one, because the notice tells the
+/// operator the transcript they are reading has bytes missing from it when it
+/// does not, and there is nothing they can do to check.
+///
+/// Three frames, because two is the shortest run that shows the bug and three
+/// proves the offset keeps advancing rather than being right once.
+///
+/// What this does NOT catch: a real hole, which the case above owns, or a hole
+/// after the first frame, which cannot happen while the daemon sends one
+/// contiguous stream per attachment.
+#[test]
+fn a_run_of_contiguous_frames_reports_no_hole_at_all() {
+    let mut stream = PaneStream::default();
+    let mut out = Vec::new();
+    stream.focus(Some(S), &mut out);
+
+    stream.output(S, 8, b"IJKL".to_vec(), &mut out);
+    stream.output(S, 12, b"MN".to_vec(), &mut out);
+    stream.output(S, 14, b"OP".to_vec(), &mut out);
+
+    // History ends at 10, inside the first buffered frame, so the splice drops
+    // two bytes of it and every later frame is already beyond the join.
+    stream.backfill(S, 0, 10, b"ABCDEFGHIJ".to_vec(), None, false, &mut out);
+
+    assert_eq!(
+        painted(&out).as_slice(),
+        b"ABCDEFGHIJKLMNOP",
+        "the splice must drop the overlap once and keep every later frame whole"
+    );
+    assert_eq!(
+        stream.take_notices(),
+        Vec::<String>::new(),
+        "a contiguous run has no missing history to report"
+    );
+}
+
 /// Overflowing the pending buffer must paint the live bytes and discard the
 /// backfill that lands afterwards.
 ///

@@ -589,6 +589,23 @@ impl WebviewInstance {
             webview = webview.with_drag_drop_handler(file_drop_handler);
         }
 
+        // Not on Linux: wry hands WebKitGTK a colour it cannot mean.
+        //
+        // `wry::webkitgtk` builds the colour with
+        // `gdk::RGBA::new(red as _, green as _, blue as _, alpha as _)` from
+        // the `u8` quadruple. A GDK channel is an `f64` on 0.0..=1.0, so
+        // `(6, 6, 8, 255)` arrives as `RGBA(6.0, 6.0, 8.0, 255.0)` and clamps
+        // to opaque WHITE. Every background colour that is not black paints
+        // white there, which is the opposite of what the setting is for, and
+        // the public `WebView::set_background_color` scales the same way and
+        // is no escape. The colour is applied below instead, once the view
+        // exists, in the units GDK actually reads.
+        #[cfg(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))]
         if let Some(color) = cfg.background_color {
             webview = webview.with_background_color(color);
         }
@@ -674,6 +691,40 @@ impl WebviewInstance {
         let webview = {
             use tao::platform::unix::WindowExtUnix;
             use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
+            // The window wears the webview's background colour from its very
+            // first expose.
+            //
+            // Two surfaces paint before a document does, and this is the
+            // first of them. Between the window being mapped and WebKit
+            // taking over, what is on screen is the GTK window's own theme
+            // background: white under every default light theme. Filmed on a
+            // bare X server at roughly thirty frames a second, a dark
+            // application was black for its whole launch and then flashed
+            // white on its way to being dark again. A flash is the one part
+            // of a launch nobody can miss and no timing instrument can see,
+            // because it falls between two events that are both on time.
+            //
+            // A screen-wide provider rather than a per-widget one, because
+            // every window this process opens wants the same answer, and
+            // because the colour has to be in place before this window is
+            // realised rather than applied to each one afterwards.
+            if let Some((r, g, b, a)) = cfg.background_color {
+                use gtk::prelude::{CssProviderExt, WidgetExt};
+                let css = format!(
+                    "window, box {{ background-color: rgba({r},{g},{b},{:.3}); }}",
+                    f64::from(a) / 255.0
+                );
+                let provider = gtk::CssProvider::new();
+                if provider.load_from_data(css.as_bytes()).is_ok() {
+                    if let Some(screen) = window.gtk_window().screen() {
+                        gtk::StyleContext::add_provider_for_screen(
+                            &screen,
+                            &provider,
+                            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                        );
+                    }
+                }
+            }
             let vbox = window.default_vbox().unwrap();
             // Every window relates to a still-live view so they all share one
             // WebKitWebProcess. See `LIVE_WEBKIT_VIEWS`.
@@ -686,6 +737,22 @@ impl WebviewInstance {
             #[cfg(target_os = "linux")]
             if let Ok(built) = &built {
                 register_webkit_view(built.webview());
+                // The second surface, and the one that was actually white.
+                //
+                // Set here rather than through the builder because wry's
+                // conversion cannot express this colour; see the note where
+                // `with_background_color` is skipped. Applied before the
+                // event loop runs, so the view is never asked to paint while
+                // it still holds its default.
+                if let Some((r, g, b, a)) = cfg.background_color {
+                    use webkit2gtk::WebViewExt as _;
+                    built.webview().set_background_color(&gtk::gdk::RGBA::new(
+                        f64::from(r) / 255.0,
+                        f64::from(g) / 255.0,
+                        f64::from(b) / 255.0,
+                        f64::from(a) / 255.0,
+                    ));
+                }
             }
             built
         };

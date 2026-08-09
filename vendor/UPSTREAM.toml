@@ -24,12 +24,25 @@ compare = "src"
 [[divergence]]
 file = "src/webview.rs"
 reason = """
+Two changes, both on Linux.
+
 The reason the fork exists. On Linux each new webview is built with
 `with_related_view` pointed at a live webview, so every window runs inside the
 first window's WebKitWebProcess instead of starting its own network process.
 Measured at 8.6 MB PSS per avoided process, so 171.2 MB across twenty windows.
 `LIVE_WEBKIT_VIEWS` tracks which views are still real so the relation target is
 never a dead widget.
+
+And the launch flash. `background_color` was honoured by neither surface that
+paints before a document does. The GTK window kept its theme background, and
+wry's WebKitGTK backend builds the view's colour with
+`gdk::RGBA::new(red as _, ...)` from the `u8` quadruple, though a GDK channel
+is an `f64` on 0.0..=1.0: `(6, 6, 8, 255)` arrives as `RGBA(6.0, 6.0, 8.0,
+255.0)` and clamps to opaque white, so every colour that is not black paints
+white. Filmed launching on a bare X server, a dark application showed a
+full-screen white frame on its way to being dark. The window now takes the
+colour through a CSS provider and the view takes it through webkit2gtk in the
+units GDK reads, and the flash is gone from the film.
 """
 upstreamable = true
 

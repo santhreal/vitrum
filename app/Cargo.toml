@@ -138,3 +138,4 @@ native-pane = ["dep:gdk", "dep:glib", "dep:vitrum-grid", "dep:wgpu", "dep:pollst
 # lockfile so it moves nothing.
 [dev-dependencies]
 dioxus-ssr = "=0.7.10"
+saphyr = "0.0.11"

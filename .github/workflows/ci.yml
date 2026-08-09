@@ -199,7 +199,7 @@ jobs:
 
       # `--bin vitrum` because the client crate has no library target, and the
       # module path because a green `assets` must mean the asset gate ran.
-      - run: cargo test --release -p vitrum --bin vitrum --locked assets::
+      - run: "cargo test --release -p vitrum --bin vitrum --locked assets::"
 
   # The release machinery, on every push, because the day it is needed is a
   # day nobody wants to debug it. None of this builds the workspace: it reads

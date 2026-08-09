@@ -227,3 +227,178 @@ fn the_zig_version_is_pinned_consistently_and_documented() {
          guide is telling contributors to install something else"
     );
 }
+
+/// Runner labels this repository has agreed on.
+///
+/// The list is not the point; the ceremony of adding to it is. A typo, a
+/// retired image, an image that does not exist yet and a self-hosted name all
+/// look identical to GitHub — accepted, queued, abandoned — and identical
+/// here: red.
+const ALLOWED_RUNNERS: [&str; 4] = [
+    "ubuntu-latest",
+    "macos-latest",
+    "macos-15-intel",
+    "windows-latest",
+];
+
+/// A workflow GitHub cannot parse is a workflow that never runs.
+///
+/// This shipped. `ci.yml` carried `run: cargo test ... --locked assets::`,
+/// and a plain scalar ending in a colon is a mapping key to YAML, so the file
+/// was invalid from the moment it merged. GitHub does not report that as an
+/// error anyone sees: it creates the run, gives it zero jobs, marks it failed
+/// and writes no annotation, no check run and no log. On the commit list it is
+/// a red dot with nothing behind it, and the pipeline is simply not running.
+///
+/// The label guard below cannot cover this and neither can any step in CI: a
+/// file that does not parse has no job to run a check in. So it is checked
+/// here, on the machine making the change, before the push.
+#[test]
+fn every_workflow_parses() {
+    for (name, text) in workflows() {
+        let documents = match saphyr::LoadableYamlNode::load_from_str(&text) {
+            Ok(documents) => documents,
+            Err(why) => panic!(
+                "{name} is not valid YAML: {why}. GitHub accepts the push, \
+                 creates a run with no jobs, and marks it failed with nothing \
+                 to read, so the pipeline stops without reporting that it has."
+            ),
+        };
+        let document: &saphyr::Yaml = documents
+            .first()
+            .unwrap_or_else(|| panic!("{name} parses to no document at all"));
+        assert!(
+            document
+                .as_mapping()
+                .is_some_and(|top| top.contains_key(&saphyr::Yaml::value_from_str("jobs"))),
+            "{name} parses, and declares no jobs"
+        );
+    }
+}
+
+/// Every runner label a workflow can hand to GitHub.
+///
+/// Three shapes reach a runner: a bare `runs-on` scalar, a quoted operand of
+/// `&&`/`||` inside a `runs-on` expression, which is how the fork ternary picks
+/// one, and a matrix `os:` value in either the inline-list or the one-per-entry
+/// form. A label read from a repository variable resolves at run creation and
+/// is invisible from here; that one is taken on trust, and the fallback beside
+/// it is not.
+fn runner_labels(text: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim_start_matches('-').trim();
+        if key != "runs-on" && key != "os" {
+            continue;
+        }
+        let value = value.trim();
+        if value.contains("${{") {
+            let mut rest = value;
+            while let Some(open) = rest.find('\'') {
+                let after = &rest[open + 1..];
+                let Some(close) = after.find('\'') else { break };
+                let quoted = &after[..close];
+                // An operand that names a runner looks like a label; the other
+                // quoted strings in these expressions are event names and
+                // repository paths, which carry no hyphen or a slash.
+                if quoted.contains('-')
+                    && !quoted.contains('/')
+                    && quoted
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
+                {
+                    labels.push(quoted.to_string());
+                }
+                rest = &after[close + 1..];
+            }
+        } else if let Some(list) = value.strip_prefix('[') {
+            for item in list.trim_end_matches(']').split(',') {
+                let item = item.trim().trim_matches(['"', '\'']);
+                if !item.is_empty() {
+                    labels.push(item.to_string());
+                }
+            }
+        } else {
+            let value = value.trim_matches(['"', '\'']);
+            if !value.is_empty() && !value.starts_with('#') {
+                labels.push(value.to_string());
+            }
+        }
+    }
+    labels
+}
+
+/// A label with no runner behind it does not fail a job, it queues it.
+///
+/// `runs-on: vitrum` named a self-hosted runner nobody ever registered. Six
+/// jobs per push asked for it, each was accepted and queued and never
+/// assigned, and 233 of them accumulated until they starved the servable jobs
+/// for the whole repository. The same defect in its other form —
+/// `macos-13`, an image GitHub retired — is why the v0.1.0 release matrix
+/// never completed and the tag carries no assets.
+///
+/// CI checks this too, from the one job that asks for a runner GitHub always
+/// has. It is here as well because a queue that has already starved is a
+/// maintainer cancelling runs by hand.
+#[test]
+fn every_runner_label_is_one_a_runner_answers_to() {
+    let mut seen = 0usize;
+    for (name, text) in workflows() {
+        for label in runner_labels(&text) {
+            seen += 1;
+            assert!(
+                ALLOWED_RUNNERS.contains(&label.as_str()),
+                "{name} asks for the runner label {label:?}, which this \
+                 repository has not agreed on. A label no machine answers to \
+                 does not fail: the job queues until GitHub discards it a day \
+                 later, and enough of those starve every servable job here. \
+                 Add it to ALLOWED_RUNNERS if a runner really answers to it."
+            );
+        }
+    }
+    assert!(
+        seen >= 4,
+        "no runner label was found at all, so this proved nothing"
+    );
+}
+
+/// The extractor sees a label in each shape a workflow writes it.
+///
+/// Without this, the guard above passes on a matcher that quietly stopped
+/// matching, which is indistinguishable from having no guard.
+#[test]
+fn a_runner_label_is_found_in_every_shape() {
+    let text = concat!(
+        "jobs:\n",
+        "  one:\n",
+        "    runs-on: ubuntu-latest\n",
+        "  two:\n",
+        "    runs-on: ${{ github.event_name == 'push' && vars.CI_RUNNER || 'macos-latest' }}\n",
+        "  three:\n",
+        "    strategy:\n",
+        "      matrix:\n",
+        "        os: [windows-latest, macos-15-intel]\n",
+        "  four:\n",
+        "    strategy:\n",
+        "      matrix:\n",
+        "        include:\n",
+        "          - os: ubuntu-latest\n",
+    );
+    let mut found = runner_labels(text);
+    found.sort();
+    found.dedup();
+    assert_eq!(
+        found,
+        vec![
+            "macos-15-intel".to_string(),
+            "macos-latest".to_string(),
+            "ubuntu-latest".to_string(),
+            "windows-latest".to_string(),
+        ],
+        "the extractor missed a shape a workflow really writes"
+    );
+}

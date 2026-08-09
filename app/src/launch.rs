@@ -52,21 +52,74 @@ const AGENTS: &[(&str, &str)] = &[
     ("veyyon", "veyyon"),
 ];
 
-/// The agent binaries resolvable on this machine right now, in table order.
+/// One agent vitrum knows how to name, and whether this machine has it.
 ///
-/// Only what is really installed. The picker used to render all five with the
-/// missing ones greyed, which put four names the operator cannot run in front
-/// of them every time the dialog opened and buried the one they could. A name
-/// that is not on `PATH` is not a suggestion.
+/// Distinct from [`Detected`], which is a launcher suggestion and therefore
+/// only ever exists for something installed. A roster entry exists either
+/// way, because the first-run surface has to be able to say "Codex, not
+/// installed" — a name the operator recognises and an honest reason it is not
+/// offered beats an empty list under a heading that promised agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentAvailability {
+    pub label: &'static str,
+    pub command: &'static str,
+    /// Whether `resolve` could find `command` when the roster was taken.
+    pub installed: bool,
+}
+
+/// Every agent vitrum knows about, in table order, judged by `resolve`.
 ///
-/// One `PATH` walk per entry, so callers resolve this once when the dialog
-/// opens and never while the window idles.
-pub fn detected_agents() -> Vec<Detected> {
+/// PURE over the resolver, and that is the whole point of the parameter.
+/// Detection is otherwise a function of whatever happens to be installed on
+/// the machine running the test, which makes every rule about it — ordering,
+/// the zero case, which entry the first-run surface promotes — untestable or,
+/// worse, testable only on one developer's laptop. `resolve` is called once
+/// per entry and nowhere else, so a caller that hands in a table gets a
+/// deterministic roster.
+pub fn agent_roster(resolve: impl Fn(&str) -> bool) -> Vec<AgentAvailability> {
     AGENTS
         .iter()
-        .filter(|(_, cmd)| on_path(cmd))
-        .map(|(label, command)| Detected { label, command })
+        .map(|(label, command)| AgentAvailability {
+            label,
+            command,
+            installed: resolve(command),
+        })
         .collect()
+}
+
+/// The roster read off this machine's `PATH`.
+///
+/// One `PATH` walk per entry, so callers resolve this once when a surface
+/// opens and never while the window idles.
+pub fn agent_roster_now() -> Vec<AgentAvailability> {
+    agent_roster(on_path)
+}
+
+/// The installed half of a roster, as launcher suggestions. PURE.
+pub fn detected_in(roster: &[AgentAvailability]) -> Vec<Detected> {
+    roster
+        .iter()
+        .filter(|a| a.installed)
+        .map(|a| Detected {
+            label: a.label,
+            command: a.command,
+        })
+        .collect()
+}
+
+/// The agent binaries resolvable on this machine right now, in table order.
+///
+/// Only what is really installed. The launcher used to render all five with
+/// the missing ones greyed, which put four names the operator cannot run in
+/// front of them every time the dialog opened and buried the one they could.
+/// A name that is not on `PATH` is not a suggestion.
+///
+/// The first-run surface is the one place that wants the other half, and it
+/// reads [`agent_roster`] instead: there, naming what is missing is the
+/// answer rather than noise, because the operator has not yet been told what
+/// vitrum is looking for.
+pub fn detected_agents() -> Vec<Detected> {
+    detected_in(&agent_roster_now())
 }
 
 /// Split a command line into the program and its arguments.

@@ -1531,6 +1531,27 @@ fn App() -> Element {
                             reconcile(bridge, st, attached, opts);
                         },
                         on_retry: move |()| retry(bridge, st, attached, opts),
+                        // The first-run pane's one action. No layer: it named
+                        // the agent and the place on the control, so there is
+                        // nothing left to ask. Validated here rather than in
+                        // the pane, because a directory that has gone or a
+                        // binary uninstalled between the reading and the click
+                        // is a sentence, and the pane owns no flash.
+                        on_start: move |(cwd, line): (String, String)| {
+                            match launch::validate(&cwd, &line, "") {
+                                Ok(l) => {
+                                    let pid = launch::resolve_project(
+                                        &st.peek().daemon.projects,
+                                        &l.cwd,
+                                    )
+                                    .0;
+                                    start_session(bridge, st, pending_open, pid, l);
+                                }
+                                Err(why) => {
+                                    st.write().window.flash = Some(Flash::notice(why));
+                                }
+                            }
+                        },
                     }
                 }
             }

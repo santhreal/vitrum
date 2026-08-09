@@ -1,6 +1,7 @@
 //! Markup. Every region of the window.
 
 pub mod dialog;
+pub mod firstrun;
 pub mod icons;
 pub mod keybinds;
 pub mod menu;

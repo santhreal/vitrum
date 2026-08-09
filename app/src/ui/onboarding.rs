@@ -238,7 +238,11 @@ pub fn agents_line(agents: &[Detected]) -> String {
 }
 
 /// `"a"`, `"a and b"`, `"a, b and c"`.
-fn join_names(names: &[&str]) -> String {
+///
+/// Shared with [`crate::ui::firstrun`], which names the same list of agents
+/// on the same machine. Two spellings of this would be two ways to write one
+/// sentence, and the pane and the sheet would eventually disagree.
+pub(crate) fn join_names(names: &[&str]) -> String {
     match names {
         [] => String::new(),
         [one] => (*one).to_string(),

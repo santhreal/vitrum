@@ -44,6 +44,15 @@ before 1.0 a minor bump may break things, and this file says when it does.
   existed, and against its own 400 ms delay the widest window it could ever
   have painted in was 143 ms. Deleting it removes `loading.js` and drops the
   JavaScript bill from 432,438 bytes to 429,041.
+- **The AV1 encoder.** The renderer fork took `image` with default features,
+  which turns on every codec it has, and AVIF encoding reaches it through
+  `ravif` to `rav1e`. A terminal multiplexer was linking a video encoder, and
+  because `rav1e` ships hand-written AVX-512 the Windows executable failed the
+  instruction-set gate with 278 instructions above the AVX2 floor while
+  `vitrum-server.exe`, which does not link it, was clean. `image` is reached
+  only from the icon helpers, and the bundled fallback icon is already decoded
+  RGBA, so the codec set is now PNG, ICO and JPEG. Fifty-nine crates leave the
+  build, among them `rav1e`, `ravif`, `rayon`, `pulp` and `raw-cpuid`.
 
 ## v0.1.1 - 2026-08-09
 

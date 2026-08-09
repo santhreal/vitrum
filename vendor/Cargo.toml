@@ -141,8 +141,22 @@ default-features = false
 [dependencies.generational-box]
 version = "0.7.10"
 
+# DIVERGENCE FROM UPSTREAM. Upstream takes `image` with default features, which
+# turns on every codec it has, including AVIF *encoding* via `ravif` -> `rav1e`.
+# `rav1e` is an AV1 encoder and it ships hand-written AVX-512, so a terminal
+# multiplexer was shipping a video encoder and `vitrum.exe` failed
+# `tools/release/check-isa.sh` with 278 instructions above the AVX2 floor while
+# `vitrum-server.exe`, which does not link this, was clean.
+#
+# `image` is reached only from `default_icon.rs`, and only by `icon_from_memory`
+# and `icon_from_path`, the helpers for a caller-supplied icon. The bundled
+# fallback is `assets/default_icon.bin`, already decoded RGBA, so it needs no
+# codec at all. PNG, ICO and JPEG are what an icon is; nothing decodes an
+# animated AVIF into a title bar.
 [dependencies.image]
 version = "0.25.6"
+default-features = false
+features = ["png", "ico", "jpeg"]
 
 [dependencies.libc]
 version = "0.2.174"

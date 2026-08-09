@@ -136,23 +136,27 @@ fn fenced_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
-/// Every keyboard shortcut the README advertises is bound.
+/// Every keyboard shortcut the documentation advertises is bound.
 ///
-/// A README that teaches a chord the product does not have is worse than
-/// one that teaches none: the operator concludes the app is broken.
+/// A page that teaches a chord the product does not have is worse than one
+/// that teaches none: the operator concludes the app is broken.
+///
+/// Pinned to `docs/keys.md`, which owns the table. The README links to it and
+/// carries no chords, for the same reason the remote instructions moved: a
+/// claim belongs in the document that owns it, not on the front page because
+/// the front page is the file a test happened to read.
 #[test]
 fn every_advertised_shortcut_exists() {
     use crate::keymap::CHORDS;
-    let readme = include_str!("../../../README.md");
-    // Only the rows of the shortcut table, which are the advertised ones.
+    let keys = include_str!("../../../docs/keys.md");
     for (chord, action) in [
         ("Ctrl+Shift+N", crate::keymap::KeyAction::NewSession),
         ("Ctrl+Shift+F", crate::keymap::KeyAction::OpenSearch),
         ("Ctrl+Shift+X", crate::keymap::KeyAction::CloseSession),
     ] {
         assert!(
-            readme.contains(chord),
-            "the README stopped documenting {chord}"
+            keys.contains(chord),
+            "docs/keys.md stopped documenting {chord}"
         );
         assert!(
             CHORDS.iter().any(|c| c.action == action),

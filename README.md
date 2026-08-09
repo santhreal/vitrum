@@ -77,27 +77,12 @@ Numbers: [docs/performance.md](docs/performance.md).
 Presets store a command with its directory and a key binding, callable from
 anywhere in the app.
 
-## Keys
-
-`vitrum` opens an empty window. `Ctrl+Shift+N` opens a dialog taking a directory
-and a command. `Ctrl+S` in that dialog stores it as a preset.
-
-| | |
-|---|---|
-| `Ctrl+Shift+N` | new session |
-| `Ctrl+Shift+Down` | next blocked session |
-| `Ctrl+K` | filter the sidebar |
-| `Ctrl+Shift+F` | search scrollback across sessions |
-| `Ctrl+Tab` | next session |
-| `Ctrl+Shift+X` | stop the focused session |
-
-`F1` lists the rest.
-
 ## Documentation
 
 | | |
 |---|---|
 | [install.md](docs/install.md) | source builds, desktop entries, uninstall |
+| [keys.md](docs/keys.md) | keyboard shortcuts |
 | [states.md](docs/states.md) | how an agent declares approval and input |
 | [appearance.md](docs/appearance.md) | opacity, backdrops, compositor blur |
 | [remote.md](docs/remote.md) | running the daemon on another machine |

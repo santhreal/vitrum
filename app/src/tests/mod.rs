@@ -9,6 +9,7 @@ mod actions;
 mod integrations;
 mod platform_build;
 mod readme;
+mod startup;
 mod upstream;
 mod workflows;
 

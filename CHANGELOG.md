@@ -35,6 +35,13 @@ before 1.0 a minor bump may break things, and this file says when it does.
   1 after the daemon moved to 2, so every run failed at the handshake and
   created no sessions. A test now asserts the two agree.
 
+- **The installer finishes the install.** `install.sh` and `install.ps1` now
+  write the launcher entry, put the install directory on `PATH` and define
+  `vu` as `vitrum update`, all idempotently, with `--no-integrate` for images
+  and headless hosts. Those steps used to be three platform-sized blocks the
+  README asked you to paste after running a command that claimed to be the
+  whole install.
+
 ### Changed
 
 - **First launch now walks through the product, not just the machine.**

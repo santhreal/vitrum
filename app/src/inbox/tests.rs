@@ -211,7 +211,7 @@ fn a_codex_row_titled_action_required_shows_a_hedged_approval_pill() {
     let blocked = row(1)
         .running()
         .command("codex")
-        .title("[ ! ] Action Required - codex")
+        .term_title("[ ! ] Action Required - codex")
         .waiting(Some(true))
         .build();
     let pill = Pill::of(&blocked);
@@ -236,7 +236,7 @@ fn a_codex_row_titled_action_required_shows_a_hedged_approval_pill() {
     let declared = row(2)
         .running()
         .command("codex")
-        .title("[ ! ] Action Required - codex")
+        .term_title("[ ! ] Action Required - codex")
         .waiting(Some(true))
         .hint(HintState::Approval, Some("Run `git push --force`?"), NOW)
         .build();
@@ -255,7 +255,7 @@ fn the_action_required_banner_only_speaks_for_codex() {
         let other = row(1)
             .running()
             .command(command)
-            .title("[ ! ] Action Required")
+            .term_title("[ ! ] Action Required")
             .waiting(Some(true))
             .build();
         let pill = Pill::of(&other);

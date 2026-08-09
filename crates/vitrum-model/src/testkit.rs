@@ -28,6 +28,7 @@ pub fn info(id: u64) -> SessionInfo {
         unread: false,
         attention: Attention::default(),
         hint: None,
+        term_title: None,
     }
 }
 
@@ -58,9 +59,19 @@ impl ViewBuilder {
         self
     }
 
-    /// The session's title, as the terminal last set it.
+    /// The session's name, as shown in the sidebar.
     pub fn title(mut self, title: &str) -> Self {
         self.view.info.title = title.to_string();
+        self
+    }
+
+    /// What the program last announced in its terminal title.
+    ///
+    /// Separate from [`ViewBuilder::title`] because for an agent TUI the two
+    /// are different strings: the name is stable and the title bar is a status
+    /// line. This is the one the status resolver reads.
+    pub fn term_title(mut self, title: &str) -> Self {
+        self.view.info.term_title = Some(title.to_string());
         self
     }
 

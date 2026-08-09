@@ -14,7 +14,7 @@ fn sample_session() -> SessionInfo {
         id: SessionId(4),
         project_id: ProjectId(9),
         title: "claude".to_string(),
-        cwd: "/tmp/demo".to_string(),
+        cwd: "/src/demo".to_string(),
         command: "claude".to_string(),
         args: vec!["--resume".to_string()],
         status: SessionStatus::Running,
@@ -35,6 +35,7 @@ fn sample_session() -> SessionInfo {
             label: Some("write src/main.rs?".to_string()),
             received_at_ms: 1_700_000_000_400,
         }),
+        term_title: Some("[ ! ] Action Required - claude".to_string()),
     }
 }
 

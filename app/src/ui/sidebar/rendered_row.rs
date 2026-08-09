@@ -140,7 +140,7 @@ fn a_codex_row_blocked_on_approval_paints_the_hedged_approval_pill() {
     let html = render(
         row(4)
             .command("codex")
-            .title("[ ! ] Action Required - codex")
+            .term_title("[ ! ] Action Required - codex")
             .waiting(Some(true))
             .build(),
         Section::Active,

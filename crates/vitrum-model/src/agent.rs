@@ -183,10 +183,11 @@ impl AgentKind {
     /// compiling until someone writes down whether it publishes a blocked state
     /// and how, so "no rule" is always a decision and never an omission.
     ///
-    /// A title the operator pinned with `SessionManager::rename` never reaches
-    /// here as the agent's, because a pinned session ignores the program's own
-    /// title from then on. Renaming a session therefore turns this channel off
-    /// for it, which is the correct trade: the operator asked for that name.
+    /// A title the operator pinned with `SessionManager::rename` still reaches
+    /// here. The pin is on the session's name, not on this channel: a session
+    /// the operator bothered to name is the one they are watching, and taking
+    /// its approval banner away as the price of naming it would remove the
+    /// state they renamed it to follow.
     pub fn title_claim(self, title: &str) -> Option<TitleClaim> {
         match self {
             // The banner is a prefix, not the whole title: Codex appends the
@@ -206,6 +207,35 @@ impl AgentKind {
             | AgentKind::Veyyon
             | AgentKind::Shell
             | AgentKind::Unknown => None,
+        }
+    }
+
+    /// Whether this kind's terminal title is a name for the session.
+    ///
+    /// A shell titles its terminal with the command it is running or the
+    /// directory it is in, which is the best name that session will ever have,
+    /// and taking it is how a `vim` tab comes to say `vim`. An agent TUI does
+    /// the opposite: it treats the title bar as a status line and rewrites it
+    /// every turn. Gemini writes `Ready (kernel-notes)` and Codex writes
+    /// `[ ! ] Action Required`, so honouring those as names produced a sidebar
+    /// row reading `Ready (kernel-n…` beside a pill already saying Ready, and
+    /// a row whose name changed every time the agent changed what it was doing.
+    ///
+    /// Unknown says yes. A command this build does not recognise is far more
+    /// likely to be an ordinary program that titles itself sensibly than an
+    /// agent that does not, and the failure mode of guessing wrong here is a
+    /// worse name rather than a wrong status.
+    ///
+    /// Exhaustive for the same reason [`AgentKind::title_claim`] is: a new
+    /// agent must not silently inherit either answer.
+    pub const fn title_is_a_name(self) -> bool {
+        match self {
+            AgentKind::Claude
+            | AgentKind::Codex
+            | AgentKind::Gemini
+            | AgentKind::Opencode
+            | AgentKind::Veyyon => false,
+            AgentKind::Shell | AgentKind::Unknown => true,
         }
     }
 

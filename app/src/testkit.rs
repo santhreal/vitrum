@@ -37,6 +37,7 @@ pub fn info(id: u64) -> SessionInfo {
         unread: false,
         attention: Attention::default(),
         hint: None,
+        term_title: None,
     }
 }
 
@@ -69,6 +70,13 @@ impl Row {
 
     pub fn title(mut self, title: &str) -> Self {
         self.view.info.title = title.to_string();
+        self
+    }
+
+    /// What the program last announced in its terminal title, which is the
+    /// channel the status resolver reads. Not the session's name.
+    pub fn term_title(mut self, title: &str) -> Self {
+        self.view.info.term_title = Some(title.to_string());
         self
     }
 

@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, anyhow, bail};
 use bytes::{Bytes, BytesMut};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use vitrum_model::AgentKind;
 use vitrum_model::hint::HintDeclaration;
 use vitrum_proto::{Attention, SessionId, SessionInfo, SessionStatus, display_safe};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
@@ -495,6 +496,9 @@ impl SessionManager {
             // the common case: every harness that has never heard of OSC 7373
             // stays `None` for its whole life and must remain fully supported.
             hint: None,
+            // Nothing announced yet either. A program that never sets a title
+            // keeps this `None` for its whole life.
+            term_title: None,
         };
 
         let session = Arc::new(Session {
@@ -1142,27 +1146,48 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Take the title the program asked for, if the program still owns the name.
+/// Record the title the program announced, and take it as the name if the
+/// program is the kind that names itself.
 ///
 /// Returns whether anything changed, so the caller only wakes watchers when
 /// there is something to see. A shell re-announces the same title on every
 /// prompt, so "changed" has to mean the string differs, not that a sequence
 /// arrived.
 ///
-/// An empty title is refused. `OSC 2 ST` with nothing in it is how some
-/// programs clear the title on exit, and honouring it would blank a row in the
-/// sidebar rather than leave the name the session already had.
+/// The announced title is always recorded, because the status resolver reads
+/// it: an agent that puts `[ ! ] Action Required` in its title bar is how a
+/// blocked Codex session is detected at all. Whether it also becomes the
+/// session's *name* is [`AgentKind::title_is_a_name`]'s call, and for every
+/// agent TUI the answer is no — their title bar is a status line, and a row
+/// named from it reads `Ready (kernel-n…` next to a pill already saying Ready.
+///
+/// An empty title is refused for the name. `OSC 2 ST` with nothing in it is how
+/// some programs clear the title on exit, and honouring it would blank a row in
+/// the sidebar rather than leave the name the session already had. It is still
+/// recorded, because a cleared title is a real retraction of whatever the
+/// program was claiming.
 fn apply_engine_title(session: &Session, title: &str) -> bool {
-    if session.title_pinned.load(Ordering::Relaxed) {
-        return false;
-    }
     let trimmed = title.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
     let mut info = write_lock(&session.info);
+
+    let announced = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    let mut changed = false;
+    if info.term_title != announced {
+        info.term_title = announced;
+        changed = true;
+    }
+
+    // The pin is on the NAME, not on the channel. An operator who renames a
+    // session is watching that one in particular, and silencing its approval
+    // banner would take the state they renamed it to follow.
+    if session.title_pinned.load(Ordering::Relaxed) {
+        return changed;
+    }
+    if trimmed.is_empty() || !AgentKind::of(&info.command).title_is_a_name() {
+        return changed;
+    }
     if info.title == trimmed {
-        return false;
+        return changed;
     }
     info.title = trimmed.to_string();
     true

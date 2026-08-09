@@ -93,6 +93,7 @@ pub fn sessions(now_ms: u64) -> Vec<SessionView> {
                 },
             },
             hint: None,
+            term_title: None,
         }
     };
 

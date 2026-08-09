@@ -67,6 +67,7 @@ fn info(id: u64, cwd: &str) -> SessionInfo {
         unread: false,
         attention: Attention::default(),
         hint: None,
+        term_title: None,
     }
 }
 

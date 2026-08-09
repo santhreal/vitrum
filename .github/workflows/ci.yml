@@ -135,6 +135,42 @@ jobs:
       - name: install.sh parses
         run: sh -n install.sh
 
+  # The release machinery, on every push, because the day it is needed is a
+  # day nobody wants to debug it. None of this builds the workspace: it reads
+  # manifests, rehearses a cut in a throwaway clone and throws the clone away.
+  release:
+    name: release machinery
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # A dry run clones this checkout and cuts a release inside the clone, so
+      # it needs the history the clone will carry.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          shared-key: release
+
+      - name: the release scripts parse
+        run: for f in tools/release/*.sh packaging/*.sh; do sh -n "$f"; done
+
+      # The version literal lives in 23 places and the published target set in
+      # three files. Both are checked here rather than discovered by the first
+      # person to run an installer against a release.
+      - name: every version literal and target triple agrees
+        run: make release-check
+
+      # The whole cut, in a scratch clone, asserted and unwound. It breaks a
+      # version site at a time inside the clone and requires the check above to
+      # catch each one, runs every refusal `cut.sh` owes, then fails if this
+      # checkout is not byte-identical afterwards.
+      - name: a release cut rehearses cleanly
+        run: make release-dry-run VERSION="$(tools/release/versions.sh current)"
+
   # What a mac would tell us about a compile error, without a mac.
   #
   # Nearly every way this workspace breaks on macOS is a compile error in
@@ -241,9 +277,11 @@ jobs:
         env:
           CC_x86_64_pc_windows_gnu: ${{ github.workspace }}/.github/zig-cc-windows
 
-  # The archive the updater downloads is built by a script, and the script and
-  # `update::archive_name` must agree. Building it on every push is how a
-  # rename is caught before a release rather than by a user whose update fails.
+  # The archive the updater downloads is built by a script, and the script,
+  # `update::archive_name` and both installers must agree on its name. This
+  # builds it and then installs it with the shipped `install.sh` against a
+  # local copy of the release, so a rename is caught here rather than by a user
+  # whose update fails, and the digest refusal is exercised rather than assumed.
   package:
     name: release archive
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'vitrum' || 'ubuntu-latest' }}
@@ -278,15 +316,8 @@ jobs:
           mkdir -p "$dir"
           echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
           echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
-      - run: ./packaging/build-release-asset.sh
-      - name: the checksum must verify
-        run: cd dist && sha256sum -c SHA256SUMS
-      - name: the binaries must run
-        run: |
-          mkdir -p /tmp/asset
-          tar xzf dist/*.tar.gz -C /tmp/asset
-          /tmp/asset/vitrum --version
-          /tmp/asset/vitrum-server --version
+      - name: build the archive and install it through install.sh
+        run: ./tools/release/verify-artifacts.sh
 
   # The README's performance tables are generated from a checked-in snapshot of
   # real harness runs. This job re-renders them and fails if what is committed

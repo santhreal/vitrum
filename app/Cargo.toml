@@ -139,3 +139,10 @@ native-pane = ["dep:gdk", "dep:glib", "dep:vitrum-grid", "dep:wgpu", "dep:pollst
 [dev-dependencies]
 dioxus-ssr = "=0.7.10"
 saphyr = "0.0.11"
+
+# The resource compiler that puts the mark inside the `.exe`, and the crate
+# that draws it. Only Windows builds run either: on every other target
+# `build.rs` writes the target triple and stops.
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+vitrum-os = { workspace = true }

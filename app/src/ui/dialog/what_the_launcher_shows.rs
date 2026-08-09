@@ -53,7 +53,7 @@ fn only_paths_under_home_get_a_tilde() {
 /// a shell: a confident wrong answer, on the one row every operator has.
 #[test]
 fn a_row_with_arguments_still_names_its_agent() {
-    use crate::agent::AgentKind;
+    use vitrum_model::AgentKind;
     for (line, want) in [
         ("bash -l", AgentKind::Shell),
         ("/bin/bash", AgentKind::Shell),

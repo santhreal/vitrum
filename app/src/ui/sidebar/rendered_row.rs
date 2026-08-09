@@ -124,6 +124,50 @@ fn each_agent_draws_its_own_mark_on_the_row() {
     );
 }
 
+/// THE PRODUCT'S HEADLINE PROMISE, in the painted markup: a Codex session that
+/// is blocked on an approval gate must say so on its row.
+///
+/// The bug this closes was live. A `codex` session sitting on "Would you like
+/// to run the following command? 1. Yes, proceed" rendered as `Ready`: the pane
+/// said the operator was blocked and the row said nothing was needed. Codex
+/// announces the state in its terminal title, which is a channel already being
+/// parsed, so nothing about it was unknowable.
+///
+/// Rendered rather than resolved, because a correct `Pill` that never reaches
+/// the markup is exactly the class of defect this file exists for.
+#[test]
+fn a_codex_row_blocked_on_approval_paints_the_hedged_approval_pill() {
+    let html = render(
+        row(4)
+            .command("codex")
+            .title("[ ! ] Action Required - codex")
+            .waiting(Some(true))
+            .build(),
+        Section::Active,
+    );
+    assert!(
+        html.contains("rg-pill--approval"),
+        "a blocked Codex row painted no approval pill: {html}"
+    );
+    assert!(
+        html.contains("rg-pill--inferred"),
+        "a title-derived state must paint the hedge, not imply certainty: {html}"
+    );
+
+    // The same row before the banner went up, so the assertions above are
+    // pinned to the title and not to something every row happens to carry.
+    let quiet = render(
+        row(4)
+            .command("codex")
+            .title("codex")
+            .waiting(Some(true))
+            .build(),
+        Section::Active,
+    );
+    assert!(!quiet.contains("rg-pill--approval"), "{quiet}");
+    assert!(!quiet.contains("rg-pill--inferred"), "{quiet}");
+}
+
 /// The mark carries the status hue, and only one of the four.
 ///
 /// The mark answers WHO and its colour answers WHETHER it is still

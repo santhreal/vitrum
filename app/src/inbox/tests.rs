@@ -199,6 +199,75 @@ fn a_declared_label_reaches_the_pill_tooltip() {
     );
 }
 
+/// THE HEADLINE ROW. A Codex session parked on "Would you like to run the
+/// following command?" titles itself `[ ! ] Action Required`, and the sidebar
+/// used to render it `Ready` — the pane says the operator is blocked, the row
+/// says nothing is needed.
+///
+/// It must now show the needs-approval pill AND the hedge, because the evidence
+/// is a banner we matched rather than a declaration the agent addressed to us.
+#[test]
+fn a_codex_row_titled_action_required_shows_a_hedged_approval_pill() {
+    let blocked = row(1)
+        .running()
+        .command("codex")
+        .title("[ ! ] Action Required - codex")
+        .waiting(Some(true))
+        .build();
+    let pill = Pill::of(&blocked);
+
+    assert_eq!(pill.status, SidebarStatus::Approval);
+    assert_eq!(pill.source, StatusSource::Title);
+    assert_eq!(pill.word, "Approval");
+    assert_eq!(pill.class, "rg-pill rg-pill--approval rg-pill--inferred");
+    assert!(
+        pill.title.contains("terminal title"),
+        "the tooltip must say where this came from, got {:?}",
+        pill.title
+    );
+
+    // The hedge has to be a style that exists, or "we marked it" is a claim
+    // about a class nobody paints.
+    let css = include_str!("../../assets/sidebar.css");
+    assert!(css.contains(".rg-pill--inferred .rg-pill__word"));
+
+    // A hinted approval on the same row is NOT hedged: the two channels must
+    // stay visually distinguishable, or the hedge says nothing.
+    let declared = row(2)
+        .running()
+        .command("codex")
+        .title("[ ! ] Action Required - codex")
+        .waiting(Some(true))
+        .hint(HintState::Approval, Some("Run `git push --force`?"), NOW)
+        .build();
+    let declared = Pill::of(&declared);
+    assert_eq!(declared.source, StatusSource::Hint);
+    assert_eq!(declared.class, "rg-pill rg-pill--approval");
+}
+
+/// The banner belongs to the agent that writes it. The same title on a session
+/// running anything else leaves the row exactly as it was, because a global
+/// string match would put "Needs approval" on any program that titles itself
+/// that way.
+#[test]
+fn the_action_required_banner_only_speaks_for_codex() {
+    for command in ["claude", "gemini", "opencode", "veyyon", "bash", "make"] {
+        let other = row(1)
+            .running()
+            .command(command)
+            .title("[ ! ] Action Required")
+            .waiting(Some(true))
+            .build();
+        let pill = Pill::of(&other);
+        assert_eq!(
+            (pill.status, pill.source),
+            (SidebarStatus::Ready, StatusSource::Waiting),
+            "{command} wore another agent's banner"
+        );
+        assert_eq!(pill.class, "rg-pill rg-pill--ready");
+    }
+}
+
 /// The Woke badge must carry a one-shot pulse class and nothing looping.
 /// The inbox sort is static, so a woken row reappears exactly where it was
 /// and the badge is the only signal that it came back.

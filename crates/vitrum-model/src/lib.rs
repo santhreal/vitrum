@@ -31,11 +31,15 @@
 //!   by asking the operating system what the foreground process is blocked in;
 //!   on Windows, where ConPTY cannot answer, they are inferred from bells and
 //!   output timing and [`StatusSource::is_inferred`] says so.
-//! - [`SidebarStatus::Approval`] and [`SidebarStatus::Input`] are HINTED and
-//!   never inferred. A shell at a prompt and an agent asking "may I force-push?"
+//! - [`SidebarStatus::Approval`] and [`SidebarStatus::Input`] are DECLARED and
+//!   never guessed. A shell at a prompt and an agent asking "may I force-push?"
 //!   block in the same syscall, so the operating system can prove the next move
-//!   is yours but not what is being asked. The [`hint`] channel carries that,
-//!   opt in, for harnesses that choose to declare it.
+//!   is yours but not what is being asked. Two channels carry that, both of
+//!   them the agent speaking: the [`hint`] channel an agent opts into, and the
+//!   terminal title, read through the per-agent rule in
+//!   [`AgentKind::title_claim`]. A title-derived state reports
+//!   [`StatusSource::Title`] and hedges, because the agent published that
+//!   banner for a title bar rather than for us.
 //!
 //! An agent that emits nothing gets the full three observed states and a working
 //! sidebar. One that opts in gets the specific request and a label. Nothing is
@@ -43,6 +47,7 @@
 //!
 //! # Module map
 //!
+//! - [`agent`]: which agent a session runs, and what its title announces.
 //! - [`civil`]: calendar arithmetic for snooze labels.
 //! - [`status`]: the five states and their precedence.
 //! - [`view`]: one row, and everything derived from it.
@@ -63,6 +68,7 @@
 //! the idle CPU cost the product forbids, and derived expiry costs nothing at
 //! all while parked.
 
+pub mod agent;
 pub mod civil;
 pub mod disposition;
 pub mod hint;
@@ -78,6 +84,7 @@ pub mod view;
 #[cfg(test)]
 mod testkit;
 
+pub use agent::{ALL_AGENT_KINDS, AgentKind};
 pub use civil::{Civil, Weekday};
 pub use disposition::{Disposition, DispositionPolicy, Section, SettleOverride};
 pub use hint::{HintDeclaration, HintParser};
@@ -87,7 +94,10 @@ pub use selection::{MenuAction, MenuItem, Selection, SelectionFacts, context_men
 pub use snooze::{
     Snooze, SnoozePreset, SnoozePresetId, snooze_presets, wake_countdown_label, wake_description,
 };
-pub use status::{ALL_STATUSES, SidebarStatus, StatusResolution, StatusSource, resolve_status};
+pub use status::{
+    ALL_STATUS_SOURCES, ALL_STATUSES, SidebarStatus, StatusResolution, StatusSource, TitleClaim,
+    resolve_status,
+};
 pub use traversal::{Direction, Wrap, adjacent, adjacent_matching};
 pub use tree::{PreviewSplit, ProjectGroup, preview_sessions, visible_session_ids};
 pub use view::{Clock, SessionView, format_duration_label};

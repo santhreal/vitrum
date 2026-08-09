@@ -475,6 +475,10 @@ pub fn source_note(source: StatusSource) -> &'static str {
             "this platform cannot probe the child, so this is a guess from recent output and may be wrong"
         }
         StatusSource::Hint => "the agent declared it",
+        // Named as a reading of the agent's own words, because that is exactly
+        // what it is and it is what tells the operator how to check it: the
+        // banner is on screen, in the pane, above the prompt.
+        StatusSource::Title => "the agent says so in its terminal title, which we matched",
     }
 }
 

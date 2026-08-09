@@ -44,10 +44,10 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use vitrum_fmt::{TimeFormat, Timestamp};
-use vitrum_model::{Disposition, Section, SessionView, SidebarStatus};
+use vitrum_model::{AgentKind, Disposition, Section, SessionView, SidebarStatus};
 use vitrum_proto::{ProjectId, SessionId, SessionStatus};
 
-use crate::agent::{AgentKind, AgentMark};
+use crate::agent::{AgentMark, AgentMarks};
 use crate::clock::age;
 use crate::inbox::{self, Pill};
 use crate::state::{

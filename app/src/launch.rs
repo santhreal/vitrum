@@ -69,15 +69,6 @@ pub fn detected_agents() -> Vec<Detected> {
         .collect()
 }
 
-/// Interactive shell to spawn when the user has not chosen anything else.
-pub fn default_shell() -> String {
-    if cfg!(windows) {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
-    } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    }
-}
-
 /// Split a command line into the program and its arguments.
 ///
 /// Double quotes group. A backslash escapes only a double quote or another
@@ -775,15 +766,18 @@ pub fn record_launch(command: &str, args: &[String], cwd: &str, now_ms: u64) -> 
     save_launch_store(&store)
 }
 
-/// Where a command suggestion came from.
+/// Where a suggested command came from.
+///
+/// There is no `Shell`. The list used to end with the login shell, which put
+/// `/bin/bash` in front of every operator whose machine has no agent
+/// installed; `ui/dialog.rs::intents` carries the argument. Typing a shell
+/// still launches one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandSource {
     /// Launched before, on this machine, by this operator.
     History,
     /// An agent binary found on `PATH`.
     Detected,
-    /// The login shell.
-    Shell,
 }
 
 /// One row of the command field's dropdown.
@@ -801,18 +795,17 @@ pub struct CommandSuggestion {
 /// History first, ranked, because what this operator launches predicts the
 /// next launch better than what this machine happens to have installed. A
 /// history line that starts with the query beats one that merely contains it.
-/// Then agent binaries actually on `PATH`, then the login shell.
+/// Then agent binaries actually on `PATH`.
 ///
-/// Nothing is invented. With an empty history the list is the detected agents
-/// and the shell; on a machine with neither it is empty, and an empty
-/// dropdown is the honest answer.
+/// Nothing is invented, and nothing is added to round the list out. With an
+/// empty history the list is the detected agents; on a machine with neither
+/// it is empty, and an empty dropdown is the honest answer.
 ///
-/// `detected` and `shell` are parameters rather than calls so the dialog pays
-/// for the `PATH` walk once when it opens instead of once per keystroke.
+/// `detected` is a parameter rather than a call so the dialog pays for the
+/// `PATH` walk once when it opens instead of once per keystroke.
 pub fn command_suggestions(
     store: &LaunchStore,
     detected: &[Detected],
-    shell: &str,
     query: &str,
     now_ms: u64,
     limit: usize,
@@ -861,18 +854,6 @@ pub fn command_suggestions(
             line,
             note: d.label.to_string(),
             source: CommandSource::Detected,
-        });
-    }
-
-    let shell = shell.trim();
-    if !shell.is_empty()
-        && !seen.iter().any(|s| s == shell)
-        && (q.is_empty() || shell.to_lowercase().contains(&q))
-    {
-        out.push(CommandSuggestion {
-            line: shell.to_string(),
-            note: "login shell".to_string(),
-            source: CommandSource::Shell,
         });
     }
 

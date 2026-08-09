@@ -364,6 +364,14 @@ static ASCII_WIDTHS: [CharWidth; 128] = {
 /// Uses the East Asian Width property with ambiguous characters treated as
 /// narrow, matching every terminal that does not run in an explicitly CJK
 /// locale.
+///
+/// libghostty, not this function, is what lays out a live session, so the two
+/// have to agree column for column or a wide character silently shifts the
+/// rest of its line. `tests::width_engine` pins this classification to the
+/// engine's, taking its sample characters from the engine rather than from a
+/// list that would go stale when the engine's Unicode data moves on. The
+/// engine cannot be called from here: `vitrum-vt` depends on this crate, so it
+/// is reachable only as a dev-dependency.
 #[must_use]
 pub fn char_width(ch: char) -> CharWidth {
     let val = ch as u32;

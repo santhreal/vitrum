@@ -103,8 +103,8 @@ mod tests;
 pub use atlas::{AtlasEntry, AtlasError, DEFAULT_ATLAS_DIM, GlyphAtlas, GlyphKey};
 pub use cell::{Attrs, Cell, CellSlot, CharWidth, Rgba, Style, char_width};
 pub use font::{
-    CellMetrics, DEFAULT_FAMILIES, FontConfig, FontError, FontStack, FontStyle, MAX_SIZE_PX,
-    RasterGlyph,
+    CellMetrics, Coverage, DEFAULT_FAMILIES, FallbackEntry, FontConfig, FontError, FontStack,
+    FontStyle, MAX_SIZE_PX, RasterGlyph, fallback_chain,
 };
 pub use gpu::{AdapterClass, GpuContext, GpuError};
 pub use grid::{

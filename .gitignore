@@ -2,6 +2,12 @@
 /target/
 **/target/
 
+# Zig's package cache and build output. `vitrum-vt` builds libghostty-vt with
+# the Zig toolchain, which drops these in whatever directory it runs from, and
+# the cache holds tens of thousands of files from other people's projects.
+**/.zig-cache/
+**/zig-out/
+
 # Release archives and their checksum file, written by
 # `packaging/build-release-asset.sh`. They are attached to a GitHub release,
 # never committed: the digest changes on every rebuild of the same source.

@@ -13,7 +13,7 @@
 //! disk that is not in [`BILL`] is a new script, and it turns the suite red
 //! until somebody records the decision by adding a row.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Every JavaScript file this product ships, with its size in source bytes.
 ///
@@ -34,59 +34,34 @@ const BILL: [(&str, usize); 6] = [
     ("app/src/vendor/addon-fit.js", 1_497),
 ];
 
-/// Directories a source scan has no business walking into.
-///
-/// `target` is build output and holds vendored copies of half of crates.io;
-/// walking it would make this test measure the dependency graph and take
-/// minutes doing it.
-const SKIP: [&str; 3] = ["target", ".git", "node_modules"];
-
 /// The repository root, from the crate this test is compiled into.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the app crate always has a parent directory")
-        .to_path_buf()
+    crate::tests::tree::root()
 }
 
-/// Every `*.js` in the tree, as (path relative to the root, byte length).
+/// Every `*.js` this repository tracks, as (path relative to the root, byte
+/// length).
+///
+/// Tracked rather than walked. A directory walk had to be told which
+/// directories to ignore, and the list was written from one machine's idea of
+/// what a checkout contains: a release build drops a `.zig-cache` full of
+/// glslang's and libxev's JavaScript into the tree, and the bill then reported
+/// seven scripts nobody here wrote as unrecorded. What ships is what is
+/// committed, and that is the set this measures.
 fn shipped_scripts() -> Vec<(String, usize)> {
     let root = repo_root();
-    let mut found = Vec::new();
-    walk(&root, &root, &mut found);
+    let mut found: Vec<(String, usize)> = crate::tests::tree::tracked()
+        .iter()
+        .filter(|rel| rel.ends_with(".js"))
+        .map(|rel| {
+            let len = std::fs::metadata(root.join(rel))
+                .unwrap_or_else(|e| panic!("git tracks {rel} and it cannot be read: {e}"))
+                .len();
+            (rel.clone(), usize::try_from(len).expect("no script is 4 GB"))
+        })
+        .collect();
     found.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     found
-}
-
-fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, usize)>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        // A directory that cannot be read is not a directory that can be
-        // proven empty of scripts, so it is a failure rather than a pass.
-        Err(e) => panic!("cannot read {}: {e}", dir.display()),
-    };
-    for entry in entries {
-        let entry = entry.expect("a directory entry that listed must stat");
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if entry.file_type().expect("a listed entry has a type").is_dir() {
-            if !SKIP.contains(&name.as_ref()) {
-                walk(root, &path, out);
-            }
-            continue;
-        }
-        if !name.ends_with(".js") {
-            continue;
-        }
-        let len = std::fs::metadata(&path).expect("a listed file has metadata").len();
-        let rel = path
-            .strip_prefix(root)
-            .expect("everything walked came from under the root")
-            .to_string_lossy()
-            .replace('\\', "/");
-        out.push((rel, usize::try_from(len).expect("no script is 4 GB")));
-    }
 }
 
 /// The scan has to find something, or every assertion below is vacuous.

@@ -41,10 +41,12 @@ use std::path::{Path, PathBuf};
 /// Directories whose contents this repository does not publish as its own.
 ///
 /// `vendor/` carries forks with their own images, which are not ours to
-/// describe or to delete; the rest are build output and scratch. A picture
-/// parked in one of these is out of scope here, which is why the README may not
-/// point at one — see [`every_reference_resolves_to_something_we_publish`].
-const SKIP: [&str; 5] = [".git", "target", "vendor", ".internal", "node_modules"];
+/// describe or to delete. A picture parked there is out of scope here, which
+/// is why the README may not point at one — see
+/// [`every_reference_resolves_to_something_we_publish`]. Build output, caches
+/// and scratch need no entry: the tree is what git tracks, so nothing that was
+/// never committed can reach these guards.
+const SKIP: [&str; 1] = ["vendor"];
 
 /// The one host allowed to serve an image into a document.
 ///
@@ -110,10 +112,7 @@ const STATE_WORDS: [&str; 9] = [
 ];
 
 fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the app crate has a parent directory")
-        .to_path_buf()
+    super::tree::root()
 }
 
 /// Does this file's content say it is a picture, whatever it is called?
@@ -160,36 +159,23 @@ fn head_of(path: &Path) -> Vec<u8> {
     head
 }
 
-/// Everything under the repository root, minus [`SKIP`], repository-relative
-/// and sorted.
+/// Every tracked file, minus [`SKIP`], repository-relative and sorted.
+///
+/// Tracked rather than walked. The walk this replaces carried a list of
+/// directory names to avoid, and a checkout that has built `vitrum-vt` holds a
+/// `.zig-cache` of package sources whose documentation images then read as
+/// pictures this repository publishes and fails to describe. What this
+/// repository publishes is what it commits.
 fn tree() -> Vec<String> {
-    let root = repo();
-    let mut out = Vec::new();
-    walk(&root, &root, &mut out);
-    out.sort();
-    out
-}
-
-fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path = entry.path();
-        if path.is_dir() {
-            if !SKIP.contains(&name.as_str()) {
-                walk(&path, root, out);
-            }
-            continue;
-        }
-        out.push(
-            path.strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/"),
-        );
-    }
+    super::tree::tracked()
+        .iter()
+        .filter(|rel| {
+            !SKIP
+                .iter()
+                .any(|dir| rel.starts_with(&format!("{dir}/")) || rel.contains(&format!("/{dir}/")))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Every file this repository publishes as a picture.

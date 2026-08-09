@@ -11,6 +11,7 @@ mod integrations;
 mod platform_build;
 mod readme;
 mod startup;
+pub(crate) mod tree;
 mod upstream;
 mod workflows;
 

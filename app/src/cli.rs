@@ -1,9 +1,69 @@
-//! Command line: what `vitrum` accepts and what it prints when it does not
-//! understand you.
+//! Command line: what `vitrum` accepts, what it prints when it does not
+//! understand you, and what it exits with either way.
 
 use super::*;
 
+use vitrum_proto::exit::{self, Exit};
 use vitrum_proto::HintState;
+
+/// The parser stopped, and this is what the process says on the way out.
+///
+/// One type for the whole command-line boundary, carrying the three things a
+/// caller needs: the text, the stream it belongs on, and the code.
+///
+/// It covers help and `--version` as well as mistakes, and that is the point.
+/// Those used to travel as `Err(String)` beside real errors, and `main`
+/// printed every one of them to stdout and returned normally, so `vitrum
+/// --bogus` wrote its usage where a script was reading output and exited 0.
+/// A wrong flag looked exactly like a successful launch. Here the difference
+/// is a field rather than a convention, and [`CliExit::report`] is the only
+/// place that chooses a stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CliExit {
+    /// What to print, without a trailing newline.
+    pub(crate) message: String,
+    /// What the process exits with.
+    pub(crate) exit: Exit,
+}
+
+impl CliExit {
+    /// Output the operator asked for: help, or the version.
+    pub(crate) fn asked(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            exit: Exit::Ok,
+        }
+    }
+
+    /// A command line this program cannot act on.
+    pub(crate) fn misuse(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            exit: Exit::Usage,
+        }
+    }
+
+    /// Print to the right stream and return the process exit code.
+    ///
+    /// Asked-for output goes to stdout, because a caller doing `vitrum --help
+    /// | less` is asking for it. Everything else goes to stderr, because a
+    /// caller reading stdout is not asking for a diagnostic and a usage dump
+    /// mixed into their data is worse than none.
+    pub(crate) fn report(&self) -> i32 {
+        if self.exit == Exit::Ok {
+            println!("{}", self.message);
+        } else {
+            eprintln!("{}", self.message);
+        }
+        self.exit.code()
+    }
+}
+
+impl std::fmt::Display for CliExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 /// Which xterm.js renderer to mount.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +162,7 @@ pub(crate) fn is_deep_link_arg(arg: &str) -> bool {
 }
 
 impl Options {
-    pub(crate) fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String> {
+    pub(crate) fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Options, CliExit> {
         let mut opts = Options {
             fixture: false,
             renderer: Renderer::Dom,
@@ -116,52 +176,58 @@ impl Options {
             match arg.as_str() {
                 "--fixture" => opts.fixture = true,
                 "--server" => {
-                    let v = args
-                        .next()
-                        .ok_or_else(|| format!("--server needs a URL\n\n{}", usage()))?;
+                    let v = args.next().ok_or_else(|| {
+                        CliExit::misuse(format!("--server needs a URL\n\n{}", usage()))
+                    })?;
                     if !v.starts_with("ws://") && !v.starts_with("wss://") {
-                        return Err(format!(
+                        return Err(CliExit::misuse(format!(
                             "--server {v} is not a WebSocket URL; expected ws:// or wss://\n\n{}",
                             usage()
-                        ));
+                        )));
                     }
                     opts.server = v.leak();
                 }
                 "--renderer" => {
                     let v = args.next().ok_or_else(|| {
-                        format!("--renderer needs a value: webgl or dom\n\n{}", usage())
+                        CliExit::misuse(format!(
+                            "--renderer needs a value: webgl or dom\n\n{}",
+                            usage()
+                        ))
                     })?;
                     opts.renderer = match v.as_str() {
                         "webgl" => Renderer::Webgl,
                         "dom" => Renderer::Dom,
                         other => {
-                            return Err(format!(
+                            return Err(CliExit::misuse(format!(
                                 "unknown renderer {other}, expected webgl or dom\n\n{}",
                                 usage()
-                            ));
+                            )));
                         }
                     };
                 }
                 "--ui-scale" => {
                     let v = args.next().ok_or_else(|| {
-                        format!("--ui-scale needs a value: auto or a number\n\n{}", usage())
+                        CliExit::misuse(format!(
+                            "--ui-scale needs a value: auto or a number\n\n{}",
+                            usage()
+                        ))
                     })?;
                     opts.ui_scale = match v.as_str() {
                         "auto" => None,
                         other => {
                             let n: f64 = other.parse().map_err(|_| {
-                                format!(
+                                CliExit::misuse(format!(
                                     "--ui-scale {other} is not a number; expected auto or a \
                                      value between {MIN_UI_SCALE} and {MAX_UI_SCALE}\n\n{}",
                                     usage()
-                                )
+                                ))
                             })?;
                             if !(MIN_UI_SCALE..=MAX_UI_SCALE).contains(&n) {
-                                return Err(format!(
+                                return Err(CliExit::misuse(format!(
                                     "--ui-scale {n} is outside {MIN_UI_SCALE}..={MAX_UI_SCALE}\
                                      \n\n{}",
                                     usage()
-                                ));
+                                )));
                             }
                             Some(n)
                         }
@@ -169,14 +235,17 @@ impl Options {
                 }
                 "--standalone" => opts.standalone = true,
                 "--no-autostart" => opts.autostart = false,
-                "-h" | "--help" => return Err(usage()),
+                "-h" | "--help" => return Err(CliExit::asked(usage())),
                 // Every shipped binary answers this. It is how an operator
                 // filing a report says which build they are on, and how they
                 // tell an installed copy from one they just rebuilt. Taken
                 // from the crate version at compile time, so it cannot drift
                 // from the tag the release was cut at.
                 "-V" | "--version" => {
-                    return Err(format!("vitrum {}", env!("CARGO_PKG_VERSION")));
+                    return Err(CliExit::asked(format!(
+                        "vitrum {}",
+                        env!("CARGO_PKG_VERSION")
+                    )));
                 }
                 // A `vitrum://` URL is not an option, it is the thing the OS
                 // hands this binary when it opens a registered link, and
@@ -191,7 +260,12 @@ impl Options {
                     // `Activation::from_args`, which reports what is wrong with
                     // the URL. "unknown argument" would name the wrong problem.
                 }
-                other => return Err(format!("unknown argument {other}\n\n{}", usage())),
+                other => {
+                    return Err(CliExit::misuse(format!(
+                        "unknown argument {other}\n\n{}",
+                        usage()
+                    )));
+                }
             }
         }
         // A window pointed at something specific must never be swallowed by
@@ -232,10 +306,20 @@ pub(crate) fn usage() -> String {
          hint                 declare what a session is doing, so the sidebar\n                       \
          can show Approval and Input. `vitrum hint --help`.\n  \
          icons                write the launcher, Windows and macOS icons into\n                       \
-         a data directory. `vitrum icons --help`.\n",
-        wire::DEFAULT_WS_URL
+         a data directory. `vitrum icons --help`.\n\n\
+         exit status:\n\
+         {}",
+        wire::DEFAULT_WS_URL,
+        exit::status_lines(EXIT_CODES)
     )
 }
+
+/// Every code `vitrum` itself can exit with, before a subcommand takes over.
+///
+/// The subcommands document their own, which are narrower: `hint` cannot fail
+/// the way `update` can. Listing the union here would tell an operator to
+/// expect 4 from a window launch, which never happens.
+pub(crate) const EXIT_CODES: &[Exit] = &[Exit::Ok, Exit::Usage];
 
 // ---------------------------------------------------------------------------
 // The `hint` subcommand
@@ -337,12 +421,24 @@ pub(crate) fn hint_usage() -> String {
          characters in it become spaces and it is truncated to fit.\n\n\
          example:\n  \
          vitrum hint approval 'run `rm -rf build/`?'\n\n\
-         exit status:\n  \
-         0                    the sequence was written\n  \
-         2                    no state, or a state that does not exist\n",
-        vitrum_proto::HINT_OSC
+         exit status:\n\
+         {}",
+        vitrum_proto::HINT_OSC,
+        exit::status_lines(HINT_EXIT_CODES)
     )
 }
 
+/// Every code `vitrum hint` can exit with.
+///
+/// [`Exit::Failed`] is here because stdout can be a closed pipe: a prompt
+/// command whose reader went away has written nothing, and saying so beats
+/// claiming a hint was declared that no terminal ever saw.
+pub(crate) const HINT_EXIT_CODES: &[Exit] = &[Exit::Ok, Exit::Failed, Exit::Usage];
+
 #[cfg(test)]
 mod what_the_command_line_accepts;
+
+/// The exit-code table is one table, and each command's help matches what it
+/// really returns.
+#[cfg(test)]
+mod what_each_command_exits_with;

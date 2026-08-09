@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use bytes::{Bytes, BytesMut};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use vitrum_model::AgentKind;
@@ -16,6 +16,7 @@ use vitrum_proto::{Attention, SessionId, SessionInfo, SessionStatus, display_saf
 use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout_at};
 
+use crate::SessionError;
 use crate::Scrollback;
 use crate::scan::OutputScan;
 
@@ -636,10 +637,12 @@ impl SessionManager {
             .context("SessionManager::spawn must run inside a Tokio runtime")?;
 
         if spec.command.is_empty() {
-            bail!("session command is empty");
+            return Err(anyhow!(SessionError::EmptyCommand));
         }
         if !spec.cwd.is_dir() {
-            bail!("cwd {} is not a directory", spec.cwd.display());
+            return Err(anyhow!(SessionError::MissingCwd {
+                cwd: spec.cwd.display().to_string(),
+            }));
         }
 
         // A zero-sized PTY makes full-screen programs divide by zero, and a
@@ -924,7 +927,7 @@ impl SessionManager {
     pub fn write(&self, id: SessionId, data: &[u8]) -> anyhow::Result<()> {
         let s = self.require(id)?;
         if !read_lock(&s.info).status.is_live() {
-            bail!("session {} has exited", id.0);
+            return Err(anyhow!(SessionError::Exited { id }));
         }
         {
             let queue = lock(&s.input);
@@ -1068,7 +1071,7 @@ impl SessionManager {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id)
-            .ok_or_else(|| anyhow!("no session {}", id.0))?;
+            .ok_or_else(|| anyhow!(SessionError::NoSuchSession { id }))?;
         // An already-exited child gives ESRCH here, which is not a failure to
         // close: the session is gone either way.
         if let Err(e) = lock(&s.killer).kill() {
@@ -1083,7 +1086,8 @@ impl SessionManager {
     }
 
     fn require(&self, id: SessionId) -> anyhow::Result<Arc<Session>> {
-        self.get(id).ok_or_else(|| anyhow!("no session {}", id.0))
+        self.get(id)
+            .ok_or_else(|| anyhow!(SessionError::NoSuchSession { id }))
     }
 }
 
@@ -1548,15 +1552,17 @@ fn default_title(command: &str) -> String {
 ///
 /// Every other spawn failure is rare and genuinely needs its reason, so it is
 /// passed through and merely bounded by the wire layer.
-fn spawn_failure(command: &str, e: &anyhow::Error) -> String {
+fn spawn_failure(command: &str, e: &anyhow::Error) -> SessionError {
     let raw = e.to_string();
     if raw.contains("No viable candidates found in PATH") {
-        return format!(
-            "no command named {} on PATH; use an absolute path or install it",
-            display_safe(command)
-        );
+        return SessionError::NotOnPath {
+            command: command.to_string(),
+        };
     }
-    format!("could not start {}: {}", display_safe(command), raw)
+    SessionError::CannotStart {
+        command: command.to_string(),
+        detail: raw,
+    }
 }
 
 /// Current branch of the repository containing `dir`, if any.
@@ -1769,13 +1775,21 @@ mod a_failed_spawn_tells_the_operator_what_to_change {
     /// type instead, and not one character of the PATH dump answered it.
     #[test]
     fn a_missing_command_does_not_recite_the_path() {
-        let m = spawn_failure("claud", &path_error("claud"));
+        let e = spawn_failure("claud", &path_error("claud"));
         assert_eq!(
-            m,
-            "no command named claud on PATH; use an absolute path or install it"
+            e,
+            SessionError::NotOnPath {
+                command: "claud".into()
+            }
         );
+        let m = e.to_string();
+        assert!(m.starts_with("no command named claud"), "{m}");
         assert!(!m.contains("/usr/bin"), "the PATH came back: {m}");
-        assert!(m.len() < 100, "still {} characters", m.len());
+        assert!(
+            m.chars().count() < vitrum_proto::MAX_ERROR_CHARS,
+            "still {} characters",
+            m.chars().count()
+        );
     }
 
     /// Every other spawn failure keeps its reason.
@@ -1785,10 +1799,15 @@ mod a_failed_spawn_tells_the_operator_what_to_change {
     /// different problems with different fixes, and the OS text is the fix.
     #[test]
     fn an_unusual_failure_keeps_the_reason_it_came_with() {
-        let m = spawn_failure("bash", &anyhow::anyhow!("Permission denied (os error 13)"));
+        let m = spawn_failure("bash", &anyhow::anyhow!("Permission denied (os error 13)"))
+            .to_string();
         assert_eq!(m, "could not start bash: Permission denied (os error 13)");
 
-        let d = spawn_failure("/tmp", &anyhow::anyhow!("Unable to spawn /tmp because it is a directory"));
+        let d = spawn_failure(
+            "/tmp",
+            &anyhow::anyhow!("Unable to spawn /tmp because it is a directory"),
+        )
+        .to_string();
         assert_eq!(
             d,
             "could not start /tmp: Unable to spawn /tmp because it is a directory"
@@ -1803,22 +1822,24 @@ mod a_failed_spawn_tells_the_operator_what_to_change {
     #[test]
     fn the_command_cannot_forge_the_banner() {
         let hostile = "ba\u{202e}sh\nStatus: ok";
-        let m = spawn_failure(hostile, &path_error(hostile));
+        let m = spawn_failure(hostile, &path_error(hostile)).to_string();
         assert!(!m.contains('\n'), "newline survived: {m:?}");
         assert!(!m.contains('\u{202e}'), "override survived: {m:?}");
-        assert_eq!(
-            m,
-            "no command named bashStatus: ok on PATH; use an absolute path or install it"
+        assert!(
+            m.starts_with("no command named bashStatus: ok on the daemon's PATH."),
+            "{m}"
         );
+
+        // The same rule on the free-text half, which carries the platform's
+        // words rather than the operator's.
+        let forged = spawn_failure("sh", &anyhow::anyhow!("denied\nStatus: ok")).to_string();
+        assert_eq!(forged, "could not start sh: deniedStatus: ok");
     }
 
     /// A command in another language is reported as written.
     #[test]
     fn a_non_ascii_command_is_named_intact() {
-        let m = spawn_failure("機能", &path_error("機能"));
-        assert_eq!(
-            m,
-            "no command named 機能 on PATH; use an absolute path or install it"
-        );
+        let m = spawn_failure("機能", &path_error("機能")).to_string();
+        assert!(m.starts_with("no command named 機能 on the daemon's PATH."), "{m}");
     }
 }

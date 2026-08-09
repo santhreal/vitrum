@@ -166,10 +166,22 @@ impl Conn {
                 if protocol != PROTOCOL_VERSION {
                     // Refuse rather than guess. A version skew that is papered
                     // over surfaces later as corrupted output.
+                    //
+                    // The fix is named as well as the fault, and the sentence
+                    // is kept under `vitrum_proto::MAX_ERROR_CHARS` so the
+                    // wire layer does not cut the middle out of it. The usual
+                    // cause is a client that applied a staged update while
+                    // this daemon kept running the old code, and restarting
+                    // the daemon ends every session it holds, which the
+                    // operator has to know before they do it.
                     self.error(
                         None,
                         format!(
-                            "unsupported protocol {protocol}; this server speaks {PROTOCOL_VERSION}"
+                            "unsupported protocol {protocol}; this daemon speaks \
+                             {PROTOCOL_VERSION} and is version {}. Restart \
+                             vitrum-server to match your client; that ends every \
+                             session it holds, so do it when your agents are idle.",
+                            env!("CARGO_PKG_VERSION")
                         ),
                     )
                     .await?;

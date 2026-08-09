@@ -2,6 +2,10 @@
 
 A row carries one of five states.
 
+<p align="center">
+  <img src="../assets/screenshots/session-transcript.png" alt="Three projects in the vitrum sidebar holding codex and gemini sessions: several ready, one waiting for approval, one failed, one snoozed with a countdown, beside a Codex transcript" width="900" />
+</p>
+
 | State | Source |
 |---|---|
 | working | observed |

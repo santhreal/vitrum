@@ -149,8 +149,12 @@ async fn spawning_an_empty_command_fails() {
     let mgr = SessionManager::new(1024);
     let mut spec = shell_spec("exit 0");
     spec.command = String::new();
-    let err = mgr.spawn(spec).expect_err("must fail");
-    assert!(err.to_string().contains("empty"), "was: {err}");
+    let err = mgr.spawn(spec).expect_err("must fail").to_string();
+    assert!(err.contains("needs a command to run"), "was: {err}");
+    assert!(
+        err.contains("launcher"),
+        "the refusal must say what to do next; was: {err}"
+    );
 }
 
 /// Spawning outside a Tokio runtime must be a clear error.

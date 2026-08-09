@@ -480,9 +480,12 @@ fn the_scale_override_is_bounded_and_rejects_nonsense() {
         Some(1.5)
     );
     let err = Options::parse(vec!["--ui-scale".into(), "9".into()]).unwrap_err();
-    assert!(err.starts_with("--ui-scale 9 is outside"), "{err}");
+    assert!(err.message.starts_with("--ui-scale 9 is outside"), "{err}");
     let err = Options::parse(vec!["--ui-scale".into(), "huge".into()]).unwrap_err();
-    assert!(err.starts_with("--ui-scale huge is not a number"), "{err}");
+    assert!(
+        err.message.starts_with("--ui-scale huge is not a number"),
+        "{err}"
+    );
 }
 
 /// A launch pointed somewhere specific must not be swallowed by the
@@ -626,9 +629,9 @@ fn renderer_defaults_to_dom_and_webgl_is_selectable() {
 #[test]
 fn bad_renderer_values_are_rejected() {
     let err = Options::parse(vec!["--renderer".into(), "vulkan".into()]).unwrap_err();
-    assert!(err.starts_with("unknown renderer vulkan"), "{err}");
+    assert!(err.message.starts_with("unknown renderer vulkan"), "{err}");
     let err = Options::parse(vec!["--renderer".into()]).unwrap_err();
-    assert!(err.starts_with("--renderer needs a value"), "{err}");
+    assert!(err.message.starts_with("--renderer needs a value"), "{err}");
 }
 
 /// The renderer names Rust writes into the page must be the ones the bridge
@@ -754,21 +757,29 @@ fn the_server_url_is_overridable_and_defaults_to_loopback() {
 fn a_non_websocket_server_url_is_rejected() {
     let err = Options::parse(vec!["--server".into(), "http://127.0.0.1:7737".into()]).unwrap_err();
     assert!(
-        err.starts_with("--server http://127.0.0.1:7737 is not a WebSocket URL"),
+        err.message
+            .starts_with("--server http://127.0.0.1:7737 is not a WebSocket URL"),
         "{err}"
     );
     let err = Options::parse(vec!["--server".into()]).unwrap_err();
-    assert!(err.starts_with("--server needs a URL"), "{err}");
+    assert!(err.message.starts_with("--server needs a URL"), "{err}");
 }
 
 /// An unknown argument must be rejected with the usage text, not silently
 /// ignored. A typo'd `--fixtures` that starts a real connection against an
 /// absent server, with no message, is the worst of both outcomes.
+///
+/// It must also exit NON-ZERO. Every one of these went to stdout with a
+/// successful status, so a wrapper script could not tell a typo from a launch.
 #[test]
 fn unknown_arguments_are_rejected_loudly() {
     let err = Options::parse(vec!["--fixtures".to_string()]).unwrap_err();
-    assert!(err.starts_with("unknown argument --fixtures"), "{err}");
-    assert!(err.contains("usage: vitrum"), "{err}");
+    assert!(
+        err.message.starts_with("unknown argument --fixtures"),
+        "{err}"
+    );
+    assert!(err.message.contains("usage: vitrum"), "{err}");
+    assert_ne!(err.exit.code(), 0, "a typo exited successfully");
 }
 
 /// A `vitrum://` URL on the command line must not be rejected as an option.
@@ -808,7 +819,7 @@ fn a_deep_link_url_is_not_an_unknown_argument() {
     // And something merely starting with the same letters is still an
     // error, because it is not a URL.
     let err = Options::parse(vec!["vitrumish".to_string()]).unwrap_err();
-    assert!(err.starts_with("unknown argument vitrumish"), "{err}");
+    assert!(err.message.starts_with("unknown argument vitrumish"), "{err}");
 }
 
 /// The reconnect schedule backs off, is capped, and ENDS.
@@ -891,9 +902,14 @@ fn version_reports_the_crate_version_and_does_not_start_a_window() {
         let out = Options::parse(vec![flag.to_string()])
             .expect_err("version must short-circuit startup, like --help");
         assert_eq!(
-            out,
+            out.message,
             format!("vitrum {}", env!("CARGO_PKG_VERSION")),
             "{flag} printed something other than the crate version"
+        );
+        assert_eq!(
+            out.exit.code(),
+            0,
+            "{flag} was asked for, so it is not a failure"
         );
     }
 }
@@ -918,8 +934,9 @@ fn the_help_text_lists_the_version_flag() {
 fn help_short_circuits_startup() {
     for flag in ["-h", "--help"] {
         let err = Options::parse(vec![flag.to_string()]).unwrap_err();
-        assert!(err.contains("usage: vitrum"), "{flag}: {err}");
-        assert!(err.contains("--fixture"), "{flag}: {err}");
+        assert!(err.message.contains("usage: vitrum"), "{flag}: {err}");
+        assert!(err.message.contains("--fixture"), "{flag}: {err}");
+        assert_eq!(err.exit.code(), 0, "{flag} was asked for, not a mistake");
     }
 }
 

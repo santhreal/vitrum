@@ -23,8 +23,10 @@
 //! backwards.
 
 pub mod b64;
+pub mod exit;
 pub mod frame;
 pub mod text;
+pub use exit::Exit;
 pub use frame::{
     FRAME_KIND_OUTPUT, FrameError, OUTPUT_HEADER_LEN, decode_output, encode_output,
     encode_output_into,

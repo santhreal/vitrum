@@ -208,12 +208,15 @@ fn main() {
     if args.first().map(String::as_str) == Some("icons") {
         std::process::exit(icons::run_icons(&args[1..]));
     }
+    // A command line this program cannot act on is a failure, and it exits
+    // like one. `--help` and `--version` travel the same channel and are not:
+    // `CliExit` carries which, and it is the only thing here that chooses a
+    // stream or a code. Before it did, every one of these went to stdout and
+    // the process returned normally, so `vitrum --bogus` was indistinguishable
+    // from a launch to anything reading the status.
     let opts = match Options::parse(args.iter().cloned()) {
         Ok(o) => o,
-        Err(msg) => {
-            println!("{msg}");
-            return;
-        }
+        Err(told) => std::process::exit(told.report()),
     };
 
     // One process, N windows. A second launch is a request for another

@@ -43,6 +43,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use vitrum_proto::exit::{self, Exit};
 
 /// Where releases are published.
 pub const REPO: &str = "santhreal/vitrum";
@@ -342,7 +343,14 @@ fn fetch_release(base: &str, path: &str) -> Result<Option<serde_json::Value>> {
             let detail = vitrum_proto::error_text(detail.trim());
             bail!("GitHub answered {code} for {REPO}: {detail}");
         }
-        Err(e) => return Err(anyhow!(e)).context(format!("asking GitHub about {REPO}")),
+        // A transport failure is the operator's network, not GitHub's answer,
+        // and it is the one update failure that is worth retrying unchanged.
+        Err(e) => {
+            return Err(anyhow!(UpdateFault::Unreachable {
+                what: format!("the {REPO} release list on GitHub"),
+                cause: e.to_string(),
+            }));
+        }
     };
 
     serde_json::from_str(&body)
@@ -505,6 +513,132 @@ pub fn version_from_archive(name: &str) -> Option<Version> {
     Version::parse(rest).ok()
 }
 
+// ---------------------------------------------------------------------------
+// What can go wrong on the way to a new build
+// ---------------------------------------------------------------------------
+
+/// Why an update did not happen, in the terms the operator has to act on.
+///
+/// One type for the whole updater boundary: the resolver, the download, the
+/// checksum pass and the apply on the next start all report through it, and
+/// every variant carries both what was wrong and what to do about it. Before
+/// it, all four came out as prose in an `anyhow` chain and `vitrum update`
+/// answered every one of them with exit code 1, so a cron entry could not tell
+/// a train tunnel from a tampered archive.
+///
+/// Not every update failure is here, and that is deliberate. A directory that
+/// cannot be written or an archive with no member for this platform is
+/// reported where it is found; these are the four whose exit code a caller
+/// genuinely branches on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateFault {
+    /// A published endpoint did not answer.
+    Unreachable {
+        /// What was being asked for, named for a person rather than by URL.
+        what: String,
+        /// What the transport said.
+        cause: String,
+    },
+    /// The release's `SHA256SUMS` has no line for this platform's archive.
+    Unlisted {
+        /// Archive name that was looked for.
+        name: String,
+    },
+    /// Downloaded bytes are not what the release published.
+    Mismatch {
+        name: String,
+        published: String,
+        found: String,
+    },
+    /// Staged bytes are not what they hashed to when they were verified.
+    ///
+    /// The gap between staging and the next start may be days, and the disk
+    /// they waited on may have failed in between.
+    StaleStage {
+        name: String,
+        recorded: String,
+        found: String,
+    },
+}
+
+impl UpdateFault {
+    /// The exit code `vitrum update` returns for this.
+    pub fn exit(&self) -> Exit {
+        match self {
+            UpdateFault::Unreachable { .. } => Exit::Offline,
+            // A release that published no sums, or bytes that do not match the
+            // ones it did publish, are the same class to a caller: what is on
+            // the server cannot be trusted, and the right move is to look
+            // rather than to retry in a loop.
+            UpdateFault::Unlisted { .. }
+            | UpdateFault::Mismatch { .. }
+            | UpdateFault::StaleStage { .. } => Exit::Corrupt,
+        }
+    }
+
+    /// The code for `error`, if this type produced it anywhere in its chain.
+    ///
+    /// Walks the chain rather than looking only at the outermost error,
+    /// because `install` adds context on the way out and the code has to
+    /// survive that.
+    pub fn exit_for(error: &anyhow::Error) -> Exit {
+        error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<UpdateFault>())
+            .map_or(Exit::Failed, UpdateFault::exit)
+    }
+}
+
+impl std::fmt::Display for UpdateFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpdateFault::Unreachable { what, cause } => write!(
+                f,
+                "could not reach {what}: {cause}\n\
+                 Nothing was downloaded and nothing on disk changed. Try again \
+                 when the network is back, or install by hand from \
+                 https://github.com/{REPO}/releases."
+            ),
+            UpdateFault::Unlisted { name } => write!(
+                f,
+                "SHA256SUMS does not list {name}\n\
+                 The release published an archive it did not publish a digest \
+                 for, so there is nothing to verify it against and it was not \
+                 installed. Report it at https://github.com/{REPO}/issues."
+            ),
+            UpdateFault::Mismatch {
+                name,
+                published,
+                found,
+            } => write!(
+                f,
+                "checksum mismatch for {name}\n  \
+                 published: {published}\n  \
+                 downloaded: {found}\n\
+                 Nothing was installed. Run `vitrum update` again; a second \
+                 mismatch means the archive on the server does not match its \
+                 own SHA256SUMS, and installing it would run code nobody \
+                 published."
+            ),
+            UpdateFault::StaleStage {
+                name,
+                recorded,
+                found,
+            } => write!(
+                f,
+                "staged {name} no longer matches the digest recorded for it; \
+                 nothing was applied\n  \
+                 recorded: {recorded}\n  \
+                 on disk: {found}\n\
+                 The staged copy has been discarded and the running install is \
+                 untouched. Run `vitrum update` to fetch it again."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UpdateFault {}
+
 /// Download, verify and stage a release for the next start.
 ///
 /// `into` is the directory holding the binaries to replace, normally the one
@@ -583,8 +717,19 @@ pub fn install(available: &Available, into: &Path, report: &mut dyn FnMut(&str))
 }
 
 /// Read a whole response body, refusing one that is implausibly large.
+///
+/// A transport failure becomes [`UpdateFault::Unreachable`] rather than a bare
+/// `ureq` error, so a laptop off the network exits with a code that says
+/// "retry later" instead of the same 1 a corrupt archive gets. An HTTP status
+/// is left alone: the endpoint answered, and what it said is the diagnosis.
 fn download(url: &str) -> Result<Vec<u8>> {
-    let response = agent().get(url).call()?;
+    let response = agent().get(url).call().map_err(|e| match e {
+        ureq::Error::Status(code, _) => anyhow!("{url} answered {code}"),
+        ureq::Error::Transport(t) => anyhow!(UpdateFault::Unreachable {
+            what: url.to_string(),
+            cause: t.to_string(),
+        }),
+    })?;
     let mut body = Vec::new();
     // A release archive for this program is single-digit megabytes. The cap
     // exists so a redirect to something enormous cannot exhaust memory on the
@@ -594,12 +739,22 @@ fn download(url: &str) -> Result<Vec<u8>> {
         .into_reader()
         .take(MAX)
         .read_to_end(&mut body)
-        .context("reading the response body")?;
+        .map_err(|e| {
+            anyhow!(UpdateFault::Unreachable {
+                what: url.to_string(),
+                cause: e.to_string(),
+            })
+        })?;
     Ok(body)
 }
 
 /// Check `archive` against the digest `sums` publishes for `name`.
-pub fn verify(archive: &[u8], sums: &str, name: &str) -> Result<()> {
+///
+/// Returns [`UpdateFault`] rather than an opaque error because this is the one
+/// gate between remote bytes and the program the operator runs: its two
+/// failures are the ones a caller must be able to tell apart from a flaky
+/// download without reading prose.
+pub fn verify(archive: &[u8], sums: &str, name: &str) -> std::result::Result<(), UpdateFault> {
     let expected = sums
         .lines()
         .find_map(|line| {
@@ -608,11 +763,17 @@ pub fn verify(archive: &[u8], sums: &str, name: &str) -> Result<()> {
             let file = parts.next()?.trim_start_matches('*');
             (file == name).then_some(digest)
         })
-        .ok_or_else(|| anyhow!("SHA256SUMS does not list {name}"))?;
+        .ok_or_else(|| UpdateFault::Unlisted {
+            name: name.to_string(),
+        })?;
 
     let actual = hex(&Sha256::digest(archive));
     if !actual.eq_ignore_ascii_case(expected) {
-        bail!("checksum mismatch for {name}\n  published: {expected}\n  downloaded: {actual}");
+        return Err(UpdateFault::Mismatch {
+            name: name.to_string(),
+            published: expected.to_string(),
+            found: actual,
+        });
     }
     Ok(())
 }
@@ -751,14 +912,16 @@ pub fn apply_staged(into: &Path) -> Result<Option<Version>> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        if !hex(&Sha256::digest(&body)).eq_ignore_ascii_case(&file.sha256) {
+        let found = hex(&Sha256::digest(&body));
+        if !found.eq_ignore_ascii_case(&file.sha256) {
             // Untouched so far, so the safe move is to keep the working
             // install and drop the staged copy.
             discard_staged(into);
-            bail!(
-                "staged {} no longer matches the digest recorded for it; nothing was applied",
-                file.name
-            );
+            return Err(anyhow!(UpdateFault::StaleStage {
+                name: file.name.clone(),
+                recorded: file.sha256.clone(),
+                found,
+            }));
         }
         pending.push(file.name.clone());
     }
@@ -993,12 +1156,25 @@ pub fn writable(dir: &Path) -> bool {
     }
 }
 
+/// Every code `vitrum update` can exit with.
+///
+/// Wider than every other subcommand's, because this is the one that talks to
+/// the network and to a directory it may not own, and because it is the one
+/// people put in a cron entry: a retry loop must be able to tell "the link was
+/// down" from "the archive did not match its digest" without parsing prose.
+pub const EXIT_CODES: &[Exit] = &[
+    Exit::Ok,
+    Exit::Failed,
+    Exit::Usage,
+    Exit::Unavailable,
+    Exit::Offline,
+    Exit::Corrupt,
+];
+
 /// `vitrum update` — check for a newer release and stage it.
 ///
-/// Returns the process exit code. Codes are load-bearing here because this is
-/// the command people put in a shell alias or a cron entry: `0` means the
-/// newest release is installed or staged, `1` means it is not and why is on
-/// stderr. "Already up to date" is success, because nothing is wrong.
+/// Returns a code from the one table in [`vitrum_proto::exit`]. "Already up to
+/// date" is [`Exit::Ok`], because nothing is wrong.
 pub fn run_update(args: &[String]) -> i32 {
     let mut check_only = false;
     let mut channel = None;
@@ -1011,20 +1187,20 @@ pub fn run_update(args: &[String]) -> i32 {
                 Some("nightly") => channel = Some(Channel::Nightly),
                 Some(other) => {
                     eprintln!("unknown channel {other}\n\n{}", update_usage());
-                    return 2;
+                    return Exit::Usage.code();
                 }
                 None => {
                     eprintln!("--channel needs stable or nightly\n\n{}", update_usage());
-                    return 2;
+                    return Exit::Usage.code();
                 }
             },
             "-h" | "--help" => {
                 println!("{}", update_usage());
-                return 0;
+                return Exit::Ok.code();
             }
             other => {
                 eprintln!("unknown argument {other}\n\n{}", update_usage());
-                return 2;
+                return Exit::Usage.code();
             }
         }
     }
@@ -1033,8 +1209,12 @@ pub fn run_update(args: &[String]) -> i32 {
     let status = match check_on(channel) {
         Ok(s) => s,
         Err(e) => {
+            // The fault carries the corrective action and the code; the prefix
+            // only says which of the updater's steps was being taken. An
+            // unreachable endpoint exits 4 so a cron entry can retry it
+            // unchanged, which is exactly the wrong response to a 5.
             eprintln!("could not check for updates: {e:#}");
-            return 1;
+            return UpdateFault::exit_for(&e).code();
         }
     };
 
@@ -1044,7 +1224,7 @@ pub fn run_update(args: &[String]) -> i32 {
                 "vitrum {version} is the newest {} release",
                 channel.as_str()
             );
-            0
+            Exit::Ok.code()
         }
         Status::NoReleases => {
             println!(
@@ -1052,7 +1232,7 @@ pub fn run_update(args: &[String]) -> i32 {
                 REPO,
                 current_version()
             );
-            0
+            Exit::Ok.code()
         }
         Status::NoAssetForPlatform { version, target } => {
             eprintln!(
@@ -1060,7 +1240,10 @@ pub fn run_update(args: &[String]) -> i32 {
                  Build it from source: https://github.com/{}/releases/tag/v{version}",
                 REPO
             );
-            1
+            // Nothing is wrong with the command or with this machine's link;
+            // the build simply does not exist yet, and a later release may
+            // carry it. That is Unavailable, not a flat failure.
+            Exit::Unavailable.code()
         }
         Status::Ready(available) => {
             println!(
@@ -1069,13 +1252,17 @@ pub fn run_update(args: &[String]) -> i32 {
                 current_version()
             );
             if check_only {
-                return 0;
+                return Exit::Ok.code();
             }
             let dir = match install_dir() {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("could not find where vitrum is installed: {e:#}");
-                    return 1;
+                    eprintln!(
+                        "could not find where vitrum is installed: {e:#}\n\
+                         Run the copy you want updated by its full path, or \
+                         reinstall with the installer for your platform."
+                    );
+                    return Exit::Unavailable.code();
                 }
             };
             // Checked before the download rather than after, so a
@@ -1084,26 +1271,28 @@ pub fn run_update(args: &[String]) -> i32 {
             if !writable(&dir) {
                 eprintln!(
                     "cannot write to {}.\n\
-                     This copy was installed by something else; update it the same way.",
+                     This copy was installed by something else; update it the \
+                     same way you installed it, or reinstall into a directory \
+                     you own.",
                     dir.display()
                 );
-                return 1;
+                return Exit::Unavailable.code();
             }
             match install(&available, &dir, &mut |line| println!("{line}")) {
                 Ok(()) => {
                     println!("{}", AFTER_INSTALL);
-                    0
+                    Exit::Ok.code()
                 }
                 Err(e) => {
                     eprintln!("update failed: {e:#}");
-                    1
+                    UpdateFault::exit_for(&e).code()
                 }
             }
         }
     }
 }
 
-fn update_usage() -> String {
+pub(crate) fn update_usage() -> String {
     format!(
         "vitrum update - stage the newest published release\n\n\
          usage: vitrum update [--check] [--channel stable|nightly]\n\n\
@@ -1117,10 +1306,10 @@ fn update_usage() -> String {
          --check              report what is available and stage nothing\n  \
          --channel <name>     stable or nightly, overriding the setting\n  \
          -h, --help           show this message\n\n\
-         exit status:\n  \
-         0                    already newest, or staged successfully\n  \
-         1                    could not check, or could not stage\n",
-        REPO
+         exit status:\n\
+         {}",
+        REPO,
+        exit::status_lines(EXIT_CODES)
     )
 }
 

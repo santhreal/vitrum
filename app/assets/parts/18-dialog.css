@@ -410,3 +410,70 @@
 .rg-whatsnew__entry + .rg-whatsnew__entry {
   margin-top: var(--rg-space-1);
 }
+
+/* -- The shortcuts sheet ------------------------------------------------
+ *
+ * app.css builds this sheet as two columns of groups, and inside a group a
+ * row is a flex line of a chord and a description with the chord pinned to
+ * `flex: 0 0 11.5rem`. The comment there argues the pin, and it is right
+ * about what it was fixing: without it the two widest chords pushed their
+ * descriptions to different left edges and the column read as a ladder.
+ *
+ * It is a fixed SPEND, though, and the sheet cannot afford it. 40rem less
+ * 16 of padding each side is 608, less the 16 between the columns is 296 a
+ * column, less 184 of chord and 8 of gap leaves 104 for the description.
+ * Measured on that sheet: "Duplicate the focused session into a new one"
+ * came out over four lines, its row stood four lines tall next to a
+ * one-line row two pixels above it, and the sheet grew past the window and
+ * scrolled — with about 90px of the chord column empty on every row whose
+ * chord was `Ctrl+K`.
+ *
+ * Two changes, both at the cause.
+ *
+ * The column is a CAP instead of a spend. `minmax(0, 11.5rem)` sizes to the
+ * group's widest chord and stops at the same 184 the pin used, so `Sessions`
+ * asks for 115 and gives the other 69 to its descriptions, while `Switching`
+ * still gets its 184 and still wraps `Ctrl+Shift+Tab / Ctrl+Shift+PageUp`
+ * inside its own column rather than shoving the text. Every description in
+ * a group keeps one left edge, which is the promise the pin was making; what
+ * it loses is one left edge across GROUPS, and that was never legible
+ * anyway, because the sheet's two columns of groups already sit at two
+ * different edges 300px apart.
+ *
+ * And the sheet is sized to what it holds: 48rem gives a column 360, so the
+ * longest description in the sheet is two lines at the narrowest group and
+ * one or two everywhere else. `.rg-sheet` keeps `max-width: calc(100% -
+ * 4rem)`, so a narrow window still gets the sheet it has room for.
+ *
+ * The row gap goes from 2 to 8 for the same reason: at 2, a wrapped second
+ * line of a description sat closer to the NEXT row than to the line it
+ * belonged to, so the rows read as one paragraph. 8 is larger than the
+ * ~5px between two wrapped lines at this size, which is the whole
+ * requirement.
+ *
+ * SCOPED TO `__group` ON PURPOSE. `ui/settings.rs` reuses `.rg-keys__row`
+ * for the Advanced diagnostics table with no `.rg-keys__group` around it,
+ * where it is still a flex line and must stay one. `display: contents` on
+ * an unscoped `.rg-keys__row` would dissolve that table into its sheet.
+ * `.rg-keys__chord`'s `flex` and `.rg-keys__what`'s need no unsetting here:
+ * flex properties do nothing to a grid item, so both files' rules survive
+ * side by side without either overriding the other. */
+.rg-sheet--shortcuts {
+  width: 48rem;
+}
+
+.rg-keys__group {
+  display: grid;
+  grid-template-columns: minmax(0, 11.5rem) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: var(--rg-space-2);
+  row-gap: var(--rg-space-2);
+}
+
+.rg-keys__group .rg-keys__heading {
+  grid-column: 1 / -1;
+}
+
+.rg-keys__group .rg-keys__row {
+  display: contents;
+}

@@ -133,9 +133,21 @@
  *
  * padding-left is NOT set here. ui/titlebar.rs writes it inline to reserve
  * the macOS traffic lights, and an inline declaration outranks any selector.
- * It resolves to the same 12px on Linux and Windows. */
+ * It resolves to 12px on Linux and Windows.
+ *
+ * THE GROUP GAP IS 12 AND IT IS ITS OWN TOKEN.
+ *
+ * It read `--rg-content-inset`, which was 12 when this was written and is
+ * now an alias of `--rg-inset`, 16. So the one distance that separates the
+ * groups in this band changed the day 10-spacing.css retuned the window's
+ * outer inset, and the two comments below still claimed 12 while the bar
+ * measured 16 between the shortcuts button and the window controls. The
+ * distance from the window's edge to its content and the distance between
+ * two clusters inside a band are different quantities that happened to
+ * agree once; the band's ladder is 4 between adjacent icon buttons, 8 within
+ * a group, 12 between groups, and it now reads that step directly. */
 .rg-titlebar {
-  gap: var(--rg-content-inset);
+  gap: var(--rg-space-3);
   height: var(--rg-titlebar-h);
   padding-right: 0;
   border-bottom: 0;
@@ -306,9 +318,18 @@
 /* Window controls                                                     */
 /* ------------------------------------------------------------------ */
 
-/* Flush to the top right corner, no gap, no radius, full band height: the
- * close button has to reach the physical corner of the window or a fast
- * diagonal throw of the pointer overshoots it and hits the desktop.
+/* Flush to the top right corner, no radius, full band height: the close
+ * button has to reach the physical corner of the window or a fast diagonal
+ * throw of the pointer overshoots it and hits the desktop.
+ *
+ * The margin reset is load-bearing and stays. app.css gives this cluster
+ * `margin-left: var(--rg-space-2)` and 10-spacing.css declared the same 8
+ * again on the same selector; that second copy is gone, and this zero is now
+ * the only thing answering the one in app.css. Deleting it does not remove a
+ * gap, it adds one: measured, the shortcuts button ended 20px from the
+ * cluster instead of 12, because a margin is spent ON TOP of the band's flex
+ * gap rather than instead of it. The distance in front of this cluster is
+ * the band's group gap and nothing else.
  *
  * 48px wide, 10-spacing.css's --rg-space-12 and on the 4px grid. It was 46,
  * which is Windows 11's own metric and a number with no relationship to

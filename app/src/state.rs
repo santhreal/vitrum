@@ -3111,6 +3111,11 @@ static STARTUP_PREFS: LazyLock<(Persisted, Option<String>)> = LazyLock::new(|| {
 static STARTUP_PREFS_LOADS: AtomicUsize = AtomicUsize::new(0);
 
 /// The number [`STARTUP_PREFS_LOADS`] is holding.
+///
+/// Test-only: nothing in the shipped build reads its own instrumentation, and
+/// this crate builds with warnings denied, so an accessor with no production
+/// caller fails the build rather than reporting a lint.
+#[cfg(test)]
 pub fn startup_prefs_loads() -> usize {
     STARTUP_PREFS_LOADS.load(Ordering::Relaxed)
 }

@@ -9,11 +9,13 @@ description = "Load, concurrency, fuzzing and profiling harness for the vitrum d
 publish = false
 
 [dependencies]
+vitrum-core = { workspace = true }
 vitrum-grid = { workspace = true }
 vitrum-model = { workspace = true }
 vitrum-proto = { workspace = true }
 vitrum-replay = { workspace = true }
 vitrum-search = { workspace = true }
+vitrum-vt = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "process", "signal"] }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }

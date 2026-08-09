@@ -7,6 +7,8 @@ mod helpers;
 #[cfg(not(windows))]
 mod hint_session;
 mod manager_registry;
+mod osc_capture;
+mod output_path_cost;
 mod output_scan;
 mod pty_burst_exit;
 mod pty_capacity;

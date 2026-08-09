@@ -5737,11 +5737,13 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "vitrum-core",
  "vitrum-grid",
  "vitrum-model",
  "vitrum-proto",
  "vitrum-replay",
  "vitrum-search",
+ "vitrum-vt",
 ]
 
 [[package]]
@@ -5866,6 +5868,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "vitrum-pane-lab"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gdk",
+ "gio",
+ "glib",
+ "gtk",
+ "libc",
+ "pollster 1.0.1",
+ "serde_json",
+ "vitrum-grid",
+ "vitrum-portable-pty",
+ "vitrum-vt",
+ "webkit2gtk",
+ "wgpu",
+]
+
+[[package]]
 name = "vitrum-portable-pty"
 version = "0.9.0"
 dependencies = [
@@ -5905,7 +5926,7 @@ dependencies = [
  "vitrum-model",
  "vitrum-proto",
  "vitrum-search",
- "vte",
+ "vitrum-vt",
 ]
 
 [[package]]
@@ -5931,6 +5952,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vitrum-core",
+ "vitrum-model",
  "vitrum-proto",
  "vitrum-search",
 ]
@@ -5943,15 +5965,6 @@ dependencies = [
  "libghostty-vt-sys",
  "pkg-config",
  "vitrum-grid",
-]
-
-[[package]]
-name = "vte"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "231fdcd7ef3037e8330d8e17e61011a2c244126acc0a982f4040ac3f9f0bc077"
-dependencies = [
- "memchr",
 ]
 
 [[package]]

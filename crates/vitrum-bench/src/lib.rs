@@ -6,12 +6,14 @@
 //! it. The daemon under test is an ordinary `vitrum-server`, started however the
 //! operator wants and named by `--server`.
 //!
-//! Four workloads, one report format:
+//! Five workloads, one report format:
 //!
 //! - [`load`]: many sessions streaming at once. Cost and delivery.
 //! - [`race`]: many connections mutating shared state. Correctness under
 //!   concurrency, checked through invariants a single client cannot break.
 //! - [`fuzz`]: hostile input, with a second healthy connection as the oracle.
+//! - [`pipeline`]: the daemon's own output path, in process and with no socket
+//!   in the middle. Where a megabyte's time and allocations go.
 //! - [`profile`]: samples the daemon's process tree from `/proc` while any of
 //!   the above runs.
 //!
@@ -22,6 +24,7 @@ pub mod client;
 pub mod fuzz;
 pub mod load;
 pub mod profile;
+pub mod pipeline;
 pub mod probe;
 pub mod race;
 pub mod report;

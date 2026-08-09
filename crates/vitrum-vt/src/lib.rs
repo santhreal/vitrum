@@ -80,3 +80,16 @@ pub use pwd::pwd_path;
 // direct dependency on the engine crate, whose version this crate pins.
 pub use libghostty_vt::terminal::ScrollViewport;
 pub use libghostty_vt::style::RgbColor;
+
+/// What a host must advertise in `COLORTERM` for this engine.
+///
+/// The claim lives beside the engine that has to keep it. A host sets this in
+/// every child's environment, and an agent reads it to decide whether to emit
+/// `\x1b[38;2;r;g;b` or quantise itself to the 256-colour cube first — so the
+/// string is a promise about what the code in THIS crate does with those
+/// bytes, and the crate that renders is the only one positioned to make it.
+///
+/// `the_engine_keeps_the_promise_this_crate_makes` asserts the two together. An
+/// engine that started rounding colours would fail there rather than shipping a
+/// lie that surfaces as wrong colours inside somebody else's TUI.
+pub const COLORTERM: &str = "truecolor";

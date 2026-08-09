@@ -16,6 +16,37 @@ fn truecolor_reaches_the_cell_exactly() {
     assert_eq!(fx.cell(0, 0).fg, Rgba::rgb(255, 128, 0));
 }
 
+/// The promise this crate publishes is one it keeps.
+///
+/// [`crate::COLORTERM`] is what a host puts in every child's environment, and
+/// an agent reads it to decide whether to emit 24-bit colour at all. The value
+/// and the behaviour are asserted in one place so they cannot drift: quantise
+/// in the engine, or weaken the claim, and this fails.
+///
+/// The colours are chosen to be nowhere near the 256-colour cube's grid, so a
+/// quantising engine cannot pass by luck. What this does NOT catch is a host
+/// that fails to set the variable at all; `vitrum-core` owns that half.
+#[test]
+fn the_engine_keeps_the_promise_this_crate_makes() {
+    assert_eq!(crate::COLORTERM, "truecolor");
+
+    let mut fx = Fixture::new(10, 1);
+    // Each `x` advances the cursor, so colour N lands in column N. Asserting
+    // every column afterwards also proves the colours did not bleed into each
+    // other, which a shared-style bug would do while a single write passed.
+    let want = [(1u8, 2u8, 3u8), (17, 34, 51), (254, 253, 252), (7, 200, 91)];
+    for (r, g, b) in want {
+        fx.write(format!("\x1b[38;2;{r};{g};{b}mx").as_bytes());
+    }
+    for (col, (r, g, b)) in want.into_iter().enumerate() {
+        assert_eq!(
+            fx.cell(col as u16, 0).fg,
+            Rgba::rgb(r, g, b),
+            "advertising truecolor means reproducing it exactly, column {col}"
+        );
+    }
+}
+
 #[test]
 fn a_background_colour_reaches_the_cell() {
     let mut fx = Fixture::new(10, 1);

@@ -1772,17 +1772,19 @@ pub fn preset_tip(preset: &SavedPreset) -> String {
 
 /// Run a blocking job on its own thread and await the answer.
 ///
-/// Two callers, both for the same reason. `read_dir` on a stale network mount
-/// blocks in the kernel for as long as the mount wants, and no timer inside
-/// [`launch::list_dirs`] can shorten a syscall that has not returned; the
-/// `PATH` walk behind [`launch::detected_agents`] is five lookups across every
-/// directory in `PATH`, any one of which can be an automounted share. On the
-/// UI thread either is a frozen window; here it is a thread nobody waits on.
+/// Three callers, all for the same reason. `read_dir` on a stale network
+/// mount blocks in the kernel for as long as the mount wants, and no timer
+/// inside [`launch::list_dirs`] can shorten a syscall that has not returned;
+/// the `PATH` walk behind [`launch::detected_agents`] is one lookup per known
+/// agent across every directory in `PATH`, any one of which can be an
+/// automounted share, and [`crate::ui::firstrun::read_machine`] does that walk
+/// plus a profile read. On the UI thread any of them is a frozen window; here
+/// it is a thread nobody waits on.
 ///
 /// The thread exits when the job returns. An answer that arrives after the
-/// launcher has closed is dropped by [`use_resource`], which has already
+/// surface has closed is dropped by [`use_resource`], which has already
 /// cancelled the future that would have received it.
-async fn off_thread<T, F>(job: F) -> T
+pub(crate) async fn off_thread<T, F>(job: F) -> T
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,

@@ -16,6 +16,7 @@ use dioxus::prelude::*;
 use vitrum_proto::{SessionId, SessionStatus};
 
 use crate::state::{ConnState, UiState};
+use crate::ui::{dialog, firstrun};
 
 /// Stable key for the terminal container.
 ///
@@ -69,16 +70,67 @@ pub struct TerminalPaneProps {
     pub on_new_session: EventHandler<()>,
     pub on_close_tab: EventHandler<SessionId>,
     pub on_retry: EventHandler<()>,
+    /// Start one session outright, with no layer at all: the directory, then
+    /// the command line exactly as it should be split and spawned.
+    ///
+    /// The first-run pane's whole point. Every other route to a session from
+    /// an empty window opened the launcher first, which asked an operator who
+    /// had never seen this product to answer three questions before it would
+    /// tell them what it was for. The caller validates and reports, because
+    /// this pane owns no state and raises no flash of its own.
+    pub on_start: EventHandler<(String, String)>,
 }
 
 #[component]
 pub fn TerminalPane(props: TerminalPaneProps) -> Element {
+    // Hooks first, and unconditionally.
+    //
+    // Reading the machine costs one `PATH` walk per known agent plus one
+    // profile read. It happens once, on a thread of its own, and only while
+    // the pane is genuinely empty, so a window with a session in it pays
+    // nothing and an idle window never rescans. An answer that arrives after
+    // the first session started is dropped by `use_resource`, which has
+    // already cancelled the future that would have received it.
+    let state = props.state;
+    let vacant = use_memo(move || matches!(pane_state(&state.read()), PaneState::Empty));
+    let machine = use_resource(move || {
+        let vacant = vacant();
+        async move {
+            if !vacant {
+                return None;
+            }
+            Some(dialog::off_thread(firstrun::read_machine).await)
+        }
+    });
+
     let st = props.state.read();
     let pane = pane_state(&st);
     let focused = st.window.focused;
     let offline = st.daemon.conn.is_retryable();
     let connecting = matches!(st.daemon.conn, ConnState::Connecting);
     let ready = st.server_ready();
+
+    // What the first-run pane offers, and the directory its rows launch in.
+    // `None` for the few milliseconds before the reading lands, which is why
+    // the headline and the sentence under it are constants: the product says
+    // what it is immediately, and only the machine-dependent half waits.
+    let read = machine.read();
+    let first: Option<(firstrun::FirstRun, String)> = (*read)
+        .as_ref()
+        .and_then(|m| m.as_ref())
+        .map(|m| {
+            let seeded = crate::actions::seed_dir(&st, None);
+            let here = if seeded.trim().is_empty() {
+                m.cwd.clone()
+            } else {
+                seeded
+            };
+            let projects = &st.daemon.projects;
+            let home = &m.home;
+            let view = firstrun::first_run(m, &here, |cwd| dialog::place_of(projects, cwd, home));
+            (view, here)
+        });
+    let chord = firstrun::other_way();
 
     rsx! {
         // Owned by JavaScript from here down. Do not add children.
@@ -90,49 +142,109 @@ pub fn TerminalPane(props: TerminalPaneProps) -> Element {
 
         match pane {
             PaneState::Live => rsx! {},
+            // Connecting and offline are NOT empty states. A failure that
+            // renders as "nothing here yet" is a lie, so each keeps its own
+            // sentence and its own modifier, and neither is ever shown the
+            // first-run copy: telling somebody what the product is for while
+            // the thing that runs it is unreachable is the wrong sentence.
+            PaneState::Empty if connecting => rsx! {
+                div { class: "rg-terminal__empty rg-terminal__empty--connecting",
+                    span { class: "rg-terminal__empty-hint",
+                        "Connecting to the session daemon."
+                    }
+                }
+            },
+            PaneState::Empty if offline => rsx! {
+                div { class: "rg-terminal__empty rg-terminal__empty--offline",
+                    span { class: "rg-terminal__empty-hint",
+                        "The session daemon is not answering."
+                    }
+                    button {
+                        class: "rg-btn rg-btn--primary",
+                        r#type: "button",
+                        onclick: move |_| props.on_retry.call(()),
+                        "Retry"
+                    }
+                }
+            },
+            // The first thirty seconds. One statement of what this is, one
+            // aimed action, and the roster of agents this machine can and
+            // cannot run. Everything on it is decided by
+            // `firstrun::first_run`, so the rules are asserted without a DOM.
             PaneState::Empty => rsx! {
-                div { class: "rg-terminal__empty",
-                    // Nothing is said here that the button does not already
-                    // say. A heading reading "No sessions yet" above a
-                    // sentence reading "Start one and it appears in the
-                    // sidebar" above a button reading "New session" is the
-                    // same statement three times, and the shortcut line under
-                    // it explained a control 24px away. Four stacked bands,
-                    // separated by gaps of 23, 15 and 17px, to say one thing.
-                    //
-                    // Connecting and offline are NOT empty states. A failure
-                    // that renders as "nothing here yet" is a lie, so those
-                    // two keep their sentence.
-                    if connecting {
+                div { class: "rg-terminal__empty rg-terminal__empty--first",
+                    h2 { class: "rg-first__headline", "{firstrun::HEADLINE}" }
+                    p { class: "rg-first__blurb", "{firstrun::BLURB}" }
+
+                    if let Some((view, here)) = first {
+                        if let Some(start) = view.start {
+                            button {
+                                class: "rg-btn rg-btn--primary rg-first__go",
+                                r#type: "button",
+                                // The one keystroke. On a window with nothing
+                                // in it there is no grid to steal focus, so
+                                // the second launch is Enter.
+                                autofocus: true,
+                                disabled: !ready,
+                                onclick: {
+                                    let cwd = start.cwd.clone();
+                                    let line = start.line.clone();
+                                    move |_| props.on_start.call((cwd.clone(), line.clone()))
+                                },
+                                "{start.label}"
+                            }
+                        }
+                        if let Some(caption) = view.caption {
+                            span { class: "rg-first__caption", "{caption}" }
+                        }
+                        if let Some(said) = view.nothing {
+                            p { class: "rg-first__nothing", "{said}" }
+                        }
+                        ul { class: "rg-first__agents",
+                            for offer in view.offers {
+                                li {
+                                    key: "{offer.command}",
+                                    class: if offer.primary {
+                                        "rg-first__agent rg-first__agent--on"
+                                    } else if offer.installed {
+                                        "rg-first__agent"
+                                    } else {
+                                        "rg-first__agent rg-first__agent--missing"
+                                    },
+                                    if offer.installed && !offer.primary {
+                                        button {
+                                            class: "rg-first__pick",
+                                            r#type: "button",
+                                            disabled: !ready,
+                                            onclick: {
+                                                let cwd = here.clone();
+                                                let line = offer.command.to_string();
+                                                move |_| props.on_start.call((cwd.clone(), line.clone()))
+                                            },
+                                            span { class: "rg-first__name", "{offer.label}" }
+                                            span { class: "rg-first__note", "{offer.note}" }
+                                        }
+                                    } else {
+                                        span { class: "rg-first__pick",
+                                            span { class: "rg-first__name", "{offer.label}" }
+                                            span { class: "rg-first__note", "{offer.note}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(chord) = chord {
                         span { class: "rg-terminal__empty-hint",
-                            "Connecting to the session daemon."
-                        }
-                    } else if offline {
-                        span { class: "rg-terminal__empty-hint",
-                            "The session daemon is not answering."
-                        }
-                        button {
-                            class: "rg-btn rg-btn--primary",
-                            r#type: "button",
-                            onclick: move |_| props.on_retry.call(()),
-                            "Retry"
-                        }
-                    } else {
-                        button {
-                            class: "rg-btn rg-btn--primary",
-                            r#type: "button",
-                            disabled: !ready,
-                            onclick: move |_| props.on_new_session.call(()),
-                            "New session"
-                        }
-                        span { class: "rg-terminal__empty-hint",
-                            kbd { "Ctrl+Shift+N" }
+                            "Something else: "
+                            kbd { "{chord}" }
                         }
                     }
                 }
             },
             PaneState::Unfocused => rsx! {
-                div { class: "rg-terminal__empty",
+                div { class: "rg-terminal__empty rg-terminal__empty--unfocused",
                     span { class: "rg-terminal__empty-title", "No session focused" }
                     span { class: "rg-terminal__empty-hint",
                         "Pick a session in the sidebar, or press "

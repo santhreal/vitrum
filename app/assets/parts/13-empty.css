@@ -49,19 +49,17 @@
 /* Telling the states apart                                            */
 /* ------------------------------------------------------------------ */
 
-/* Four different pane states share one container class and two child classes
- * with no modifier to separate them, so they are selected by shape. Every
- * discriminator below is exact rather than merely sufficient, and none of them
- * relies on a child being present that another variant also has:
+/* The four pane states each carry their own modifier now — --connecting,
+ * --offline, --first and --unfocused — and every selector below picks one by
+ * name. They used to be told apart by counting children (`hint:only-child`,
+ * `.rg-btn + hint`, `hint:first-child:nth-last-child(2)`), which is exactly
+ * the arrangement the last paragraph of this section asked the markup owner
+ * to retire.
  *
- *   children                     state          discriminator
- *   hint                         connecting     hint:only-child
- *   hint, button                 offline        hint:first-child:nth-last-child(2)
- *   button, hint                 first launch   .rg-btn + hint
- *   title, hint                  no focus       has the only surviving title
- *
- * Counting survives the suppressions further down, because :nth-last-child
- * counts DOM children and not rendered ones.
+ * First launch is what forced it. A heading, a sentence, a control, a caption
+ * and a list of agents is not a shape a sibling count can name, and the count
+ * was already fragile: adding one node to any variant silently restyled
+ * another.
  *
  * The sidebar has the same problem and the same shape:
  *
@@ -72,8 +70,8 @@
  *
  * Connecting and offline are indistinguishable from each other in the sidebar,
  * which is survivable only because both are suppressed there for the same
- * reason. A modifier class on each container is requested of the markup owner
- * and would retire this whole section. */
+ * reason. The same modifier the pane now carries would retire the rest of
+ * this section, and is still requested of whoever next owns that markup. */
 
 /* ------------------------------------------------------------------ */
 /* Main pane                                                           */
@@ -120,25 +118,181 @@
  * The only pane state that still has a heading, and the only one that is
  * neither a failure nor a first launch. Full contrast, because it is the focal
  * line of the screen, and one step to its own sentence because the two are one
- * thought. */
+ * thought.
+ *
+ * Keyed on the modifier like every other pane state, rather than on the
+ * title-then-hint adjacency it used to rely on. The heading is what tells this
+ * state apart from a fault, and a rule that fires on a shape rather than on a
+ * name is a rule that changes meaning the next time somebody adds a node. */
 .rg-terminal__empty-title {
   margin: 0;
   color: var(--rg-fg);
 }
 
-.rg-terminal__empty > .rg-terminal__empty-title + .rg-terminal__empty-hint {
+.rg-terminal__empty--unfocused > .rg-terminal__empty-title + .rg-terminal__empty-hint {
   margin-top: var(--rg-space-2);
 }
 
 /* -- First launch --------------------------------------------------------
  *
- * A button and the shortcut that does the same thing. The shortcut is a
- * caption for the control directly above it, so it sits close enough to be
- * read as belonging to it and quiet enough not to compete with it. Three steps
- * rather than one: at one step a caption crowds a control it is describing,
- * and the kbd chip has a border of its own that needs clearance. */
-.rg-terminal__empty > .rg-btn + .rg-terminal__empty-hint {
-  margin-top: var(--rg-space-3);
+ * The one pane state that has to argue for the product, and therefore the one
+ * that carries more than a sentence. It says four things and no more: what
+ * this is, why that differs from a terminal with tabs, one control already
+ * aimed at an agent this machine really has, and the roster of every agent
+ * vitrum knows with the absent ones named as absent rather than hidden.
+ *
+ * What it replaced was a grey button reading "New session" with `Ctrl+Shift+N`
+ * under it. That screen was correct by rule 1 and useless: a first-run
+ * operator learned neither what a session is, nor which agents this machine
+ * can run, nor that the product's whole argument is that they outlive the
+ * window.
+ *
+ * This is an amendment to rule 1 at the top of this file, not an exception to
+ * it. The rule exists to stop a screen saying one thing four times, and
+ * nothing here is said twice: the agent the control fires is MARKED in the
+ * roster rather than repeated there as a second button. There is still
+ * exactly one action.
+ *
+ * The roster is a column of its own width, left-aligned, rather than five
+ * centred lines. Centred rows of name-and-note give every row a different
+ * left edge, which is the fastest way to make a list look like debris. The
+ * headline and the sentence stay centred above it, because they are prose and
+ * short.
+ *
+ * TYPE lives here rather than in 11-type.css, alone in this file. Every
+ * selector below is new and belongs to this one state; splitting six
+ * declarations across two files to honour a boundary drawn for the shared
+ * classes would cost more than it buys. */
+.rg-terminal__empty--first {
+  /* Per-child margins, as everywhere else here: one flat gap would set a
+   * headline from its own sentence as far as a control from an unrelated
+   * list. */
+  gap: 0;
+}
+
+.rg-first__headline {
+  max-width: 30rem;
+  margin: 0;
+  color: var(--rg-fg-strong);
+  font-size: var(--rg-text-17);
+  font-weight: var(--rg-weight-semibold);
+  line-height: var(--rg-lead-title);
+}
+
+/* One step from the headline, because the two are one thought. The measure is
+ * what makes the sentence findable rather than merely readable. */
+.rg-first__blurb {
+  max-width: 26rem;
+  margin: var(--rg-space-2) 0 0;
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-12);
+  line-height: var(--rg-lh-loose);
+}
+
+/* The focal point. Far enough under the prose to be the next thing the eye
+ * lands on rather than the end of the paragraph. */
+.rg-first__go {
+  margin-top: var(--rg-space-6);
+}
+
+/* A caption for the control directly above it, at the distance the shortcut
+ * hint used to sit: close enough to belong to it, quiet enough not to compete
+ * with it. `nothing` takes the same treatment because it stands in the
+ * control's place on a machine with no agent on it, and a screen whose only
+ * sentence is set like an afterthought reads as an error. */
+.rg-first__caption,
+.rg-first__nothing {
+  max-width: 26rem;
+  margin: var(--rg-space-3) 0 0;
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-12);
+  line-height: var(--rg-lh-loose);
+}
+
+/* The roster. One column, name on the left rail and note ranged right, so the
+ * two never collide on a narrow pane and the eye can read either edge alone. */
+.rg-first__agents {
+  width: 20rem;
+  max-width: 100%;
+  margin: var(--rg-space-8) 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.rg-first__agent {
+  display: block;
+}
+
+/* One geometry for both shapes. An installed row is a button and a missing
+ * one is a span, and if the two measured differently the list would step in
+ * and out as agents were installed. */
+.rg-first__pick {
+  display: flex;
+  gap: var(--rg-space-4);
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--rg-space-2) var(--rg-space-3);
+  border: 0;
+  border-radius: var(--rg-radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.rg-first__pick {
+  cursor: pointer;
+}
+
+button.rg-first__pick:hover:enabled {
+  background-color: var(--rg-row-hover);
+}
+
+button.rg-first__pick:focus-visible {
+  outline: 2px solid var(--rg-focus-ring);
+  outline-offset: 1px;
+}
+
+button.rg-first__pick:disabled {
+  cursor: default;
+}
+
+.rg-first__name {
+  color: var(--rg-fg);
+  font-size: var(--rg-text-13);
+}
+
+.rg-first__note {
+  color: var(--rg-fg-faint);
+  font-size: var(--rg-text-11);
+}
+
+/* The one the control is already aimed at. A filled row rather than a bullet:
+ * a marker glyph would indent one name by its own width and put a second left
+ * edge in a five-row list. */
+.rg-first__agent--on .rg-first__pick {
+  background-color: var(--rg-row-selected);
+}
+
+.rg-first__agent--on .rg-first__name {
+  color: var(--rg-fg-strong);
+  font-weight: var(--rg-weight-medium);
+}
+
+/* Missing, and visibly not takeable. The whole row recedes rather than the
+ * note alone: a name at full contrast beside a grey caption reads as a row you
+ * may click, and clicking it can only fail. */
+.rg-first__agent--missing .rg-first__name,
+.rg-first__agent--missing .rg-first__note {
+  color: var(--rg-fg-faint);
+}
+
+/* The other way in, held well off the roster so it reads as a footnote to the
+ * screen rather than as a sixth row of it. */
+.rg-terminal__empty--first > .rg-terminal__empty-hint {
+  margin-top: var(--rg-space-8);
 }
 
 /* -- Offline -------------------------------------------------------------
@@ -149,12 +303,11 @@
  * contrast rather than to the failure hue: a saturated pink at 12px on black
  * is less legible than white, and the state is already named by the mark. This
  * is what makes the screen a fault rather than an emptiness. */
-.rg-terminal__empty > .rg-terminal__empty-hint:first-child:nth-last-child(2) {
+.rg-terminal__empty--offline > .rg-terminal__empty-hint {
   color: var(--rg-fg);
 }
 
-.rg-terminal__empty
-  > .rg-terminal__empty-hint:first-child:nth-last-child(2)::before {
+.rg-terminal__empty--offline > .rg-terminal__empty-hint::before {
   content: "";
   display: block;
   width: var(--rg-space-2);
@@ -165,7 +318,7 @@
 }
 
 /* Retry, occurrence two of four. See rule 2 at the top of this file. */
-.rg-terminal__empty > .rg-terminal__empty-hint + .rg-btn {
+.rg-terminal__empty--offline > .rg-btn {
   display: none;
 }
 
@@ -173,10 +326,8 @@
  *
  * One sentence, recessive, unmarked. It is normally on screen for a fraction
  * of a second and it is not a problem, so it gets neither the mark the failure
- * gets nor the contrast the heading gets. :only-child is exact: the offline
- * variant's hint has a Retry after it, so it is never an only child, and the
- * other two variants lead with a button or a title. */
-.rg-terminal__empty > .rg-terminal__empty-hint:only-child {
+ * gets nor the contrast the heading gets. */
+.rg-terminal__empty--connecting > .rg-terminal__empty-hint {
   color: var(--rg-fg-subtle);
 }
 

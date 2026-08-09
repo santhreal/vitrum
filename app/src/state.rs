@@ -87,6 +87,8 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 use vitrum_model::{
@@ -3064,10 +3066,58 @@ pub fn save_ui_state(path: &Path, doc: &Persisted) -> std::io::Result<()> {
 /// the caller can flash it. The caller then applies the document with
 /// [`Persisted::restore_daemon`] and [`Persisted::restore_window`].
 pub fn load_prefs() -> (Persisted, Option<String>) {
+    PREFS_LOADS.fetch_add(1, Ordering::Relaxed);
     match ui_state_path() {
         Ok(path) => load_ui_state(&path).or_default(),
         Err(e) => (Persisted::default(), Some(e.to_string())),
     }
+}
+
+/// How many times the profile has actually been parsed off disk.
+///
+/// A counter and not a timer. What the startup path is allowed to spend on
+/// `ui.json` is a property of the code — one read, shared — and it stays true
+/// on a loaded machine where a millisecond budget would not.
+static PREFS_LOADS: AtomicUsize = AtomicUsize::new(0);
+
+/// The number [`PREFS_LOADS`] is holding.
+pub fn prefs_loads() -> usize {
+    PREFS_LOADS.load(Ordering::Relaxed)
+}
+
+/// The profile as it was when this process started.
+///
+/// Three things on the startup path want it and all three want the same
+/// answer: whether the window is created see-through, which is frozen for the
+/// life of the process; the keymap inlined into the document head, which is
+/// built once per process; and the restore the first window's mount performs.
+/// They used to take three independent reads of the same file, two of them on
+/// the main thread before the window existed.
+///
+/// Deliberately NOT the accessor for anything that must see a later write.
+/// Settings the operator changes are pushed live and re-read through
+/// [`load_prefs`]; this is the snapshot, and the doc comment is the contract.
+static STARTUP_PREFS: LazyLock<(Persisted, Option<String>)> = LazyLock::new(|| {
+    STARTUP_PREFS_LOADS.fetch_add(1, Ordering::Relaxed);
+    load_prefs()
+});
+
+/// How many times the startup snapshot has gone to disk.
+///
+/// Absolute rather than a delta, which is what makes it assertable: whatever
+/// else a process does, this number is one after anything has asked for the
+/// snapshot and zero before. A delta against [`prefs_loads`] would be a race
+/// against every other test in the binary.
+static STARTUP_PREFS_LOADS: AtomicUsize = AtomicUsize::new(0);
+
+/// The number [`STARTUP_PREFS_LOADS`] is holding.
+pub fn startup_prefs_loads() -> usize {
+    STARTUP_PREFS_LOADS.load(Ordering::Relaxed)
+}
+
+/// The profile as it was when this process started, read at most once.
+pub fn startup_prefs() -> &'static (Persisted, Option<String>) {
+    &STARTUP_PREFS
 }
 
 /// Write one window's slice of the document, keeping every other window's.

@@ -134,6 +134,24 @@ for file in $files; do
         fail "$file: $hits instructions above the $floor floor"
         printf '%s\n' "$text" | grep -E "$pattern" | head -5 | sed 's/^/    /' >&2
         printf '    (first 5 of %s)\n' "$hits" >&2
+        # An address names nothing anyone can act on, and the next question a
+        # failure here always asks is which dependency did it. `objdump -d`
+        # already prints a symbol header before each function, so attribute
+        # every hit to the one it falls under and report the worst offenders.
+        # A mangled Rust symbol carries its crate, which is the answer.
+        CHECK_ISA_PATTERN=$pattern
+        export CHECK_ISA_PATTERN
+        printf '%s\n' "$text" | awk '
+            /^[0-9a-fA-F]+ </ {
+                sym = $0
+                sub(/^[0-9a-fA-F]+ </, "", sym)
+                sub(/>:.*$/, "", sym)
+                next
+            }
+            $0 ~ ENVIRON["CHECK_ISA_PATTERN"] { n[sym]++ }
+            END { for (s in n) printf "%8d  %s\n", n[s], s }
+        ' | sort -rn | head -10 | sed 's/^/    /' >&2
+        printf '    (functions carrying them, worst first)\n' >&2
         continue
     fi
 

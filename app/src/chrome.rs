@@ -19,7 +19,7 @@ use super::*;
 /// see-through, and the first move from a fully opaque profile needs a new
 /// window.
 static TRANSLUCENT: LazyLock<bool> = LazyLock::new(|| {
-    state::load_prefs()
+    state::startup_prefs()
         .0
         .settings
         .appearance
@@ -35,19 +35,46 @@ static TRANSLUCENT: LazyLock<bool> = LazyLock::new(|| {
 /// 16 pixel raster instead leaves the alt-tab switcher upscaling eight times.
 const WINDOW_ICON_SIZE: u32 = 128;
 
-/// The mark, rasterised for the window manager.
+/// The mark, rasterised once for every window this process opens.
 ///
 /// Not a file, and not a resource: the geometry is compiled in and drawn by
 /// [`vitrum_os::mark`], so a window that opens before anything is installed
 /// still carries the mark. Without this the window shows whatever generic
 /// placeholder the desktop keeps for a program it cannot identify.
 ///
+/// The RASTER is cached rather than the `Icon`, because the raster is plain
+/// bytes that cross a thread and an `Icon` is a toolkit type that makes no
+/// such promise. That is what lets the prewarm thread pay for it while the
+/// main thread is bringing up the toolkit, and it is also what stops the
+/// twentieth window redrawing a mark identical to the first nineteen.
+static MARK_RASTER: LazyLock<vitrum_os::icon::IconImage> = LazyLock::new(|| {
+    MARK_RASTERISATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    vitrum_os::mark::render_mark(WINDOW_ICON_SIZE, vitrum_os::mark::MARK_COLOUR)
+});
+
+/// How many times the mark has been drawn for a window icon.
+static MARK_RASTERISATIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The number [`MARK_RASTERISATIONS`] is holding.
+pub(crate) fn mark_rasterisations() -> usize {
+    MARK_RASTERISATIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Draw the mark now, so the thread that needs it does not have to.
+pub(crate) fn warm_window_icon() {
+    LazyLock::force(&MARK_RASTER);
+}
+
+/// The mark as the window manager wants it.
+///
 /// `None` only if the rasteriser ever hands back a buffer whose length
 /// disagrees with its dimensions, which `tao` rejects. A window with the
 /// generic icon is the right answer to that; refusing to open is not.
-fn window_icon() -> Option<vitrum_dioxus_desktop::tao::window::Icon> {
-    let img = vitrum_os::mark::render_mark(WINDOW_ICON_SIZE, vitrum_os::mark::MARK_COLOUR);
-    vitrum_dioxus_desktop::tao::window::Icon::from_rgba(img.rgba, img.width, img.height).ok()
+pub(crate) fn window_icon() -> Option<vitrum_dioxus_desktop::tao::window::Icon> {
+    let img = &*MARK_RASTER;
+    vitrum_dioxus_desktop::tao::window::Icon::from_rgba(img.rgba.clone(), img.width, img.height)
+        .ok()
 }
 
 /// The OS window for one slot.
@@ -241,6 +268,7 @@ pub(crate) fn style_origins() -> Vec<(&'static str, String)> {
 pub(crate) fn document_head(opts: Options) -> &'static str {
     static HEAD: OnceLock<String> = OnceLock::new();
     HEAD.get_or_init(|| {
+        boot::mark("head.start");
         // Every sheet, in one place: `style_origins` decides what ships and
         // in what order, and this loop only wraps each one in its element.
         let styles: String = {
@@ -255,7 +283,23 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
             }
             out
         };
-        format!(
+        boot::mark("head.css");
+        // The table the OPERATOR has, not the compile-time default: their
+        // rebindings folded in and their saved presets appended. The head is
+        // the only copy that is guaranteed to be in place before the first
+        // keydown, so shipping defaults here means every rebound chord and
+        // every preset shortcut is dead until the mount-time push lands, and
+        // silently dead forever if it does not.
+        //
+        // Hoisted out of the `format!` below so the trace can tell the two
+        // costs apart: this reads two files off the profile, and the format
+        // copies 800 KB of vendored script.
+        let keymap = ui::settings::keymap_json(&ui::settings::live_chords(
+            &state::startup_prefs().0.settings.keyboard,
+            &launch::load_launch_store().presets,
+        ));
+        boot::mark("head.keymap");
+        let head = format!(
             "{styles}\
              <script>window.__vitrum_renderer={:?};window.__vitrum_keymap={};</script>\
              <script type=\"text/plain\" id=\"rg-vendor-xterm\">{XTERM_JS}</script>\
@@ -263,16 +307,7 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
              <script type=\"text/plain\" id=\"rg-vendor-fit\">{ADDON_FIT_JS}</script>\
              {loading}",
             opts.renderer.as_str(),
-            // The table the OPERATOR has, not the compile-time default: their
-            // rebindings folded in and their saved presets appended. The head
-            // is the only copy that is guaranteed to be in place before the
-            // first keydown, so shipping defaults here means every rebound
-            // chord and every preset shortcut is dead until the mount-time
-            // push lands, and silently dead forever if it does not.
-            ui::settings::keymap_json(&ui::settings::live_chords(
-                &state::load_prefs().0.settings.keyboard,
-                &launch::load_launch_store().presets,
-            )),
+            keymap,
             // `type="text/plain"` so the engine STORES these and does not
             // parse them. `bootstrap.js::loadVendor` evaluates them on the
             // first command that needs a terminal, then clears the element's
@@ -299,7 +334,9 @@ pub(crate) fn document_head(opts: Options) -> &'static str {
             // The tag is written into the literal above rather than built as
             // an argument, so the 100 KB is copied once instead of twice.
             loading = loading_scripts(),
-        )
+        );
+        boot::mark("head.done");
+        head
     })
     .as_str()
 }

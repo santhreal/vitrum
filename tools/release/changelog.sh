@@ -50,6 +50,9 @@ trimmed() {
     '
 }
 
+tmp=$(mktemp)
+trap 'rm -f "$tmp" "$FILE.roll.tmp"' EXIT HUP INT TERM
+
 cmd=${1:-unreleased}
 case "$cmd" in
     unreleased)
@@ -65,23 +68,68 @@ case "$cmd" in
         printf '%s\n' "$body"
         ;;
     roll)
+        # `--merge` is for a first release whose section was written before the
+        # tag existed: this file can already carry `## v0.1.0 - <a date>` for a
+        # version that was never published. Rolling Unreleased into a second
+        # `## v0.1.0` heading would leave two sections for one version, and
+        # every reader of this file — the publish job, the in-app dialog —
+        # takes the first one, which is the older and wrong one. So the two are
+        # merged into one section instead, newest content first, dated the day
+        # it is actually cut. Re-dating is not rewriting history: a section for
+        # a version that was never tagged has no release date yet.
+        merge=no
+        [ "${2:-}" = --merge ] && { merge=yes; shift; }
         [ $# -ge 2 ] || die 'roll needs a version'
         v=${2#v}
         date=${3:-$(date -u +%Y-%m-%d)}
-        [ -n "$(trimmed Unreleased)" ] || die "$FILE has no unreleased content"
-        grep -q "^## v$v " "$FILE" && die "$FILE already has a section for v$v"
-        awk -v heading="## v$v - $date" '
-            !done && /^## Unreleased[ \t]*$/ {
-                print "## Unreleased"
-                print ""
-                print heading
-                done = 1
-                next
-            }
-            { print }
-        ' "$FILE" > "$FILE.roll.tmp"
-        mv "$FILE.roll.tmp" "$FILE"
-        printf 'changelog: rolled Unreleased into v%s - %s\n' "$v" "$date"
+        unreleased=$(trimmed Unreleased)
+        [ -n "$unreleased" ] || die "$FILE has no unreleased content"
+
+        if grep -q "^## v$v " "$FILE"; then
+            [ "$merge" = yes ] ||
+                die "$FILE already has a section for v$v"
+
+            # Drop the Unreleased section, then reopen an empty one above the
+            # existing release heading and put its body back under the new
+            # dated heading, ahead of what was already there.
+            awk '
+                /^## Unreleased[ \t]*$/ { skip = 1; next }
+                skip && /^## / { skip = 0 }
+                skip { next }
+                { print }
+            ' "$FILE" > "$tmp"
+            awk -v want="## v$v " -v heading="## v$v - $date" -v body="$unreleased" '
+                !done && index($0, want) == 1 {
+                    print "## Unreleased"
+                    print ""
+                    print heading
+                    print ""
+                    print body
+                    # No blank line here: the blank that followed the old
+                    # heading is the next input line and separates the merged
+                    # body from the one that was already there.
+                    done = 1
+                    next
+                }
+                { print }
+            ' "$tmp" > "$FILE.roll.tmp"
+            mv "$FILE.roll.tmp" "$FILE"
+            printf 'changelog: merged Unreleased into the existing v%s section, dated %s\n' \
+                "$v" "$date"
+        else
+            awk -v heading="## v$v - $date" '
+                !done && /^## Unreleased[ \t]*$/ {
+                    print "## Unreleased"
+                    print ""
+                    print heading
+                    done = 1
+                    next
+                }
+                { print }
+            ' "$FILE" > "$FILE.roll.tmp"
+            mv "$FILE.roll.tmp" "$FILE"
+            printf 'changelog: rolled Unreleased into v%s - %s\n' "$v" "$date"
+        fi
         ;;
     *) die "unknown command: $cmd" ;;
 esac

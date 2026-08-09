@@ -5,6 +5,10 @@
   <a href="https://github.com/santhreal/vitrum/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/santhreal/vitrum/ci.yml?style=flat-square&label=CI&labelColor=0a0a0a" alt="CI" /></a>&nbsp;
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-7aa2f7?style=flat-square&labelColor=0a0a0a" alt="License: MIT OR Apache-2.0" /></a>
 </p>
+<p align="center">
+  <img src="assets/screenshots/hero-sidebar-five-states.png" alt="Three projects in the vitrum sidebar: an agent working, one blocked on approval, one finished, one snoozed with a countdown, and one that failed, beside a Codex transcript" width="900" />
+</p>
+
 
 vitrum runs agent TUIs in one window: Claude Code, Codex, Gemini CLI, veyyon,
 or any other command. Each session gets a row in a sidebar showing the agent,
@@ -19,6 +23,14 @@ the project directory, and the state.
 | failed | exited |
 
 `Ctrl+Shift+Down` selects the next session in one of the blocked states.
+
+<p align="center">
+  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher: recent agents per project and the agents installed on this machine" width="900" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over a populated sidebar" width="900" />
+</p>
 
 Sessions run in a daemon. Closing the window, or updating vitrum, does not stop
 them, and scrollback is intact when you open it again.

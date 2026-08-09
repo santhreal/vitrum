@@ -410,9 +410,10 @@ pub fn transcript(info: &SessionInfo) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentKind;
     use crate::state::UiState;
-    use vitrum_model::{Clock, Disposition, DispositionPolicy, SidebarStatus, StatusSource};
+    use vitrum_model::{
+        AgentKind, Clock, Disposition, DispositionPolicy, SidebarStatus, StatusSource,
+    };
 
     const NOW: u64 = 1_772_580_600_000;
 

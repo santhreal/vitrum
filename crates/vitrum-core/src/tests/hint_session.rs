@@ -6,6 +6,7 @@
 //! declaration. They also pin the precedence the model expects, by resolving
 //! the sidebar status from the projection rather than by asserting on fields.
 
+use vitrum_model::agent::AgentKind;
 use vitrum_model::status::{SidebarStatus, StatusSource, resolve_status};
 #[cfg(target_os = "linux")]
 use vitrum_proto::IDLE_ATTENTION_MS;
@@ -22,6 +23,11 @@ fn status(info: &vitrum_proto::SessionInfo) -> (SidebarStatus, StatusSource) {
         &info.status,
         &info.attention,
         info.hint.as_ref().map(|h| h.state),
+        // Resolved from the projection exactly as a client does, so these
+        // tests cannot pass on a fiction: the sessions here run a shell, which
+        // has no title rule, so the claim is always `None` and the hint
+        // precedence is what is under test.
+        AgentKind::of(&info.command).title_claim(&info.title),
     );
     (resolution.status, resolution.source)
 }

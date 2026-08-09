@@ -14,6 +14,7 @@
 use vitrum_proto::{ProjectId, SessionId, SessionInfo};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentKind;
 use crate::disposition::SettleOverride;
 use crate::snooze::Snooze;
 use crate::status::{SidebarStatus, StatusResolution, resolve_status};
@@ -81,11 +82,17 @@ impl SessionView {
 
     /// Status and the signal that produced it. See [`resolve_status`] for the
     /// precedence rules.
+    ///
+    /// The title claim is resolved here rather than by the caller so that every
+    /// consumer of a row — the pill, the sort, the project rollup — sees the
+    /// same answer. A Codex session blocked on an approval gate that only the
+    /// sidebar pill knew about would sort as if nothing were wanted.
     pub fn resolve_status(&self) -> StatusResolution {
         resolve_status(
             &self.info.status,
             &self.info.attention,
             self.info.hint.as_ref().map(|hint| hint.state),
+            AgentKind::of(&self.info.command).title_claim(&self.info.title),
         )
     }
 
@@ -581,5 +588,98 @@ mod tests {
         assert_eq!(back, row);
         assert!(json.contains("\"lastVisitedMs\":3"));
         assert!(json.contains("\"snooze\":{\"snoozedAtMs\":1,\"wakeAtMs\":2}"));
+    }
+
+    /// THE HEADLINE CASE, at the layer every consumer actually calls. A Codex
+    /// session parked on "Would you like to run the following command?" sets
+    /// the title `[ ! ] Action Required`, and the operating system sees only a
+    /// process blocked on a read — which is `Ready`, which is what the sidebar
+    /// showed while the operator was being waited on.
+    #[test]
+    fn a_codex_session_titled_action_required_needs_approval() {
+        let row = ViewBuilder::new(1)
+            .command("codex")
+            .title("[ ! ] Action Required - codex")
+            .waiting(Some(true))
+            .build();
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Approval, StatusSource::Title)
+        );
+        assert!(
+            row.resolve_status().source.is_inferred(),
+            "a title-derived state must hedge; it is a reading, not a protocol"
+        );
+        assert!(row.status().wants_operator());
+    }
+
+    /// The rule belongs to the agent that produces the banner. The same title
+    /// on an agent with no rule, on a shell, and on a command this build cannot
+    /// name must change nothing: a global string match would put "Needs
+    /// approval" on any session that happened to title itself that way.
+    #[test]
+    fn the_same_title_on_another_agent_is_not_a_declaration() {
+        for command in ["claude", "gemini", "opencode", "veyyon", "bash", "make", ""] {
+            let row = ViewBuilder::new(1)
+                .command(command)
+                .title("[ ! ] Action Required")
+                .waiting(Some(true))
+                .build();
+            assert_eq!(
+                row.resolve_status(),
+                StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting),
+                "{command:?} read another agent's banner as a declaration"
+            );
+        }
+    }
+
+    /// BOTH DIRECTIONS. The claim is a function of the current title and
+    /// nothing else, so it appears when Codex raises the banner and is gone the
+    /// instant Codex clears it. A row that stuck on "Needs approval" after the
+    /// agent moved on would be worse than never showing the state: it trains
+    /// the operator to ignore the pill.
+    #[test]
+    fn a_title_claim_appears_and_clears_with_the_title() {
+        let quiet = ViewBuilder::new(1)
+            .command("codex")
+            .title("codex")
+            .waiting(Some(true))
+            .build();
+        assert_eq!(quiet.status(), SidebarStatus::Ready);
+
+        let mut row = quiet.clone();
+        row.info.title = "[ ! ] Action Required - codex".to_string();
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Approval, StatusSource::Title)
+        );
+
+        // ... and back. The agent answered the gate and retitled.
+        row.info.title = "codex".to_string();
+        assert_eq!(row.resolve_status(), quiet.resolve_status());
+        assert_eq!(row.status(), SidebarStatus::Ready);
+
+        // Once more, so the transition is proven repeatable rather than a
+        // one-shot that happens to survive the first flip.
+        row.info.title = "[ ! ] Action Required".to_string();
+        assert_eq!(row.status(), SidebarStatus::Approval);
+    }
+
+    /// PRECEDENCE at the row level: a deliberate `working` hint beats the
+    /// banner. Codex's title lags its own state, so a row whose agent is
+    /// telling us it is busy must not be dragged back to "Needs approval" by a
+    /// string.
+    #[test]
+    fn a_working_hint_beats_the_title_banner_on_a_row() {
+        let row = ViewBuilder::new(1)
+            .command("codex")
+            .title("[ ! ] Action Required - codex")
+            .waiting(Some(true))
+            .hint(HintState::Working, None, NOW)
+            .build();
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Working, StatusSource::Hint)
+        );
     }
 }

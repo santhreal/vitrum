@@ -51,6 +51,19 @@ impl ViewBuilder {
         self
     }
 
+    /// The program behind the session, which is what decides whether its title
+    /// is read for a declaration at all.
+    pub fn command(mut self, command: &str) -> Self {
+        self.view.info.command = command.to_string();
+        self
+    }
+
+    /// The session's title, as the terminal last set it.
+    pub fn title(mut self, title: &str) -> Self {
+        self.view.info.title = title.to_string();
+        self
+    }
+
     pub fn running(mut self) -> Self {
         self.view.info.status = SessionStatus::Running;
         self

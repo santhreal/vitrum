@@ -19,10 +19,10 @@
 //! | `Working`  | OBSERVED, proven: the foreground process is not blocked on the terminal. | OBSERVED, inferred from recent output. |
 //! | `Ready`    | OBSERVED, proven: the foreground process is blocked reading the terminal. | OBSERVED, inferred from a bell or from silence past [`IDLE_ATTENTION_MS`]. |
 //! | `Failed`   | OBSERVED: the child exited nonzero or was signalled. | Same. |
-//! | `Approval` | HINTED only.                     | HINTED only.                  |
-//! | `Input`    | HINTED only.                     | HINTED only.                  |
+//! | `Approval` | DECLARED: a hint, or a title this agent is known to publish while blocked. | Same. |
+//! | `Input`    | DECLARED: a hint, or a title this agent is known to publish while blocked. | Same. |
 //!
-//! # Why approval and input stay hinted even with the syscall probe
+//! # Why approval and input are declared rather than observed
 //!
 //! Because a `read()` is a `read()`. A shell sitting at a prompt, an agent
 //! asking "which file?", and an agent asking "may I force-push?" all block in
@@ -34,21 +34,48 @@
 //! would read "Needs input", the state would stop discriminating, and the
 //! sidebar would be a flat list again. So `waiting` proves `Ready`, which is
 //! precisely T3 Code's meaning of ready: the agent stopped and the next move is
-//! yours, whether it finished, asked something, or proposed a plan. The hint
-//! channel is what upgrades that into `Approval` or `Input` and supplies a
-//! label.
+//! yours, whether it finished, asked something, or proposed a plan.
 //!
-//! Nothing here guesses at those two states. [`SidebarStatus::is_observable`]
-//! is false for them, and no code path in this crate produces either without an
-//! [`AgentHint`](vitrum_proto::AgentHint).
+//! Two channels upgrade that into `Approval` or `Input`, and both are the agent
+//! speaking:
+//!
+//! 1. The [`hint`](crate::hint) channel, which an agent writes to us on
+//!    purpose. It carries the state and a label, and it is the best evidence
+//!    there is.
+//! 2. The terminal title, read through the per-agent rule in
+//!    [`AgentKind::title_claim`](crate::agent::AgentKind::title_claim). Codex
+//!    titles itself `[ ! ] Action Required` while it holds an approval gate,
+//!    and clears it when the turn resumes.
+//!
+//! A title is admissible where output timing is not, and the difference is not
+//! subtle. Timing is us guessing what silence means, and silence means nothing
+//! in particular: an agent thinking hard and an agent waiting for you look
+//! identical. A title is a statement the agent chose to publish, in its own
+//! words, about its own state, at the instant it entered that state and again
+//! at the instant it left. We are not inferring it; we are reading it.
+//!
+//! What it is NOT is a hint. The agent wrote that string for a window title
+//! bar, not for us, and we recognise it by a pattern that belongs to one agent
+//! and goes stale the day that agent rewords its banner. So it resolves with
+//! [`StatusSource::Title`], which reports [`StatusSource::is_inferred`] and
+//! makes the sidebar hedge.
+//!
+//! What it still does not catch: any agent that blocks without retitling.
+//! Gemini, opencode and veyyon publish nothing recognisable, so a Gemini
+//! session sitting on a question reads `Ready` exactly as before. There is no
+//! general rule to write, and a global match on somebody else's banner would
+//! put "Needs approval" on a row that merely opened a file with that name.
+//! [`SidebarStatus::requires_declaration`] is the invariant that holds: neither
+//! state is ever reached from what we measured, only from what the agent said.
 //!
 //! # Inferred versus proven
 //!
 //! Every resolution reports a [`StatusSource`], so a UI can distinguish what
-//! the operating system proved, what we inferred from output timing, and what
-//! the agent declared. On a platform that cannot answer the `waiting` question,
-//! the source is `Bell`, `Idle` or `Output` and the UI can say the platform
-//! cannot tell rather than implying a certainty it does not have.
+//! the operating system proved, what we inferred from output timing or from a
+//! title, and what the agent declared to us directly. On a platform that cannot
+//! answer the `waiting` question, the source is `Bell`, `Idle` or `Output` and
+//! the UI can say the platform cannot tell rather than implying a certainty it
+//! does not have.
 
 use vitrum_proto::{Attention, HintState, IDLE_ATTENTION_MS, SessionStatus};
 use serde::{Deserialize, Serialize};
@@ -62,10 +89,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub enum SidebarStatus {
     /// The agent declared it is blocked asking the operator to approve an
-    /// action. Hinted only.
+    /// action, either over the hint channel or by publishing it in its
+    /// terminal title. Never inferred from what the process is doing.
     Approval,
-    /// The agent declared it is blocked asking the operator a question.
-    /// Hinted only.
+    /// The agent declared it is blocked asking the operator a question, either
+    /// over the hint channel or by publishing it in its terminal title. Never
+    /// inferred from what the process is doing.
     Input,
     /// The child is computing. Nothing is wanted.
     Working,
@@ -119,12 +148,24 @@ impl SidebarStatus {
         }
     }
 
-    /// True when this state can be reached from observation alone.
+    /// True when the agent has to say so for this state to appear.
     ///
-    /// False for [`SidebarStatus::Approval`] and [`SidebarStatus::Input`]: they
-    /// exist only when an agent declares them.
-    pub fn is_observable(self) -> bool {
-        !matches!(self, SidebarStatus::Approval | SidebarStatus::Input)
+    /// True for [`SidebarStatus::Approval`] and [`SidebarStatus::Input`], and
+    /// only for those. Nothing we measure ourselves — the exit code, the
+    /// foreground probe, a bell, output timing — can reach either, because a
+    /// process blocked on a question and a process blocked at a prompt are the
+    /// same process to the operating system. Both channels that do reach them,
+    /// [`StatusSource::Hint`] and [`StatusSource::Title`], are the agent
+    /// speaking about itself.
+    ///
+    /// This replaced an `is_observable` that meant the same partition and said
+    /// the wrong thing about it. A title IS observed — we read it off the
+    /// stream the same way we count a bell — and the property that actually
+    /// matters is not how the evidence reached us but whether the agent
+    /// produced it. A predicate named for observation would now have to answer
+    /// "yes, but not like that".
+    pub fn requires_declaration(self) -> bool {
+        matches!(self, SidebarStatus::Approval | SidebarStatus::Input)
     }
 
     /// True when the operator is what the session is waiting on.
@@ -180,24 +221,94 @@ pub enum StatusSource {
     Output,
     /// The agent declared this state over the OSC hint channel.
     Hint,
+    /// The agent published this state in its terminal title, and the per-agent
+    /// rule in [`AgentKind::title_claim`](crate::agent::AgentKind::title_claim)
+    /// recognised it.
+    ///
+    /// A declaration, not a measurement: Codex sets `[ ! ] Action Required`
+    /// when it puts up a gate and clears it when the turn resumes, so the state
+    /// arrives and leaves on the agent's own say-so rather than on our reading
+    /// of a silence.
+    ///
+    /// Weaker than [`StatusSource::Hint`] on two counts, which is why it is a
+    /// separate variant and why [`StatusSource::is_inferred`] is true for it.
+    /// The agent wrote the string for a window title bar and not for us, so it
+    /// never consented to the meaning we read into it; and we recognise it by a
+    /// pattern owned by one agent, which is wrong the day that agent rewords
+    /// its banner. A hint is a contract. A title is a good-faith reading.
+    Title,
 }
 
+/// Every source, in declaration order. Useful for exhaustive iteration in
+/// tests and in a UI that has to say something about each one.
+pub const ALL_STATUS_SOURCES: [StatusSource; 8] = [
+    StatusSource::Exit,
+    StatusSource::Waiting,
+    StatusSource::Foreground,
+    StatusSource::Bell,
+    StatusSource::Idle,
+    StatusSource::Output,
+    StatusSource::Hint,
+    StatusSource::Title,
+];
+
 impl StatusSource {
-    /// True for everything the shell worked out for itself, as opposed to what
-    /// the agent declared.
+    /// True for everything we worked out for ourselves, as opposed to what the
+    /// agent published about itself.
+    ///
+    /// False for both declaration channels. [`StatusSource::Title`] reaches us
+    /// through the output stream, but the sentence in it was written by the
+    /// agent, and grouping it with the bell would lose the only distinction
+    /// this predicate exists to make.
     pub fn is_observed(self) -> bool {
-        !matches!(self, StatusSource::Hint)
+        !matches!(self, StatusSource::Hint | StatusSource::Title)
     }
 
-    /// True when the status rests on output timing rather than on a direct
-    /// answer from the operating system, the agent, or the child's exit.
+    /// True when the status rests on a reading that can be wrong, rather than
+    /// on a direct answer from the operating system, the agent's own hint, or
+    /// the child's exit.
     ///
-    /// A UI should mark these, because they are the states that can be wrong:
-    /// an agent thinking silently for a minute is inferred `Ready` and is
-    /// actually working. On Linux and macOS this is never true for a live
-    /// session; on Windows it is the only path available.
+    /// A UI should mark these. [`StatusSource::Idle`] and
+    /// [`StatusSource::Output`] can be wrong about the state: an agent thinking
+    /// silently for a minute is inferred `Ready` and is actually working.
+    /// [`StatusSource::Title`] can be wrong about the reading: the agent really
+    /// did publish that banner, and our rule for what it means is a per-agent
+    /// pattern rather than a protocol. Either way the honest UI hedges.
+    ///
+    /// On Linux and macOS the timing sources are never reached for a live
+    /// session; on Windows they are the only path available. A title claim is
+    /// platform-independent, so this is the one inferred source a Linux row can
+    /// show.
     pub fn is_inferred(self) -> bool {
-        matches!(self, StatusSource::Idle | StatusSource::Output)
+        matches!(
+            self,
+            StatusSource::Idle | StatusSource::Output | StatusSource::Title
+        )
+    }
+}
+
+/// A blocked state an agent published in its terminal title.
+///
+/// Only the two states the agent alone can know. A title never produces
+/// `Working`, `Ready` or `Failed`: those are measured, the measurement is
+/// better evidence than a banner, and a title rule that could set them would be
+/// a second, worse status engine running beside the real one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TitleClaim {
+    /// The agent is holding for the operator to approve something.
+    Approval,
+    /// The agent is holding for an answer.
+    Input,
+}
+
+impl TitleClaim {
+    /// The state this claim resolves to.
+    pub fn status(self) -> SidebarStatus {
+        match self {
+            TitleClaim::Approval => SidebarStatus::Approval,
+            TitleClaim::Input => SidebarStatus::Input,
+        }
     }
 }
 
@@ -210,7 +321,7 @@ pub struct StatusResolution {
 }
 
 impl StatusResolution {
-    const fn new(status: SidebarStatus, source: StatusSource) -> Self {
+    pub(crate) const fn new(status: SidebarStatus, source: StatusSource) -> Self {
         StatusResolution { status, source }
     }
 }
@@ -236,12 +347,30 @@ impl StatusResolution {
 ///    unseen past [`IDLE_ATTENTION_MS`], observation takes over. `approval` and
 ///    `input` are never retired this way, because being blocked on a human is
 ///    silent by definition.
-/// 5. **Otherwise the observed signals decide**, in the order
+/// 5. **The hint channel outranks the title, on every state including
+///    `working`.** Both are the agent talking, and when they disagree the one
+///    the agent addressed to us is the one it meant. An agent that hints
+///    `working` while its title still carries yesterday's banner is working:
+///    the hint is a protocol it opted into, the banner is a string we matched.
+///    A `working` hint that silence has already retired is no longer evidence
+///    of anything, so a title claim is read after that point.
+/// 6. **A title claim beats every observation.** It is a declaration, and the
+///    states it can produce are exactly the ones observation cannot reach. It
+///    is never retired by silence, for the same reason a blocking hint is not:
+///    an agent waiting on a human emits nothing, and the claim ends when the
+///    agent retitles.
+/// 7. **Otherwise the observed signals decide**, in the order
 ///    [`Attention::priority`] ranks them: failure, then the operating system's
 ///    answer, then a bell, then unseen silence, then recent output. Proof beats
 ///    a beep: a session the OS reports as computing is `Working` even if it rang
 ///    the bell, and the bell still lifts it inside its band through
 ///    `Attention::priority`.
+///
+/// `title` is the caller's already-resolved claim rather than a raw string,
+/// because reading a title is per agent: see
+/// [`AgentKind::title_claim`](crate::agent::AgentKind::title_claim), which
+/// [`SessionView::resolve_status`](crate::view::SessionView::resolve_status)
+/// applies for every row.
 ///
 /// Snooze does not appear here. Snoozing changes whether a row is settled and
 /// where it sorts, not what the agent is doing.
@@ -249,6 +378,7 @@ pub fn resolve_status(
     session_status: &SessionStatus,
     attention: &Attention,
     hint: Option<HintState>,
+    title: Option<TitleClaim>,
 ) -> StatusResolution {
     if !session_status.is_live() {
         return if attention.failed || exited_badly(session_status) {
@@ -275,6 +405,10 @@ pub fn resolve_status(
                 }
             }
         }
+    }
+
+    if let Some(claim) = title {
+        return StatusResolution::new(claim.status(), StatusSource::Title);
     }
 
     resolve_observed(attention)
@@ -342,12 +476,20 @@ mod tests {
     };
 
     /// The crate's central honesty claim, asserted as code: approval and input
-    /// are not derivable from observation, not even with the syscall probe,
-    /// because a shell at a prompt and an agent asking a question block in the
-    /// same syscall. If someone later adds an inference path to either, this
-    /// fails and forces the question back into review.
+    /// are not derivable from anything we measure, not even with the syscall
+    /// probe, because a shell at a prompt and an agent asking a question block
+    /// in the same syscall. If someone later adds an inference path to either,
+    /// this fails and forces the question back into review.
+    ///
+    /// The claim moved when titles became admissible, and it moved in one
+    /// direction only: the two states now have a second DECLARATION channel,
+    /// and still no observation channel. So the matrix below sweeps every
+    /// observable input with both declaration channels silent, and the
+    /// membership assertions are derived from
+    /// [`SidebarStatus::requires_declaration`] over [`ALL_STATUSES`] rather
+    /// than listing states, so a sixth state cannot join without a ruling.
     #[test]
-    fn approval_and_input_are_never_produced_without_a_hint() {
+    fn states_that_require_a_declaration_are_never_produced_without_one() {
         let mut produced = Vec::new();
         for bell in [false, true] {
             for idle_ms in [0, 1, IDLE_ATTENTION_MS - 1, IDLE_ATTENTION_MS, 10_000_000] {
@@ -364,11 +506,12 @@ mod tests {
                                 &lifecycle,
                                 &attention(bell, idle_ms, failed, waiting),
                                 None,
+                                None,
                             );
                             produced.push(resolved.status);
                             assert!(
                                 resolved.source.is_observed(),
-                                "unhinted resolution claimed a hint source: {resolved:?}"
+                                "undeclared resolution claimed a declared source: {resolved:?}"
                             );
                         }
                     }
@@ -376,13 +519,53 @@ mod tests {
             }
         }
         assert_eq!(produced.len(), 300);
-        assert!(!produced.contains(&SidebarStatus::Approval));
-        assert!(!produced.contains(&SidebarStatus::Input));
-        assert!(!SidebarStatus::Approval.is_observable());
-        assert!(!SidebarStatus::Input.is_observable());
-        assert!(SidebarStatus::Working.is_observable());
-        assert!(SidebarStatus::Ready.is_observable());
-        assert!(SidebarStatus::Failed.is_observable());
+        for status in ALL_STATUSES {
+            assert_eq!(
+                !produced.contains(&status),
+                status.requires_declaration(),
+                "{status:?} requires a declaration: {}, but the undeclared matrix \
+                 produced it: {}",
+                status.requires_declaration(),
+                produced.contains(&status)
+            );
+        }
+    }
+
+    /// The other half of that partition: every state that requires a
+    /// declaration must be reachable from BOTH declaration channels, or the
+    /// predicate is describing a state nothing can produce.
+    ///
+    /// Derived from [`ALL_STATUSES`] and from the mappings, so adding a
+    /// declarable state without wiring it to a channel fails here rather than
+    /// shipping a state the sidebar can never show.
+    #[test]
+    fn every_state_that_requires_a_declaration_has_both_channels_wired() {
+        let hinted = [
+            (HintState::Approval, SidebarStatus::Approval),
+            (HintState::Input, SidebarStatus::Input),
+        ];
+        let titled = [
+            (TitleClaim::Approval, SidebarStatus::Approval),
+            (TitleClaim::Input, SidebarStatus::Input),
+        ];
+        for status in ALL_STATUSES.iter().filter(|s| s.requires_declaration()) {
+            let (hint, _) = hinted
+                .iter()
+                .find(|(_, produced)| produced == status)
+                .unwrap_or_else(|| panic!("{status:?} requires a declaration but no hint reaches it"));
+            let (claim, _) = titled
+                .iter()
+                .find(|(_, produced)| produced == status)
+                .unwrap_or_else(|| panic!("{status:?} requires a declaration but no title reaches it"));
+            assert_eq!(
+                resolve_status(&SessionStatus::Running, &UNKNOWN, Some(*hint), None),
+                StatusResolution::new(*status, StatusSource::Hint)
+            );
+            assert_eq!(
+                resolve_status(&SessionStatus::Running, &UNKNOWN, None, Some(*claim)),
+                StatusResolution::new(*status, StatusSource::Title)
+            );
+        }
     }
 
     /// The operating system's answer is proof and must be reported as proof.
@@ -394,6 +577,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, 0, false, Some(true)),
             None,
+            None,
         );
         assert_eq!(
             blocked,
@@ -404,6 +588,7 @@ mod tests {
         let computing = resolve_status(
             &SessionStatus::Running,
             &attention(false, 0, false, Some(false)),
+            None,
             None,
         );
         assert_eq!(
@@ -422,6 +607,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS * 100, false, Some(false)),
             None,
+            None,
         );
         assert_eq!(
             resolved,
@@ -436,7 +622,7 @@ mod tests {
     #[test]
     fn a_bell_does_not_override_a_process_proven_to_be_computing() {
         let observed = attention(true, 0, false, Some(false));
-        let resolved = resolve_status(&SessionStatus::Running, &observed, None);
+        let resolved = resolve_status(&SessionStatus::Running, &observed, None, None);
         assert_eq!(
             resolved,
             StatusResolution::new(SidebarStatus::Working, StatusSource::Foreground)
@@ -449,7 +635,7 @@ mod tests {
     /// working, which is a confident lie.
     #[test]
     fn an_unknown_probe_falls_back_to_inference_and_is_marked_inferred() {
-        let quiet = resolve_status(&SessionStatus::Running, &UNKNOWN, None);
+        let quiet = resolve_status(&SessionStatus::Running, &UNKNOWN, None, None);
         assert_eq!(
             quiet,
             StatusResolution::new(SidebarStatus::Working, StatusSource::Output)
@@ -459,6 +645,7 @@ mod tests {
         let silent = resolve_status(
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS, false, None),
+            None,
             None,
         );
         assert_eq!(
@@ -473,6 +660,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS, false, Some(false)),
             None,
+            None,
         );
         assert_eq!(answered.status, SidebarStatus::Working);
         assert_ne!(answered.status, silent.status);
@@ -486,6 +674,7 @@ mod tests {
         let resolved = resolve_status(
             &SessionStatus::Running,
             &attention(true, 0, false, None),
+            None,
             None,
         );
         assert_eq!(
@@ -503,6 +692,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS - 1, false, None),
             None,
+            None,
         );
         assert_eq!(
             just_under,
@@ -512,6 +702,7 @@ mod tests {
         let at = resolve_status(
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS, false, None),
+            None,
             None,
         );
         assert_eq!(at, StatusResolution::new(SidebarStatus::Ready, StatusSource::Idle));
@@ -523,7 +714,7 @@ mod tests {
     #[test]
     fn a_starting_session_is_working() {
         for lifecycle in [SessionStatus::Starting, SessionStatus::Running] {
-            let resolved = resolve_status(&lifecycle, &UNKNOWN, None);
+            let resolved = resolve_status(&lifecycle, &UNKNOWN, None, None);
             assert_eq!(
                 resolved,
                 StatusResolution::new(SidebarStatus::Working, StatusSource::Output)
@@ -536,13 +727,13 @@ mod tests {
     /// the settled pile.
     #[test]
     fn exit_code_decides_failed_versus_ready_and_signals_count_as_failure() {
-        let clean = resolve_status(&SessionStatus::Exited { code: Some(0) }, &UNKNOWN, None);
+        let clean = resolve_status(&SessionStatus::Exited { code: Some(0) }, &UNKNOWN, None, None);
         assert_eq!(clean, StatusResolution::new(SidebarStatus::Ready, StatusSource::Exit));
 
-        let nonzero = resolve_status(&SessionStatus::Exited { code: Some(1) }, &UNKNOWN, None);
+        let nonzero = resolve_status(&SessionStatus::Exited { code: Some(1) }, &UNKNOWN, None, None);
         assert_eq!(nonzero, StatusResolution::new(SidebarStatus::Failed, StatusSource::Exit));
 
-        let signalled = resolve_status(&SessionStatus::Exited { code: None }, &UNKNOWN, None);
+        let signalled = resolve_status(&SessionStatus::Exited { code: None }, &UNKNOWN, None, None);
         assert_eq!(signalled, StatusResolution::new(SidebarStatus::Failed, StatusSource::Exit));
     }
 
@@ -554,6 +745,7 @@ mod tests {
             let resolved = resolve_status(
                 &SessionStatus::Running,
                 &attention(true, 0, true, waiting),
+                None,
                 None,
             );
             assert_eq!(
@@ -573,6 +765,7 @@ mod tests {
             &SessionStatus::Exited { code: Some(0) },
             &attention(false, 0, true, None),
             None,
+            None,
         );
         assert_eq!(resolved, StatusResolution::new(SidebarStatus::Failed, StatusSource::Exit));
     }
@@ -584,15 +777,15 @@ mod tests {
     fn a_hint_upgrades_an_observed_ready_into_approval_or_input() {
         let observed = attention(false, 0, false, Some(true));
         assert_eq!(
-            resolve_status(&SessionStatus::Running, &observed, None).status,
+            resolve_status(&SessionStatus::Running, &observed, None, None).status,
             SidebarStatus::Ready
         );
         assert_eq!(
-            resolve_status(&SessionStatus::Running, &observed, Some(HintState::Approval)),
+            resolve_status(&SessionStatus::Running, &observed, Some(HintState::Approval), None),
             StatusResolution::new(SidebarStatus::Approval, StatusSource::Hint)
         );
         assert_eq!(
-            resolve_status(&SessionStatus::Running, &observed, Some(HintState::Input)),
+            resolve_status(&SessionStatus::Running, &observed, Some(HintState::Input), None),
             StatusResolution::new(SidebarStatus::Input, StatusSource::Hint)
         );
     }
@@ -616,7 +809,7 @@ mod tests {
                 attention(false, 0, false, Some(true)),
                 attention(true, IDLE_ATTENTION_MS * 100, false, Some(false)),
             ] {
-                let resolved = resolve_status(&SessionStatus::Running, &observed, Some(state));
+                let resolved = resolve_status(&SessionStatus::Running, &observed, Some(state), None);
                 assert_eq!(
                     resolved,
                     StatusResolution::new(expected, StatusSource::Hint),
@@ -638,7 +831,7 @@ mod tests {
             HintState::Ready,
         ] {
             let clean =
-                resolve_status(&SessionStatus::Exited { code: Some(0) }, &UNKNOWN, Some(state));
+                resolve_status(&SessionStatus::Exited { code: Some(0) }, &UNKNOWN, Some(state), None);
             assert_eq!(
                 clean,
                 StatusResolution::new(SidebarStatus::Ready, StatusSource::Exit),
@@ -646,7 +839,7 @@ mod tests {
             );
 
             let crashed =
-                resolve_status(&SessionStatus::Exited { code: Some(2) }, &UNKNOWN, Some(state));
+                resolve_status(&SessionStatus::Exited { code: Some(2) }, &UNKNOWN, Some(state), None);
             assert_eq!(
                 crashed,
                 StatusResolution::new(SidebarStatus::Failed, StatusSource::Exit),
@@ -664,6 +857,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, 0, false, Some(false)),
             Some(HintState::Ready),
+            None,
         );
         assert_eq!(resolved, StatusResolution::new(SidebarStatus::Ready, StatusSource::Hint));
     }
@@ -678,6 +872,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, 0, false, Some(true)),
             Some(HintState::Working),
+            None,
         );
         assert_eq!(resolved, StatusResolution::new(SidebarStatus::Working, StatusSource::Hint));
     }
@@ -691,6 +886,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS - 1, false, Some(true)),
             Some(HintState::Working),
+            None,
         );
         assert_eq!(fresh, StatusResolution::new(SidebarStatus::Working, StatusSource::Hint));
 
@@ -698,6 +894,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS, false, Some(true)),
             Some(HintState::Working),
+            None,
         );
         assert_eq!(stale, StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting));
 
@@ -707,6 +904,7 @@ mod tests {
             &SessionStatus::Running,
             &attention(false, IDLE_ATTENTION_MS, false, Some(false)),
             Some(HintState::Working),
+            None,
         );
         assert_eq!(
             still_busy,
@@ -727,6 +925,7 @@ mod tests {
                 &SessionStatus::Running,
                 &attention(false, IDLE_ATTENTION_MS * 1000, false, Some(true)),
                 Some(state),
+                None,
             );
             assert_eq!(resolved, StatusResolution::new(expected, StatusSource::Hint));
         }
@@ -774,7 +973,7 @@ mod tests {
         let mut previous_urgency = u8::MAX;
         for observed in ranked_signals {
             let priority = observed.priority();
-            let urgency = resolve_status(&SessionStatus::Running, &observed, None)
+            let urgency = resolve_status(&SessionStatus::Running, &observed, None, None)
                 .status
                 .urgency();
             assert!(priority < previous_priority, "coarse rank not descending");
@@ -849,49 +1048,230 @@ mod tests {
         }
     }
 
-    /// Exactly one source is a declaration and exactly two are inferences. A UI
-    /// that marks declared and uncertain states differently depends on this
-    /// split being exact.
+    /// Two sources are declarations and three are readings that can be wrong.
+    /// A UI that marks declared and uncertain states differently depends on
+    /// this split being exact.
+    ///
+    /// The expectation is an EXHAUSTIVE match rather than a list, so a new
+    /// source cannot be added without ruling on both predicates: the crate
+    /// stops compiling until it is classified, and [`ALL_STATUS_SOURCES`]
+    /// stops matching until it is enumerated.
     #[test]
     fn status_sources_partition_into_declared_proven_and_inferred() {
-        let sources = [
-            StatusSource::Exit,
-            StatusSource::Waiting,
-            StatusSource::Foreground,
-            StatusSource::Bell,
-            StatusSource::Idle,
-            StatusSource::Output,
-            StatusSource::Hint,
-        ];
-        assert_eq!(sources.iter().filter(|source| source.is_observed()).count(), 6);
-        assert_eq!(sources.iter().filter(|source| source.is_inferred()).count(), 2);
-        assert!(!StatusSource::Hint.is_observed());
-        assert!(StatusSource::Idle.is_inferred());
-        assert!(StatusSource::Output.is_inferred());
-        assert!(!StatusSource::Waiting.is_inferred());
-        assert!(!StatusSource::Foreground.is_inferred());
-        assert!(!StatusSource::Bell.is_inferred());
+        // (is_observed, is_inferred) per source, written out.
+        let expected = |source: StatusSource| match source {
+            StatusSource::Exit => (true, false),
+            StatusSource::Waiting => (true, false),
+            StatusSource::Foreground => (true, false),
+            StatusSource::Bell => (true, false),
+            StatusSource::Idle => (true, true),
+            StatusSource::Output => (true, true),
+            // Declared, and hedged: the agent published the banner, we
+            // interpreted it.
+            StatusSource::Title => (false, true),
+            // Declared, and not hedged: the agent addressed it to us.
+            StatusSource::Hint => (false, false),
+        };
+        for source in ALL_STATUS_SOURCES {
+            assert_eq!(
+                (source.is_observed(), source.is_inferred()),
+                expected(source),
+                "{source:?} is classified differently from its ruling"
+            );
+        }
+        assert_eq!(
+            ALL_STATUS_SOURCES
+                .iter()
+                .filter(|source| !source.is_observed())
+                .count(),
+            2,
+            "exactly two declaration channels: the hint and the title"
+        );
+        assert_eq!(
+            ALL_STATUS_SOURCES
+                .iter()
+                .filter(|source| source.is_inferred())
+                .count(),
+            3
+        );
     }
 
-    /// On Linux and macOS a live session is never inferred, because the probe
-    /// always answers. That is the platform guarantee the UI leans on to avoid
-    /// showing an uncertainty marker where there is no uncertainty.
+    /// On Linux and macOS a live session is never inferred from timing, because
+    /// the probe always answers. That is the platform guarantee the UI leans on
+    /// to avoid showing an uncertainty marker where there is no uncertainty.
+    ///
+    /// A title claim is the one exception, and it is deliberate: it is
+    /// available on every platform and it is hedged on every platform, because
+    /// what is uncertain about it is the reading rather than the probe.
     #[test]
-    fn a_live_session_with_a_probe_answer_is_never_inferred() {
+    fn a_live_session_with_a_probe_answer_is_never_inferred_unless_it_was_titled() {
         for waiting in [Some(true), Some(false)] {
             for bell in [false, true] {
                 for idle_ms in [0, IDLE_ATTENTION_MS * 10] {
-                    let resolved = resolve_status(
-                        &SessionStatus::Running,
-                        &attention(bell, idle_ms, false, waiting),
-                        None,
-                    );
+                    let observed = attention(bell, idle_ms, false, waiting);
+                    let resolved =
+                        resolve_status(&SessionStatus::Running, &observed, None, None);
                     assert!(
                         !resolved.source.is_inferred(),
                         "inferred with a probe answer: {resolved:?}"
                     );
+
+                    let titled = resolve_status(
+                        &SessionStatus::Running,
+                        &observed,
+                        None,
+                        Some(TitleClaim::Approval),
+                    );
+                    assert_eq!(
+                        titled,
+                        StatusResolution::new(SidebarStatus::Approval, StatusSource::Title)
+                    );
+                    assert!(
+                        titled.source.is_inferred(),
+                        "a title claim must hedge even where the probe answers"
+                    );
                 }
             }
+        }
+    }
+
+    /// The headline case, end to end at this layer: a session whose agent
+    /// published a blocked banner resolves to that state, with the title source
+    /// and the hedge, beating every observation including the probe that says
+    /// the process is merely blocked reading the terminal.
+    ///
+    /// Before this rule the same inputs resolved to `Ready`, which is the exact
+    /// wrong answer: the pane holds "Would you like to run the following
+    /// command?" and the row says nothing is wanted.
+    #[test]
+    fn a_title_claim_beats_every_live_observation() {
+        for (claim, expected) in [
+            (TitleClaim::Approval, SidebarStatus::Approval),
+            (TitleClaim::Input, SidebarStatus::Input),
+        ] {
+            for observed in [
+                UNKNOWN,
+                attention(true, 0, false, None),
+                attention(false, IDLE_ATTENTION_MS * 100, false, None),
+                attention(false, 0, false, Some(false)),
+                attention(false, 0, false, Some(true)),
+                attention(true, IDLE_ATTENTION_MS * 100, false, Some(false)),
+            ] {
+                let resolved =
+                    resolve_status(&SessionStatus::Running, &observed, None, Some(claim));
+                assert_eq!(
+                    resolved,
+                    StatusResolution::new(expected, StatusSource::Title),
+                    "title claim {claim:?} lost to {observed:?}"
+                );
+                assert!(resolved.source.is_inferred());
+                assert!(!resolved.source.is_observed());
+            }
+        }
+    }
+
+    /// PRECEDENCE. A hint is the agent addressing us on a channel it opted
+    /// into; a title is a banner we recognised. When they disagree the hint
+    /// wins, on every state including `working`.
+    ///
+    /// The live shape of the bug: an agent whose title still carries the
+    /// approval banner from the gate you just answered, while it hints
+    /// `working` because it is off running the command. Reading the title there
+    /// would park "Needs approval" on a row that is busy, which is the same
+    /// class of lie as missing the gate in the first place.
+    #[test]
+    fn a_live_hint_beats_a_title_claim_on_every_state() {
+        for (hint, expected) in [
+            (HintState::Working, SidebarStatus::Working),
+            (HintState::Ready, SidebarStatus::Ready),
+            (HintState::Approval, SidebarStatus::Approval),
+            (HintState::Input, SidebarStatus::Input),
+        ] {
+            for claim in [TitleClaim::Approval, TitleClaim::Input] {
+                let resolved = resolve_status(
+                    &SessionStatus::Running,
+                    &attention(false, 0, false, Some(true)),
+                    Some(hint),
+                    Some(claim),
+                );
+                assert_eq!(
+                    resolved,
+                    StatusResolution::new(expected, StatusSource::Hint),
+                    "title {claim:?} overrode the deliberate hint {hint:?}"
+                );
+            }
+        }
+    }
+
+    /// A `working` hint that silence has already retired is no longer evidence,
+    /// so the title is read at that point. The precedence above is between two
+    /// LIVE declarations, not between a title and a declaration we have
+    /// ourselves decided to stop believing.
+    #[test]
+    fn a_retired_working_hint_yields_to_a_title_claim() {
+        let fresh = resolve_status(
+            &SessionStatus::Running,
+            &attention(false, IDLE_ATTENTION_MS - 1, false, Some(true)),
+            Some(HintState::Working),
+            Some(TitleClaim::Approval),
+        );
+        assert_eq!(fresh, StatusResolution::new(SidebarStatus::Working, StatusSource::Hint));
+
+        let retired = resolve_status(
+            &SessionStatus::Running,
+            &attention(false, IDLE_ATTENTION_MS, false, Some(true)),
+            Some(HintState::Working),
+            Some(TitleClaim::Approval),
+        );
+        assert_eq!(
+            retired,
+            StatusResolution::new(SidebarStatus::Approval, StatusSource::Title)
+        );
+    }
+
+    /// A title claim is never retired by silence, for the same reason a
+    /// blocking hint is not: an agent waiting on a human emits nothing. The
+    /// claim ends when the agent retitles, which is tested as a transition in
+    /// `crate::view`.
+    #[test]
+    fn a_title_claim_is_exempt_from_the_staleness_rule() {
+        let resolved = resolve_status(
+            &SessionStatus::Running,
+            &attention(false, IDLE_ATTENTION_MS * 1000, false, Some(true)),
+            None,
+            Some(TitleClaim::Approval),
+        );
+        assert_eq!(
+            resolved,
+            StatusResolution::new(SidebarStatus::Approval, StatusSource::Title)
+        );
+    }
+
+    /// A dead process is not waiting for your approval, whatever its last title
+    /// said. Titles outlive the process that set them — the terminal keeps the
+    /// string — so without this a crashed Codex session would keep an "act now"
+    /// badge forever.
+    #[test]
+    fn an_exit_overrides_a_stale_title_claim() {
+        for claim in [TitleClaim::Approval, TitleClaim::Input] {
+            assert_eq!(
+                resolve_status(
+                    &SessionStatus::Exited { code: Some(0) },
+                    &UNKNOWN,
+                    None,
+                    Some(claim),
+                ),
+                StatusResolution::new(SidebarStatus::Ready, StatusSource::Exit)
+            );
+            assert_eq!(
+                resolve_status(
+                    &SessionStatus::Exited { code: Some(2) },
+                    &UNKNOWN,
+                    None,
+                    Some(claim),
+                ),
+                StatusResolution::new(SidebarStatus::Failed, StatusSource::Exit)
+            );
         }
     }
 }

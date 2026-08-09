@@ -45,125 +45,25 @@
 //! No letters, no digits, no monograms. The sidebar's monogram tiles were
 //! removed and nothing replaced them; a letter-initial avatar is a standing
 //! ban in this product.
+//!
+//! # Where the identity itself lives
+//!
+//! [`AgentKind`] is [`vitrum_model::agent`]'s, not this module's. Which agent a
+//! session runs decides its sidebar STATUS as well as its mark, because an
+//! agent that announces a blocked state in its terminal title is read through a
+//! rule that belongs to that agent
+//! ([`AgentKind::title_claim`](vitrum_model::AgentKind::title_claim)). Identity
+//! is therefore a model fact. What is left here is the drawing, which is the
+//! part a headless crate has no business holding.
 
-/// Which agent is behind a session.
+use vitrum_model::AgentKind;
+
+/// The drawn mark for an agent.
 ///
-/// [`AgentKind::Unknown`] is a real answer and never a fallback dressed as one.
-/// A command this build does not recognise gets the unknown mark, not the
-/// nearest agent's: a wrong provider mark on a tab is a confident wrong answer,
-/// and the operator has no way to tell it from a right one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AgentKind {
-    Claude,
-    Codex,
-    Gemini,
-    Opencode,
-    Veyyon,
-    /// An interactive shell. Its own identity, not a failure to recognise one:
-    /// a `bash` tab is a shell on purpose and the operator knows it.
-    Shell,
-    /// Nothing this build recognises.
-    Unknown,
-}
-
-/// The agent binaries this build knows, keyed on the command rather than on the
-/// label.
-///
-/// The commands are exactly `launch.rs`'s `AGENTS` table, so a session started
-/// from the picker and one typed into the command field resolve to the same
-/// mark. The labels are that table's too, and they are what the tooltip says.
-const AGENTS: [(&str, AgentKind, &str); 5] = [
-    ("claude", AgentKind::Claude, "Claude Code"),
-    ("codex", AgentKind::Codex, "Codex"),
-    ("gemini", AgentKind::Gemini, "Gemini CLI"),
-    ("opencode", AgentKind::Opencode, "opencode"),
-    ("veyyon", AgentKind::Veyyon, "veyyon"),
-];
-
-/// Interactive shells, which get the prompt mark rather than the unknown one.
-///
-/// Login shells reach this from `Options::shell` and from history entries like
-/// `/bin/bash`, so the common case on a fresh machine is a shell and not an
-/// agent. Reporting that as unknown would put a dashed placeholder on the one
-/// kind of session every operator has.
-const SHELLS: [&str; 15] = [
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "dash",
-    "ksh",
-    "mksh",
-    "csh",
-    "tcsh",
-    "nu",
-    "elvish",
-    "xonsh",
-    "pwsh",
-    "powershell",
-    "cmd",
-];
-
-/// Suffixes `PATHEXT` resolution can leave on a Windows command.
-///
-/// `launch.rs::on_path` honours `PATHEXT`, so `claude` can resolve to
-/// `claude.cmd` and arrive here with the extension attached. Without this a
-/// Windows operator would see the unknown mark on every agent tab.
-const EXECUTABLE_SUFFIXES: [&str; 5] = [".exe", ".cmd", ".bat", ".com", ".ps1"];
-
-impl AgentKind {
-    /// Resolve the agent behind a command line's program.
-    ///
-    /// The program's basename is lowercased and stripped of a Windows
-    /// executable suffix, then matched exactly. There is no prefix match and no
-    /// nearest neighbour: `claudex` and `my-claude` are not Claude Code, and
-    /// guessing that they are would put the wrong provider on a tab with no way
-    /// for the operator to notice.
-    pub fn of(command: &str) -> Self {
-        // Split on BOTH separators rather than through `std::path`. `Path` uses
-        // the host's rules, so on Linux `C:\tools\codex.exe` has no components
-        // at all and resolves to unknown, and on Windows a forward-slash path
-        // does resolve but only by accident of that platform accepting both.
-        // The command string arrives from `SessionInfo` exactly as the operator
-        // or the launcher wrote it, and both forms are ordinary.
-        let base = command.rsplit(['/', '\\']).next().unwrap_or(command);
-        let lower = base.to_ascii_lowercase();
-        let name = EXECUTABLE_SUFFIXES
-            .iter()
-            .find_map(|suffix| lower.strip_suffix(suffix))
-            .unwrap_or(lower.as_str());
-
-        if let Some((_, kind, _)) = AGENTS.iter().find(|(cmd, _, _)| *cmd == name) {
-            return *kind;
-        }
-        if SHELLS.contains(&name) {
-            return AgentKind::Shell;
-        }
-        AgentKind::Unknown
-    }
-
-    /// The operator-facing name, for a tooltip.
-    ///
-    /// The five agent labels come out of [`AGENTS`] rather than a second match,
-    /// so the picker that started the session and the tab that hosts it cannot
-    /// end up calling it two different things. The two remaining kinds are not
-    /// in that table because they are not binaries this build looks for.
-    ///
-    /// The `unwrap_or` is total rather than a panic and is never taken while
-    /// [`AGENTS`] names all five agent variants, which
-    /// `every_agent_has_its_own_mark_and_its_own_label` proves.
-    pub fn label(self) -> &'static str {
-        match self {
-            AgentKind::Shell => "shell",
-            AgentKind::Unknown => "unknown agent",
-            agent => AGENTS
-                .iter()
-                .find(|(_, kind, _)| *kind == agent)
-                .map(|(_, _, label)| *label)
-                .unwrap_or("agent"),
-        }
-    }
-
+/// An extension trait rather than an inherent method, because [`AgentKind`]
+/// belongs to the model crate and its marks belong to the UI. Bring it into
+/// scope to call `kind.mark()`.
+pub trait AgentMarks {
     /// The drawn mark.
     ///
     /// Coordinates are in the 16-unit box every mark shares. Optical size, not
@@ -176,7 +76,11 @@ impl AgentKind {
     ///
     /// Every mark is symmetric about y = 8, so flex centring lands its optical
     /// centre on the title's without a per-mark nudge.
-    pub fn mark(self) -> AgentMark {
+    fn mark(self) -> AgentMark;
+}
+
+impl AgentMarks for AgentKind {
+    fn mark(self) -> AgentMark {
         match self {
             // Eight spokes from an open centre, r 2.2 to 6.8: 13.6 tip to tip
             // with a 4.4 hole in the middle. Anthropic's radiating mark, and
@@ -255,134 +159,23 @@ pub struct AgentMark {
 mod tests {
     use super::*;
 
-    /// Every kind, so a variant added without a mark, a label or a test fails
-    /// here rather than rendering blank in the strip.
-    const ALL: [AgentKind; 7] = [
-        AgentKind::Claude,
-        AgentKind::Codex,
-        AgentKind::Gemini,
-        AgentKind::Opencode,
-        AgentKind::Veyyon,
-        AgentKind::Shell,
-        AgentKind::Unknown,
-    ];
-
-    /// Position of one kind, as an EXHAUSTIVE match.
+    /// Every kind, from the model's own list, so a variant added without a mark
+    /// fails here rather than rendering blank in the strip.
     ///
-    /// This is the chain that makes [`ALL`] enforced rather than trusted. Rust
-    /// cannot enumerate an enum's variants, so a hand-kept list is the only
-    /// option and a hand-kept list of the thing a guard names is a hole: three
-    /// tests iterate `ALL`, and an eighth agent left out of it would be checked
-    /// by none of them while shipping a mark nobody had looked at.
-    ///
-    /// Adding a variant breaks this match, which stops the crate compiling.
-    /// Giving it the next index then overruns `seen` below, which panics. Sizing
-    /// `seen` to fit then leaves a `false` in it until `ALL` is updated too. So
-    /// the only way to a green build is to add the variant everywhere.
-    fn index(kind: AgentKind) -> usize {
-        match kind {
-            AgentKind::Claude => 0,
-            AgentKind::Codex => 1,
-            AgentKind::Gemini => 2,
-            AgentKind::Opencode => 3,
-            AgentKind::Veyyon => 4,
-            AgentKind::Shell => 5,
-            AgentKind::Unknown => 6,
-        }
-    }
+    /// The list is enforced rather than trusted on the model's side, by an
+    /// exhaustive match in `AgentKind::index` that stops the workspace
+    /// compiling when a variant is added. Restating it here would put the hole
+    /// back: the guards below iterate it, and an eighth agent left out of a
+    /// local copy would be checked by none of them.
+    use vitrum_model::ALL_AGENT_KINDS as ALL;
 
-    /// [`ALL`] must name every variant exactly once.
-    ///
-    /// THE BUG, and it is LauncherRedesign's shape: a guard that polices a
-    /// hand-kept list of the thing it names. Adding an agent is the most likely
-    /// future change to this file, and an agent missing from `ALL` is invisible
-    /// to `every_agent_has_its_own_mark_and_its_own_label`,
-    /// `only_the_veyyon_ring_has_a_solid_element` and
-    /// `no_mark_reaches_outside_its_box` at once.
-    #[test]
-    fn the_all_list_names_every_variant_exactly_once() {
-        let mut seen = [0usize; 7];
-        for kind in ALL {
-            seen[index(kind)] += 1;
-        }
-        assert_eq!(
-            seen, [1; 7],
-            "ALL must name each variant once; index {seen:?} counted per variant"
-        );
-    }
-
-    /// The five commands `launch.rs` offers must each reach their own kind.
-    ///
-    /// The bug: the picker starts `gemini` and the tab draws Claude's burst,
-    /// because the table here drifted from `launch.rs`'s. The operator then has
-    /// no way at all to tell which agent a tab is, since the mark is the only
-    /// channel that says so on a renamed session.
-    #[test]
-    fn the_launcher_commands_each_resolve_to_their_own_agent() {
-        assert_eq!(AgentKind::of("claude"), AgentKind::Claude);
-        assert_eq!(AgentKind::of("codex"), AgentKind::Codex);
-        assert_eq!(AgentKind::of("gemini"), AgentKind::Gemini);
-        assert_eq!(AgentKind::of("opencode"), AgentKind::Opencode);
-        assert_eq!(AgentKind::of("veyyon"), AgentKind::Veyyon);
-    }
-
-    /// A full path, an uppercased name and a `PATHEXT` suffix must all still
-    /// resolve.
-    ///
-    /// The bug: `SessionInfo::command` holds whatever was typed or resolved, so
-    /// `/home/me/.local/bin/claude` and `claude.cmd` are both ordinary. Matching
-    /// the raw string puts the unknown placeholder on every agent tab on
-    /// Windows, and on any machine where the operator typed a path.
-    #[test]
-    fn a_path_a_case_and_a_windows_suffix_still_resolve() {
-        assert_eq!(
-            AgentKind::of("/home/me/.local/bin/claude"),
-            AgentKind::Claude
-        );
-        assert_eq!(AgentKind::of("CLAUDE"), AgentKind::Claude);
-        assert_eq!(AgentKind::of("claude.cmd"), AgentKind::Claude);
-        assert_eq!(AgentKind::of(r"C:\tools\codex.exe"), AgentKind::Codex);
-        assert_eq!(AgentKind::of("/usr/bin/bash"), AgentKind::Shell);
-        assert_eq!(AgentKind::of("PowerShell.EXE"), AgentKind::Shell);
-    }
-
-    /// An unrecognised command must report unknown, never the nearest agent.
-    ///
-    /// The bug: a prefix or substring match. `claudex`, `my-claude` and
-    /// `claude-wrapper` all contain `claude`, and a tab that draws Anthropic's
-    /// burst for someone else's binary is a confident wrong answer the operator
-    /// cannot detect. `env` is the live case: `/usr/bin/env sh -c ...` is a
-    /// perfectly ordinary command line whose program identifies nothing.
-    #[test]
-    fn an_unrecognised_command_is_unknown_and_not_the_nearest_agent() {
-        for command in [
-            "",
-            "env",
-            "/usr/bin/env",
-            "claudex",
-            "my-claude",
-            "claude-wrapper",
-            "gemini2",
-            "shell",
-            "make",
-        ] {
-            assert_eq!(
-                AgentKind::of(command),
-                AgentKind::Unknown,
-                "{command:?} must be unknown rather than guessed"
-            );
-        }
-        assert_eq!(AgentKind::of("env").mark(), AgentKind::Unknown.mark());
-        assert_ne!(AgentKind::of("env").mark(), AgentKind::Claude.mark());
-    }
-
-    /// Seven kinds, seven different marks and seven different labels.
+    /// Every kind draws its own mark, and no mark is empty.
     ///
     /// The bug this locks out is a copy-paste in the match above leaving two
     /// agents with the same path data. Two identical marks make the icon worse
     /// than absent: it looks like it is answering the question and is not.
     #[test]
-    fn every_agent_has_its_own_mark_and_its_own_label() {
+    fn every_agent_has_its_own_mark() {
         let marks: Vec<AgentMark> = ALL.iter().map(|k| k.mark()).collect();
         for (i, a) in marks.iter().enumerate() {
             assert!(!a.stroke.is_empty(), "{:?} has no stroked path", ALL[i]);
@@ -390,19 +183,15 @@ mod tests {
                 assert_ne!(a, b, "{:?} and {:?} draw the same mark", ALL[i], ALL[j]);
             }
         }
-        let labels: Vec<&str> = ALL.iter().map(|k| k.label()).collect();
-        assert_eq!(
-            labels,
-            vec![
-                "Claude Code",
-                "Codex",
-                "Gemini CLI",
-                "opencode",
-                "veyyon",
-                "shell",
-                "unknown agent",
-            ]
-        );
+    }
+
+    /// A command this build cannot name draws the unknown mark, never the
+    /// nearest agent's. `env` is the live case: `/usr/bin/env sh -c ...` is a
+    /// perfectly ordinary command line whose program identifies nothing.
+    #[test]
+    fn an_unrecognised_command_draws_the_unknown_mark() {
+        assert_eq!(AgentKind::of("env").mark(), AgentKind::Unknown.mark());
+        assert_ne!(AgentKind::of("env").mark(), AgentKind::Claude.mark());
     }
 
     /// One mark carries a solid element and the other six do not.

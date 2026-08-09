@@ -832,12 +832,11 @@ pub fn view(pick: &Pick, home: &str) -> RowView {
             // the unknown mark on a shell, which is a confident wrong answer
             // about the one row every operator has.
             mark: Some(
-                crate::agent::AgentKind::of(
+                crate::agent::AgentMarks::mark(vitrum_model::AgentKind::of(
                     &launch::split_command(&i.command)
                         .map(|(program, _)| program)
                         .unwrap_or_else(|| i.command.clone()),
-                )
-                .mark(),
+                )),
             ),
             text: i.text().to_string(),
             place: Some((i.place.clone(), i.cwd.clone())),

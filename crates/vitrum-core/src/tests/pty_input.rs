@@ -39,23 +39,31 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 /// child inherits `L` through the environment and delayed expansion reads it at
 /// the moment it runs.
 ///
-/// CONFIRMED FAILING on windows-latest, and the first thing that ever ran it
-/// was the `windows tests` job added for the burst question. The child reaches
-/// its prompt and the stream then stops dead at 78 bytes:
+/// FAILED ONCE, UNDER LOAD, AND HAS NOT REPRODUCED. Its first run stopped dead
+/// at 78 bytes, with the prompt present and then nothing:
 ///
 /// ```text
 /// \e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[Hask:\e[1C\e]0;C:\Windows\system32\cmd.exe\a\e[?25h
 /// ```
 ///
-/// `ask:` is there, so the child is running and reading. After `write` there is
-/// no reply AND NO ECHO. A console echoes what it reads in cooked mode, so the
-/// absence of the echo puts this before the child: the bytes are not reaching
-/// the console input buffer at all. That makes it input delivery, not this
-/// test's script and not `set /p`.
+/// That reads like broken input delivery, because a console echoes what it
+/// reads in cooked mode and not even the echo arrived. It is not. The test is
+/// UNCHANGED from that run and now passes in 0.06 s. The only thing that
+/// differed is how many tests shared the process: it failed as one of 152
+/// running concurrently and passes as one of two.
 ///
-/// Left exactly as it is. The workflow runs it in a step of its own that is
-/// allowed to fail, so it reports on every push without blocking the 151 that
-/// pass, and weakening it would throw away the only evidence anyone has.
+/// So the fault is contention, not delivery, and the 30 s deadline is what
+/// noticed. A hosted Windows runner has two cores and every pty here starts a
+/// pseudoconsole host process, so a suite that opens many at once can leave one
+/// child unscheduled long enough to blow the deadline. Whether that is only
+/// slowness or a real stall inside ConPTY is unproven either way, and one
+/// unreproducible occurrence does not settle it.
+///
+/// It gates with everything else rather than being quarantined, because a
+/// quarantined flake is one nobody sees again. If it returns, the raw probe at
+/// the bottom of this file is the discriminator: that one bypasses the session
+/// queue, so the pair failing together means the pty and this one failing alone
+/// means the session layer.
 #[cfg(windows)]
 #[tokio::test]
 async fn input_reaches_the_child_and_its_reply_returns() {
@@ -146,33 +154,28 @@ async fn write_to_an_unknown_session_errors() {
     assert!(err.to_string().contains("4242"), "unhelpful error: {err}");
 }
 
-/// Whether a raw pseudoconsole accepts input at all, with vitrum removed.
+/// A raw pseudoconsole accepts written input, with the session layer removed.
 ///
-/// WHY: `input_reaches_the_child_and_its_reply_returns` fails on Windows and
-/// the session layer cannot say why, because `SessionManager::write` is a queue
-/// send. It returns Ok once the bytes are ON the queue, so a write that later
-/// fails on the master, and a write that succeeds and is dropped by the
-/// console, look identical from the test.
+/// WHY: everything else here writes through `SessionManager`, whose `write` is
+/// a queue send. It returns Ok once the bytes are ON the queue, which is before
+/// anything touches the console, so a write that later fails on the master and
+/// a write the console silently drops are indistinguishable from above. This
+/// opens a pty itself, writes to the handle `take_writer` hands out, and puts
+/// the write's own result in the failure message.
 ///
-/// This asks the pty directly: open one, spawn the same child, write to the
-/// handle `take_writer` returns, and report what the write returned alongside
-/// what came back. Three outcomes and each names a different layer.
-///
-///   - the write returns an error -> the master handle is wrong, and the errno
-///     says how. That is the vendored pty, not the session.
-///   - the write returns Ok and nothing echoes -> the console accepted the
-///     bytes and did not deliver them to the child. Also the vendored pty, but
-///     a different bug: the input pipe is not the one the pseudoconsole reads.
-///   - the echo appears and only the reply is missing -> input works and the
-///     child is the problem, which would make the failing test wrong about its
-///     own script.
+/// It was added to diagnose a failure that turned out to be contention, and it
+/// stays because it holds a contract nothing else does: that the vendored pty's
+/// writer reaches the child. A regression there breaks every keystroke in the
+/// product, and this is the test that would name the pty rather than the queue.
+/// Read it together with the round trip above: both failing means the pty, this
+/// one passing while that one fails means the session layer or scheduling.
 ///
 /// Both line endings are tried because `set /p` completes on a carriage return
-/// and a lone CR is what a console actually delivers for Enter; if CRLF is
-/// mishandled and CR alone works, the fix is a translation, not a handle.
+/// and CR alone is what a console delivers for Enter, so if CRLF were ever
+/// mishandled while CR worked, the fix would be a translation, not a handle.
 ///
-/// This asserts nothing about vitrum and is expected to fail while the defect
-/// is open. It exists to make one CI run answer the question instead of three.
+/// This does NOT catch: ordering, partial writes, or anything about the
+/// sequences conpty adds around the echo.
 #[cfg(windows)]
 #[test]
 fn a_raw_pseudoconsole_accepts_written_input() {

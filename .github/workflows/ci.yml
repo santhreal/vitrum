@@ -469,44 +469,18 @@ jobs:
         with:
           version: 0.15.2
 
-      # The first run of this job answered the question it was added for. 151
-      # of 152 passed on a real pseudoconsole, including the burst-after-exit
-      # case, so the burst loss this project has assumed for months does NOT
-      # reproduce. One test failed, and it found something else: input written
-      # to a session never reaches the child on Windows.
+      # This job was added to settle a burst-loss theory and settled two things
+      # instead. 151 of 152 passed on a real pseudoconsole, including the
+      # burst-after-exit case, so that theory is retired. The one failure was
+      # the keyboard round trip, and it has not reproduced: unchanged, it now
+      # passes in hundredths of a second. It failed as one of 152 tests sharing
+      # a two-core runner and every pty here starts a pseudoconsole host, so the
+      # deadline it blew looks like contention rather than a defect.
       #
-      # That one is skipped here and run below instead. Skipping it is not a
-      # verdict on it: it is a real open defect, the test is unchanged and
-      # still asserts exactly what it did, and the step below runs it on every
-      # push so the day it starts passing is visible. What this split buys is
-      # that the other 151 gate, rather than being hidden behind a red that
-      # everyone already knows the reason for.
-      - name: the session crate on a real pseudoconsole
-        run: >
-          cargo test -p vitrum-core --locked --
-          --skip input_reaches_the_child_and_its_reply_returns
-          --skip a_raw_pseudoconsole_accepts_written_input
-
-      # CONFIRMED FAILING. Observed on windows-latest: the child prints its
-      # prompt, `mgr.write` is called with `hello\r\n`, and the stream stops at
-      # 78 bytes with no echo and no reply. Not even the echo means the bytes
-      # are not reaching the console input buffer, so this is input delivery
-      # rather than the child or the assertion.
-      #
-      # The probe alongside it removes vitrum from the picture: it writes to the
-      # pty handle directly and reports what the write returned, which separates
-      # a bad master handle from bytes the console accepted and dropped. The
-      # session layer cannot tell those apart, because its write is a queue send
-      # that returns Ok long before anything touches the console.
-      #
-      # Allowed to fail so they report without blocking. When input works,
-      # delete this step and both skips above.
-      - name: keyboard input reaches a Windows child
-        continue-on-error: true
-        run: >
-          cargo test -p vitrum-core --locked --
-          input_reaches_the_child_and_its_reply_returns
-          a_raw_pseudoconsole_accepts_written_input
+      # It runs with everything else rather than in a quarantined step. A flake
+      # nobody sees again is one nobody fixes, and the suite is where it will be
+      # seen.
+      - run: cargo test -p vitrum-core --locked
 
   # The archive the updater downloads is built by a script, and the script,
   # `update::archive_name` and both installers must agree on its name. This

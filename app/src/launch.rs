@@ -523,6 +523,79 @@ impl Default for LaunchStore {
     }
 }
 
+/// Is `command` one of the agents [`AGENTS`] names?
+///
+/// Exact, for the reason [`crate::ui::dialog`] resolves an agent from the
+/// program rather than the line: `claudex` is not Claude, and a row that
+/// guessed otherwise would carry a confident wrong mark.
+#[must_use]
+pub fn is_known_agent(command: &str) -> bool {
+    AGENTS.iter().any(|(_, c)| *c == command)
+}
+
+/// The presets a profile starts with, one per agent vitrum knows. PURE over
+/// the roster, for the same reason [`agent_roster`] is: which rows a fresh
+/// profile gets must not depend on what is installed on the machine running
+/// the test.
+///
+/// INSTALLED FIRST. Presets render in stored order and the launcher puts the
+/// whole band above detected agents, so seeding in table order would open a
+/// new profile with the one agent this machine can run sitting below four it
+/// cannot. That is the arrangement `detected_agents` was changed to avoid.
+///
+/// The uninstalled ones are still seeded, and that is the deliberate part: a
+/// fresh launcher on a machine with no agent at all is otherwise empty, and
+/// an empty list under a cursor teaches nothing about what vitrum starts.
+/// They are presets rather than fixed furniture, so deleting one is a normal
+/// edit and it stays deleted.
+///
+/// `cwd` is `None` on every one of them: a starting preset pins no directory,
+/// so it runs wherever the dialog is pointing rather than somewhere chosen
+/// for the operator before they had a project.
+#[must_use]
+pub fn seed_presets(roster: &[AgentAvailability]) -> Vec<SavedPreset> {
+    let mut out: Vec<SavedPreset> = Vec::with_capacity(roster.len());
+    for installed in [true, false] {
+        for a in roster.iter().filter(|a| a.installed == installed) {
+            out.push(SavedPreset {
+                id: mint_preset_id(a.label, a.command),
+                label: a.label.to_string(),
+                command: a.command.to_string(),
+                args: Vec::new(),
+                cwd: None,
+                shortcut: None,
+                icon: None,
+            });
+        }
+    }
+    out
+}
+
+/// Write the starting presets, once, for a profile that has never had a
+/// launch store. Returns whether it wrote one.
+///
+/// Keyed on the FILE being absent, not on the preset list being empty. An
+/// operator who deletes every seeded row has made a decision, and seeding
+/// again on the next start would overrule it every time they restarted.
+///
+/// A write failure is not reported. The seed is a convenience; a profile
+/// directory that cannot be written has a problem the next real save will
+/// surface with a path in it, and refusing to start over it would cost the
+/// operator the session they opened vitrum to start.
+pub fn seed_launch_store_once() -> bool {
+    let Ok(path) = launch_store_path() else {
+        return false;
+    };
+    if path.exists() {
+        return false;
+    }
+    let store = LaunchStore {
+        presets: seed_presets(&agent_roster_now()),
+        ..LaunchStore::default()
+    };
+    save_launch_store(&store).is_ok()
+}
+
 /// Serialise the store. Pure: touches no path and reads no environment.
 pub fn encode_launch_store(store: &LaunchStore) -> String {
     serde_json::to_string_pretty(store).expect("strings and integers always serialise")

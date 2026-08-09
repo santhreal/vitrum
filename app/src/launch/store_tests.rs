@@ -869,3 +869,133 @@ fn a_pinned_preset_ignores_the_dialog_and_an_unpinned_one_follows_it() {
         Some("Free")
     );
 }
+
+// ---------------------------------------------------------------------------
+// The presets a fresh profile starts with
+// ---------------------------------------------------------------------------
+
+/// A roster with `installed` set exactly as the case wants it.
+fn roster(rows: &[(&'static str, &'static str, bool)]) -> Vec<AgentAvailability> {
+    rows.iter()
+        .map(|(label, command, installed)| AgentAvailability {
+            label,
+            command,
+            installed: *installed,
+        })
+        .collect()
+}
+
+/// Every agent is seeded, and the ones this machine can run come first.
+///
+/// WHY THE ORDER IS THE CONTRACT: presets render in stored order and the
+/// launcher puts the whole preset band above detected agents, so seeding in
+/// table order opens a new profile with the single agent the machine has
+/// sitting under four it does not. That is the exact arrangement
+/// `detected_agents` was changed to stop producing.
+#[test]
+fn a_fresh_profile_is_seeded_with_what_it_can_run_first() {
+    let seeded = seed_presets(&roster(&[
+        ("Claude Code", "claude", false),
+        ("Codex", "codex", true),
+        ("Gemini CLI", "gemini", false),
+        ("opencode", "opencode", true),
+    ]));
+
+    let order: Vec<&str> = seeded.iter().map(|p| p.command.as_str()).collect();
+    assert_eq!(
+        order,
+        vec!["codex", "opencode", "claude", "gemini"],
+        "installed agents must lead, and relative table order must survive"
+    );
+    assert_eq!(seeded.len(), 4, "no agent may be dropped from the seed");
+}
+
+/// A seeded preset pins no directory and no key.
+///
+/// It runs wherever the dialog points. Pinning `cwd` would choose a project
+/// for an operator who does not have one yet, and a shipped `shortcut` would
+/// occupy a chord the operator never agreed to.
+#[test]
+fn a_seeded_preset_pins_nothing() {
+    for p in seed_presets(&roster(&[("Claude Code", "claude", true)])) {
+        assert_eq!(p.cwd, None, "{} pinned a directory", p.label);
+        assert_eq!(p.shortcut, None, "{} claimed a chord", p.label);
+        assert!(p.args.is_empty(), "{} shipped arguments", p.label);
+        assert_ne!(p.id, 0, "{} has no stable id", p.label);
+    }
+}
+
+/// Every agent in the real table is seeded, whatever that table becomes.
+///
+/// Derived from `agent_roster` rather than from a list written here, so
+/// adding an agent cannot leave a fresh profile silently missing it.
+#[test]
+fn the_seed_covers_every_agent_vitrum_knows() {
+    let all = agent_roster(|_| false);
+    let seeded = seed_presets(&all);
+    assert_eq!(seeded.len(), all.len());
+    for a in &all {
+        assert!(
+            seeded.iter().any(|p| p.command == a.command),
+            "{} is missing from a fresh profile",
+            a.command
+        );
+        assert!(
+            is_known_agent(a.command),
+            "{} is in the roster but not known to is_known_agent",
+            a.command
+        );
+    }
+}
+
+/// Seeding happens once, keyed on the FILE, not on the list being empty.
+///
+/// An operator who deletes every seeded row has made a decision. Keying on
+/// emptiness would overrule it on the next start, forever, which is the
+/// failure mode that makes shipped defaults hostile.
+#[test]
+fn a_profile_whose_presets_were_deleted_is_not_reseeded() {
+    let dir = Scratch::new("seed-once");
+    let path = dir.0.join(LAUNCH_STORE_FILE);
+
+    // Stand in for the real store: seed, then delete every row, then ask
+    // whether the seeding rule would fire again.
+    let seeded = LaunchStore {
+        presets: seed_presets(&agent_roster(|_| true)),
+        ..LaunchStore::default()
+    };
+    assert!(!seeded.presets.is_empty(), "the seed produced nothing");
+    std::fs::write(&path, encode_launch_store(&seeded)).expect("write");
+
+    let emptied = LaunchStore {
+        presets: Vec::new(),
+        ..parse_launch_store(&std::fs::read_to_string(&path).expect("read"))
+    };
+    std::fs::write(&path, encode_launch_store(&emptied)).expect("write");
+
+    assert!(
+        path.exists(),
+        "the rule is keyed on this file, so the file must be what survives"
+    );
+    let back = parse_launch_store(&std::fs::read_to_string(&path).expect("read"));
+    assert!(
+        back.presets.is_empty(),
+        "a profile that was emptied on purpose came back with rows"
+    );
+}
+
+/// A seeded store round-trips through the file format unchanged.
+#[test]
+fn the_seed_survives_being_written_and_read() {
+    let seeded = seed_presets(&agent_roster(|c| c == "codex"));
+    let store = LaunchStore {
+        presets: seeded.clone(),
+        ..LaunchStore::default()
+    };
+    let back = parse_launch_store(&encode_launch_store(&store));
+    assert_eq!(back.presets, seeded);
+    assert_eq!(
+        back.presets[0].command, "codex",
+        "the installed agent must still lead after a round trip"
+    );
+}

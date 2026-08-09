@@ -1463,3 +1463,95 @@ fn tab_descends_into_a_directory_row() {
     // Already descended: the field says exactly what this pick completes to.
     assert_eq!(completion(&pick, &format!("{sep}src{sep}vitrum{sep}")), None);
 }
+
+// ---------------------------------------------------------------------------
+// The seeded presets a fresh profile opens with
+// ---------------------------------------------------------------------------
+
+/// A seeded preset for an agent this machine lacks says so on the row.
+///
+/// WHY: a fresh profile is seeded with every agent vitrum knows, so on most
+/// machines some of those rows cannot run. The launcher validates a preset on
+/// the CLICK, never per render, because `preset_fault` is a stat plus a PATH
+/// walk. Without a caption those rows look launchable and refuse when taken,
+/// which is the worst of the three states: not honest, and not silent either.
+///
+/// The answer costs nothing. `detected` is already computed once when the
+/// dialog opens, so the row is captioned from a list the caller had anyway.
+#[test]
+fn a_seeded_agent_this_machine_lacks_is_captioned_not_installed() {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum", "/src/vitrum")];
+    let store = LaunchStore {
+        presets: launch::seed_presets(&launch::agent_roster(|c| c == "codex")),
+        ..LaunchStore::default()
+    };
+    let detected = vec![Detected {
+        label: "Codex",
+        command: "codex",
+    }];
+    let rows = intents(&st, &store, &detected, "/src/vitrum", "/home/u", 2_000);
+
+    let note_of = |command: &str| {
+        rows.iter()
+            .find(|r| r.command == command)
+            .unwrap_or_else(|| panic!("no row for {command}"))
+            .note
+            .clone()
+    };
+    assert_eq!(note_of("codex"), "saved", "an agent that is here is not flagged");
+    assert_eq!(note_of("claude"), "not installed");
+    assert_eq!(note_of("gemini"), "not installed");
+}
+
+/// A preset naming an unknown program is never called "not installed".
+///
+/// `detected` only ever holds agents vitrum looked for, so a program missing
+/// from it means nothing at all about whether it exists. Captioning an
+/// operator's own tool "not installed" on that basis would be a confident
+/// wrong answer about their machine.
+#[test]
+fn a_preset_for_an_unknown_program_is_not_called_missing() {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum", "/src/vitrum")];
+    let store = LaunchStore {
+        presets: vec![SavedPreset {
+            id: 1,
+            label: "My tool".into(),
+            command: "my-own-tool".into(),
+            ..SavedPreset::default()
+        }],
+        ..LaunchStore::default()
+    };
+    let rows = intents(&st, &store, &[], "/src/vitrum", "/home/u", 2_000);
+    let row = rows
+        .iter()
+        .find(|r| r.command == "my-own-tool")
+        .expect("the preset row");
+    assert_eq!(row.note, "saved");
+}
+
+/// A seeded preset replaces the detected-agent row rather than doubling it.
+///
+/// Both bands can offer the same command in the same directory. The preset is
+/// added first and the dedup keeps the first of a pair, so what survives is
+/// the row carrying the operator's own name for it.
+#[test]
+fn a_seeded_preset_does_not_double_the_agent_it_names() {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum", "/src/vitrum")];
+    let store = LaunchStore {
+        presets: launch::seed_presets(&launch::agent_roster(|c| c == "codex")),
+        ..LaunchStore::default()
+    };
+    let detected = vec![Detected {
+        label: "Codex",
+        command: "codex",
+    }];
+    let rows = intents(&st, &store, &detected, "/src/vitrum", "/home/u", 2_000);
+
+    let codex: Vec<&Intent> = rows.iter().filter(|r| r.command == "codex").collect();
+    assert_eq!(codex.len(), 1, "codex was offered twice");
+    assert_eq!(codex[0].band, Band::Preset, "the preset row must be the survivor");
+    assert_eq!(codex[0].text(), "Codex", "the row must read as its label");
+}

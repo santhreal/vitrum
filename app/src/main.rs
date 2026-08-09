@@ -311,6 +311,19 @@ fn main() {
     };
     boot::mark("main.instance");
 
+    // A profile that has never had a launch store gets one, with a preset per
+    // agent vitrum knows. Before the prewarm below, which READS that store to
+    // build the first window's document: seeding after it would leave the
+    // first launcher of a new profile empty and only fill it on the second
+    // start.
+    //
+    // One `stat` on every other start, which is what "has this profile been
+    // used" costs. The `PATH` walk behind the roster happens only when the
+    // file is absent, so it is paid once in the life of a profile and never
+    // on the path this program is measured on.
+    launch::seed_launch_store_once();
+    boot::mark("main.seeded");
+
     // The document the first window is built around, assembled on a thread of
     // its own while this one brings up the toolkit.
     //

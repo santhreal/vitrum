@@ -259,6 +259,23 @@ pub fn intents(
         }
     }
 
+    // A preset's caption says "saved", except when the preset names an agent
+    // vitrum knows and this machine does not have. A fresh profile is seeded
+    // with every known agent, so on most machines some of these rows cannot
+    // run, and the launcher validates a preset on the CLICK rather than on
+    // every render — `preset_fault` is a stat and a PATH walk, and paying for
+    // it while drawing would put both on every keystroke. Without a caption
+    // those rows look launchable and refuse when taken.
+    //
+    // `detected` is the answer to the same question, already computed once
+    // when the dialog opened, so this costs nothing. It is applied only to
+    // commands in the known-agent table: any other program missing from
+    // `detected` merely means vitrum was not looking for it, which is not
+    // evidence that it is absent.
+    let missing = |command: &str| {
+        launch::is_known_agent(command) && !detected.iter().any(|d| d.command == command)
+    };
+
     let presets: Vec<Intent> = store
         .presets
         .iter()
@@ -285,7 +302,11 @@ pub fn intents(
                     branch_in(st, &cwd)
                 },
                 Band::Preset,
-                "saved".to_string(),
+                if missing(&p.command) {
+                    "not installed".to_string()
+                } else {
+                    "saved".to_string()
+                },
                 Some(p.clone()),
             )
         })

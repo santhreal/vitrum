@@ -52,6 +52,21 @@ Hardware rendering lowers the idle figure. Agents printing raise it.
 
 ## Cold start
 
-Measured on the same host, single window: the web process exists 0.20 s after
-exec, and the window is painted and idle at 1.31 s. Three runs: 1.26, 1.31,
-1.36.
+Measured on the same host, single window, by filming the root window every
+35 ms and reducing each frame to its mean value and its count of distinct
+colours. Instrumentation does not see this. A flash falls between two events
+that are both on time, so first-frame work is judged by looking at pixels.
+
+| on screen | at |
+|---|---|
+| nothing, black | 0 ms |
+| the window, carrying the mark | 107 ms |
+| the mark retires to a mapped webview | 687 ms |
+| the document background | 763 ms |
+| content | 919 ms |
+| settled | 1130 ms |
+
+Before the window painted itself, the same film showed black until 690 ms,
+one full-screen white frame at 706 ms, and content at 950 ms. The window is
+now drawn as soon as it is built rather than when the event loop starts,
+which is after the webview is constructed.

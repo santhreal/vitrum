@@ -20,6 +20,8 @@ set -eu
 REPO="santhreal/vitrum"
 VERSION="${VITRUM_VERSION:-}"
 INSTALL_DIR="${VITRUM_INSTALL_DIR:-$HOME/.local/bin}"
+INTEGRATE=1
+if [ -n "${VITRUM_NO_INTEGRATE:-}" ]; then INTEGRATE=0; fi
 TMPDIR_SELF=""
 
 # ============================================================
@@ -62,12 +64,19 @@ Options:
   --install-dir=PATH      where to put the binaries
                           (default: $HOME/.local/bin)
   --version=VERSION       same as the positional VERSION argument
+  --no-integrate          install the binaries only: no launcher entry, no
+                          PATH edit, no `vu` shortcut
   -h, --help              show this help and exit
 
 Environment:
   VITRUM_VERSION          same as --version
   VITRUM_INSTALL_DIR      same as --install-dir
   GITHUB_TOKEN            bearer token for the GitHub API
+  VITRUM_NO_INTEGRATE     set to anything for --no-integrate
+
+Beyond the binaries, the installer adds a launcher entry, puts the install
+directory on your `PATH`, and defines `vu` as `vitrum update`. Each step is
+idempotent and each is skipped by --no-integrate.
 
 The installer downloads `vitrum-<version>-<target>.tar.gz` and the release
 `SHA256SUMS`, refuses to install if the digests disagree, and then places
@@ -108,6 +117,9 @@ while [ $# -gt 0 ]; do
                 "Pass it as --version=0.1.0."
             VERSION="$2"
             shift
+            ;;
+        --no-integrate)
+            INTEGRATE=0
             ;;
         -*)
             die "unknown option: $1" "Run 'sh install.sh --help' for the options."
@@ -204,9 +216,9 @@ case "$os" in
             *)
                 die "no published release for Linux $arch" \
                     "Releases carry x86_64 Linux only." \
-                    "Build from source instead: https://github.com/$REPO#build-from-source" \
+                    "Build from source instead: https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
                     "You will need a WebKitGTK 4.1 development package first; see" \
-                    "https://github.com/$REPO#requirements"
+                    "https://github.com/$REPO/blob/main/CONTRIBUTING.md"
                 ;;
         esac
         ;;
@@ -217,14 +229,14 @@ case "$os" in
             *)
                 die "no published release for macOS $arch" \
                     "Releases carry Apple silicon and Intel macOS only." \
-                    "Build from source instead: https://github.com/$REPO#build-from-source"
+                    "Build from source instead: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
                 ;;
         esac
         ;;
     *)
         die "this installer supports Linux and macOS; found $os" \
             "On Windows, use install.ps1 from the same repository." \
-            "Anywhere else, build from source: https://github.com/$REPO#build-from-source"
+            "Anywhere else, build from source: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
         ;;
 esac
 
@@ -340,17 +352,107 @@ done
 say "Installed vitrum and vitrum-server into $INSTALL_DIR."
 
 # ============================================================
-# what is left for you to do
+# desktop integration
 # ============================================================
+#
+# The installer finishes the job. A launcher entry, a PATH entry and the `vu`
+# shortcut are not follow-up steps for you to paste; they are what installing
+# an application means. Every step here is idempotent and skipped by
+# --no-integrate.
 
-case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
-    *)
-        warn "$INSTALL_DIR is not on your PATH, so 'vitrum' will not be found."
-        say "  Add it, then open a new shell:"
-        say "    echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.profile"
-        ;;
-esac
+rc_files() {
+    # ~/.profile is read by login shells and by most desktop sessions, so it is
+    # what makes the launcher entry find the binary. The interactive rc is what
+    # makes the current terminal find it.
+    printf '%s\n' "$HOME/.profile"
+    case "$(basename "${SHELL:-/bin/sh}")" in
+        zsh) printf '%s\n' "$HOME/.zshrc" ;;
+        bash) printf '%s\n' "$HOME/.bashrc" ;;
+    esac
+}
+
+append_once() {
+    file="$1"
+    marker="$2"
+    line="$3"
+    [ -e "$file" ] || : > "$file" 2>/dev/null || return 0
+    if grep -qsF "$marker" "$file"; then return 0; fi
+    printf '\n# vitrum\n%s\n' "$line" >> "$file" 2>/dev/null || return 0
+    say "  $file"
+}
+
+if [ "$INTEGRATE" = 1 ]; then
+    say ""
+    say "Setting up."
+
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*) ;;
+        *)
+            rc_files | while read -r rc; do
+                append_once "$rc" "$INSTALL_DIR:\$PATH" \
+                    "export PATH=\"$INSTALL_DIR:\$PATH\""
+            done
+            PATH="$INSTALL_DIR:$PATH"
+            export PATH
+            ;;
+    esac
+
+    rc_files | while read -r rc; do
+        case "$rc" in
+            "$HOME/.profile") continue ;;
+        esac
+        append_once "$rc" 'alias vu=' 'alias vu="vitrum update"'
+    done
+
+    if [ "$os" = "Linux" ]; then
+        apps="$HOME/.local/share/applications"
+        if mkdir -p "$apps" 2>/dev/null; then
+            cat > "$apps/vitrum.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=vitrum
+Comment=One interface for every agent TUI you have running
+Exec=$INSTALL_DIR/vitrum
+Terminal=false
+Categories=Development;TerminalEmulator;
+StartupWMClass=vitrum
+EOF
+            if command -v update-desktop-database >/dev/null 2>&1; then
+                update-desktop-database "$apps" 2>/dev/null || true
+            fi
+            say "  $apps/vitrum.desktop"
+        else
+            warn "could not write $apps, so there is no launcher entry"
+        fi
+    fi
+
+    if [ "$os" = "Darwin" ]; then
+        app="$HOME/Applications/vitrum.app"
+        if mkdir -p "$app/Contents/MacOS" 2>/dev/null; then
+            cat > "$app/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>vitrum</string>
+  <key>CFBundleIdentifier</key><string>dev.santhreal.vitrum</string>
+  <key>CFBundleExecutable</key><string>vitrum</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+EOF
+            # The daemon is linked in beside the client on purpose: an app
+            # launched from Finder inherits no shell PATH, so `vitrum` finds
+            # `vitrum-server` next to itself or not at all.
+            ln -sf "$INSTALL_DIR/vitrum" "$app/Contents/MacOS/vitrum"
+            ln -sf "$INSTALL_DIR/vitrum-server" "$app/Contents/MacOS/vitrum-server"
+            say "  $app"
+            say "  the bundle is unsigned; the first launch needs right-click, then Open"
+        else
+            warn "could not write $app, so there is no launcher entry"
+        fi
+    fi
+fi
 
 if [ "$os" = "Linux" ]; then
     # A WebKit runtime is vitrum's only system dependency. `ldconfig -p` is the
@@ -374,7 +476,5 @@ if [ "$os" = "Linux" ]; then
 fi
 
 say ""
-say "Run it:"
-say "  vitrum"
-say ""
-say "Update later with 'vitrum update'."
+say "Run 'vitrum', or open it from your app launcher."
+say "Update with 'vitrum update', or 'vu' in a new shell."

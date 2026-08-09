@@ -14,7 +14,7 @@ PROBE_RUN ?= harness/out/probe-20260806T035911Z
 MEMORY_RUNS ?= harness/out/memory-20260806T192242Z harness/out/memory-20260806T192658Z
 IDLE_RUN ?= harness/out/idle-cpu-20260806T192751Z
 
-.PHONY: help build test clippy gate lanes plan readme-perf readme-perf-check measure package clean
+.PHONY: help build test clippy gate lanes plan perf-tables perf-tables-check measure package clean
 
 help:
 	@echo 'build              release build of every crate, warnings fatal'
@@ -22,8 +22,8 @@ help:
 	@echo 'clippy             advisory lints'
 	@echo 'gate               build, then test, exactly as CI does'
 	@echo 'measure            run the harness on the measurement host'
-	@echo 'readme-perf        snapshot the harness runs and inject README tables'
-	@echo 'readme-perf-check  fail if the README tables are stale (CI runs this)'
+	@echo 'perf-tables        snapshot the harness runs and inject docs/performance.md'
+	@echo 'perf-tables-check  fail if those tables are stale (CI runs this)'
 	@echo 'package            build the release archive and verify its checksum'
 	@echo 'lanes              every worktree, what is uncommitted, what is unpushed'
 	@echo 'plan               group open pull requests into non-overlapping waves'
@@ -62,14 +62,14 @@ measure:
 	harness/run.sh idle-cpu 60 20
 	@echo 'now point PROBE_RUN, MEMORY_RUNS and IDLE_RUN at the new directories'
 
-readme-perf:
+perf-tables:
 	$(PYTHON) harness/readme_perf.py snapshot \
 		--probe $(PROBE_RUN) \
 		$(foreach run,$(MEMORY_RUNS),--memory $(run)) \
 		--idle $(IDLE_RUN)
 	$(PYTHON) harness/readme_perf.py render
 
-readme-perf-check:
+perf-tables-check:
 	$(PYTHON) harness/readme_perf.py render --check
 
 package:

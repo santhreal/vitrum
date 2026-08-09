@@ -7,16 +7,23 @@
 #   .\install.ps1                     install the latest release
 #   .\install.ps1 -Version 0.1.0      install a specific version
 #   .\install.ps1 -InstallDir C:\bin  install somewhere else
+#   .\install.ps1 -NoIntegrate        binaries only: no PATH, shortcut or `vu`
+#
+# Beyond the binaries, the installer puts the install directory on your user
+# PATH, adds a Start menu shortcut, and defines `vu` as `vitrum update`. Each
+# step is idempotent.
 #
 # Env overrides:
 #   $env:VITRUM_VERSION       same as -Version
 #   $env:VITRUM_INSTALL_DIR   same as -InstallDir
+#   $env:VITRUM_NO_INTEGRATE  same as -NoIntegrate
 #   $env:GITHUB_TOKEN         bearer token for the GitHub API
 
 [CmdletBinding()]
 param(
     [string]$Version = $env:VITRUM_VERSION,
-    [string]$InstallDir = $(if ($env:VITRUM_INSTALL_DIR) { $env:VITRUM_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'vitrum\bin' })
+    [string]$InstallDir = $(if ($env:VITRUM_INSTALL_DIR) { $env:VITRUM_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'vitrum\bin' }),
+    [switch]$NoIntegrate = [bool]$env:VITRUM_NO_INTEGRATE
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,7 +58,7 @@ $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { 
 if ($arch -ne 'AMD64') {
     Fail "no published release for Windows $arch" @(
         'Releases carry x86_64 Windows only.',
-        'Build from source instead: https://github.com/santhreal/vitrum#build-from-source'
+        'Build from source instead: https://github.com/santhreal/vitrum/blob/main/CONTRIBUTING.md'
     )
 }
 $Target = 'x86_64-pc-windows-msvc'
@@ -245,8 +252,12 @@ try {
 }
 
 # ============================================================
-# what is left for you to do
+# desktop integration
 # ============================================================
+#
+# The installer finishes the job: PATH, a Start menu shortcut, and `vu` as
+# `vitrum update`. Every step is idempotent and each is skipped by
+# -NoIntegrate.
 
 $onPath = $false
 foreach ($entry in ($env:Path -split ';')) {
@@ -256,14 +267,58 @@ foreach ($entry in ($env:Path -split ';')) {
         break
     }
 }
-if (-not $onPath) {
-    Warn "$InstallDir is not on your PATH, so 'vitrum' will not be found."
-    Say '  Add it, then open a new terminal:'
-    Say "    [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$InstallDir', 'User')"
+
+if ($NoIntegrate) {
+    if (-not $onPath) {
+        Warn "$InstallDir is not on your PATH, so 'vitrum' will not be found."
+    }
+} else {
+    Say ''
+    Say 'Setting up.'
+
+    if (-not $onPath) {
+        $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if ($null -eq $user) { $user = '' }
+        $known = $user -split ';' | Where-Object {
+            [string]::Equals($_.TrimEnd('\'), $InstallDir.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+        }
+        if (-not $known) {
+            $joined = if ($user.Length -gt 0) { "$user;$InstallDir" } else { $InstallDir }
+            [Environment]::SetEnvironmentVariable('Path', $joined, 'User')
+            Say "  user PATH"
+        }
+        # This process, so `vitrum --version` below works without a new shell.
+        $env:Path = "$env:Path;$InstallDir"
+    }
+
+    try {
+        $menu = [Environment]::GetFolderPath('Programs')
+        $lnk = Join-Path $menu 'vitrum.lnk'
+        $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+        $s.TargetPath = Join-Path $InstallDir 'vitrum.exe'
+        $s.WorkingDirectory = $InstallDir
+        $s.Description = 'One interface for every agent TUI you have running'
+        $s.Save()
+        Say "  $lnk"
+    } catch {
+        Warn "could not write the Start menu shortcut: $($_.Exception.Message)"
+    }
+
+    # A function, not an alias: a PowerShell alias names a command and cannot
+    # carry the `update` argument with it.
+    try {
+        if (-not (Test-Path $PROFILE)) {
+            New-Item -ItemType File -Force -Path $PROFILE | Out-Null
+        }
+        if (-not (Select-String -Path $PROFILE -Pattern 'function vu' -Quiet)) {
+            Add-Content $PROFILE "`n# vitrum`nfunction vu { vitrum update @args }"
+            Say "  $PROFILE"
+        }
+    } catch {
+        Warn "could not write $PROFILE : $($_.Exception.Message)"
+    }
 }
 
 Say ''
-Say 'Run it:'
-Say "  $(Join-Path $InstallDir 'vitrum.exe')"
-Say ''
-Say "Update later with 'vitrum update'."
+Say "Run 'vitrum', or open it from the Start menu."
+Say "Update with 'vitrum update', or 'vu' in a new terminal."

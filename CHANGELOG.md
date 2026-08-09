@@ -29,6 +29,16 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ### Fixed
 
+- **Every failure says what to do, and exits with a code that means it.**
+  `vitrum --bogus` printed usage to standard output and exited 0, so a
+  wrapper could not tell a typo from a launch. Failures now name the fault
+  and the correction, and exit through one shared table: `0` fine, `1`
+  failed, `2` you typed something wrong, `3` fix the machine and retry, `4`
+  the network is down so retry unchanged, `5` what arrived is not what was
+  published. Both binaries render their `exit status:` help block from that
+  table, and a test derives each command's codes from its own source, so a
+  new failure returning an undocumented code turns the suite red.
+
 - **A contiguous run of output no longer reports missing history.** The
   backlog splice measured every buffered frame against the resume offset,
   which is only the right question for the first one, so the second frame of

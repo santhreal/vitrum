@@ -35,6 +35,7 @@ use super::*;
 use std::io::{self, Write};
 
 use vitrum_model::hint::{MAX_LABEL_CHARS, MAX_SEQUENCE_BYTES};
+use vitrum_proto::Exit;
 use vitrum_proto::{HINT_OSC, HintState};
 
 const ESC: char = '\u{1b}';
@@ -99,10 +100,13 @@ fn shape(label: &str, byte_budget: usize) -> Option<String> {
 
 /// `vitrum hint` - write a hint sequence to stdout.
 ///
-/// Returns the process exit code. This command exists to be called from a
-/// prompt command or a wrapper script, where the caller checks the status and
-/// nothing reads prose, so `0` is "the bytes were written" and `2` is "you
-/// asked for something that is not a state".
+/// Returns the process exit code from the one table in
+/// [`vitrum_proto::exit`]. This command exists to be called from a prompt
+/// command or a wrapper script, where the caller checks the status and
+/// nothing reads prose, so the codes carry the whole answer:
+/// [`Exit::Ok`] wrote the bytes, [`Exit::Usage`] means the arguments were
+/// wrong and nothing was written, and [`Exit::Failed`] means stdout would not
+/// take them.
 pub(crate) fn run_hint(args: &[String]) -> i32 {
     let stdout = io::stdout();
     hint_command(args, &mut stdout.lock())
@@ -118,23 +122,30 @@ pub(crate) fn hint_command(args: &[String], out: &mut dyn Write) -> i32 {
         Ok(HintRequest::Help) => {
             // Help is what was asked for, so it is the output, not a diagnostic.
             if writeln!(out, "{}", hint_usage()).is_err() {
-                return 1;
+                eprintln!(
+                    "vitrum hint: could not write the help to stdout; \
+                     the reader on the other end of the pipe has gone"
+                );
+                return Exit::Failed.code();
             }
-            return 0;
+            return Exit::Ok.code();
         }
         Ok(HintRequest::Declare { state, label }) => sequence(state, label.as_deref()),
         Err(message) => {
             eprintln!("{message}");
-            return 2;
+            return Exit::Usage.code();
         }
     };
     // No terminal check. The whole point is the pipeline and the prompt
     // command, where stdout is a pipe and the bytes still have to arrive.
     if out.write_all(request.as_bytes()).is_err() || out.flush().is_err() {
-        eprintln!("vitrum hint: could not write to stdout");
-        return 1;
+        eprintln!(
+            "vitrum hint: could not write to stdout; the row keeps whatever \
+             status vitrum observes, so nothing was declared"
+        );
+        return Exit::Failed.code();
     }
-    0
+    Exit::Ok.code()
 }
 
 #[cfg(test)]

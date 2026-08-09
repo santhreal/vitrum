@@ -390,6 +390,50 @@ impl WebviewInstance {
             on_build(window.clone(), &mut dom);
         }
 
+        // The window paints its own background here, before WebKit exists.
+        //
+        // Two things were wrong with the launch. The window kept its GTK
+        // theme background, which is white under every default light theme,
+        // and nothing drew it at all until the event loop started — which is
+        // after the webview is built, and building a webview is where a
+        // launch spends most of its time. Filmed on a bare X server, the
+        // window was in the tree at about 75 ms and the screen was still
+        // black at 650, then flashed white on its way to the document.
+        //
+        // So the colour is installed through a screen-wide CSS provider, and
+        // the pending GTK events are drained right here to force the first
+        // expose. The window is already mapped by this point, so this costs
+        // one paint of a solid colour and moves it in front of WebKit's
+        // initialisation rather than behind it.
+        //
+        // A screen-wide provider rather than a per-widget one, because every
+        // window this process opens wants the same answer.
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::{CssProviderExt, WidgetExt};
+            use tao::platform::unix::WindowExtUnix;
+
+            if let Some((r, g, b, a)) = cfg.background_color {
+                let css = format!(
+                    "window, box {{ background-color: rgba({r},{g},{b},{:.3}); }}",
+                    f64::from(a) / 255.0
+                );
+                let provider = gtk::CssProvider::new();
+                if provider.load_from_data(css.as_bytes()).is_ok() {
+                    if let Some(screen) = window.gtk_window().screen() {
+                        gtk::StyleContext::add_provider_for_screen(
+                            &screen,
+                            &provider,
+                            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                        );
+                    }
+                }
+            }
+            while gtk::events_pending() {
+                gtk::main_iteration_do(false);
+            }
+        }
+
         // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
         #[cfg(target_os = "macos")]
         #[allow(deprecated)]
@@ -691,40 +735,6 @@ impl WebviewInstance {
         let webview = {
             use tao::platform::unix::WindowExtUnix;
             use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
-            // The window wears the webview's background colour from its very
-            // first expose.
-            //
-            // Two surfaces paint before a document does, and this is the
-            // first of them. Between the window being mapped and WebKit
-            // taking over, what is on screen is the GTK window's own theme
-            // background: white under every default light theme. Filmed on a
-            // bare X server at roughly thirty frames a second, a dark
-            // application was black for its whole launch and then flashed
-            // white on its way to being dark again. A flash is the one part
-            // of a launch nobody can miss and no timing instrument can see,
-            // because it falls between two events that are both on time.
-            //
-            // A screen-wide provider rather than a per-widget one, because
-            // every window this process opens wants the same answer, and
-            // because the colour has to be in place before this window is
-            // realised rather than applied to each one afterwards.
-            if let Some((r, g, b, a)) = cfg.background_color {
-                use gtk::prelude::{CssProviderExt, WidgetExt};
-                let css = format!(
-                    "window, box {{ background-color: rgba({r},{g},{b},{:.3}); }}",
-                    f64::from(a) / 255.0
-                );
-                let provider = gtk::CssProvider::new();
-                if provider.load_from_data(css.as_bytes()).is_ok() {
-                    if let Some(screen) = window.gtk_window().screen() {
-                        gtk::StyleContext::add_provider_for_screen(
-                            &screen,
-                            &provider,
-                            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                        );
-                    }
-                }
-            }
             let vbox = window.default_vbox().unwrap();
             // Every window relates to a still-live view so they all share one
             // WebKitWebProcess. See `LIVE_WEBKIT_VIEWS`.

@@ -43,6 +43,12 @@ white. Filmed launching on a bare X server, a dark application showed a
 full-screen white frame on its way to being dark. The window now takes the
 colour through a CSS provider and the view takes it through webkit2gtk in the
 units GDK reads, and the flash is gone from the film.
+
+The window is also drawn before the webview is built rather than after. Nothing
+painted it until the event loop started, which is on the far side of WebKit's
+initialisation, so the screen was black for the whole of it: the window was in
+the tree at 75 ms and the first pixel arrived at 690. Draining the pending GTK
+events once, right after the window is built, puts that first paint at 100 ms.
 """
 upstreamable = true
 

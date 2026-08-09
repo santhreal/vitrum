@@ -34,7 +34,7 @@ A file whose first non-blank byte is `{` is read as asciicast; anything else is
 read as raw bytes.
 
 Commands:
-  info      size, geometry, chapter count, keyframe count, index memory
+  info      size, geometry, chapter count, replay memory
   screen    print the screen as it stood at one position
   markers   list the OSC 7373 chapters, with the position of each
   export    write the input as an asciicast v2 recording
@@ -44,7 +44,6 @@ Options:
   --rows N          screen height (default 24; an asciicast header wins)
   --at SEQ          screen: byte position to show (default: the end)
   --micros N        screen: time position to show, in microseconds
-  --stride BYTES    bytes between keyframes (default 262144)
   --title TEXT      export: title to record in the header
   -o, --output F    export: where to write (default stdout)
   -h, --help        print this and exit 0
@@ -88,7 +87,6 @@ struct Options {
     rows: u16,
     at: Option<u64>,
     micros: Option<u64>,
-    stride: Option<usize>,
     title: Option<String>,
     output: Option<String>,
 }
@@ -108,13 +106,8 @@ fn run(args: &[String]) -> Result<(), Failure> {
 
     let chunks = [input.bytes.as_slice()];
     let stream = Stream::new(0, &chunks);
-    let mut config = ReplayConfig::new(input.cols, input.rows)
+    let config = ReplayConfig::new(input.cols, input.rows)
         .map_err(|error| Failure::Runtime(error.to_string()))?;
-    if let Some(stride) = options.stride {
-        config = config
-            .with_keyframe_stride(stride)
-            .map_err(|error| Failure::Usage(error.to_string()))?;
-    }
 
     let mut replay =
         Replay::build(stream, &config).map_err(|error| Failure::Runtime(error.to_string()))?;
@@ -217,7 +210,6 @@ fn parse(args: &[String]) -> Result<Options, Failure> {
     let mut rows = 24u16;
     let mut at = None;
     let mut micros = None;
-    let mut stride = None;
     let mut title = None;
     let mut output = None;
 
@@ -236,7 +228,6 @@ fn parse(args: &[String]) -> Result<Options, Failure> {
             "--rows" => rows = number(&value("--rows")?, "--rows")?,
             "--at" => at = Some(number(&value("--at")?, "--at")?),
             "--micros" => micros = Some(number(&value("--micros")?, "--micros")?),
-            "--stride" => stride = Some(number(&value("--stride")?, "--stride")?),
             "--title" => title = Some(value("--title")?),
             "-o" | "--output" => output = Some(value("--output")?),
             other if other.starts_with('-') && other != "-" => {
@@ -270,7 +261,7 @@ fn parse(args: &[String]) -> Result<Options, Failure> {
         )));
     }
 
-    Ok(Options { command, path, cols, rows, at, micros, stride, title, output })
+    Ok(Options { command, path, cols, rows, at, micros, title, output })
 }
 
 const fn name_of(command: Command) -> &'static str {
@@ -301,7 +292,6 @@ fn load(path: &str) -> Result<Vec<u8>, Failure> {
 
 fn info<W: Write>(out: &mut W, replay: &Replay<'_>, input: &Input) -> Result<(), Failure> {
     let timeline = replay.timeline();
-    let index = replay.index();
     let mut report = String::new();
 
     report.push_str(&format!("source        {}\n", input.kind));
@@ -330,13 +320,7 @@ fn info<W: Write>(out: &mut W, replay: &Replay<'_>, input: &Input) -> Result<(),
         ));
     }
     report.push_str(&format!("chapters      {}\n", timeline.markers().len()));
-    report.push_str(&format!(
-        "keyframes     {} at a {} byte stride, {} boundaries skipped\n",
-        index.len(),
-        index.stride(),
-        index.skipped_boundaries()
-    ));
-    report.push_str(&format!("index memory  {} bytes\n", replay.heap_bytes()));
+    report.push_str(&format!("replay memory {} bytes\n", replay.heap_bytes()));
     if input.inputs > 0 {
         report.push_str(&format!(
             "keystrokes    {} input events, not replayed\n",

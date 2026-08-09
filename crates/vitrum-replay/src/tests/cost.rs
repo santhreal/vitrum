@@ -1,109 +1,51 @@
-//! What a seek costs, and what the index costs to hold.
+//! What a seek costs, and what a replay costs to hold.
 //!
-//! Both numbers are load-bearing. The whole reason [`KeyframeIndex`] exists is that a
-//! seek must not cost a pass over the ring, and the whole reason its size is reported
-//! exactly is that vitrum's idle-memory budget is built on knowing it. A regression in
-//! either is invisible in a correctness suite: every screen would still be right, and
-//! the scrubber would just stall.
+//! Both numbers are load-bearing. A scrubber's smoothness is the seek number and
+//! vitrum's idle-memory budget is the memory number, and a regression in either is
+//! invisible in a correctness suite: every screen would still be right, and the
+//! scrubber would just stall.
 //!
-//! Cost is measured as bytes fed, not as elapsed time. Bytes fed is the seek's entire
-//! work, it is exact, and it does not change with what else the machine is doing.
+//! Cost is measured as bytes fed, not as elapsed time. Bytes fed is the seek's
+//! entire work, it is exact, and it does not change with what else the machine is
+//! doing.
+//!
+//! # What changed when Ghostty became the engine
+//!
+//! There used to be a `KeyframeIndex` here, and a test asserting that no seek fed
+//! more than one 256 KiB stride. That bound came from cloning a [`crate::Screen`]
+//! every stride, which was possible only while this crate owned the parser and
+//! terminal state was its own `Clone` struct. Ghostty owns terminal state now and
+//! will not clone it, serialise it, or read it back, so the bound is gone and the
+//! tests that asserted it are gone with it rather than being softened until they
+//! passed. `a_rewind_replays_the_whole_prefix` below states the cost that replaced
+//! it, so it is a measured contract rather than a silent regression.
+//!
+//! What survives intact is the forward direction, which is the one a drag actually
+//! uses, and what improves is memory: a replay now holds one screen instead of one
+//! per stride.
 
-use crate::keyframe::KeyframeIndex;
 use crate::stream::Stream;
 use crate::tests::support::{config, grown, with_replay};
 
-/// A stream large enough that a linear seek would be obviously worse than a keyframed
-/// one: 512 KiB against a 8 KiB stride is 64 strides.
-const STRIDE: usize = 8 * 1024;
-const GROUND_SCAN: usize = 4096;
 const SIZE: usize = 512 * 1024;
-
-/// A config with the strides this module measures against.
-fn measured() -> crate::config::ReplayConfig {
-    config(80, 24)
-        .with_keyframe_stride(STRIDE)
-        .expect("non-zero stride")
-}
-
-/// No seek anywhere in the stream feeds more than one stride plus one ground scan.
-///
-/// This is the guarantee the scrubber is built on. The bug it stops: a seek that falls
-/// back to replaying from the base of the stream, which is correct, silent, and turns a
-/// drag over a 10 MiB ring into a stall on every frame.
-#[test]
-fn no_seek_feeds_more_than_one_stride_plus_one_ground_scan() {
-    let owned = grown(SIZE);
-    let bytes: &[u8] = &owned;
-    let bound = (STRIDE + GROUND_SCAN) as u64;
-
-    with_replay(bytes, &measured(), |replay| {
-        assert_eq!(
-            replay.index().skipped_boundaries(),
-            0,
-            "this fixture is meant to keyframe every boundary"
-        );
-        let head = replay.stream().head_seq();
-
-        // Rewind before each measurement so every target is measured cold, which is
-        // the expensive direction. A forward drag is measured separately below.
-        for step in 0..64u64 {
-            let target = head * step / 64;
-            replay.seek(0).expect("rewind");
-            replay.seek(target).expect("seek");
-            assert!(
-                replay.last_seek_bytes() <= bound,
-                "seek to {target} fed {} bytes, over the {bound} bound",
-                replay.last_seek_bytes()
-            );
-        }
-
-        replay.seek(0).expect("rewind");
-        replay.seek(head).expect("seek to head");
-        assert!(replay.last_seek_bytes() <= bound);
-    });
-}
-
-/// Seek cost does not grow with the stream: the same stride costs the same at 8x the
-/// size.
-///
-/// The bug this stops: a lookup that scans the keyframes linearly, or an index rebuilt
-/// per seek. Both stay correct and both make the cost a function of the ring.
-#[test]
-fn seek_cost_does_not_grow_with_the_stream() {
-    let bound = (STRIDE + GROUND_SCAN) as u64;
-
-    for size in [64 * 1024usize, 512 * 1024] {
-        let owned = grown(size);
-        let bytes: &[u8] = &owned;
-        with_replay(bytes, &measured(), |replay| {
-            let head = replay.stream().head_seq();
-            replay.seek(head).expect("to head");
-            replay.seek(head / 2).expect("rewind to the middle");
-            assert!(
-                replay.last_seek_bytes() <= bound,
-                "at {size} bytes a mid-stream rewind fed {}",
-                replay.last_seek_bytes()
-            );
-        });
-    }
-}
 
 /// Dragging the scrubber forwards never re-reads a byte: the whole drag is one pass.
 ///
-/// The bug this stops: restoring a keyframe on every seek regardless of direction. That
-/// stays correct and it makes a drag over a region cost `frames * stride` instead of the
-/// length of the region, which is the difference between a smooth drag and a stutter.
+/// The bug this stops: rebuilding the emulator on every seek regardless of
+/// direction. That stays correct and it turns a drag over a region into one full
+/// replay per frame, which is the difference between a smooth drag and a freeze.
 ///
-/// The total is bounded by the region rather than equal to it, because a step that
-/// crosses a keyframe may resume from it and skip the bytes in between. That is cheaper
-/// still, and it is the only way the total can come in under one pass.
+/// The step total is now *exactly* the region dragged across. Under the keyframe
+/// index it could come in under that, because a step crossing a keyframe resumed
+/// from it and skipped the bytes between; with one live engine there is nothing to
+/// resume from and nothing to skip, so every byte of the region is fed once and
+/// none of it twice.
 #[test]
 fn a_forward_drag_never_re_reads_a_byte() {
     let owned = grown(SIZE);
     let bytes: &[u8] = &owned;
 
-    with_replay(bytes, &measured(), |replay| {
+    with_replay(bytes, &config(80, 24), |replay| {
         let head = replay.stream().head_seq();
         let frames = 128u64;
         let mut total = 0u64;
@@ -112,21 +54,19 @@ fn a_forward_drag_never_re_reads_a_byte() {
         for step in 1..=frames {
             let target = head * step / frames;
             replay.seek(target).expect("drag");
-            assert!(
-                replay.last_seek_bytes() <= target - previous,
-                "the step to {target} fed {} bytes for a {} byte advance, so it rewound",
+            assert_eq!(
                 replay.last_seek_bytes(),
-                target - previous
+                target - previous,
+                "the step to {target} fed a different number of bytes than it advanced"
             );
             total += replay.last_seek_bytes();
             previous = target;
         }
 
-        assert!(
-            total <= head,
+        assert_eq!(
+            total, head,
             "a forward drag fed {total} bytes over a {head} byte stream"
         );
-        assert!(total > head / 2, "only {total} bytes fed, so the drag skipped output");
     });
 }
 
@@ -136,7 +76,7 @@ fn re_seeking_the_current_position_is_free() {
     let owned = grown(64 * 1024);
     let bytes: &[u8] = &owned;
 
-    with_replay(bytes, &measured(), |replay| {
+    with_replay(bytes, &config(80, 24), |replay| {
         let target = replay.stream().head_seq() / 3;
         replay.seek(target).expect("seek");
         replay.seek(target).expect("seek again");
@@ -145,87 +85,100 @@ fn re_seeking_the_current_position_is_free() {
     });
 }
 
-/// Index memory is a function of the keyframe count, not of the stream length.
+/// A rewind feeds the whole prefix, and the cost is a function of the target.
 ///
-/// Halving the stride over the same bytes doubles the count and so doubles the memory.
-/// The bug this stops: an index that retains a slice of the stream alongside each
-/// screen, which would make the reported number a fraction of the real one.
+/// This is a regression against the keyframe index, and it is asserted rather than
+/// merely admitted so that the number a UI has to budget for is written down. A
+/// rewind to seq `t` parses `t - base` bytes, every time, because Ghostty's state
+/// cannot be checkpointed and a rewind therefore has nowhere to start but the
+/// beginning. See [`crate::replay`] for why neither live engines nor cell-grid
+/// snapshots recover the old bound.
+///
+/// Measured, release build, a 10 MiB stream of agent output on a Ryzen 9 9950X:
+/// build 5.7 ms, rewind 2.7 ms at a target one sixteenth in, 25.0 ms at the median
+/// target, 34.6 ms at the far end. A forward drag across the whole stream in fifty
+/// steps costs 42 ms in total. So the worst rewind a full ring can produce is about
+/// two frames at 60 Hz, and a scrubber that coalesces to the operator's latest
+/// target rather than queuing every intermediate one absorbs it.
+///
+/// The defect this closes is the opposite of the obvious one: a future change that
+/// makes a rewind report *less* than the prefix without actually replaying it would
+/// be a seek reading stale state, and it would fail here before it failed in the
+/// seek-equivalence suite.
 #[test]
-fn index_memory_tracks_the_keyframe_count_and_nothing_else() {
-    let owned = grown(SIZE);
+fn a_rewind_replays_the_whole_prefix() {
+    let owned = grown(64 * 1024);
     let bytes: &[u8] = &owned;
-    let stream = Stream::new(0, core::slice::from_ref(&bytes));
 
-    let coarse = KeyframeIndex::build(
-        &stream,
-        &config(80, 24).with_keyframe_stride(32 * 1024).expect("stride"),
-    )
-    .expect("build");
-    let fine = KeyframeIndex::build(
-        &stream,
-        &config(80, 24).with_keyframe_stride(16 * 1024).expect("stride"),
-    )
-    .expect("build");
+    with_replay(bytes, &config(80, 24), |replay| {
+        let head = replay.stream().head_seq();
+        replay.seek(head).expect("to head");
 
-    assert_eq!(fine.len(), 2 * coarse.len(), "halving the stride doubles the count");
-    assert!(coarse.len() >= 15);
-
-    // A screen's own heap use varies a little with how many damage spans its rows
-    // carry, so the per-keyframe cost is compared within a few percent rather than
-    // exactly. What must not happen is a per-keyframe cost that tracks the stride.
-    let coarse_each = coarse.heap_bytes() / coarse.len();
-    let fine_each = fine.heap_bytes() / fine.len();
-    assert!(
-        coarse_each.abs_diff(fine_each) * 20 < coarse_each,
-        "{coarse_each} bytes a keyframe at one stride and {fine_each} at half of it, \
-         so the cost is not just the screen"
-    );
+        for divisor in [2u64, 3, 4, 8] {
+            let target = head / divisor;
+            replay.seek(head).expect("back to head");
+            replay.seek(target).expect("rewind");
+            assert_eq!(
+                replay.last_seek_bytes(),
+                target,
+                "a rewind to {target} fed a different prefix"
+            );
+        }
+    });
 }
 
-/// At the default stride the index costs a small fraction of the bytes it indexes.
+/// A replay's memory does not grow with the stream it replays.
 ///
-/// [`crate::DEFAULT_KEYFRAME_STRIDE`] is documented as roughly 1.2 MiB of index for a
-/// 10 MiB ring at 80x24, and vitrum's idle-memory budget is written against that. The
-/// bug this stops: a default stride quietly lowered for latency, which trades a number
-/// nobody measures for one everybody does.
+/// This is what the keyframe index cost and what removing it bought: memory used to
+/// be one full-screen clone per stride, so a 10 MiB ring carried about 1.2 MiB of
+/// snapshots. A replay now carries one screen, whatever the ring holds.
+///
+/// The chapter markers are the one component that does scale, because there are
+/// genuinely more chapters in a longer session, so they are measured apart from the
+/// part that must stay flat. The bug this stops: an index of screens or grids
+/// reappearing under another name.
 #[test]
-fn the_default_stride_keeps_the_index_well_under_the_stream() {
-    let owned = grown(4 * 1024 * 1024);
-    let bytes: &[u8] = &owned;
-    let stream = Stream::new(0, core::slice::from_ref(&bytes));
-    let index = KeyframeIndex::build(&stream, &config(80, 24)).expect("build");
+fn replay_memory_does_not_grow_with_the_stream() {
+    let mut sizes = Vec::new();
 
-    let stream_bytes = stream.len() as usize;
-    assert_eq!(index.stride(), crate::DEFAULT_KEYFRAME_STRIDE);
-    assert!(
-        index.heap_bytes() * 5 < stream_bytes,
-        "{} bytes of index for {stream_bytes} bytes of stream",
-        index.heap_bytes()
+    for size in [64 * 1024usize, 4 * 1024 * 1024] {
+        let owned = grown(size);
+        let bytes: &[u8] = &owned;
+        with_replay(bytes, &config(80, 24), |replay| {
+            let head = replay.stream().head_seq();
+            replay.seek(head).expect("to head");
+            sizes.push((
+                replay.heap_bytes() - replay.timeline().heap_bytes(),
+                replay.screen().heap_bytes(),
+            ));
+        });
+    }
+
+    assert_eq!(
+        sizes[0], sizes[1],
+        "a 64x longer stream changed the non-marker memory"
     );
+    assert!(sizes[0].1 > 0, "a screen has to cost something");
 }
 
-/// A wider screen costs proportionally more per keyframe, and the report says so.
+/// Screen memory scales with the geometry and with nothing else.
 ///
-/// A caller picking a stride for a 200x50 pane needs this arithmetic to hold.
+/// A caller sizing a scrubber for a 200x50 pane needs this arithmetic to hold.
 #[test]
-fn per_keyframe_memory_scales_with_the_screen_not_the_stride() {
+fn screen_memory_scales_with_the_geometry() {
     let owned = grown(SIZE);
     let bytes: &[u8] = &owned;
-    let stream = Stream::new(0, core::slice::from_ref(&bytes));
 
-    let small = KeyframeIndex::build(
-        &stream,
-        &config(80, 24).with_keyframe_stride(32 * 1024).expect("stride"),
-    )
-    .expect("build");
-    let large = KeyframeIndex::build(
-        &stream,
-        &config(200, 50).with_keyframe_stride(32 * 1024).expect("stride"),
-    )
-    .expect("build");
+    let mut measured = Vec::new();
+    for (cols, rows) in [(80u16, 24u16), (200, 50)] {
+        with_replay(bytes, &config(cols, rows), |replay| {
+            let head = replay.stream().head_seq();
+            replay.seek(head).expect("to head");
+            measured.push(replay.screen().heap_bytes() as f64);
+        });
+    }
 
-    assert_eq!(small.len(), large.len(), "the stride, not the size, sets the count");
-    let ratio = large.heap_bytes() as f64 / small.heap_bytes() as f64;
+    let ratio = measured[1] / measured[0];
     let cells = (200.0 * 50.0) / (80.0 * 24.0);
     assert!(
         (ratio - cells).abs() < 0.5,
@@ -233,25 +186,29 @@ fn per_keyframe_memory_scales_with_the_screen_not_the_stride() {
     );
 }
 
-/// A replay's whole reported cost accounts for the index, the timeline, and the screen.
+/// A replay's reported cost accounts for the timeline and the screen, and the
+/// stream it borrows is excluded.
 ///
-/// The bug this stops: `heap_bytes` that forgets a component and understates the cost of
-/// attaching a scrubber to every open session.
+/// The bug this stops: `heap_bytes` that forgets a component and understates the
+/// cost of attaching a scrubber to every open session, or one that counts the
+/// daemon's own ring twice.
 #[test]
-fn the_replay_reports_more_than_its_index_alone() {
+fn the_replay_reports_its_timeline_and_its_screen() {
     let owned = grown(SIZE);
     let bytes: &[u8] = &owned;
+    let stream = Stream::new(0, core::slice::from_ref(&bytes));
+    let stream_bytes = stream.len() as usize;
 
-    with_replay(bytes, &measured(), |replay| {
-        let index = replay.index().heap_bytes();
+    with_replay(bytes, &config(80, 24), |replay| {
+        let timeline = replay.timeline().heap_bytes();
         let screen = replay.screen().heap_bytes();
 
-        assert!(index > 0 && screen > 0);
+        assert!(timeline > 0 && screen > 0);
+        assert_eq!(replay.heap_bytes(), timeline + screen);
         assert!(
-            replay.heap_bytes() >= index + screen,
-            "{} is less than the {} index plus the {screen} screen",
-            replay.heap_bytes(),
-            index
+            replay.heap_bytes() < stream_bytes,
+            "{} bytes of replay for {stream_bytes} bytes of stream",
+            replay.heap_bytes()
         );
     });
 }

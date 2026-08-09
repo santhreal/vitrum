@@ -418,13 +418,13 @@ fn an_evicted_prefix_exports_as_a_self_contained_recording() {
     );
 }
 
-/// Replaying a recording exported from a keyframed replay agrees with the original.
+/// Replaying a recording exported from a replay agrees with the original.
 ///
-/// End to end: index, seek, export, import, seek again.
+/// End to end: seek, export, import, seek again.
 #[test]
 fn export_then_import_then_seek_agrees_with_the_original_seek() {
     let bytes = grown(96 * 1024);
-    let config = config(80, 24).with_keyframe_stride(8192).expect("stride");
+    let config = config(80, 24);
 
     let chunks = [bytes.as_slice()];
     let stream = Stream::new(0, &chunks);

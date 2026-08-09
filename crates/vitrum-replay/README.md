@@ -28,14 +28,18 @@ assert_eq!(replay.screen().line(0).trim_end(), "one");
 assert_eq!(replay.screen().line(1).trim_end(), "");
 ```
 
-Seeking is cheap because a keyframe index snapshots the screen every `stride`
-bytes during one linear build pass, and a keyframe is only taken where the VT
-parser is provably back in its ground state. A seek restores the newest keyframe
-at or before the target and feeds at most `stride` bytes from there.
+A forward seek feeds the bytes between where the replay is and where it is going.
+A backward seek builds a fresh terminal and replays the stream from its first byte,
+so its cost tracks the target's distance from the start rather than the distance
+moved. There is no keyframe index: the terminal is a state machine with no readable
+state and no clone, so a checkpoint would have to be a parked engine, and advancing a
+parked engine consumes it. Refilling one cascades into every earlier checkpoint and
+costs exactly what rebuilding from the start costs.
 
 This crate does not emulate a terminal from scratch: the cell grid is
-[`vitrum-grid`](https://crates.io/crates/vitrum-grid) and the byte-level state
-machine is [`vte`](https://crates.io/crates/vte). What lives here is the layer
-between them.
+[`vitrum-grid`](https://crates.io/crates/vitrum-grid) and the terminal is
+[`vitrum-vt`](https://crates.io/crates/vitrum-vt), which wraps Ghostty's VT
+implementation. What lives here is the layer between them. It is the same terminal
+that paints a live session, so a replay and the pane agree on every byte.
 
 Part of [vitrum](https://github.com/santhreal/vitrum). MIT licensed.

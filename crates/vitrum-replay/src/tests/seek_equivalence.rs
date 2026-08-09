@@ -42,18 +42,14 @@ fn seeking_to_every_byte_of_the_capture_matches_a_linear_replay() {
     assert_seeks_match(CAPTURED, &targets, &config(80, 24));
 }
 
-/// The same, in descending order, which forces the keyframe rewind path on every seek.
+/// The same, in descending order, which forces the rewind path on every seek.
 ///
-/// Ascending seeks never rewind, so a suite that only walked forwards would never
-/// execute the restore at all.
+/// Ascending seeks never rebuild the emulator, so a suite that only walked forwards
+/// would never execute the rewind at all.
 #[test]
 fn seeking_backwards_through_the_capture_matches_a_linear_replay() {
     let targets: Vec<u64> = (0..=CAPTURED.len() as u64).rev().collect();
-    assert_seeks_match(
-        CAPTURED,
-        &targets,
-        &config(80, 24).with_keyframe_stride(64).expect("stride"),
-    );
+    assert_seeks_match(CAPTURED, &targets, &config(80, 24));
 }
 
 /// A seq inside a multi-byte UTF-8 character replays as though the character had not
@@ -121,9 +117,9 @@ fn a_seek_inside_an_escape_sequence_shows_the_sequence_as_not_yet_arrived() {
 
 /// A seq inside an `ESC \` terminated OSC replays correctly.
 ///
-/// The interesting byte is the `ESC` of the terminator, where vte has already dispatched
-/// the OSC but is not yet in its ground state. This is the exact boundary the ground
-/// probe deliberately calls unsafe, and a seek landing there must still be right.
+/// The interesting byte is the `ESC` of the terminator, where the OSC has already been
+/// dispatched but the parser is not yet back in its ground state. The old ground probe
+/// refused to checkpoint there, and a seek landing there must still be right.
 #[test]
 fn a_seek_inside_an_esc_terminated_osc_matches_a_linear_replay() {
     let start = CAPTURED
@@ -230,7 +226,7 @@ fn an_out_of_range_seek_reports_the_window_it_could_have_used() {
 fn scattered_seeks_over_a_long_stream_all_match() {
     let bytes = grown(300 * 1024);
     let length = bytes.len() as u64;
-    let config = config(100, 30).with_keyframe_stride(16 * 1024).expect("stride");
+    let config = config(100, 30);
 
     // A deterministic scatter: a multiplicative walk over the stream, so the order is
     // reproducible and covers forward jumps, backward jumps and near-neighbours.
@@ -250,35 +246,32 @@ fn scattered_seeks_over_a_long_stream_all_match() {
     assert_seeks_match(&bytes, &targets, &config);
 }
 
-/// Seeking forward does not rewind to a keyframe when the current position is already
-/// past it.
+/// Seeking forward from a position deep in the stream never rebuilds the emulator.
 ///
 /// This is the property that makes dragging a scrubber cheap rather than quadratic. It
-/// is asserted through the emulator's own position, because the alternative, timing, is
-/// not a contract.
+/// is asserted through the bytes the seek fed, because the alternative, timing, is not
+/// a contract: a step that rebuilt would have to feed the whole prefix, and a step that
+/// did not feeds exactly the one byte it advanced.
 #[test]
-fn a_forward_seek_from_a_position_past_the_last_keyframe_does_not_rewind() {
+fn a_forward_seek_from_a_position_deep_in_the_stream_does_not_rewind() {
     let bytes = grown(64 * 1024);
     let chunks = [bytes.as_slice()];
     let stream = Stream::new(0, &chunks);
-    let config = config(80, 24).with_keyframe_stride(8192).expect("stride");
-    let mut replay = Replay::build(stream, &config).expect("build");
+    let mut replay = Replay::build(stream, &config(80, 24)).expect("build");
 
     let head = replay.stream().head_seq();
-    let last_keyframe = replay.index().frames().last().expect("keyframes").seq;
     let start = head - 20;
-    assert!(start > last_keyframe, "the fixture must end past its last keyframe");
     replay.seek(start).expect("in range");
     assert_eq!(replay.position(), start);
 
-    // Now step forward one byte at a time. Each step must land exactly where asked and
-    // agree with a linear replay, which it cannot do if the restore fired and dropped
-    // the bytes between the keyframe and here.
+    // Now step forward one byte at a time. Each step must feed exactly one byte and
+    // agree with a linear replay, which it cannot do if it silently restarted.
     for step in 1..=20u64 {
         let target = start + step;
         let screen = replay.seek(target).expect("in range");
         let reference = linear(80, 24, &bytes[..target as usize]);
         assert_eq!(screen, &reference);
+        assert_eq!(replay.last_seek_bytes(), 1, "the step to {target} rewound");
     }
 }
 

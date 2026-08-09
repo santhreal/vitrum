@@ -22,6 +22,8 @@
 //! Every one of those is a case that has broken a terminal emulator in the wild, and
 //! a fixture written by hand would have contained the ones its author remembered.
 
+use vitrum_grid::Rgba;
+
 use crate::config::ReplayConfig;
 use crate::emulator::Emulator;
 use crate::palette::Palette;
@@ -31,13 +33,43 @@ use crate::stream::Stream;
 /// A real PTY capture. See the module header.
 pub const CAPTURED: &[u8] = include_bytes!("../../fixtures/captured-session.raw");
 
+/// Ghostty's own sixteen named colours, which is what `SGR 30..37` and `SGR 90..97`
+/// resolve to now that the engine owns indexed colour.
+///
+/// Not xterm's table. Ghostty ships a theme rather than xterm's compiled-in
+/// defaults, so `SGR 31` is `cc6666` where xterm's is `cd0000`. That is the product
+/// truth because the daemon paints the live pane through the same engine; see
+/// [`crate::palette`].
+///
+/// This table exists so a Ghostty version bump that changes the theme turns the
+/// suite red in one place and forces somebody to record the decision, rather than
+/// silently changing what colour a replayed session was.
+pub const GHOSTTY_ANSI: [Rgba; 16] = [
+    Rgba::rgb(0x1d, 0x1f, 0x21),
+    Rgba::rgb(0xcc, 0x66, 0x66),
+    Rgba::rgb(0xb5, 0xbd, 0x68),
+    Rgba::rgb(0xf0, 0xc6, 0x74),
+    Rgba::rgb(0x81, 0xa2, 0xbe),
+    Rgba::rgb(0xb2, 0x94, 0xbb),
+    Rgba::rgb(0x8a, 0xbe, 0xb7),
+    Rgba::rgb(0xc5, 0xc8, 0xc6),
+    Rgba::rgb(0x66, 0x66, 0x66),
+    Rgba::rgb(0xd5, 0x4e, 0x53),
+    Rgba::rgb(0xb9, 0xca, 0x4a),
+    Rgba::rgb(0xe7, 0xc5, 0x47),
+    Rgba::rgb(0x7a, 0xa6, 0xda),
+    Rgba::rgb(0xc3, 0x97, 0xd8),
+    Rgba::rgb(0x70, 0xc0, 0xb1),
+    Rgba::rgb(0xea, 0xea, 0xea),
+];
+
 /// A screen with `bytes` fed through a single emulator in one call.
 ///
 /// This is the reference implementation every seek is compared against: no
 /// keyframes, no restore, just the whole prefix in order.
 pub fn linear(cols: u16, rows: u16, bytes: &[u8]) -> Screen {
     let mut emulator = Emulator::new(cols, rows, Palette::XTERM).expect("valid geometry");
-    emulator.feed(bytes);
+    emulator.feed(bytes).expect("engine readable");
     emulator.into_screen()
 }
 
@@ -65,8 +97,8 @@ pub fn rows_of(screen: &Screen) -> Vec<String> {
         .collect()
 }
 
-/// A stream long enough to need keyframes, built by repeating the capture with a
-/// changing line each round so no two regions are identical.
+/// A stream long enough to make a rewind expensive, built by repeating the capture
+/// with a changing line each round so no two regions are identical.
 ///
 /// Identical regions would let a broken seek land in the wrong place and still
 /// produce the right screen, which is the one way this whole suite could pass while
@@ -82,11 +114,6 @@ pub fn grown(target: usize) -> Vec<u8> {
         round += 1;
     }
     out
-}
-
-/// Feed `bytes` through a fresh emulator and return the screen, at 80x24.
-pub fn screen80(bytes: &[u8]) -> Screen {
-    linear(80, 24, bytes)
 }
 
 /// Feed `bytes` at a small size, where wrapping and scrolling are easy to assert.

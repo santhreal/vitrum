@@ -11,8 +11,6 @@
 //! - [`screen_sgr`]: rendition, including both extended colour spellings.
 //! - [`screen_charset`]: DEC Special Graphics and the shifts.
 //! - [`screen_alt`]: the alternate screen and 1049's cursor stash.
-//! - [`emulator_ground`]: the ground-state probe keyframes depend on.
-//! - [`keyframe_index`]: keyframe placement, lookup, and cost.
 //! - [`seek_equivalence`]: every seek against a linear replay.
 //! - [`timeline_clock`]: seq to time and back, and the honesty flag.
 //! - [`hints_markers`]: OSC 7373 marker positions.
@@ -20,7 +18,8 @@
 //! - [`asciicast_roundtrip`]: bytes to file to bytes.
 //! - [`asciicast_reader_errors`]: every way a file can be rejected.
 //! - [`asciicast_header`]: header requirements and unknown-key preservation.
-//! - [`cost`]: measured seek latency and index memory.
+//! - [`streaming_reader`]: asciicast read incrementally from a partial file.
+//! - [`cost`]: measured seek latency and replay memory.
 
 mod asciicast_header;
 mod streaming_reader;
@@ -28,9 +27,7 @@ mod asciicast_jsonstr;
 mod asciicast_reader_errors;
 mod asciicast_roundtrip;
 mod cost;
-mod emulator_ground;
 mod hints_markers;
-mod keyframe_index;
 mod screen_alt;
 mod screen_charset;
 mod screen_cursor;

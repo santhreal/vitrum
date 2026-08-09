@@ -48,33 +48,26 @@
 //! same [`Stream`] plus [`Timeline`] pair the live path uses, so an imported
 //! recording scrubs through exactly the same code.
 //!
-//! # Why seeking is cheap
+//! # Why forward scrubbing is cheap and rewinding is not
 //!
-//! Feeding the stream from byte zero on every seek is O(n) per seek, and a
-//! 10 MiB ring makes that a visible stall on a scrubber the user is dragging.
-//! [`KeyframeIndex`] therefore snapshots the whole screen every `stride` bytes
-//! during one linear build pass. A seek restores the newest keyframe at or
-//! before the target and feeds at most `stride` bytes from there.
+//! A seek at or ahead of the current position feeds only the bytes in between,
+//! so dragging the scrubber rightwards costs one linear pass over the region
+//! dragged across, not one per frame.
 //!
-//! A keyframe may only be taken where the VT parser is provably back in its
-//! ground state, because a snapshot taken halfway through an escape sequence
-//! could not be resumed from. [`Emulator::feed_byte`] reports exactly that, and
-//! [`KeyframeIndex::build`] uses it to slide each keyframe forward to the next
-//! safe boundary. See [`mod@keyframe`].
-//!
-//! Forward scrubbing does not rewind at all: a seek to a seq at or after the
-//! current position just feeds the bytes in between, so dragging the scrubber
-//! rightwards costs one linear pass over the region dragged across, not one per
-//! frame.
+//! A rewind replays from the base of the stream. It used to restore a snapshot
+//! taken every 256 KiB, which bounded it; that index is gone because Ghostty's
+//! terminal state cannot be cloned, serialised or read back, and neither an
+//! index of live engines nor an index of cell grids recovers the bound. See
+//! [`mod@replay`] for the argument in full, so nobody re-proposes either one.
 //!
 //! # What this does not do
 //!
-//! It does not emulate a terminal from scratch. The cell grid is
-//! [`vitrum_grid::CellGrid`], already tested in its own crate, and the byte
-//! level state machine is [`vte`], the parser Alacritty uses. What lives here is
-//! the layer between them: cursor, scroll region, modes, tab stops, charsets,
-//! and the mapping from VT commands onto grid operations. See [`mod@perform`]
-//! for the exact command set and what is deliberately ignored.
+//! It does not emulate a terminal. Ghostty does, through
+//! [`vitrum_vt`], which is the same engine the daemon runs against the live
+//! session, so a replayed screen and the screen the user watched are produced by
+//! one parser rather than by two that agree until they do not. The cell grid is
+//! [`vitrum_grid::CellGrid`]. What lives here is the stream, the timeline, the
+//! seek, and the asciicast codec.
 //!
 //! It does not keep scrollback of its own. A [`Screen`] is the screen: rows that
 //! scrolled off the top before the seek target are gone, exactly as they are
@@ -85,15 +78,13 @@
 //! # Module map
 //!
 //! - [`mod@stream`]: the byte stream and its seq coordinate space.
-//! - [`mod@screen`]: the reconstructed terminal state.
-//! - [`mod@perform`]: the VT command set, mapped onto the grid.
-//! - [`mod@emulator`]: parser plus screen, and the ground state probe.
-//! - [`mod@keyframe`]: periodic snapshots, and why seeking is cheap.
+//! - [`mod@screen`]: the projected terminal state.
+//! - [`mod@emulator`]: the engine driving a screen.
 //! - [`mod@timeline`]: seq to time, and where the times come from.
 //! - [`mod@hints`]: OSC 7373 chapter markers over the same stream.
 //! - [`mod@replay`]: the seek API.
 //! - [`asciicast`]: v2 import and export, byte exact.
-//! - [`mod@palette`]: indexed colour to RGB.
+//! - [`mod@palette`]: the default foreground and background.
 //! - [`mod@error`]: how this crate fails.
 
 #![deny(missing_docs)]
@@ -103,9 +94,7 @@ pub mod config;
 pub mod emulator;
 pub mod error;
 pub mod hints;
-pub mod keyframe;
 pub mod palette;
-pub mod perform;
 pub mod replay;
 pub mod screen;
 pub mod stream;
@@ -114,12 +103,11 @@ pub mod timeline;
 #[cfg(test)]
 mod tests;
 
-pub use config::{DEFAULT_GROUND_SCAN, DEFAULT_KEYFRAME_STRIDE, ReplayConfig};
+pub use config::ReplayConfig;
 pub use emulator::Emulator;
 pub use error::{CastError, Error, Result};
-pub use keyframe::{Keyframe, KeyframeIndex};
 pub use palette::Palette;
 pub use replay::Replay;
-pub use screen::{Charset, Charsets, Cursor, Modes, SavedCursor, Screen, ScrollRegion, TabStops};
+pub use screen::{Cursor, Screen};
 pub use stream::{Slices, Stream};
 pub use timeline::{ChunkStamp, Marker, Timeline};

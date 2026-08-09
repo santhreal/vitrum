@@ -110,9 +110,9 @@ impl Recording {
     /// The `"r"` resize events, in order.
     ///
     /// These are reported, not applied. A replay is built at one geometry, and
-    /// applying a resize mid-stream would need a seq-indexed geometry track for the
-    /// keyframes to restore alongside the screen. A caller that cares can rebuild
-    /// the replay at the new size at the seq named here.
+    /// applying a resize mid-stream would need a seq-indexed geometry track for a seek
+    /// to restore alongside the screen. A caller that cares can rebuild the replay at
+    /// the new size at the seq named here.
     #[must_use]
     pub fn resizes(&self) -> &[Resize] {
         &self.resizes

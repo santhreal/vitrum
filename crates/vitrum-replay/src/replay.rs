@@ -1,30 +1,50 @@
 //! The seek API.
 //!
-//! [`Replay`] owns a [`Stream`], the [`KeyframeIndex`] over it, a [`Timeline`], and
-//! one live [`Emulator`]. [`Replay::seek`] moves that emulator to any seq the stream
-//! holds and hands back the [`Screen`].
+//! [`Replay`] owns a [`Stream`], a [`Timeline`], and one live [`Emulator`].
+//! [`Replay::seek`] moves that emulator to any seq the stream holds and hands
+//! back the [`Screen`].
 //!
-//! # The three ways a seek can start
+//! # The two ways a seek can start
 //!
-//! A seek picks the cheapest sound starting point, which is one of:
-//!
-//! 1. **The current position**, when the target is ahead of it. Nothing is
-//!    restored: the emulator is already correct at `at`, so the seek feeds
+//! 1. **The current position**, when the target is at or ahead of it. Nothing is
+//!    rebuilt: the emulator is already correct at `at`, so the seek feeds
 //!    `at..target` and stops. This is the case a user dragging the scrubber
 //!    rightwards hits every frame, and it makes a full drag cost one linear pass
 //!    over the region dragged across rather than one per frame.
-//! 2. **A keyframe**, when one sits between the current position and the target,
-//!    or when the target is behind the current position. See [`crate::keyframe`].
-//! 3. **The start of the stream**, when the target is behind the first keyframe.
+//! 2. **The base of the stream**, when the target is behind the current position.
+//!    A fresh emulator replays `base..target`.
 //!
-//! In every case the emulator then feeds a contiguous byte range and nothing else
-//! happens, so a seek is a bounded amount of parsing and one screen clone.
+//! # Why a rewind is not cheaper than that
+//!
+//! It used to be. A [`Screen`] was the whole of terminal state and it was
+//! `Clone`, so an index of snapshots every 256 KiB bounded a rewind to one
+//! stride. Ghostty owns terminal state now, and libghostty's C API offers no
+//! clone, no serialisation, and no readback for the scroll region, tab stops,
+//! charset designations, saved cursor or inactive buffer.
+//!
+//! An index of live engines does not recover it, and the reason is worth stating
+//! so nobody re-proposes it: using a parked engine means advancing it to the
+//! target, which consumes it. Refilling its slot needs an engine at that seq,
+//! whose only source is the slot below advanced one span, cascading down to a
+//! fresh engine at the base. The refill therefore costs exactly what rebuilding
+//! from the base would have cost for the same target. The engines are a wash, and
+//! they are a wash while charging one terminal of memory each and half a pass per
+//! checkpoint at build.
+//!
+//! Snapshotting the [`vitrum_grid::CellGrid`] instead does not recover it either.
+//! A grid is a value at one seq, not a state machine: advancing one from the
+//! snapshot to the target means applying VT sequences to a grid, which is the
+//! hand-written translation this crate deleted in favour of Ghostty. A snapshot
+//! answers the one seq it was taken at, and every seek between two snapshots is a
+//! question it cannot answer.
+//!
+//! Rebuilding from the base is therefore optimal for a non-clonable engine, and
+//! it is what this does.
 
 use crate::config::ReplayConfig;
 use crate::emulator::Emulator;
 use crate::error::{Error, Result};
 use crate::hints;
-use crate::keyframe::KeyframeIndex;
 use crate::screen::Screen;
 use crate::stream::Stream;
 use crate::timeline::Timeline;
@@ -34,7 +54,6 @@ use crate::timeline::Timeline;
 pub struct Replay<'a> {
     stream: Stream<'a>,
     config: ReplayConfig,
-    index: KeyframeIndex,
     timeline: Timeline,
     emulator: Emulator,
     at: u64,
@@ -42,25 +61,26 @@ pub struct Replay<'a> {
 }
 
 impl<'a> Replay<'a> {
-    /// Index `stream` and park at the start of it.
+    /// Prepare `stream` and park at the start of it.
     ///
-    /// One linear pass builds the keyframes, and a second, much cheaper pass
-    /// collects OSC 7373 chapter markers (see [`crate::hints`]). The timeline starts
-    /// as [`Timeline::positional`], which is the honest state for a live session:
-    /// seq scrubbing works, and there is no clock until someone supplies one through
-    /// [`Replay::set_timeline`].
+    /// One cheap pass collects OSC 7373 chapter markers (see [`crate::hints`]).
+    /// No terminal bytes are parsed here: the emulator starts blank at the base of
+    /// the stream, and the first [`Replay::seek`] is what feeds it. The timeline
+    /// starts as [`Timeline::positional`], which is the honest state for a live
+    /// session: seq scrubbing works, and there is no clock until someone supplies
+    /// one through [`Replay::set_timeline`].
     ///
     /// # Errors
     ///
-    /// Whatever [`ReplayConfig::validate`] rejects.
+    /// Whatever [`ReplayConfig::validate`] rejects, and [`Error::Engine`] when
+    /// Ghostty refuses to allocate a terminal.
     pub fn build(stream: Stream<'a>, config: &ReplayConfig) -> Result<Self> {
-        let index = KeyframeIndex::build(&stream, config)?;
+        config.validate()?;
         let timeline = Timeline::positional().with_markers(hints::scan(&stream));
         let emulator = Emulator::new(config.cols, config.rows, config.palette)?;
         Ok(Self {
             stream,
             config: *config,
-            index,
             timeline,
             emulator,
             at: stream.base_seq(),
@@ -104,7 +124,8 @@ impl<'a> Replay<'a> {
     /// # Errors
     ///
     /// [`Error::SeqOutOfRange`] when the stream does not hold `seq`, reporting the
-    /// range it does hold.
+    /// range it does hold, and [`Error::Engine`] when the engine cannot be read
+    /// back.
     pub fn seek(&mut self, seq: u64) -> Result<&Screen> {
         if !self.stream.holds(seq) {
             return Err(Error::SeqOutOfRange {
@@ -114,28 +135,17 @@ impl<'a> Replay<'a> {
             });
         }
 
-        let keyframe_seq = self.index.latest_at_or_before(seq).map(|frame| frame.seq);
-        let rewinding = seq < self.at;
-        let keyframe_is_closer = keyframe_seq.is_some_and(|at| at > self.at);
-
-        if rewinding || keyframe_is_closer {
-            match self.index.latest_at_or_before(seq) {
-                Some(frame) => {
-                    self.emulator = Emulator::resume(frame.screen().clone());
-                    self.at = frame.seq;
-                }
-                None => {
-                    self.emulator =
-                        Emulator::new(self.config.cols, self.config.rows, self.config.palette)?;
-                    self.at = self.stream.base_seq();
-                }
-            }
+        if seq < self.at {
+            self.emulator =
+                Emulator::new(self.config.cols, self.config.rows, self.config.palette)?;
+            self.at = self.stream.base_seq();
         }
 
         let from = self.at;
         for slice in self.stream.slices(from..seq) {
-            self.emulator.feed(slice);
+            self.emulator.feed_raw(slice);
         }
+        self.emulator.project()?;
         self.last_seek_bytes = seq.saturating_sub(from);
         self.at = seq;
         Ok(self.emulator.screen())
@@ -170,10 +180,10 @@ impl<'a> Replay<'a> {
 
     /// Bytes the last [`Replay::seek`] had to feed.
     ///
-    /// This is the seek's whole cost: everything else it does is one screen clone.
-    /// Surfaced because a scrubber choosing a stride is choosing this number, and
-    /// because it is the only way to tell a cheap forward drag from a rewind that
-    /// had to restart from a keyframe.
+    /// This is the seek's whole cost. Surfaced because it is the only way to tell
+    /// a cheap forward drag from a rewind that had to restart from the base of the
+    /// stream, and a UI that wants to stay responsive is choosing between exactly
+    /// those two.
     #[must_use]
     pub const fn last_seek_bytes(&self) -> u64 {
         self.last_seek_bytes
@@ -183,12 +193,6 @@ impl<'a> Replay<'a> {
     #[must_use]
     pub const fn stream(&self) -> &Stream<'a> {
         &self.stream
-    }
-
-    /// The keyframe index.
-    #[must_use]
-    pub const fn index(&self) -> &KeyframeIndex {
-        &self.index
     }
 
     /// The timeline.
@@ -206,9 +210,12 @@ impl<'a> Replay<'a> {
     /// Bytes this replay holds on the heap, not counting the borrowed stream.
     ///
     /// The stream is excluded because the daemon already owns those bytes; this is
-    /// the cost of *adding* scrubbing to a session that already exists.
+    /// the cost of *adding* scrubbing to a session that already exists. The
+    /// engine's own arena is not counted either, because libghostty neither
+    /// reports it nor offers a way to measure it; it is one terminal, fixed, and
+    /// it does not grow with the stream.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        self.index.heap_bytes() + self.timeline.heap_bytes() + self.screen().heap_bytes()
+        self.timeline.heap_bytes() + self.screen().heap_bytes()
     }
 }

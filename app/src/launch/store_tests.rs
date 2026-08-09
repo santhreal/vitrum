@@ -182,9 +182,9 @@ fn a_launch_records_its_directory_and_never_blanks_it() {
 
 // ---- suggestions -----------------------------------------------------
 
-/// An empty history must offer the agents really on `PATH` and the shell,
-/// and nothing else. Inventing a name for a binary this machine does not
-/// have is a suggestion that fails at spawn.
+/// An empty history must offer the agents really on `PATH`, and nothing
+/// else. Inventing a name for a binary this machine does not have is a
+/// suggestion that fails at spawn, and the login shell is not an agent.
 #[test]
 fn an_empty_history_offers_only_what_is_installed() {
     let store = LaunchStore::default();
@@ -192,7 +192,7 @@ fn an_empty_history_offers_only_what_is_installed() {
         label: "Claude Code",
         command: "claude",
     }];
-    let got = command_suggestions(&store, &detected, "/bin/bash", "", NOW, 8);
+    let got = command_suggestions(&store, &detected, "", NOW, 8);
     assert_eq!(
         got,
         vec![
@@ -201,21 +201,16 @@ fn an_empty_history_offers_only_what_is_installed() {
                 note: "Claude Code".into(),
                 source: CommandSource::Detected,
             },
-            CommandSuggestion {
-                line: "/bin/bash".into(),
-                note: "login shell".into(),
-                source: CommandSource::Shell,
-            },
         ]
     );
 }
 
-/// An empty history on a machine with no agent and no resolvable shell
-/// must produce an empty list, not a placeholder. An offer nobody can run
-/// is worse than an honest blank.
+/// An empty history on a machine with no agent must produce an empty list,
+/// not a placeholder. An offer nobody can run is worse than an honest
+/// blank.
 #[test]
 fn nothing_installed_and_no_history_suggests_nothing() {
-    assert!(command_suggestions(&LaunchStore::default(), &[], "", "", NOW, 8).is_empty());
+    assert!(command_suggestions(&LaunchStore::default(), &[], "", NOW, 8).is_empty());
 }
 
 /// History must come before detection, ranked, and a detected agent the
@@ -233,9 +228,9 @@ fn history_outranks_detection_and_is_never_duplicated() {
             command: "gemini",
         },
     ];
-    let got = command_suggestions(&store, &detected, "/bin/sh", "", NOW, 8);
+    let got = command_suggestions(&store, &detected, "", NOW, 8);
     let lines: Vec<&str> = got.iter().map(|s| s.line.as_str()).collect();
-    assert_eq!(lines, vec!["claude", "codex", "gemini", "/bin/sh"]);
+    assert_eq!(lines, vec!["claude", "codex", "gemini"]);
     assert_eq!(got[0].note, "used 9 times");
     assert_eq!(got[1].note, "used once");
     assert_eq!(got[2].source, CommandSource::Detected);
@@ -255,7 +250,7 @@ fn a_prefix_match_beats_a_higher_ranked_substring_match() {
         last_used_ms: NOW,
         icon: None,
     });
-    let got = command_suggestions(&store, &[], "", "cl", NOW, 8);
+    let got = command_suggestions(&store, &[], "cl", NOW, 8);
     let lines: Vec<&str> = got.iter().map(|s| s.line.as_str()).collect();
     assert_eq!(lines, vec!["claude", "codex --client"]);
 }

@@ -441,6 +441,35 @@ jobs:
         env:
           CC_x86_64_pc_windows_gnu: ${{ github.workspace }}/.github/zig-cc-windows
 
+  # Compiling for Windows is not running on Windows, and the difference is
+  # where this project's oldest open defect lives. A Windows pseudoconsole does
+  # not close its read side while the session holds the master, so the reader
+  # cannot reach end of stream, `READER_REPORTS_EOF` is false there, and the
+  # coalescer ends a session on a stopwatch after the exit. Whether that loses
+  # a burst has never been observed, only reasoned about, because nobody
+  # working on this has a Windows machine.
+  #
+  # A hosted Windows runner is one. This runs the session crate's own suite on
+  # a real pseudoconsole, so the question stops being a comment and starts
+  # being a result. It is scoped to `vitrum-core` rather than the workspace on
+  # purpose: that is the crate whose behaviour is platform-dependent, and a job
+  # that also fails for an unrelated reason answers nothing.
+  windows-test:
+    name: windows tests
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-test
+      - name: zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - run: cargo test -p vitrum-core --locked
+
   # The archive the updater downloads is built by a script, and the script,
   # `update::archive_name` and both installers must agree on its name. This
   # builds it and then installs it with the shipped `install.sh` against a

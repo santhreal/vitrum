@@ -14,7 +14,7 @@ PROBE_RUN ?= harness/out/probe-20260806T035911Z
 MEMORY_RUNS ?= harness/out/memory-20260806T192242Z harness/out/memory-20260806T192658Z
 IDLE_RUN ?= harness/out/idle-cpu-20260806T192751Z
 
-.PHONY: help build test clippy gate lanes plan perf-tables perf-tables-check \
+.PHONY: help build test clippy fast gate lanes plan perf-tables perf-tables-check \
 	measure package release release-dry-run release-check verify-artifacts \
 	check-isa clean
 
@@ -23,6 +23,7 @@ help:
 	@echo 'test               release test run of every crate'
 	@echo 'clippy             advisory lints'
 	@echo 'gate               build, then test, exactly as CI does'
+	@echo 'fast               one crate, debug, tests only; CRATE=<name>, default vitrum'
 	@echo 'measure            run the harness on the measurement host'
 	@echo 'perf-tables        snapshot the harness runs and inject docs/performance.md'
 	@echo 'perf-tables-check  fail if those tables are stale (CI runs this)'
@@ -57,6 +58,26 @@ plan:
 	$(PYTHON) tools/integrate.py plan
 
 gate: build test
+
+# The per-lane gate. One package, debug, tests only, and none of the rest of
+# the workspace compiled beyond what that package links. A lane proves its own
+# slice with this; `gate` is the workspace build and suite, which runs once
+# before a release rather than once per lane.
+#
+#   make fast                      the client
+#   make fast CRATE=vitrum-core    one crate
+#
+# The client crate has no lib target, so `-p vitrum` alone has no test target
+# to run and reports nothing; naming the bin is what runs its tests, and it is
+# the difference between a green lane and a lane that never ran.
+CRATE ?= vitrum
+
+fast:
+	@if [ '$(CRATE)' = vitrum ]; then \
+		$(CARGO) test -p vitrum --bin vitrum --locked; \
+	else \
+		$(CARGO) test -p '$(CRATE)' --locked; \
+	fi
 
 # The measurement itself needs the rig: a host with a display it owns and the
 # binaries staged onto it. It is deliberately not a dependency of readme-perf,

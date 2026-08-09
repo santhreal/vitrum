@@ -24,11 +24,20 @@ Three binaries ship: `vitrum`, `vitrum-server`, and `vitrum-replay`.
 `webkit_web_view_new_with_related_view`, which upstream wry has and
 dioxus-desktop did not surface.
 
+The data plane is Rust. `app/src/socket.rs` opens the session socket and owns
+reconnection, sequence continuity, the backlog splice and reassembly of a
+character split across two frames. The webview receives decoded pane
+operations and renders them, so the wire format has one decoder rather than
+one in `vitrum-proto` and a second in JavaScript.
+
 `vitrum-grid` reaches the shipped build through `vitrum-replay`, which uses its
-cell grid to reconstruct a screen. The wgpu renderer in the same crate is not
-reachable from any surface: the window draws terminals with xterm.js. The
-renderer exists for a later move to Dioxus Native, which paints through Blitz
-and cannot carry JavaScript.
+cell grid to reconstruct a screen, and it agrees with libghostty about how many
+columns a character takes because the tests take their samples from the engine.
+The wgpu renderer in the same crate does not yet paint a session: the window
+draws terminals with xterm.js. `crates/vitrum-pane-lab` proves the replacement
+works inside the current shell — a native GTK drawing area, its XID, and a wgpu
+surface on it — and the reason to make that move is one parser and OSC 7 and
+OSC 133 semantics a webview cannot have, not frame rate.
 
 Development, testing and the fork policy are in
 [CONTRIBUTING.md](../CONTRIBUTING.md).

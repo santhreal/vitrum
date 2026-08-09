@@ -97,7 +97,22 @@ X86_ABOVE_FLOOR='%zmm|%k[0-7]|%tmm|	(vpternlog|vpconflict|vplzcnt|vpcompress|vpe
 #   ptrue, whilelo    SVE control instructions.
 #   smstart, rdsvl    SME streaming mode.
 #   smmla, bfdot      i8mm and bf16, armv8.6.
-ARM_ABOVE_FLOOR='	(ptrue|whilel[eot]|whileg[et]|rdvl|addvl|addpl|setffr|rdffr|smstart|smstop|rdsvl|addsvl|addspl|zero	)|[	,]z[0-9]+\.|[	,]p[0-9]+[/.]|	(smmla|usmmla|ummla|bfdot|bfmmla|bfcvt|bfmlal)|	(ld64b|st64b|cpyf|setp|mops)'
+#
+# Split in two, because a disassembler decodes every four bytes of __text and
+# a literal pool is not code. A single `fnmls z7.h, p3/m, z27.h, z13.h` failed
+# the arm64 mac leg on a target whose CPUs have no SVE at all, so nothing could
+# have emitted it: those four bytes were data.
+#
+# ARM_SVE_CONTROL is self-evidencing. A vector length is not known until run
+# time, so generated SVE has to establish one, and these are the only
+# instructions that do it. One of them means a compiler really did emit SVE.
+#
+# ARM_ABOVE_FLOOR is register operands and shared mnemonics, which is what
+# misdecoded data lands on. Those count only when a control instruction
+# corroborates them, the same shape as the x86 rule that above-floor code with
+# no CPUID anywhere has nothing dispatching it.
+ARM_SVE_CONTROL='	(ptrue|whilel[eot]|whileg[et]|rdvl|addvl|addpl|setffr|rdffr|smstart|smstop|rdsvl|addsvl|addspl)'
+ARM_ABOVE_FLOOR='[	,]z[0-9]+\.|[	,]p[0-9]+[/.]|	(smmla|usmmla|ummla|bfdot|bfmmla|bfcvt|bfmlal)|	(ld64b|st64b|cpyf|setp|mops)'
 
 status=0
 checked=0
@@ -130,8 +145,9 @@ for file in $files; do
     [ -n "$fmt" ] || continue
 
     case "$fmt" in
-        *x86-64*|*x86_64*)  pattern=$X86_ABOVE_FLOOR; floor='AVX2' ;;
-        *arm64*|*aarch64*)  pattern=$ARM_ABOVE_FLOOR; floor='armv8.2-a' ;;
+        *x86-64*|*x86_64*)  pattern=$X86_ABOVE_FLOOR; floor='AVX2'; corroborate= ;;
+        *arm64*|*aarch64*)  pattern=$ARM_ABOVE_FLOOR; floor='armv8.2-a'
+                            corroborate=$ARM_SVE_CONTROL ;;
         *) die "unknown object format '$fmt' in $file; extend the floor table" ;;
     esac
 
@@ -143,6 +159,24 @@ for file in $files; do
     [ -n "$text" ] || { fail "$file: could not be disassembled"; continue; }
 
     hits=$(printf '%s\n' "$text" | grep -E -c "$pattern" || true)
+
+    if [ -n "$corroborate" ]; then
+        control=$(printf '%s\n' "$text" | grep -E -c "$corroborate" || true)
+        if [ "$control" -eq 0 ] && [ "$hits" -gt 0 ]; then
+            # Operands with nothing establishing a vector length. Real SVE
+            # cannot run in this state, so these bytes were decoded, not
+            # emitted. Say so rather than passing in silence.
+            printf '  ok  %s: %s, %s SVE-shaped operands with no control instruction; decoded data, not code\n' \
+                "$(basename "$file")" "$fmt" "$hits"
+            continue
+        fi
+        # A control instruction is above the floor too. Recount over the union
+        # rather than adding, because `ptrue p0.b` matches both patterns.
+        if [ "$control" -gt 0 ]; then
+            pattern="$pattern|$corroborate"
+            hits=$(printf '%s\n' "$text" | grep -E -c "$pattern" || true)
+        fi
+    fi
     if [ "$hits" -gt 0 ]; then
         fail "$file: $hits instructions above the $floor floor"
         printf '%s\n' "$text" | grep -E "$pattern" | head -5 | sed 's/^/    /' >&2

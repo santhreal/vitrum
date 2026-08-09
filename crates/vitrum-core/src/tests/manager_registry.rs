@@ -228,27 +228,55 @@ async fn spec_environment_reaches_the_child() {
     assert_eq!(wait_exit(&mgr, id).await, Some(0));
 }
 
-/// TERM must be set for hosted agents, and an explicit TERM must win.
+/// EVERY advertised terminal capability reaches the child, and each is
+/// overridable.
 ///
-/// Coding agents render with escape sequences; an unset TERM makes them fall back
-/// to plain output, which defeats the point of hosting them in a terminal.
+/// Driven from `DEFAULT_TERM_ENV` rather than a list written here, so adding a
+/// variable without deciding what a child should see fails instead of shipping
+/// unread. `TERM` alone was set for a year while the renderer was already
+/// 24-bit, and Gemini CLI spent that year printing "True color (24-bit)
+/// support not detected" and quantising itself to 256 colours.
+///
+/// The override half matters as much as the default: a session started to
+/// reproduce a rendering bug has to be able to claim to be a dumb terminal.
 #[cfg(not(windows))]
 #[tokio::test]
-async fn term_defaults_but_can_be_overridden() {
-    let mgr = SessionManager::new(4096);
-    let id = mgr
-        .spawn(shell_spec("printf '%s' \"$TERM\""))
-        .expect("spawn");
-    let mut c = crate::tests::helpers::collect(&mgr, id);
-    c.until(|b| b.len() >= 14).await;
-    assert_eq!(c.bytes, b"xterm-256color");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+async fn every_advertised_capability_reaches_the_child_and_can_be_overridden() {
+    for (key, want) in crate::session::DEFAULT_TERM_ENV {
+        let mgr = SessionManager::new(4096);
+        let id = mgr
+            .spawn(shell_spec(&format!("printf '%s' \"${key}\"")))
+            .expect("spawn");
+        let mut c = crate::tests::helpers::collect(&mgr, id);
+        c.until(|b| b.len() >= want.len()).await;
+        assert_eq!(
+            c.bytes,
+            want.as_bytes(),
+            "{key} should have reached the child as {want:?}"
+        );
+        assert_eq!(wait_exit(&mgr, id).await, Some(0));
 
-    let mut spec = shell_spec("printf '%s' \"$TERM\"");
-    spec.env = vec![("TERM".to_string(), "dumb".to_string())];
-    let id = mgr.spawn(spec).expect("spawn");
-    let mut c = crate::tests::helpers::collect(&mgr, id);
-    c.until(|b| b.len() >= 4).await;
-    assert_eq!(c.bytes, b"dumb");
-    assert_eq!(wait_exit(&mgr, id).await, Some(0));
+        let mut spec = shell_spec(&format!("printf '%s' \"${key}\""));
+        spec.env = vec![(key.to_string(), "overridden".to_string())];
+        let id = mgr.spawn(spec).expect("spawn");
+        let mut c = crate::tests::helpers::collect(&mgr, id);
+        c.until(|b| b.len() >= 10).await;
+        assert_eq!(c.bytes, b"overridden", "{key} should have been overridable");
+        assert_eq!(wait_exit(&mgr, id).await, Some(0));
+    }
+}
+
+/// The colour claim is the engine's to make, not this crate's to invent.
+///
+/// `vitrum-vt` publishes what it can render and proves it renders that; this
+/// crate's only job is to tell children. Asserting the identity here is what
+/// stops someone "fixing" a colour bug by editing the string on this side,
+/// where no test can tell whether the engine agrees.
+#[test]
+fn the_colour_claim_comes_from_the_engine() {
+    let advertised = crate::session::DEFAULT_TERM_ENV
+        .iter()
+        .find(|(k, _)| *k == "COLORTERM")
+        .map(|(_, v)| *v);
+    assert_eq!(advertised, Some(vitrum_vt::COLORTERM));
 }

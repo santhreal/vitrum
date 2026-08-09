@@ -1,0 +1,37 @@
+[package]
+name = "vitrum-pane-lab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Disposable prototype that answers whether the terminal pane can be drawn natively."
+publish = false
+
+# Disposable on purpose. This crate exists to answer one question with running
+# code: can the terminal pane be Ghostty + vitrum-grid on a native GPU surface
+# instead of xterm.js inside WebKitGTK, and can that surface live in the same
+# GTK window as the Dioxus webview. It produces numbers and a PNG. If the
+# verdict is "go native", the real code lands in vitrum-grid and the app and
+# this crate is deleted in the same change; it is never a second implementation.
+
+[dependencies]
+vitrum-grid.workspace = true
+vitrum-vt.workspace = true
+portable-pty.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+# Pinned to the version vitrum-grid uses, so one device and one set of types
+# cross the boundary.
+wgpu = { version = "29", default-features = false, features = ["std", "vulkan", "gles", "wgsl"] }
+pollster = "1.0"
+
+# The exact GTK 3 and WebKitGTK bindings tao (and therefore the shipping
+# Dioxus shell) already links, so the compositing answer is about the same
+# stack the product runs on and not a lookalike.
+gtk = "0.18"
+gdk = "0.18"
+glib = "0.18"
+webkit2gtk = "2.0"
+libc = "0.2"

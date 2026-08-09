@@ -11,11 +11,33 @@ members = [
     "crates/vitrum-os",
     "crates/vitrum-search",
     "crates/vitrum-bench",
+    "crates/vitrum-pane-lab",
     "app",
     "vendor",
     "vendor-pty",
+    "vendor-ghostty-vt-sys",
 ]
 resolver = "3"
+
+# libghostty-vt-sys 0.2.1 passes -Dtarget to zig only when cross-compiling, so
+# a native build compiles for the builder's CPU. Every target this project
+# publishes is built natively, which made the instruction set of a release a
+# property of whichever runner produced it: two builds of the same crate on
+# this one machine disagreed, and the path the release workflow takes emitted
+# AVX2. That is an illegal instruction on everything pre-Haswell and on every
+# Atom, Celeron and Pentium through Jasper Lake, and it arrives as a bare
+# SIGILL. The fork pins -Dtarget and -Dcpu=baseline on all four targets.
+#
+# WHAT THIS DOES NOT COVER: `[patch.crates-io]` is ignored by registry builds,
+# so `cargo install vitrum` still compiles against upstream's build script and
+# can still produce a host-tuned binary. The exposure that matters is closed
+# because what this project publishes is prebuilt archives built from this
+# repository, and `tools/release/check-isa.sh` disassembles them before a
+# release is promoted. Closing the registry path too means forking
+# `libghostty-vt` as well so its dependency resolves to a name we own, which
+# is not worth its maintenance while the fix is six lines upstream can take.
+[patch.crates-io]
+libghostty-vt-sys = { path = "vendor-ghostty-vt-sys" }
 
 [workspace.package]
 version = "0.1.0"

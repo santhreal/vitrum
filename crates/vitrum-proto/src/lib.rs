@@ -278,6 +278,19 @@ pub struct SessionInfo {
     /// `None` for every agent that has never heard of us, which must stay a
     /// fully supported case rather than a degraded one.
     pub hint: Option<AgentHint>,
+    /// The last title the program itself announced, verbatim.
+    ///
+    /// Separate from [`SessionInfo::title`] because the two are different
+    /// facts. `title` is the session's name, which a shell is allowed to write
+    /// and an operator is allowed to pin. This is whatever the program last put
+    /// in the terminal title bar, which for an agent TUI is a status line
+    /// rather than a name: Gemini writes `Ready (kernel-notes)` and Codex
+    /// writes `[ ! ] Action Required`. Reading one as the other put an agent's
+    /// status in the sidebar twice, once as the row's name, truncated.
+    ///
+    /// `None` until the program announces something.
+    #[serde(default)]
+    pub term_title: Option<String>,
 }
 
 /// Client to server, control plane.
@@ -1158,6 +1171,7 @@ mod tests {
                 label: Some("run `rm -rf build/`?".to_string()),
                 received_at_ms: 1_700_000_000_400,
             }),
+            term_title: Some("[ ! ] Action Required - claude".to_string()),
         }
     }
 

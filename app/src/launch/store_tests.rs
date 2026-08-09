@@ -805,6 +805,7 @@ fn duplicating_reproduces_the_command_arguments_and_label() {
         unread: false,
         attention: vitrum_proto::Attention::default(),
         hint: None,
+        term_title: None,
     };
     let l = duplicate_of(&info).expect("a running session can be duplicated");
     assert_eq!(l.command, shell);
@@ -833,6 +834,7 @@ fn duplicating_into_a_deleted_directory_fails_by_name() {
         unread: false,
         attention: vitrum_proto::Attention::default(),
         hint: None,
+        term_title: None,
     };
     assert_eq!(
         duplicate_of(&info),

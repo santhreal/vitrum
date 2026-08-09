@@ -87,12 +87,21 @@ impl SessionView {
     /// consumer of a row — the pill, the sort, the project rollup — sees the
     /// same answer. A Codex session blocked on an approval gate that only the
     /// sidebar pill knew about would sort as if nothing were wanted.
+    ///
+    /// It reads `term_title`, what the program announced, and never `title`,
+    /// the session's name. For an agent TUI those are deliberately different
+    /// strings: the name is stable and may be the operator's, while the title
+    /// bar is rewritten every turn. Reading the name here would let a session
+    /// renamed `[ ! ] Action Required` claim to be blocked forever.
     pub fn resolve_status(&self) -> StatusResolution {
         resolve_status(
             &self.info.status,
             &self.info.attention,
             self.info.hint.as_ref().map(|hint| hint.state),
-            AgentKind::of(&self.info.command).title_claim(&self.info.title),
+            self.info
+                .term_title
+                .as_deref()
+                .and_then(|title| AgentKind::of(&self.info.command).title_claim(title)),
         )
     }
 
@@ -599,7 +608,7 @@ mod tests {
     fn a_codex_session_titled_action_required_needs_approval() {
         let row = ViewBuilder::new(1)
             .command("codex")
-            .title("[ ! ] Action Required - codex")
+            .term_title("[ ! ] Action Required - codex")
             .waiting(Some(true))
             .build();
         assert_eq!(
@@ -622,7 +631,7 @@ mod tests {
         for command in ["claude", "gemini", "opencode", "veyyon", "bash", "make", ""] {
             let row = ViewBuilder::new(1)
                 .command(command)
-                .title("[ ! ] Action Required")
+                .term_title("[ ! ] Action Required")
                 .waiting(Some(true))
                 .build();
             assert_eq!(
@@ -642,26 +651,26 @@ mod tests {
     fn a_title_claim_appears_and_clears_with_the_title() {
         let quiet = ViewBuilder::new(1)
             .command("codex")
-            .title("codex")
+            .term_title("codex")
             .waiting(Some(true))
             .build();
         assert_eq!(quiet.status(), SidebarStatus::Ready);
 
         let mut row = quiet.clone();
-        row.info.title = "[ ! ] Action Required - codex".to_string();
+        row.info.term_title = Some("[ ! ] Action Required - codex".to_string());
         assert_eq!(
             row.resolve_status(),
             StatusResolution::new(SidebarStatus::Approval, StatusSource::Title)
         );
 
         // ... and back. The agent answered the gate and retitled.
-        row.info.title = "codex".to_string();
+        row.info.term_title = Some("codex".to_string());
         assert_eq!(row.resolve_status(), quiet.resolve_status());
         assert_eq!(row.status(), SidebarStatus::Ready);
 
         // Once more, so the transition is proven repeatable rather than a
         // one-shot that happens to survive the first flip.
-        row.info.title = "[ ! ] Action Required".to_string();
+        row.info.term_title = Some("[ ! ] Action Required".to_string());
         assert_eq!(row.status(), SidebarStatus::Approval);
     }
 
@@ -673,13 +682,53 @@ mod tests {
     fn a_working_hint_beats_the_title_banner_on_a_row() {
         let row = ViewBuilder::new(1)
             .command("codex")
-            .title("[ ! ] Action Required - codex")
+            .term_title("[ ! ] Action Required - codex")
             .waiting(Some(true))
             .hint(HintState::Working, None, NOW)
             .build();
         assert_eq!(
             row.resolve_status(),
             StatusResolution::new(SidebarStatus::Working, StatusSource::Hint)
+        );
+    }
+
+    /// The session's NAME is never read as a declaration.
+    ///
+    /// The two strings were one field until an agent's status line started
+    /// arriving as a row name. Collapsing them again would be silent: every
+    /// test above would still pass, because a real Codex session has the
+    /// banner in both places. What breaks is a session that merely happens to
+    /// be CALLED that — one the operator renamed, or one an agent named after
+    /// a task — which would then claim to be blocked for the rest of its life,
+    /// with nothing able to retract it.
+    #[test]
+    fn a_session_named_after_the_banner_is_not_blocked() {
+        let row = ViewBuilder::new(1)
+            .command("codex")
+            .title("[ ! ] Action Required - codex")
+            .waiting(Some(true))
+            .build();
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting),
+            "the name is not a channel the agent speaks on"
+        );
+    }
+
+    /// A session that has announced nothing claims nothing.
+    ///
+    /// `None` has to stay distinct from "announced something unrecognised", so
+    /// that the resolver treats silence as no evidence rather than as a state.
+    #[test]
+    fn a_session_that_never_titled_itself_claims_nothing() {
+        let row = ViewBuilder::new(1)
+            .command("codex")
+            .waiting(Some(true))
+            .build();
+        assert_eq!(row.info.term_title, None);
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting)
         );
     }
 }

@@ -91,6 +91,7 @@ impl Row {
                 waiting: Some(false),
             },
             hint: None,
+            term_title: None,
         }))
     }
 

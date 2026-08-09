@@ -52,6 +52,7 @@ fn session(id: u64, project: u64, created_at_ms: u64) -> SessionInfo {
             waiting: Some(false),
         },
         hint: None,
+        term_title: None,
     }
 }
 

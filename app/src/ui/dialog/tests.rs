@@ -19,6 +19,7 @@ fn session(id: u64, cwd: &str, command: &str, branch: Option<&str>) -> SessionVi
         unread: false,
         attention: Attention::default(),
         hint: None,
+        term_title: None,
     })
 }
 

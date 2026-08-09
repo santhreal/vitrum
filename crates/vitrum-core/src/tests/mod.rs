@@ -1,5 +1,6 @@
 //! Test suites for vitrum-core, one concern per module.
 
+mod agent_title;
 mod attention;
 mod git_branch;
 mod helpers;

@@ -485,6 +485,7 @@ mod tests {
             unread: false,
             attention: Attention::default(),
             hint: None,
+            term_title: None,
         }
     }
 

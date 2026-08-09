@@ -5799,7 +5799,10 @@ dependencies = [
  "dioxus-ssr",
  "flate2",
  "futures-util",
+ "gdk",
+ "glib",
  "gtk",
+ "pollster 1.0.1",
  "semver",
  "serde",
  "serde_json",
@@ -5812,9 +5815,11 @@ dependencies = [
  "ureq",
  "vitrum-dioxus-desktop",
  "vitrum-fmt",
+ "vitrum-grid",
  "vitrum-model",
  "vitrum-os",
  "vitrum-proto",
+ "wgpu",
 ]
 
 [[package]]

@@ -39,6 +39,13 @@ mod instance;
 mod keymap;
 mod keys;
 mod launch;
+// The GPU terminal pane, behind its own feature and X11 only. Nothing hosts it
+// yet, so it is dead code until the change that puts it on screen; the
+// allowance is on the module rather than the crate so it never hides an unused
+// item anywhere else.
+#[cfg(all(feature = "native-pane", target_os = "linux"))]
+#[allow(dead_code)]
+mod pane;
 mod socket;
 mod state;
 mod sync;

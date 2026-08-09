@@ -46,24 +46,30 @@ fn setting_a_scroll_region_homes_the_cursor() {
 #[test]
 fn csi_r_with_no_parameters_restores_the_full_screen_region() {
     let screen = linear(4, 3, b"\x1b[2;2r\x1b[ra\r\nb\r\nc\r\nd");
-    assert_eq!(rows_of(&screen), vec!["b", "c", "d"]);
-    assert_eq!(screen.region().top, 0);
-    assert_eq!(screen.region().bottom, 2);
+    assert_eq!(
+        rows_of(&screen),
+        vec!["b", "c", "d"],
+        "the whole screen scrolled, so the region really went back to 0..2"
+    );
 }
 
 /// An inverted or degenerate region is rejected and the full screen is used.
 ///
 /// `CSI 5 ; 2 r` is malformed. Accepting it would leave `top > bottom`, and every
 /// later scroll would compute a negative height.
+///
+/// Ghostty owns the region and does not report it, so the assertion is what the
+/// region does: four rows of output scroll the whole screen by one, which only
+/// happens when the region is the full screen.
 #[test]
 fn an_inverted_region_falls_back_to_the_full_screen() {
-    let screen = linear(4, 4, b"\x1b[4;2r");
-    assert_eq!((screen.region().top, screen.region().bottom), (0, 3));
+    let inverted = linear(4, 4, b"\x1b[4;2ra\r\nb\r\nc\r\nd\r\ne");
+    assert_eq!(rows_of(&inverted), vec!["b", "c", "d", "e"]);
 
-    let single = linear(4, 4, b"\x1b[2;2r");
+    let single = linear(4, 4, b"\x1b[2;2ra\r\nb\r\nc\r\nd\r\ne");
     assert_eq!(
-        (single.region().top, single.region().bottom),
-        (0, 3),
+        rows_of(&single),
+        vec!["b", "c", "d", "e"],
         "a one-row region cannot scroll, so it is refused too"
     );
 }
@@ -145,7 +151,7 @@ fn scrolled_in_rows_use_the_current_background() {
     let vacated = screen.grid().cell(3, 2).expect("cell");
     assert_eq!(
         vacated.bg,
-        crate::palette::Palette::XTERM.indexed(1),
+        crate::tests::support::GHOSTTY_ANSI[1],
         "the vacated row was filled in the pane colour"
     );
 }

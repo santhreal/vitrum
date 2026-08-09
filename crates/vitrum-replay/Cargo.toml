@@ -20,9 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 memchr = { workspace = true }
 
-# The VT byte-level state machine, and nothing else. `vitrum-grid` owns the cell
-# grid and states plainly that it has no VT parser; this crate needs one and does
-# not write one. `default-features = false` turns off vte's `no_std` mode, whose
-# only effect is swapping a `Vec` for an `ArrayVec`, so the whole dependency is
-# vte plus `memchr`, which this workspace already builds.
-vte = { version = "0.14", default-features = false }
+# The terminal engine. Ghostty, through `vitrum-vt`, is the only VT
+# implementation in this workspace, so a replayed screen and a live one are
+# produced by the same parser rather than by two that agree until they do not.
+vitrum-vt = { workspace = true }

@@ -3,7 +3,7 @@
 use vitrum_grid::{Attrs, Rgba};
 
 use crate::palette::Palette;
-use crate::tests::support::linear;
+use crate::tests::support::{GHOSTTY_ANSI, linear};
 
 fn style_at(bytes: &[u8], col: u16) -> (Rgba, Rgba, Attrs) {
     let screen = linear(20, 2, bytes);
@@ -24,22 +24,44 @@ fn a_bare_csi_m_resets_the_rendition() {
     assert_eq!(attrs, Attrs::NONE);
 }
 
-/// The eight normal and eight bright colours resolve through the palette.
+/// The eight normal and eight bright colours resolve through the engine's palette,
+/// and `SGR 3x`, `SGR 9x`, `SGR 4x` and `SGR 38;5;x` all reach the same entry.
+///
+/// The old parser resolved these itself out of [`Palette`], and the assertion was
+/// against xterm's compiled-in table. Ghostty resolves them now, out of its own
+/// sixteen defaults, which are not xterm's — `SGR 31` is `cc6666` and not `cd0000`.
+/// Ghostty is the truth because Ghostty is what paints the live pane too; a replay
+/// that kept xterm's table would be the only surface in the product disagreeing
+/// about what red is.
+///
+/// The relationships are what this asserts rather than sixteen literals in sixteen
+/// places: the same entry has to come back through every spelling that names it.
+/// [`GHOSTTY_ANSI`] is the one place a Ghostty theme change turns the suite red.
 #[test]
-fn the_sixteen_ansi_colours_resolve_through_the_palette() {
+fn the_sixteen_ansi_colours_resolve_through_the_engines_palette() {
     for index in 0u8..8 {
-        let bytes = format!("\x1b[{}mX", 30 + u16::from(index));
-        let (fg, _, _) = style_at(bytes.as_bytes(), 0);
-        assert_eq!(fg, Palette::XTERM.indexed(index), "SGR 3{index}");
+        let normal = format!("\x1b[{}mX", 30 + u16::from(index));
+        let (fg, _, _) = style_at(normal.as_bytes(), 0);
+        assert_eq!(fg, GHOSTTY_ANSI[index as usize], "SGR 3{index}");
 
         let bright = format!("\x1b[{}mX", 90 + u16::from(index));
         let (fg, _, _) = style_at(bright.as_bytes(), 0);
-        assert_eq!(fg, Palette::XTERM.indexed(index + 8), "SGR 9{index}");
+        assert_eq!(fg, GHOSTTY_ANSI[index as usize + 8], "SGR 9{index}");
     }
+
+    for index in 0u8..16 {
+        let indexed = format!("\x1b[38;5;{index}mX");
+        let (fg, _, _) = style_at(indexed.as_bytes(), 0);
+        assert_eq!(
+            fg, GHOSTTY_ANSI[index as usize],
+            "SGR 38;5;{index} names the same entry as the short form"
+        );
+    }
+
     let (_, bg, _) = style_at(b"\x1b[44mX", 0);
-    assert_eq!(bg, Palette::XTERM.indexed(4));
+    assert_eq!(bg, GHOSTTY_ANSI[4]);
     let (_, bg, _) = style_at(b"\x1b[104mX", 0);
-    assert_eq!(bg, Palette::XTERM.indexed(12));
+    assert_eq!(bg, GHOSTTY_ANSI[12]);
 }
 
 /// `39` and `49` return to the palette's defaults, not to black on black.
@@ -87,7 +109,7 @@ fn underline_subparameters_choose_on_or_off() {
 #[test]
 fn extended_colour_works_in_the_semicolon_spelling() {
     let (fg, _, _) = style_at(b"\x1b[38;5;120mX", 0);
-    assert_eq!(fg, Palette::XTERM.indexed(120));
+    assert_eq!(fg, Rgba::rgb(0x87, 0xff, 0x87));
 
     let (fg, _, _) = style_at(b"\x1b[38;2;255;170;0mX", 0);
     assert_eq!(fg, Rgba::rgb(255, 170, 0));
@@ -111,24 +133,39 @@ fn extended_colour_works_in_the_colon_spelling() {
     assert_eq!(fg, Rgba::rgb(255, 170, 0), "without it");
 
     let (fg, _, _) = style_at(b"\x1b[38:5:120mX", 0);
-    assert_eq!(fg, Palette::XTERM.indexed(120));
+    assert_eq!(fg, Rgba::rgb(0x87, 0xff, 0x87));
 }
 
-/// A channel above 255 saturates instead of wrapping.
+/// A channel above 255 is truncated to its low eight bits, after the parameter itself
+/// saturates at 16 bits.
 ///
-/// `38;2;300;0;0` is malformed. Truncating to eight bits turns "brighter than red"
-/// into dark red, which looks like a colour the program chose.
+/// `38;2;300;0;0` is malformed and there is no right answer, only a consistent one.
+/// The old parser clamped each channel to 255; Ghostty takes the low byte, so 300
+/// becomes 44 and 256 becomes 0. Above 65535 the CSI parameter saturates first, so
+/// every larger value lands on 255.
+///
+/// Ghostty's answer is the one asserted because Ghostty paints the live pane, and a
+/// replay that disagreed with the pane about the colour of the same bytes would be
+/// worse than either rule. The bug this stops is the projection quietly re-clamping
+/// on top of the engine and drifting away from it again.
 #[test]
-fn an_out_of_range_channel_saturates() {
+fn an_out_of_range_channel_truncates_to_eight_bits() {
     let (fg, _, _) = style_at(b"\x1b[38;2;300;999;70000mX", 0);
-    assert_eq!(fg, Rgba::rgb(255, 255, 255));
+    assert_eq!(fg, Rgba::rgb(44, 231, 255));
+
+    let (fg, _, _) = style_at(b"\x1b[38;2;256;65535;65536mX", 0);
+    assert_eq!(
+        fg,
+        Rgba::rgb(0, 255, 255),
+        "256 wraps to 0; 65536 saturates at the parameter and then truncates to 255"
+    );
 }
 
 /// A truncated extended colour consumes what is there and leaves the pen alone.
 #[test]
 fn a_truncated_extended_colour_leaves_the_pen_alone() {
     let (fg, _, _) = style_at(b"\x1b[31m\x1b[38;2;10mX", 0);
-    assert_eq!(fg, Palette::XTERM.indexed(1), "the red from before survived");
+    assert_eq!(fg, GHOSTTY_ANSI[1], "the red from before survived");
 }
 
 /// Codes the grid cannot store are ignored and do not disturb the ones it can.
@@ -137,11 +174,16 @@ fn a_truncated_extended_colour_leaves_the_pen_alone() {
 /// Mapping any of them onto a bit that means something else would make the replay
 /// lie about the session; dropping them is the honest answer, and the codes around
 /// them must still land.
+///
+/// Ghostty parses all four and stores them; the drop now happens one layer out, in
+/// `vitrum_vt::bridge::attrs_of`, for the same reason and with the same result. The
+/// contract this file asserts is unchanged: the modelled bits land, the unmodelled
+/// ones change nothing, and nothing is invented in their place.
 #[test]
 fn unmodelled_codes_are_ignored_without_disturbing_the_rest() {
     let (fg, _, attrs) = style_at(b"\x1b[2;5;8;9;1;31mX", 0);
     assert_eq!(attrs, Attrs::BOLD, "only bold, and nothing invented");
-    assert_eq!(fg, Palette::XTERM.indexed(1));
+    assert_eq!(fg, GHOSTTY_ANSI[1]);
 
     let (_, _, unknown) = style_at(b"\x1b[1;73;99mX", 0);
     assert_eq!(unknown, Attrs::BOLD, "an unassigned code changes nothing");
@@ -153,37 +195,61 @@ fn rendition_persists_until_it_is_changed() {
     let screen = linear(8, 3, b"\x1b[31ma\r\nb");
     let first = screen.grid().cell(0, 0).expect("cell");
     let second = screen.grid().cell(0, 1).expect("cell");
-    assert_eq!(first.fg, Palette::XTERM.indexed(1));
-    assert_eq!(second.fg, Palette::XTERM.indexed(1));
+    assert_eq!(first.fg, GHOSTTY_ANSI[1]);
+    assert_eq!(second.fg, GHOSTTY_ANSI[1]);
 }
 
 /// The 6x6x6 cube and the grey ramp use xterm's uneven level table.
 ///
 /// The bug: evenly spaced levels. The first step is 95, not 51, and getting it wrong
 /// shifts every one of the 216 cube colours, which is most of what a modern TUI uses.
+///
+/// This used to read a lookup table in this crate. It now drives the engine, which
+/// is the only table that paints anything, and it is asserted against xterm's
+/// published values rather than against whatever the engine happens to return.
 #[test]
 fn the_colour_cube_and_grey_ramp_use_xterms_level_table() {
-    let palette = Palette::XTERM;
-    assert_eq!(palette.indexed(16), Rgba::rgb(0, 0, 0), "cube origin");
-    assert_eq!(palette.indexed(17), Rgba::rgb(0, 0, 95), "the first step is 95");
-    assert_eq!(palette.indexed(231), Rgba::rgb(255, 255, 255), "cube corner");
-    assert_eq!(palette.indexed(232), Rgba::rgb(8, 8, 8), "grey ramp starts at 8");
-    assert_eq!(palette.indexed(255), Rgba::rgb(238, 238, 238));
-    assert_eq!(palette.indexed(120), Rgba::rgb(135, 255, 135));
+    let indexed = |index: u16| {
+        let bytes = format!("\x1b[38;5;{index}mX");
+        style_at(bytes.as_bytes(), 0).0
+    };
+
+    assert_eq!(indexed(16), Rgba::rgb(0, 0, 0), "cube origin");
+    assert_eq!(indexed(17), Rgba::rgb(0, 0, 95), "the first step is 95");
+    assert_eq!(indexed(231), Rgba::rgb(255, 255, 255), "cube corner");
+    assert_eq!(indexed(232), Rgba::rgb(8, 8, 8), "grey ramp starts at 8");
+    assert_eq!(indexed(255), Rgba::rgb(238, 238, 238));
+    assert_eq!(indexed(120), Rgba::rgb(135, 255, 135));
 }
 
-/// A caller's own palette is used, so a replay inside vitrum matches the live pane.
+/// A caller's own default colours are used, so a replay inside vitrum matches the
+/// live pane.
+///
+/// Only the two defaults. The sixteen named colours are the engine's and this crate
+/// has no way to set them, which is why [`Palette`] no longer carries them; see
+/// [`crate::palette`]. Passing a theme's default foreground still works, and it is
+/// the one that matters for a blank screen and for `SGR 39`.
 #[test]
 fn a_custom_palette_replaces_the_defaults() {
     use crate::emulator::Emulator;
 
-    let mut palette = Palette::XTERM;
-    palette.ansi[1] = Rgba::rgb(1, 2, 3);
-    palette.fg = Rgba::rgb(9, 9, 9);
+    let palette = Palette {
+        fg: Rgba::rgb(9, 9, 9),
+        bg: Rgba::rgb(3, 2, 1),
+    };
 
     let mut emulator = Emulator::new(8, 2, palette).expect("geometry");
-    emulator.feed(b"\x1b[31ma\x1b[39mb");
+    emulator.feed(b"\x1b[31ma\x1b[39mb").expect("engine readable");
     let screen = emulator.into_screen();
-    assert_eq!(screen.grid().cell(0, 0).expect("cell").fg, Rgba::rgb(1, 2, 3));
-    assert_eq!(screen.grid().cell(1, 0).expect("cell").fg, Rgba::rgb(9, 9, 9));
+
+    assert_eq!(
+        screen.grid().cell(1, 0).expect("cell").fg,
+        Rgba::rgb(9, 9, 9),
+        "SGR 39 went back to the caller's foreground"
+    );
+    assert_eq!(
+        screen.grid().cell(4, 1).expect("cell").bg,
+        Rgba::rgb(3, 2, 1),
+        "an untouched cell is painted in the caller's background"
+    );
 }

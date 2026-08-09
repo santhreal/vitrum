@@ -35,9 +35,12 @@ pub enum Error {
         /// Requested rows.
         rows: u16,
     },
-    /// A keyframe stride of zero was requested, which would ask for one snapshot
-    /// per byte.
-    ZeroStride,
+    /// The terminal engine refused an operation.
+    ///
+    /// Carries libghostty's own message rather than a code, because the engine
+    /// is the only thing that knows why and there is nothing this crate can do
+    /// about it beyond repeating what it said.
+    Engine(String),
     /// An asciicast recording could not be read.
     Cast(CastError),
 }
@@ -55,11 +58,7 @@ impl fmt::Display for Error {
                 "{cols}x{rows} is not a usable screen size; both sides must be \
                  non-zero and within vitrum-grid's MAX_COLS/MAX_ROWS/MAX_CELLS"
             ),
-            Self::ZeroStride => write!(
-                f,
-                "keyframe stride must be at least 1 byte; zero would snapshot \
-                 the whole screen once per byte"
-            ),
+            Self::Engine(message) => write!(f, "terminal engine: {message}"),
             Self::Cast(inner) => write!(f, "asciicast: {inner}"),
         }
     }

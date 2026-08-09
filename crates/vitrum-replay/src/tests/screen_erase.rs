@@ -3,7 +3,7 @@
 use vitrum_grid::{Attrs, Rgba};
 
 use crate::palette::Palette;
-use crate::tests::support::{linear, rows_of};
+use crate::tests::support::{GHOSTTY_ANSI, linear, rows_of};
 
 /// `CSI K` with no parameter erases from the cursor to the end of the line and
 /// leaves everything before it.
@@ -107,7 +107,7 @@ fn an_erase_keeps_the_background_and_drops_the_other_attributes() {
     let screen = linear(6, 2, b"\x1b[44;4mxxxxxx\r\x1b[2K");
     let cell = screen.grid().cell(0, 0).expect("cell");
     assert_eq!(cell.ch, ' ');
-    assert_eq!(cell.bg, Palette::XTERM.indexed(4), "the panel colour survived");
+    assert_eq!(cell.bg, GHOSTTY_ANSI[4], "the panel colour survived");
     assert_eq!(cell.fg, Palette::XTERM.fg, "the foreground went back to default");
     assert_eq!(cell.attrs, Attrs::NONE, "no underline across the blank");
 }

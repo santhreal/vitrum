@@ -3,7 +3,7 @@
 use vitrum_grid::Attrs;
 
 use crate::palette::Palette;
-use crate::tests::support::{linear, rows_of};
+use crate::tests::support::{GHOSTTY_ANSI, linear, rows_of};
 
 /// `CUP` is one-based, row first, and an absent parameter means one.
 ///
@@ -93,8 +93,20 @@ fn tab_stops_can_be_set_cleared_and_wiped() {
     assert_eq!(rows_of(&none)[0], "a          b");
 
     // Clearing just the stop at column 8 makes the first tab reach column 16.
-    let one_gone = linear(24, 2, b"\x1b[1;9H\x1b[g\x1b[1;1Ha\tb");
+    let one_gone = linear(24, 2, b"\x1b[1;9H\x1b[0g\x1b[1;1Ha\tb");
     assert_eq!(rows_of(&one_gone)[0], "a               b");
+
+    // Ghostty ignores `TBC` with the parameter omitted, where ECMA-48 says an absent
+    // parameter is 0. This records the defect rather than hiding it: the assertion is
+    // that the bare form does nothing, so the day Ghostty starts honouring it this
+    // test goes red and someone deletes this block instead of discovering the change
+    // through a replay that suddenly tabs to a different column.
+    let bare = linear(24, 2, b"\x1b[1;9H\x1b[g\x1b[1;1Ha\tb");
+    assert_eq!(
+        rows_of(&bare)[0],
+        "a       b",
+        "CSI g with no parameter is a no-op in Ghostty, so the column-8 stop survives"
+    );
 }
 
 /// `CHT` and `CBT` move several stops at a time.
@@ -118,7 +130,7 @@ fn decsc_and_decrc_carry_the_rendition_as_well_as_the_position() {
     assert_eq!(rows_of(&screen)[1], "    green");
     assert_eq!(rows_of(&screen)[0], "red");
     let cell = screen.grid().cell(0, 0).expect("cell");
-    assert_eq!(cell.fg, Palette::XTERM.indexed(1), "red came back");
+    assert_eq!(cell.fg, GHOSTTY_ANSI[1], "red came back");
 }
 
 /// `CSI s` and `CSI u` save and restore too.
@@ -154,11 +166,18 @@ fn dectcem_toggles_cursor_visibility() {
     assert!(linear(4, 2, b"\x1b[?25l\x1b[?25h").cursor().visible);
 }
 
-/// `RIS` puts everything back: screen, cursor, region, modes, tabs, charset, title.
+/// `RIS` puts everything back: screen, cursor, region, modes, tabs, charset. Not the
+/// title.
 ///
 /// The bug: a partial reset. `reset` in a shell sends `ESC c`, and anything left over
 /// afterwards, a scroll region most of all, makes the shell behave as though it were
 /// still inside the program that crashed.
+///
+/// The region, the modes and the charset are proved by what they would do rather
+/// than by reading them off the screen, because Ghostty owns them and does not
+/// report them. After the reset the trailer prints `qqq` (so the graphics set is
+/// gone), fills past the last column (so autowrap is back and insert mode is not),
+/// and reaches row 4 (so the two-row scroll region is gone).
 #[test]
 fn ris_resets_every_piece_of_state() {
     let screen = linear(
@@ -167,13 +186,26 @@ fn ris_resets_every_piece_of_state() {
         b"\x1b]0;title\x07\x1b[2;3r\x1b[?7l\x1b[4h\x1b(0\x1b[31mtext\x1b[2;2H\x1bcX",
     );
     assert_eq!(rows_of(&screen), vec!["X", "", "", ""]);
-    assert_eq!(screen.region().top, 0);
-    assert_eq!(screen.region().bottom, 3);
-    assert!(screen.modes().autowrap);
-    assert!(!screen.modes().insert);
-    assert_eq!(screen.title(), "");
+    assert_eq!(
+        screen.title(),
+        "title",
+        "the window title survives RIS: it is a window property set over OSC, not part \
+         of the VT state Ghostty resets, and the old parser clearing it was a local \
+         invention"
+    );
     let cell = screen.grid().cell(0, 0).expect("cell");
     assert_eq!(cell.fg, Palette::XTERM.fg, "the pen went back to default");
+
+    let after = linear(
+        8,
+        4,
+        b"\x1b[2;3r\x1b[?7l\x1b[4h\x1b(0\x1b[31m\x1bcqqqqqqqqZ\x1b[4;1Hbottom",
+    );
+    assert_eq!(
+        rows_of(&after),
+        vec!["qqqqqqqq", "Z", "", "bottom"],
+        "ascii again, wrapping again, and the whole screen scrollable again"
+    );
 }
 
 /// `DECALN` fills the screen with `E` and homes the cursor.

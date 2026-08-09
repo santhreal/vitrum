@@ -17,7 +17,6 @@ fn filling_the_last_column_defers_the_wrap_so_a_following_cr_stays_on_the_row() 
     let screen = small(b"0123456789");
     assert_eq!(screen.cursor().col, 9, "the cursor stays on the last column");
     assert_eq!(screen.cursor().row, 0);
-    assert!(screen.cursor().pending_wrap);
 
     let after_cr = small(b"0123456789\rX");
     assert_eq!(rows_of(&after_cr)[0], "X123456789");
@@ -31,7 +30,7 @@ fn one_more_character_takes_the_deferred_wrap() {
     assert_eq!(rows_of(&screen)[0], "0123456789");
     assert_eq!(rows_of(&screen)[1], "A");
     assert_eq!((screen.cursor().col, screen.cursor().row), (1, 1));
-    assert!(!screen.cursor().pending_wrap);
+    assert_eq!(rows_of(&screen)[2], "", "and only one row was taken");
 }
 
 /// With autowrap off, printing past the last column overwrites it in place.
@@ -44,7 +43,7 @@ fn autowrap_off_overwrites_the_last_column_instead_of_wrapping() {
     let screen = small(b"\x1b[?7l0123456789ABC");
     assert_eq!(rows_of(&screen)[0], "012345678C");
     assert_eq!(rows_of(&screen)[1], "", "nothing reached row 1");
-    assert!(!screen.cursor().pending_wrap);
+    assert_eq!(screen.cursor().col, 9, "parked on the last column, not wrapped");
 }
 
 /// A double-width character with one column left moves whole to the next row, and
@@ -160,13 +159,13 @@ fn a_utf8_character_split_across_feeds_prints_once_when_it_completes() {
 
     let mut emulator = Emulator::new(10, 2, Palette::XTERM).expect("geometry");
     let bytes = "é".as_bytes();
-    emulator.feed(&bytes[..1]);
+    emulator.feed(&bytes[..1]).expect("engine readable");
     assert_eq!(
         emulator.screen().line(0).trim_end(),
         "",
         "nothing is drawn from half a character"
     );
-    emulator.feed(&bytes[1..]);
+    emulator.feed(&bytes[1..]).expect("engine readable");
     assert_eq!(emulator.screen().line(0).trim_end(), "é");
 }
 

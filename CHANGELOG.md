@@ -5,6 +5,18 @@ before 1.0 a minor bump may break things, and this file says when it does.
 
 ## Unreleased
 
+### Fixed
+
+- **An applied update is the build that keeps running.** Applying a staged
+  update renames the new binary over the running one, which unlinks the image
+  the process is executing. From that moment Linux answers `/proc/self/exe`
+  with the path plus ` (deleted)`, and the restart into the new build was
+  asked for that path, so it failed with `No such file or directory` on every
+  successful update. The binary on disk was correct and the next start was
+  fine, so it read as cosmetic; it was not, because for the rest of that run
+  the process was the version that had just been replaced. The path is now
+  read before the swap, when it still names the file.
+
 ## v0.1.2 - 2026-08-09
 
 ### Added

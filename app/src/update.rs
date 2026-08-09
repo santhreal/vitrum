@@ -957,6 +957,16 @@ pub fn apply_on_start() {
     let Ok(dir) = install_dir() else {
         return;
     };
+
+    // Read this BEFORE the staged image is moved into place. `apply_staged`
+    // renames the new binary over the running one, which unlinks the inode
+    // this process is executing, and from that moment `/proc/self/exe` reads
+    // `<path> (deleted)`. Rust returns that literal string, so the exec below
+    // failed with ENOENT on every successful update: the new build was on
+    // disk and correct, and the process still printed an error and carried on
+    // as the old one. Captured first the path names the file, and after the
+    // rename the same path names the new image, which is the one to exec.
+    let exe = std::env::current_exe().ok();
     // A previous update on Windows could not delete the image it replaced,
     // because that image was the process doing the replacing. It has exited by
     // now, so this is the first moment the file can go.
@@ -974,7 +984,7 @@ pub fn apply_on_start() {
     if std::env::var_os(GUARD).is_some() {
         return;
     }
-    let Ok(exe) = std::env::current_exe() else {
+    let Some(exe) = exe else {
         return;
     };
     let mut command = std::process::Command::new(exe);

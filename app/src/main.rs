@@ -155,13 +155,80 @@ const PART_SEARCH_CSS: &str = include_str!("../assets/parts/21-search.css");
 const PART_LAUNCHER_CSS: &str = include_str!("../assets/parts/22-launcher.css");
 const PART_BACKDROP_CSS: &str = include_str!("../assets/parts/23-backdrop.css");
 
+/// Startup timing, and the counters that keep it honest.
+///
+/// The timings are a TRACE, never an assertion. What a start costs depends on
+/// the disk, the compositor, the display server and whatever else the machine
+/// is doing, so a suite that asserted on milliseconds would fail on a loaded
+/// builder and teach everyone to rerun it. The counters beside them are
+/// properties of the code instead: how many times the profile is read off
+/// disk, how many times the mark is rasterised, how many times a keystroke
+/// makes the shell measure its own window. Those do not move under load, and
+/// they are what the guards in `tests` pin.
+///
+/// `VITRUM_BOOT_TRACE=1` turns the trace on. Off, every mark is one relaxed
+/// atomic load and nothing else.
+mod boot {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+
+    /// Read the switch, once, while `main` is still the only thread.
+    ///
+    /// Reading it per mark would be a `getenv` on the startup path, which is
+    /// the thing being measured, and would race the prewarm thread against
+    /// any later environment write.
+    pub(crate) fn arm() {
+        ON.store(
+            std::env::var_os("VITRUM_BOOT_TRACE").is_some(),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Record that the process reached `phase`.
+    ///
+    /// Absolute microseconds since the epoch rather than a delta, so a
+    /// harness that stamped the clock before `exec` can subtract its own
+    /// zero and see the dynamic-link and toolkit-init cost this process
+    /// cannot observe from inside itself.
+    pub(crate) fn mark(phase: &str) {
+        if !ON.load(Ordering::Relaxed) {
+            return;
+        }
+        let us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros());
+        eprintln!("vitrum-boot {phase} {us}");
+    }
+
+    /// Record a counter's standing at the end of a run.
+    ///
+    /// The counters are what the suite asserts on, and this is what makes the
+    /// same numbers readable from a real session on a real machine: a trace
+    /// that ends with one profile read and one mark rasterised is the claim,
+    /// checked where it is made rather than only in a unit test.
+    pub(crate) fn tally(name: &str, n: usize) {
+        if !ON.load(Ordering::Relaxed) {
+            return;
+        }
+        eprintln!("vitrum-boot count.{name} {n}");
+    }
+}
+
 fn main() {
+    // First, so the trace covers the subscriber's own construction: the
+    // filter is parsed from the environment and the writer is built, and on a
+    // cold start that is not free.
+    boot::arm();
+    boot::mark("main.enter");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("VITRUM_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,vitrum=info")),
         )
         .init();
+    boot::mark("main.logging");
 
     // WebKitGTK's MemoryPressureMonitor parks a thread reading
     // `/proc/self/cgroup` one byte at a time, 178 read syscalls a second, for
@@ -186,6 +253,7 @@ fn main() {
     // The daemon is not restarted. It keeps running the old code until the
     // operator restarts it, which ends every session it holds.
     update::apply_on_start();
+    boot::mark("main.update-swept");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -240,6 +308,42 @@ fn main() {
             held => held,
         }
     };
+    boot::mark("main.instance");
+
+    // The document the first window is built around, assembled on a thread of
+    // its own while this one brings up the toolkit.
+    //
+    // None of it needs a window, a display server or the event loop: it reads
+    // `ui.json` and the launch store off the profile, strips the comments out
+    // of 410 KB of stylesheet, folds the operator's rebindings into the keymap
+    // and copies 800 KB of vendored script into one string. All of that used
+    // to run between the monitor probe and the window, on the thread that
+    // could have been opening the window.
+    //
+    // Meanwhile the main thread builds the event loop, which is where GTK,
+    // GDK and the X or Wayland connection come up. The two do not touch: the
+    // prewarm never calls a toolkit function, and the toolkit never reads the
+    // profile. Wall clock becomes the longer of the two instead of their sum.
+    //
+    // There is no handle to join. `document_head` and `window_icon` are both
+    // one-shot caches, so whichever thread arrives second waits on the cell
+    // and takes the finished value; if the prewarm somehow never ran, the main
+    // thread does the work itself and nothing is lost but the overlap.
+    //
+    // Safe with respect to the environment write above: that happens before
+    // this thread exists, and nothing in the process writes the environment
+    // after it.
+    if let Err(e) = std::thread::Builder::new()
+        .name("vitrum-prewarm".to_string())
+        .spawn(move || {
+            boot::mark("prewarm.start");
+            document_head(opts);
+            warm_window_icon();
+            boot::mark("prewarm.done");
+        })
+    {
+        tracing::warn!("no prewarm thread, building the document inline: {e}");
+    }
 
     // The event loop is built here rather than left to the launcher because
     // the first window's size and scale depend on the monitor it will open on,
@@ -252,6 +356,7 @@ fn main() {
         .primary_monitor()
         .or_else(|| monitors.first().cloned());
     seed_book(load_geometry(&monitor_rects(primary.as_ref(), &monitors)));
+    boot::mark("main.event-loop");
 
     let density = primary.as_ref().map(density_of);
     let scale = opts
@@ -277,13 +382,17 @@ fn main() {
     let state =
         remembered(ordinal).unwrap_or_else(|| fresh_geometry(primary.as_ref(), scale, ordinal));
     remember(ordinal, state);
+    boot::mark("main.geometry");
 
     let config = window_config(opts, &state, scale, os_scale).with_event_loop(event_loop);
+    boot::mark("main.window-config");
 
     let seed = WindowSeed {
         ordinal,
         link: activation.link(),
     };
+
+    boot::mark("main.launch");
 
     // `LaunchBuilder::desktop()` would go through the dioxus facade, which
     // resolves the registry renderer. This is the same call one level down,
@@ -452,6 +561,9 @@ fn tick() -> Tick {
 
 #[allow(non_snake_case)]
 fn App() -> Element {
+    // A hook, so this is the FIRST render and not every render. Unqualified
+    // it fired on every repaint and buried the startup trace in itself.
+    use_hook(|| boot::mark("app.mount"));
     let opts: Options = use_context();
     let seed: WindowSeed = use_context();
     let window = vitrum_dioxus_desktop::use_window();
@@ -750,6 +862,8 @@ fn App() -> Element {
         if live_window_count() == 0 {
             badge::clear();
         }
+        boot::tally("prefs-loads", state::prefs_loads());
+        boot::tally("mark-rasterisations", mark_rasterisations());
     });
 
     // Handoffs from later launches. Every window parks here; the queue hands
@@ -872,6 +986,7 @@ fn App() -> Element {
     use_future(move || {
         let settle_window = settle_window.clone();
         async move {
+            boot::mark("app.restore");
             // Preferences before anything else, so the first connection uses the
             // daemon URL the user chose and the first paint uses their theme.
             //
@@ -880,7 +995,12 @@ fn App() -> Element {
             // a window nobody has expressed a preference about, and `ui.json` is
             // the preference. Two files can only disagree if one of them is not
             // authoritative, so this decides which.
-            let (prefs, why) = state::load_prefs();
+            //
+            // The SNAPSHOT, not a fresh read. The document head already parsed
+            // this file to inline the keymap, and the window was already created
+            // from its opacity setting; a third read here would be a third parse
+            // of a file nothing has written since, on the path to the first paint.
+            let (prefs, why) = state::startup_prefs();
             {
                 let mut guard = st.write();
                 let w = &mut *guard;
@@ -900,6 +1020,7 @@ fn App() -> Element {
             // Pushes the restored text scale, terminal options and key bindings
             // into the webview that just mounted.
             ui::settings::apply_here(&st.peek().daemon.settings);
+            boot::mark("app.restored");
 
             // First run gets the walkthrough, an upgrade gets the release
             // notes, and a window that is neither gets neither. Only the first
@@ -975,10 +1096,12 @@ fn App() -> Element {
                     .to_string();
                 // First-run agent detection shares this await so a PATH walk
                 // cannot push the first connect later than it has to.
+                boot::mark("app.dial");
                 tokio::join!(
                     start_daemon_then_connect(bridge, st, &url, opts),
                     fill_agents
                 );
+                boot::mark("app.dialled");
             }
 
             // Re-derive the automatic sidebar width against the window's real
@@ -1002,6 +1125,16 @@ fn App() -> Element {
             // guarded by an equality check, so it writes the signal only when
             // the answer actually moved. A width the operator has chosen is
             // never touched.
+            //
+            // It is also affordable on the eval channel's OTHER traffic, which
+            // is one message per keystroke. That was measured rather than
+            // assumed, because it reads like a defect: `tao` answers
+            // `inner_size` and `scale_factor` from its own cached geometry and
+            // never asks the display server, timed at 3 ns for the pair over
+            // 10,000 calls on a headless X server. Splitting the events into
+            // ones that can have moved the window and ones that cannot was
+            // written, measured and dropped: it removed three nanoseconds from
+            // a path whose next step is a WebSocket write.
             let mut resettle = move || {
                 if *sidebar_pinned.peek() {
                     return;

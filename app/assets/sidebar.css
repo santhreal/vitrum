@@ -1067,6 +1067,7 @@
 }
 
 .rg-project__header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--rg-space-1-5);
@@ -1230,6 +1231,7 @@
 }
 
 .rg-project__more {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--rg-space-2);
@@ -1274,6 +1276,7 @@
 }
 
 .rg-project__section-head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--rg-space-2);
@@ -1301,6 +1304,66 @@
 
 .rg-project__section-head:hover .rg-project__section-label {
   color: var(--rg-fg);
+}
+
+/* -- The hover detail for everything in the list that is not a row -------
+ *
+ * The same element as `.rg-session__tip`, for the same reason and with the
+ * same mechanism: a project header, a shelf head and a "show the rest"
+ * button all sit inside the list, the list reorders under a stationary
+ * cursor, and `title` paints a platform window anchored to the pointer
+ * rather than to the element. That window is not repositioned by the layout
+ * that moved the element, so it stays where it was — an opaque rectangle
+ * across rows it no longer describes, in the desktop's tooltip colours and
+ * not this product's, for the whole of the reorder.
+ *
+ * The row was fixed and the rest of the list was not, which is why the
+ * rectangle survived: a header is the element most likely to be under the
+ * cursor when a bucket is pinned to the top.
+ *
+ * A separate class from `.rg-session__tip` because the hosts differ: these
+ * are 24-32px controls that do not clip their own content, so they need no
+ * `overflow: visible` escape and their panel hangs from a shorter box.
+ * Everything else — `display: none` rather than opacity so twenty invisible
+ * panels are not composited, `pointer-events: none` so the panel never
+ * becomes the thing under the cursor, no transition per 17-motion.css — is
+ * the row's rule, unchanged. */
+.rg-project__tip {
+  display: none;
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + var(--rg-space-1));
+  left: var(--rg-space-1);
+  max-width: calc(100% - 2 * var(--rg-space-1));
+  padding: var(--rg-space-2) var(--rg-space-3);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-md);
+  background-color: var(--rg-surface-overlay);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--rg-fg-muted);
+  font-size: var(--rg-text-xs);
+  font-weight: var(--rg-weight-normal);
+  line-height: 1.5;
+  /* `header_title` is assembled with a newline between the directory and
+   * the rollup, which is the shape the `title` it replaced wanted. */
+  white-space: pre-line;
+  pointer-events: none;
+}
+
+.rg-project__header:hover > .rg-project__tip,
+.rg-project__header:focus-visible > .rg-project__tip,
+.rg-project__section-head:hover > .rg-project__tip,
+.rg-project__section-head:focus-visible > .rg-project__tip,
+.rg-project__more:hover > .rg-project__tip,
+.rg-project__more:focus-visible > .rg-project__tip {
+  display: block;
+}
+
+/* The collapsed rail is 48px wide and this panel is a paragraph, so it has
+ * nowhere to go that is not on top of the terminal. Same answer the row's
+ * panel gives at the same width. */
+.rg-sidebar--collapsed .rg-project__tip {
+  display: none;
 }
 
 /* THE HEADING IS NOT THE FAINTEST INK IN ITS OWN BAND.

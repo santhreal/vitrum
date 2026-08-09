@@ -725,4 +725,105 @@ mod tests {
         assert!(html.contains("rg-update"), "chip class missing from {html}");
     }
 
+    /// Every surface that names a session state reads the shared vocabulary.
+    ///
+    /// The sibling test above proves the bar and the pill agree for the
+    /// session it renders. It cannot see the way the defect got in: a surface
+    /// that never asks [`crate::inbox::status_word`] at all and simply types
+    /// the word into its markup. That copy agrees with the pill on the day it
+    /// is written and drifts the first time a word is retuned, which is the
+    /// same two-names-for-one-state the class is about, arriving through a
+    /// door the rendered comparison does not watch.
+    ///
+    /// So this reads the surfaces as source and forbids the vocabulary as a
+    /// literal. `inbox.rs` is not on the list because it OWNS the words and is
+    /// the one file allowed to spell them.
+    ///
+    /// The word list is derived, not transcribed: `EVERY_WORD` is mapped
+    /// through `status_word`, and `every_state_word_is_listed` below is an
+    /// exhaustive match, so adding a [`StateWord`] fails to compile here until
+    /// it is listed and the scan cannot silently stop covering one.
+    ///
+    /// What it does NOT catch: a surface that computes the word some other
+    /// way, or one that reads a second helper returning the same strings.
+    /// Comments and test code are skipped, so prose may still say "Working".
+    #[test]
+    fn no_surface_writes_a_status_word_of_its_own() {
+        use crate::inbox::{StateWord, status_word};
+
+        /// Exhaustive by the compiler: see `every_state_word_is_listed`.
+        const EVERY_WORD: [StateWord; 7] = [
+            StateWord::Approval,
+            StateWord::Input,
+            StateWord::Working,
+            StateWord::Failed,
+            StateWord::Ready,
+            StateWord::Woke,
+            StateWord::Done,
+        ];
+
+        /// Every surface that can put a session's state in front of a person.
+        const SURFACES: &[(&str, &str)] = &[
+            ("ui/titlebar.rs", include_str!("titlebar.rs")),
+            ("ui/sidebar.rs", include_str!("sidebar.rs")),
+            ("ui/menu.rs", include_str!("menu.rs")),
+            ("ui/search/render.rs", include_str!("search/render.rs")),
+            ("ui/settings.rs", include_str!("settings.rs")),
+            ("ui/workspaces.rs", include_str!("workspaces.rs")),
+            ("ui/mod.rs", include_str!("mod.rs")),
+        ];
+
+        for (name, src) in SURFACES {
+            // Production markup only. A test may spell a word, because
+            // asserting the word is what a test of the word looks like.
+            let code = src.split_once("#[cfg(test)]").map_or(*src, |(a, _)| a);
+            for (n, line) in code.lines().enumerate() {
+                let line = line.trim_start();
+                if line.starts_with("//") {
+                    continue;
+                }
+                for word in EVERY_WORD {
+                    let text = status_word(word);
+                    // A string literal, not the identifier: `StateWord::Ready`
+                    // and `SidebarStatus::Ready` are the shared vocabulary
+                    // being used correctly, and only a quoted copy is a
+                    // second one.
+                    for quoted in [format!("\"{text}\""), format!(" {text}\"")] {
+                        assert!(
+                            !line.contains(&quoted),
+                            "{name}:{} writes the state word {text:?} itself; \
+                             read crate::inbox::status_word instead so one \
+                             state cannot be called two things: {line}",
+                            n + 1
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Adding a [`StateWord`] must break the scan above until it is listed.
+    ///
+    /// The match is the whole point: a hardcoded word list goes stale in
+    /// silence, which is the same failure as having no guard.
+    #[test]
+    fn every_state_word_is_listed() {
+        use crate::inbox::StateWord;
+        fn rank(word: StateWord) -> usize {
+            match word {
+                StateWord::Approval => 0,
+                StateWord::Input => 1,
+                StateWord::Working => 2,
+                StateWord::Failed => 3,
+                StateWord::Ready => 4,
+                StateWord::Woke => 5,
+                StateWord::Done => 6,
+            }
+        }
+        for status in vitrum_model::ALL_STATUSES {
+            assert!(rank(StateWord::of(status)) < 7);
+        }
+        assert_eq!(rank(StateWord::Done), 6, "the vocabulary grew");
+    }
+
 }

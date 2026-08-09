@@ -518,7 +518,6 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                     button {
                                         class: "rg-project__header",
                                         r#type: "button",
-                                        title: "{header_title}",
                                         "aria-expanded": if is_collapsed { "false" } else { "true" },
                                         "aria-current": if group.current { "true" } else { "false" },
                                         onclick: move |_| props.on_toggle_project.call(key),
@@ -526,6 +525,25 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                         span { class: "rg-project__name", "{name}" }
                                         if let Some(rollup) = rollup {
                                             ProjectRollupChips { rollup }
+                                        }
+                                        // NO `title` ANYWHERE IN THIS LIST.
+                                        // A project header reorders for the
+                                        // same reasons a row does — a bucket
+                                        // is pinned to the top, an agent
+                                        // changes state — and `title` is a
+                                        // platform window anchored to the
+                                        // POINTER, so it survives the
+                                        // reorder in place as an opaque
+                                        // rectangle over rows it no longer
+                                        // describes. `SessionRow` below
+                                        // carries the full argument; this is
+                                        // the same fix applied to the rest
+                                        // of the list, which was left
+                                        // holding the defect.
+                                        span {
+                                            class: "rg-project__tip",
+                                            role: "tooltip",
+                                            "{header_title}",
                                         }
                                     }
                                 } else {
@@ -609,11 +627,15 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                             // the same bucket.
                                             div {
                                                 class: "rg-project__section-head rg-project__section-head--static",
-                                                title: "{active_hint}",
                                                 span { class: "rg-project__chevron" }
                                                 span { class: "rg-project__section-label", "{active_head}" }
                                                 span { class: "rg-project__section-rule" }
                                                 span { class: "rg-project__section-count", "{group.bands.active.len()}" }
+                                                span {
+                                                    class: "rg-project__tip",
+                                                    role: "tooltip",
+                                                    "{active_hint}",
+                                                }
                                             }
                                         }
                                         for s in group.bands.active.iter() {
@@ -636,10 +658,14 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                             button {
                                                 class: "rg-project__more",
                                                 r#type: "button",
-                                                title: "Show the rest of this project's inbox",
                                                 onclick: move |_| props.on_toggle_preview.call(key),
                                                 "Show all"
                                                 span { class: "rg-project__section-count", "{group.bands.hidden.len()}" }
+                                                span {
+                                                    class: "rg-project__tip",
+                                                    role: "tooltip",
+                                                    "Show the rest of this project's inbox",
+                                                }
                                             }
                                         }
                                     }
@@ -663,13 +689,17 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                         button {
                                                             class: "rg-project__section-head",
                                                             r#type: "button",
-                                                            title: "{hint}",
                                                             "aria-expanded": if open { "true" } else { "false" },
                                                             onclick: move |_| props.on_toggle_section.call((key, section)),
                                                             span { class: "rg-project__chevron", "{CHEVRON}" }
                                                             span { class: "rg-project__section-label", "{head}" }
                                                             span { class: "rg-project__section-rule" }
                                                             span { class: "rg-project__section-count", "{rows.len()}" }
+                                                            span {
+                                                                class: "rg-project__tip",
+                                                                role: "tooltip",
+                                                                "{hint}",
+                                                            }
                                                         }
                                                         if open {
                                                             for s in rows.iter().take(shown) {
@@ -700,10 +730,14 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                                 button {
                                                                     class: "rg-project__more",
                                                                     r#type: "button",
-                                                                    title: "Show the rest of this project's finished sessions",
                                                                     onclick: move |_| props.on_toggle_settled_tail.call(key),
                                                                     "Show more"
                                                                     span { class: "rg-project__section-count", "{deeper}" }
+                                                                    span {
+                                                                        class: "rg-project__tip",
+                                                                        role: "tooltip",
+                                                                        "Show the rest of this project's finished sessions",
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -942,6 +976,12 @@ struct ProjectRollupChipsProps {
 /// The most urgent state leads and the zeroes are dropped. A header that always
 /// showed five numbers would spend four of them on nothing, on the row with the
 /// least horizontal room in the whole sidebar.
+///
+/// No chip carries a `title`. A chip lives inside the project header, the
+/// header reorders, and a platform tooltip does not move with the thing it
+/// describes. Nothing is lost by dropping them: the header's own
+/// `.rg-project__tip` already spells the rollup out through
+/// [`inbox::rollup_title`], in one panel rather than five overlapping ones.
 #[allow(non_snake_case)]
 fn ProjectRollupChips(props: ProjectRollupChipsProps) -> Element {
     let chips = inbox::rollup_chips(&props.rollup);
@@ -953,7 +993,6 @@ fn ProjectRollupChips(props: ProjectRollupChipsProps) -> Element {
                 span {
                     key: "{status.token()}",
                     class: "rg-rollup__chip {inbox::status_modifier(status)}",
-                    title: "{count} {status.label()}",
                     // A DOT, not a glyph. These are up to five chips on the
                     // narrowest row in the panel, and the five status glyphs
                     // spanned 6.2x in ink width, so a run of them read as a
@@ -968,7 +1007,6 @@ fn ProjectRollupChips(props: ProjectRollupChipsProps) -> Element {
             if woke > 0 {
                 span {
                     class: "rg-rollup__chip rg-rollup__chip--woke",
-                    title: "{woke} came back from a snooze",
                     span { class: "rg-rollup__dot" }
                     "{woke}"
                 }
@@ -976,7 +1014,6 @@ fn ProjectRollupChips(props: ProjectRollupChipsProps) -> Element {
             if parked > 0 {
                 span {
                     class: "rg-rollup__chip rg-rollup__chip--snoozed",
-                    title: "{parked} parked",
                     span { class: "rg-rollup__dot" }
                     "{parked}"
                 }

@@ -310,3 +310,46 @@ fn an_unresolvable_command_warns_but_is_allowed() {
         )
     );
 }
+
+/// No entry the product SHIPS may be a shell, by name.
+///
+/// `no_invented_suggestion_is_a_shell` above asks the model's classifier, and
+/// that is the right question for an arbitrary command line. It is the wrong
+/// question for the shipped table, because it is answered by a second file:
+/// widen or narrow [`vitrum_model::AgentKind`] and this gate moves with it,
+/// silently. So the shipped table is also checked against the six shells by
+/// name, here, where the table is.
+///
+/// The table is enumerated at run time, so an entry added to `AGENTS` is
+/// under the gate the moment it is written.
+///
+/// The rule is `AGENTS.md`, "Demos show agents, not shell output": vitrum
+/// manages coding-agent TUIs, and a launcher offering a bare shell argues it
+/// is a terminal multiplexer, where tmux already wins and nothing this
+/// product does is visible. Typing a shell still launches one; that is the
+/// operator's choice and is not a thing the product proposes.
+///
+/// What it does NOT catch: a wrapper that reaches a shell — `env`, `script`,
+/// `-c` — which is the classifier's job above.
+#[test]
+fn no_shipped_launcher_entry_is_a_shell() {
+    /// Every shell a shipped entry could name. Matched on the program's own
+    /// name, so `/bin/bash` and `bash.exe` are the same answer.
+    const SHELLS: [&str; 6] = ["bash", "zsh", "sh", "fish", "pwsh", "cmd"];
+
+    assert!(!AGENTS.is_empty(), "an empty table gates nothing");
+    for (label, command) in AGENTS {
+        let base = command.rsplit(['/', '\\']).next().unwrap_or(command);
+        let program = base.strip_suffix(".exe").unwrap_or(base);
+        assert!(
+            !SHELLS.contains(&program),
+            "the shipped launcher offers {label:?} -> {command:?}, which is a \
+             shell; vitrum manages coding agents and a shell entry sells a \
+             terminal multiplexer"
+        );
+        assert!(
+            !label.to_lowercase().contains("shell"),
+            "the shipped launcher offers an entry named {label:?}"
+        );
+    }
+}

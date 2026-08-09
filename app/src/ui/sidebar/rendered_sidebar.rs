@@ -332,3 +332,141 @@ fn the_setting_hides_the_restart_offer_without_disabling_updates() {
     }
 }
 
+
+/// WHY: a reorder painted an opaque rectangle across the list.
+///
+/// `title` is not a request for a tooltip, it is a request for a WINDOW. The
+/// engine hands it to the platform, which paints an override-redirect surface
+/// anchored to the POINTER, in the desktop's tooltip colours, that no rule in
+/// this stylesheet can reach. Reorder the list under a stationary cursor —
+/// which is what happens whenever a bucket is pinned to the top or an agent
+/// changes state — and that surface stays exactly where it was, over rows it
+/// no longer describes, for the whole of the reorder.
+///
+/// `SessionRow` was fixed for this and the rest of the list was not, so the
+/// rectangle survived on the elements most likely to be under the cursor when
+/// a bucket moves: the project header, its rollup chips, the shelf heads and
+/// the two "show the rest" buttons. All of them now carry
+/// `.rg-project__tip`, a child of the element it describes, which the same
+/// layout that moves the element moves with it.
+///
+/// Asserted twice, because neither half is enough on its own. The rendered
+/// half proves the markup that actually reaches the webview is clean, and the
+/// source half covers the branches this fixture cannot put on screen at once
+/// — it reads the whole list region of `sidebar.rs` and forbids the attribute
+/// outright, so a new control added inside the list with a `title` on it goes
+/// red here rather than shipping the defect back.
+///
+/// What it does NOT catch: chrome OUTSIDE the list. The toolbar, the floor
+/// button and the footer keep their `title` and should: none of them moves.
+#[test]
+fn nothing_in_the_reorderable_list_asks_the_platform_for_a_tooltip() {
+    let mut st = UiState::default();
+    st.daemon.projects = vec![project(1, "vitrum"), project(2, "atlas")];
+    let mut sessions = Vec::new();
+    for i in 0..3 {
+        sessions.push(
+            row(10 + i)
+                .project(1)
+                .command("claude")
+                .title(&format!("session {i}"))
+                .waiting(Some(false))
+                .build(),
+        );
+    }
+    // A shelf under the Active band, so both shelf heads render: the static
+    // Active caption and the Snoozed button.
+    sessions.push(
+        row(20)
+            .project(1)
+            .command("codex")
+            .title("parked")
+            .snooze(NOW - HOUR, NOW + HOUR)
+            .build(),
+    );
+    for i in 0..3 {
+        sessions.push(
+            row(30 + i)
+                .project(2)
+                .command("gemini")
+                .title(&format!("atlas {i}"))
+                .waiting(Some(false))
+                .build(),
+        );
+    }
+    st.daemon.sessions = sessions;
+
+    // Every bucket but the first is collapsed, which is the only state that
+    // draws the rollup chips. The first stays open so its shelves render.
+    let clock = TimeFormat::new(vitrum_fmt::Timestamp::from_millis(NOW as i64), 0);
+    let shut: Vec<GroupKey> = st
+        .tree(inbox::model_clock(clock))
+        .iter()
+        .skip(1)
+        .map(|g| g.key)
+        .collect();
+    assert!(!shut.is_empty(), "the fixture must draw more than one bucket");
+    for key in shut {
+        st.window.collapsed.insert(key);
+    }
+
+    let html = render(st);
+    for present in [
+        "rg-project__header",
+        "rg-rollup__chip",
+        "rg-project__section-head",
+        "rg-project__tip",
+    ] {
+        assert!(
+            html.contains(present),
+            "the fixture never drew {present}, so this proves nothing: {html}"
+        );
+    }
+
+    // The list is everything between the scroller and the floor button. The
+    // floor is the one control inside the scroller that does not move, and it
+    // keeps its `title`.
+    let from = html
+        .find("rg-sidebar__body")
+        .expect("the scroller is the list");
+    let to = html
+        .find("rg-sidebar__floor")
+        .expect("the floor closes the scroller");
+    let list = &html[from..to];
+    assert!(
+        !list.contains("title=\""),
+        "something in the reorderable list still asks the platform for a \
+         tooltip, which paints an opaque rectangle over the list for the \
+         whole of a reorder: {list}"
+    );
+
+    // The source half: every branch, including the ones this fixture cannot
+    // render at the same time.
+    let src = include_str!("../sidebar.rs");
+    let code = src.split_once("#[cfg(test)]").map_or(src, |(a, _)| a);
+    let open = code
+        .find("class: \"rg-sidebar__body\"")
+        .expect("the scroller opens the list");
+    let close = code
+        .find("class: \"rg-sidebar__floor\"")
+        .expect("the floor closes the list");
+    let region = &code[open..close];
+    assert!(
+        !region.contains("title:"),
+        "sidebar.rs puts a `title` attribute inside the list region; use a \
+         .rg-project__tip child instead, so a reorder moves it"
+    );
+
+    // And the panel it moved to is really styled, rather than being an
+    // always-visible paragraph stapled under every header.
+    let css = include_str!("../../../assets/sidebar.css");
+    assert!(
+        css.contains(".rg-project__tip"),
+        "nothing styles the replacement, so the strings render inline"
+    );
+    assert!(
+        css.contains(".rg-project__header:hover > .rg-project__tip"),
+        "the replacement never appears, so the fix deleted the tooltip \
+         rather than moving it"
+    );
+}

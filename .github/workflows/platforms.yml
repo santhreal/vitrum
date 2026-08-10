@@ -4,9 +4,9 @@ name: platforms
 #
 # `ci.yml` gates every push on x86-64 Linux, because that is where a defect is
 # found per minute of runner time. This workflow answers the other question,
-# which is whether the tree still builds and passes on macOS, on Windows, and
-# on ARM Linux, which is a different code generator against the same
-# libraries. It runs:
+# which is whether the tree still builds and passes on macOS, on Windows, on
+# Windows on ARM and on ARM Linux, which is a different code generator against
+# the same libraries. It runs:
 #
 #   - on every push to main, as the quick subset described below, so a
 #     platform break is attached to the commit that caused it
@@ -34,10 +34,9 @@ name: platforms
 # the rate of Linux with five concurrent macOS jobs available. A full matrix
 # on every push would spend most of that allowance queueing behind itself.
 #
-# So a push to main runs the same three legs with the release profile, clippy
-# and the installer parse removed, and pays three runners bounded at thirty
-# minutes instead of three bounded at sixty, on a dev-profile build rather
-# than an optimised one.
+# So a push to main runs the same legs with the release profile, clippy and
+# the installer parse removed, and bounds each runner at thirty minutes
+# instead of sixty, on a dev-profile build rather than an optimised one.
 #
 # What the subset does not catch, and the nightly and tag runs do:
 #
@@ -107,7 +106,13 @@ jobs:
       # must not cancel the other.
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04-arm]
+        # Windows on ARM is here before it is published. Nothing in the tree
+        # has ever been compiled for `aarch64-pc-windows-msvc`: the terminal
+        # engine is built from Zig source, the pty layer is vendored C, and
+        # the webview is a different runtime build, so whether that target
+        # builds at all is a question with no answer yet. It gets one on every
+        # push, and a release leg follows only once these are green.
+        os: [macos-latest, windows-latest, windows-11-arm, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v7
 

@@ -3,6 +3,21 @@
 Notable changes per release. Versions follow [semver](https://semver.org).
 Before 1.0, a minor bump may break compatibility.
 
+## Unreleased
+
+### Added
+
+- **A row shows the directory its session is in.** Only the part the project
+  heading above it does not already give: a session at the project root shows
+  nothing, one below it shows the remainder, and one outside the project
+  entirely — a worktree beside it, or an agent that moved itself — shows its
+  own path. That last case previously drew a branch with nothing saying the
+  files were somewhere else. It is the live directory, not the launch
+  directory: a session follows the OSC 7 report a shell already emits from its
+  prompt, and `docs/states.md` documents the sequence for an agent that wants
+  to report a move itself. Off in Settings under Sidebar; the session still
+  moves and the branch still follows it.
+
 ## v0.2.1 - 2026-08-10
 
 The first published release of the 0.2 line. `v0.2.0` is a tag and never

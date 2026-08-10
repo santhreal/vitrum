@@ -178,7 +178,7 @@ fn auto_settle_window() {
     );
 }
 
-/// The three row-content switches survive the file. Their rendering effect
+/// The row-content switches survive the file. Their rendering effect
 /// is asserted in `ui/sidebar.rs`, which is the module that reads them;
 /// what this file is responsible for is that the value the operator chose
 /// is still there next launch.
@@ -189,6 +189,11 @@ fn row_content_switches() {
             "show_branch",
             (|s: &mut Settings| s.show_branch = false) as fn(&mut Settings),
             (|s: &Settings| s.show_branch) as fn(&Settings) -> bool,
+        ),
+        (
+            "show_place",
+            |s: &mut Settings| s.show_place = false,
+            |s: &Settings| s.show_place,
         ),
         (
             "show_time",

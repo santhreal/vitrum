@@ -18,6 +18,8 @@ struct HarnessProps {
     section: Section,
     fields: RowFields,
     contested: Option<(usize, usize)>,
+    /// The project directory this row was grouped under.
+    root: Rc<str>,
 }
 
 #[component]
@@ -31,6 +33,7 @@ fn Harness(props: HarnessProps) -> Element {
             picked: false,
             clock: TimeFormat::new(vitrum_fmt::Timestamp::from_millis(NOW as i64), 0),
             home: Rc::from("/home/u"),
+            root: Rc::clone(&props.root),
             contested: props.contested,
             on_select: move |_: (SessionId, Click)| {},
             on_close: move |_: SessionId| {},
@@ -45,6 +48,7 @@ fn all_fields() -> RowFields {
         branch: true,
         time: true,
         status_word: true,
+        place: true,
         always_slim: false,
     }
 }
@@ -56,6 +60,11 @@ fn render(view: SessionView, section: Section) -> String {
 
 /// One row's HTML with the operator's row-element switches set explicitly.
 fn render_with(view: SessionView, section: Section, fields: RowFields) -> String {
+    render_under(view, section, fields, "")
+}
+
+/// One row's HTML, grouped under a given project directory.
+fn render_under(view: SessionView, section: Section, fields: RowFields, root: &str) -> String {
     let mut dom = VirtualDom::new_with_props(
         Harness,
         HarnessProps {
@@ -63,6 +72,7 @@ fn render_with(view: SessionView, section: Section, fields: RowFields) -> String
             section,
             fields,
             contested: None,
+            root: Rc::from(root),
         },
     );
     dom.rebuild_in_place();
@@ -561,6 +571,7 @@ fn render_case(
             section,
             fields,
             contested,
+            root: Rc::from("/src/vitrum"),
         },
     );
     dom.rebuild_in_place();
@@ -917,4 +928,82 @@ fn a_node_agents_trust_prompt_reads_as_working_and_claims_nothing_else() {
              not a claim and must not wear it: {html}"
         );
     }
+}
+
+/// WHY: the working directory has to reach the MARKUP, and it has to be the
+/// one the session is in now.
+///
+/// This is the defect class this file exists for, and the one the feature is
+/// most exposed to: `RowFields::status_word` was read, carried through props,
+/// compared by `PartialEq` and then never consulted by any markup, so the
+/// switch persisted and changed nothing. A directory resolved correctly by
+/// `place_label` and never emitted would fail in exactly that way.
+///
+/// The three arms are the whole rule. A row at the project root emits an
+/// EMPTY element, because the group header above it already says that path
+/// and `.rg-session__place:empty` collapses the box; a row below the root
+/// emits the remainder; a row outside the project entirely — a worktree, or a
+/// session an agent moved with OSC 7 — emits its own home-shortened path,
+/// which is the case where the group header is actively misleading.
+///
+/// The switch is asserted in both directions, because a control that
+/// round-trips to disk and changes no markup is the defect above.
+///
+/// What it does NOT catch: the CSS actually collapsing the empty element, or
+/// anything about how the daemon decides a session moved.
+#[test]
+fn the_rows_working_directory_reaches_the_markup() {
+    let at_root = render_under(
+        row(1).cwd("/src/vitrum").build(),
+        Section::Active,
+        all_fields(),
+        "/src/vitrum",
+    );
+    assert_eq!(
+        element_text(&at_root, "rg-session__place"),
+        Some(""),
+        "a row at the project root must emit the element and leave it empty"
+    );
+
+    let below = render_under(
+        row(1).cwd("/src/vitrum/crates/vitrum-core").build(),
+        Section::Active,
+        all_fields(),
+        "/src/vitrum",
+    );
+    assert_eq!(
+        element_text(&below, "rg-session__place"),
+        Some("crates/vitrum-core"),
+        "a row below the root must draw the remainder"
+    );
+
+    let outside = render_under(
+        row(1).cwd("/home/u/worktrees/topic").build(),
+        Section::Active,
+        all_fields(),
+        "/src/vitrum",
+    );
+    assert_eq!(
+        element_text(&outside, "rg-session__place"),
+        Some("~/worktrees/topic"),
+        "a row outside the project must draw where it actually is"
+    );
+
+    let off = RowFields {
+        place: false,
+        ..all_fields()
+    };
+    assert_eq!(
+        element_text(
+            &render_under(
+                row(1).cwd("/src/vitrum/app").build(),
+                Section::Active,
+                off,
+                "/src/vitrum",
+            ),
+            "rg-session__place"
+        ),
+        Some(""),
+        "the switch is off and the directory is still drawn"
+    );
 }

@@ -44,6 +44,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
+use vitrum_fmt::path::{self, Place};
 use vitrum_fmt::{TimeFormat, Timestamp};
 use vitrum_model::{AgentKind, Disposition, Section, SessionView, SidebarStatus};
 use vitrum_proto::{ProjectId, SessionId, SessionStatus};
@@ -475,6 +476,10 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                             Cow::Borrowed(group.label.as_str())
                         };
                         let root: &str = group.root.as_deref().unwrap_or_default();
+                        // The same buffer for every row of the group. `root`
+                        // above is borrowed from `group`, which the rows
+                        // outlive, so the rows get a refcount instead.
+                        let row_root: Rc<str> = Rc::from(root);
                         // The Unfiled bucket has no name to look for its rows
                         // under, so it cannot be collapsed: doing so would hide
                         // sessions behind a header that does not say what is in
@@ -649,6 +654,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                 picked: st.window.selection.contains(s.id()),
                                                 clock: row_clock(props.clock, s),
                                                 home: Rc::clone(&home),
+                                                root: Rc::clone(&row_root),
                                                 contested: st.daemon.collisions.for_session(s.id()),
                                                 on_select: props.on_select,
                                                 on_close: props.on_close_session,
@@ -713,6 +719,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                                     picked: st.window.selection.contains(s.id()),
                                                                     clock: row_clock(props.clock, s),
                                                                     home: Rc::clone(&home),
+                                                                    root: Rc::clone(&row_root),
                                                                     contested: st.daemon.collisions.for_session(s.id()),
                                                                     on_select: props.on_select,
                                                                     on_close: props.on_close_session,
@@ -1037,6 +1044,8 @@ struct RowFields {
     branch: bool,
     time: bool,
     status_word: bool,
+    /// Draw the session's working directory when it is not the project's own.
+    place: bool,
     /// Force every row to the slim shape, whatever band it is in.
     always_slim: bool,
 }
@@ -1047,6 +1056,7 @@ impl RowFields {
             branch: settings.show_branch,
             time: settings.show_time,
             status_word: settings.show_status_word,
+            place: settings.show_place,
             always_slim: settings.always_slim,
         }
     }
@@ -1067,6 +1077,11 @@ struct SessionRowProps {
     /// twenty heap allocations and twenty memcpys of the same string on every
     /// paint; one buffer and a refcount bump per row is the same string.
     home: Rc<str>,
+    /// The project this row was grouped under, empty for the Unfiled bucket.
+    ///
+    /// Shared for the same reason `home` is: one buffer per group, one
+    /// refcount per row.
+    root: Rc<str>,
     clock: TimeFormat,
     /// Files this session is contesting, and how many other sessions it is
     /// contesting them with. `None` when it is fighting nobody, which is the
@@ -1131,6 +1146,33 @@ fn row_variant(section: Section, always_slim: bool) -> &'static str {
 /// cannot drift again.
 fn draws_card(section: Section, always_slim: bool) -> bool {
     !always_slim && section == Section::Active
+}
+
+/// How many columns a row spends on its working directory.
+///
+/// Line two also carries the branch, a badge and a timestamp, and the row's
+/// measured floor is 224px. Eighteen columns is two short components; past
+/// that the middle is elided rather than the tail, because the leaf is the
+/// part that says which of a project's crates the session is in.
+const PLACE_COLUMNS: usize = 18;
+
+/// What a row draws for its working directory, given the project it is under.
+///
+/// The rule is that a row says only what its group header does not. A session
+/// sitting at the project root repeats the header exactly, so it draws
+/// nothing and the branch keeps the space.
+///
+/// The case this exists for is the last arm. A git worktree lives beside its
+/// project rather than inside it, on another branch, and a row for one used
+/// to show a branch with no hint that the files were somewhere else. So does
+/// an agent that moved itself: sessions follow OSC 7, so a row's directory is
+/// where the agent is now, not where it was launched.
+fn place_label(cwd: &str, root: &str, home: &str) -> String {
+    match path::under(cwd, root) {
+        Place::At => String::new(),
+        Place::Under(rest) => path::shorten(rest, PLACE_COLUMNS),
+        Place::Outside => path::shorten_home_relative(cwd, home, PLACE_COLUMNS),
+    }
 }
 
 /// How many of a band's rows are drawn, and how many stay behind "Show more".
@@ -1437,6 +1479,15 @@ fn SessionRow(props: SessionRowProps) -> Element {
     } else {
         ""
     };
+    // The working directory, drawn only where it says something the group
+    // header above does not. An agent can move its session after launch by
+    // reporting OSC 7, and the daemon follows it, so this is the live
+    // directory and not the one the session was started in.
+    let place = if props.fields.place {
+        place_label(&info.cwd, &props.root, &props.home)
+    } else {
+        String::new()
+    };
     let mut tooltip = row_tooltip(row, &props.home, &pill);
     if let Some((files, peers)) = props.contested {
         tooltip.push('\n');
@@ -1558,6 +1609,10 @@ fn SessionRow(props: SessionRowProps) -> Element {
                             span { class: "rg-session__contest-count", "{files}" }
                         }
                     }
+                    // Before the branch, which is the flex spacer: an element
+                    // after it would be pushed to the far right and land in
+                    // the tail's run of badges, where a path reads as one.
+                    span { class: "rg-session__place", "{place}" }
                     span { class: "rg-session__branch", "{branch}" }
                     if let Some(badge) = disposition {
                         span { class: "{badge.class}",

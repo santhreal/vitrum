@@ -583,6 +583,7 @@ fn every_emitted_class_is_styled_somewhere() {
         "rg-session__actions",
         "rg-session__title",
         "rg-session__branch",
+        "rg-session__place",
         "rg-session__time",
         "rg-session__close",
         "rg-empty__title",
@@ -1192,10 +1193,12 @@ fn the_card_is_exactly_two_lines_and_neither_is_conditional() {
     // slides into the middle of the row on half the list.
     //
     // What must hold is that the spacer is present and that everything
-    // which should be pushed right comes after it. A FIXED-width element
-    // may precede it: the contest marker does, so that on a row with no
-    // branch it sits under the title instead of floating alone against the
-    // timestamp with the left half of the line empty.
+    // which should be pushed right comes after it. An element with a FIXED
+    // flex basis may precede it: the contest marker does, so that on a row
+    // with no branch it sits under the title instead of floating alone
+    // against the timestamp with the left half of the line empty, and the
+    // working directory does, because it is `flex: 0 1 auto` and so shrinks
+    // but never grows into a second spacer.
     let tail = tokens
         .iter()
         .position(|t| *t == "rg-session__line--tail")
@@ -1208,8 +1211,8 @@ fn the_card_is_exactly_two_lines_and_neither_is_conditional() {
     assert!(
         tokens[tail + 1..branch]
             .iter()
-            .all(|t| t.starts_with("rg-session__contest")),
-        "something other than the fixed-width contest marker was put \
+            .all(|t| t.starts_with("rg-session__contest") || *t == "rg-session__place"),
+        "something other than a fixed-basis element was put \
          ahead of the flex spacer: {:?}",
         &tokens[tail + 1..branch]
     );
@@ -1747,4 +1750,69 @@ fn without_comments(css: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// A row at its project's own directory draws no path.
+///
+/// The group header directly above the row already says it. This is the
+/// common row, and the whole reason the element can be on by default: the
+/// list does not change at all for anyone whose sessions sit at their project
+/// roots.
+#[test]
+fn a_row_at_the_project_root_draws_no_working_directory() {
+    assert_eq!(place_label("/src/vitrum", "/src/vitrum", "/home/mk"), "");
+}
+
+/// A row inside the project draws only the part below the root.
+#[test]
+fn a_row_inside_the_project_draws_the_remainder() {
+    assert_eq!(
+        place_label("/src/vitrum/crates/vitrum-fmt", "/src/vitrum", "/home/mk"),
+        "crates/vitrum-fmt"
+    );
+    assert_eq!(place_label("/src/vitrum/app", "/src/vitrum", "/home/mk"), "app");
+}
+
+/// A worktree beside the project draws the whole path, shortened against
+/// home.
+///
+/// The case the element exists for. The row's branch already differs from
+/// every other row in the group, and before this there was nothing on it
+/// saying the files were somewhere else entirely.
+#[test]
+fn a_worktree_beside_the_project_draws_its_own_path() {
+    assert_eq!(
+        place_label("/home/mk/worktrees/topic", "/src/vitrum", "/home/mk"),
+        "~/worktrees/topic"
+    );
+}
+
+/// A long remainder is elided in the middle, keeping the leaf.
+///
+/// The leaf is the part that answers "which crate is this agent in". Cutting
+/// the tail would throw away the answer and keep the preamble.
+#[test]
+fn a_long_remainder_keeps_its_leaf() {
+    let label = place_label(
+        "/src/vitrum/crates/vitrum-core/src/session",
+        "/src/vitrum",
+        "/home/mk",
+    );
+    assert!(
+        label.ends_with("session"),
+        "the leaf was cut instead of the middle: {label}"
+    );
+    assert!(
+        vitrum_fmt::text::display_width(&label) <= PLACE_COLUMNS,
+        "the label overran its column budget: {label}"
+    );
+}
+
+/// A session in the Unfiled bucket, which has no root, draws its own path.
+///
+/// There is no header above it saying where it is, so the row is the only
+/// place the directory can appear.
+#[test]
+fn an_unfiled_row_draws_its_own_path() {
+    assert_eq!(place_label("/home/mk/scratch", "", "/home/mk"), "~/scratch");
 }

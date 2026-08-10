@@ -88,3 +88,31 @@ reach the PTY another way.
 
 [`integrations/claude-code`](../integrations/claude-code) contains the hook,
 the `settings.json` entries that call it, and the event mapping.
+
+## Working directory
+
+A session's row is grouped under a project and shows the part of its working
+directory that the project heading does not already give. A session at the
+project root shows nothing extra. A session in a worktree beside the project,
+or anywhere else, shows its own path.
+
+The directory is the one the session is in now, not the one it was launched
+in. An agent that changes directory reports the move with OSC 7:
+
+```text
+ESC ] 7 ; file://<host>/<path> ESC \
+```
+
+vitrum moves the session to that directory and resolves the branch there.
+`<host>` is ignored. A path that does not exist is ignored.
+
+bash and zsh emit OSC 7 from their prompt already, so a shell session follows
+`cd` with no configuration. An agent that runs commands in a directory of its
+own choosing writes the sequence itself:
+
+```sh
+printf '\033]7;file://%s%s\033\\' "$(hostname)" "$PWD"
+```
+
+Turn the column off in Settings under Sidebar. The session still moves and the
+branch still follows it.

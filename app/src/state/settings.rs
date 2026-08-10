@@ -258,6 +258,13 @@ pub const TEXT_SCALE_MAX_PCT: u16 = 200;
 pub struct Settings {
     /// Draw `rg-session__branch` on rows that have a branch.
     pub show_branch: bool,
+    /// Draw `rg-session__place`: the session's working directory, on the rows
+    /// where it is not the project's own directory.
+    ///
+    /// On by default. It costs nothing on the common row, which sits at the
+    /// project root and draws nothing, and it is the only thing that says a
+    /// row is in a worktree or that an agent moved itself somewhere else.
+    pub show_place: bool,
     /// Draw `rg-session__time`.
     pub show_time: bool,
     /// Draw `rg-pill__word`. Off leaves the icon, which is what the collapsed
@@ -327,6 +334,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             show_branch: true,
+            show_place: true,
             show_time: true,
             show_status_word: true,
             always_slim: false,

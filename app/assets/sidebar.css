@@ -1652,6 +1652,7 @@
 }
 
 .rg-session--recede .rg-session__branch,
+.rg-session--recede .rg-session__place,
 .rg-session--recede .rg-session__time {
   color: var(--rg-fg-faint);
 }
@@ -1665,6 +1666,7 @@
 }
 
 .rg-session--recede:hover .rg-session__branch,
+.rg-session--recede:hover .rg-session__place,
 .rg-session--recede:hover .rg-session__time {
   color: var(--rg-fg-subtle);
 }
@@ -1720,6 +1722,7 @@
 }
 
 .rg-session--active .rg-session__branch,
+.rg-session--active .rg-session__place,
 .rg-session--active .rg-session__time {
   color: var(--rg-fg-muted);
 }
@@ -1942,6 +1945,32 @@
   font-size: var(--rg-text-12);
   line-height: var(--rg-line-12);
   font-weight: var(--rg-weight-normal);
+}
+
+/* The session's working directory, immediately left of the branch.
+ *
+ * Dimmer than the branch and allowed to shrink first: on a narrow sidebar the
+ * branch is the thing an operator scans for, and a path that has already been
+ * elided in the middle survives losing a few more columns better than a
+ * branch name does.
+ *
+ * Unlike the branch this collapses when empty, which is the common row: the
+ * element is not a spacer, and leaving an empty box in the line would spend
+ * the tail's gap on nothing. */
+.rg-session__place {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--rg-fg-dim);
+  font-size: var(--rg-text-11);
+  line-height: var(--rg-line-12);
+  font-weight: var(--rg-weight-normal);
+}
+
+.rg-session__place:empty {
+  display: none;
 }
 
 /* The timestamp sits on line three of a card and inside the slot on a slim
@@ -2284,6 +2313,7 @@
 .rg-sidebar--collapsed .rg-project__section-count,
 .rg-sidebar--collapsed .rg-session__title,
 .rg-sidebar--collapsed .rg-session__branch,
+.rg-sidebar--collapsed .rg-session__place,
 .rg-sidebar--collapsed .rg-session__time,
 .rg-sidebar--collapsed .rg-session__actions,
 .rg-sidebar--collapsed .rg-badge,

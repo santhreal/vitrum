@@ -21,7 +21,8 @@
 //!   through [`ui_scale_script`]: every geometry and type token in both
 //!   stylesheets is declared in `rem`, so one property scales the whole shell
 //!   without this module knowing any token's value.
-//! - **Sidebar** is `show_branch` / `show_time` / `show_status_word`, read by
+//! - **Sidebar** is `show_branch` / `show_place` / `show_time` /
+//!   `show_status_word`, read by
 //!   `ui/sidebar.rs`, plus the auto-settle window, which is
 //!   [`vitrum_model::DispositionPolicy`] and therefore governs every
 //!   disposition, section, rollup and traversal decision in the product.
@@ -2093,6 +2094,15 @@ fn SidebarPanel(props: PanelProps) -> Element {
             desc: "The branch chip on rows whose directory is a checkout.".to_string(),
             on: settings.show_branch,
             onchange: move |on| edit(state, |s| s.show_branch = on),
+        }
+        SwitchRow {
+            label: "Show the working directory".to_string(),
+            desc: "The part of a session's directory the project header does not already \
+                   say. Rows sitting at the project root show nothing. A session an agent \
+                   moved, or one in a worktree beside the project, shows where it is."
+                .to_string(),
+            on: settings.show_place,
+            onchange: move |on| edit(state, |s| s.show_place = on),
         }
         SwitchRow {
             label: "Show the last-activity time".to_string(),

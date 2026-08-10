@@ -1,11 +1,12 @@
 # The verification harness
 
-Every number in `GOAL.md` was taken by launching vitrum on the author's own
-desktop. That has to stop. A measurement run starts an X client, a daemon and
-up to twenty windows, and it kills them again afterwards; doing that on the
-machine somebody is working at costs them their session sooner or later, and it
-also makes the measurement worse, because a live desktop has a compositor, a
-window manager and other people's windows in the way.
+The first round of figures was taken by launching vitrum on a development
+desktop, in a live graphical session. That has to stop. A measurement run
+starts an X client, a daemon and up to twenty windows, and it kills them again
+afterwards; doing that on the machine somebody is working at costs them their
+session sooner or later, and it also makes the measurement worse, because a
+live desktop has a compositor, a window manager and other people's windows in
+the way.
 
 This directory moves the whole thing to another machine. You build here. The
 other machine runs a virtual display, launches the binary you built, drives it
@@ -16,12 +17,13 @@ the machine you type on.
 ## Before you quote a number from this harness
 
 Read this first. It is the thing most likely to be got wrong later, and the
-damage is a wrong line in `GOAL.md` that nobody notices for a month.
+damage is a wrong figure in `docs/performance.md`, which owns the published
+memory and idle-CPU numbers, that nobody notices for a month.
 
-**A number measured here is not a number measured on the desktop, and the two
-must never appear side by side as if they were.** `GOAL.md`'s headline figures
-were taken on the development desktop, on a Ryzen 9 9950X with an NVIDIA card
-on a real WM-managed display:
+**A number measured here is not a number measured on a development desktop,
+and the two must never appear side by side as if they were.** The
+desktop-baseline figures quoted in this file were taken on a Ryzen 9 9950X
+with an NVIDIA card on a real WM-managed display:
 
 - **398.0 MB** PSS for twenty windows each showing a session, with all twenty
   sharing **one** `WebKitWebProcess`.
@@ -37,11 +39,12 @@ So:
 - A remote number is comparable to **another remote number**, taken on the same
   host, on the same kind of run. That is what makes it useful: run the scenario
   before your change and after it, and the difference between the two is real.
-- A remote number is **not** comparable to a figure in `GOAL.md`, and must not
-  be written into `GOAL.md` next to one, until somebody re-establishes a
-  baseline on that host by running the same scenarios on a build already known
-  good. Until that exists, quote remote results as "on perfhost, N windows,
-  this build against that build", never as "the memory target".
+- A remote number is **not** comparable to a desktop-baseline figure, and must
+  not be written into `docs/performance.md` beside one, until somebody
+  re-establishes a baseline on that host by running the same scenarios on a
+  build already known good. Until that exists, quote remote results as "on
+  perfhost, N windows, this build against that build", never as "the memory
+  target".
 - If you do establish a baseline there, write the host, the CPU, the WebKitGTK
   version and the session workload next to it. A number whose conditions are
   not recorded beside it is not a measurement.
@@ -154,9 +157,9 @@ before-and-after pair.
 
 ## Reproducing the memory number
 
-`GOAL.md` records 398.0 MB for twenty windows, each showing its own session,
-as PSS across the whole client process tree. To take the same measurement on
-the measurement host:
+The desktop baseline is 398.0 MB for twenty windows, each showing its own
+session, as PSS across the whole client process tree. To take the same
+measurement on the measurement host:
 
 ```
 harness/run.sh memory 20
@@ -197,7 +200,8 @@ PSS and not RSS, because twenty windows share one `WebKitWebProcess` and RSS
 would count that engine twenty times over.
 
 The workload is a knob, and it moves the number by more than the margin you
-are likely to care about. `GOAL.md` measures 1068.1 MB with the sessions
+are likely to care about. The desktop baseline measures 1068.1 MB with the
+sessions
 printing nothing, 1101.0 with ordinary shell startup, and 1153.6 with 400 lines
 each, all on the pre-sharing build. Change it explicitly:
 
@@ -207,8 +211,8 @@ HARNESS_SESSION_CMD=/bin/sleep HARNESS_SESSION_ARGS=600 harness/run.sh memory 20
 
 ## Reproducing the idle CPU number
 
-`GOAL.md` records 0.0292% over 240 seconds with twenty windows open. The same
-shape of run:
+The desktop baseline is 0.0292% over 240 seconds with twenty windows open. The
+same shape of run:
 
 ```
 harness/run.sh idle-cpu 240 20
@@ -350,7 +354,7 @@ run for not converging when nothing is wrong.
 The banner at the top of this file states the baseline rule. This is the
 itemised version of it: what specifically cannot be answered here, and why. A
 regression is a change between two runs on the same host. It is not the gap
-between a run here and a line in `GOAL.md`.
+between a run here and a desktop-baseline figure.
 
 - **Idle CPU is a percentage of a different core.** The desktop is a Ryzen 9
   9950X; `perfhost` is an i9-13900K with a different clock, different boost
@@ -456,13 +460,12 @@ is a substring match on the geometry. Both obvious forms have a collision, at
 opposite ends:
 
 - `*10x10*` matches `810x102`, so a real window at that size is discarded.
-  This is the form in `tools/regression/screenshot.sh:136`. It is not wrong for
-  the sizes that script uses and it is not my file to change.
+  This was the form in `tools/regression/screenshot.sh`, and it is fixed
+  there now for the same reason it is fixed here.
 - `*"Geometry: 10x10"*` closes that and matches `Geometry: 10x100` and
-  `Geometry: 10x1080`, so a narrow tall window is discarded. This was mine,
-  written as the fix for the first one, and it stood until a sibling agent
-  found the identical missing right-hand boundary in an unrelated matcher and
-  I went looking for my own.
+  `Geometry: 10x1080`, so a narrow tall window is discarded. That was written
+  as the fix for the first one, and it stood until the identical missing
+  right-hand boundary turned up in an unrelated matcher.
 
 Neither collision is reachable at the sizes vitrum uses today, which is exactly
 why both survive review and why neither was found by reading. `app_windows`
@@ -588,15 +591,15 @@ Verified against `perfhost`, and the probe additionally against
   hole as counting nothing. `open_windows` asserted the window count, but
   `wait_windows` has already established `have >= want` by the time it runs, so
   alone it only really catches an EXTRA window. What it could not catch is the
-  failure GOAL.md already records: a 1059.2 MB result taken with fewer sessions
-  than windows, so several windows showed the same session and the number was
-  not the workload it claimed. The rig now also asks the daemon how many
-  sessions it holds and requires the two to agree. Proved against a live daemon
-  on the remote, which needs no WebKitGTK: a fresh daemon reports 0, after five
-  creates it reports 5 and a five-window run passes, after two more it reports
-  7 and a five-window run dies. It still does not prove each window is showing
-  a DIFFERENT session, which needs the client's own state; that remains
-  unverified and is named below rather than implied.
+  failure this project has already made: a 1059.2 MB result taken with fewer
+  sessions than windows, so several windows showed the same session and the
+  number was not the workload it claimed. The rig now also asks the daemon how
+  many sessions it holds and requires the two to agree. Proved against a live
+  daemon on the remote, which needs no WebKitGTK: a fresh daemon reports 0,
+  after five creates it reports 5 and a five-window run passes, after two more
+  it reports 7 and a five-window run dies. It still does not prove each window
+  is showing a DIFFERENT session, which needs the client's own state; that
+  remains unverified and is named below rather than implied.
 - `bench 20` end to end on `axiomserver`: mock served 140 requests and 28000
   tokens, twenty mock agents ran, and the split reported 845.8 MB of client,
   45.1 MB of daemon and 190.2 MB of excluded workload. The exclusion is not
@@ -611,13 +614,13 @@ Verified against `perfhost`, and the probe additionally against
   tools. Run against a curated `PATH` with `xdotool` and `import` hidden, the
   branch fired correctly and exposed a fourth hole: it printed a hardcoded
   blanket list of six packages for two missing tools, and named `dbus-daemon`,
-  which is not a package. That is the same defect I had already fixed in
-  `probe`, left standing in its twin. The line is now derived from what is
+  which is not a package. That is the same defect already fixed once in
+  `probe` and left standing in its twin. The line is now derived from what is
   absent and deduplicated: hiding `xdotool`, `import`, `identify` and `flock`
   reports four missing tools and three packages, with `imagemagick` named once
   for the two binaries it provides.
 - The stray-process warning, added after turning the instrument question on
-  my own tree walk. The walk follows `ppid`, so a descendant that is reparented
+  the tree walk here. The walk follows `ppid`, so a descendant reparented
   by double-forking or by an intermediary exiting has its `ppid` set to 1 and
   leaves the tree SILENTLY. Demonstrated rather than assumed: a `setsid`
   grandchild whose parent exits stays alive and stops being counted, and
@@ -653,8 +656,8 @@ Verified against `perfhost`, and the probe additionally against
 - The decoy rejection, and this one found a real hole rather than confirming an
   assumption. Proving it against live `xdotool` output on a spare `Xvfb`, with
   a 10x10 window mapped at `+10+10` in the shape vitrum's decoy takes, showed
-  the format is `Geometry: 10x10` on its own indented line. But the matcher I
-  had, `*"Geometry: 10x10"*`, also rejected a real `10x100` window, because a
+  the format is `Geometry: 10x10` on its own indented line. But that matcher,
+  `*"Geometry: 10x10"*`, also rejected a real `10x100` window, because a
   substring test has no right-hand boundary. It was written to close the
   `810x102` collision in the unanchored form and it silently kept a collision
   of its own at the other end. Neither is reachable at the sizes vitrum uses,
@@ -680,8 +683,8 @@ Verified against `perfhost`, and the probe additionally against
   re-verified on both hosts.
 
 A guard can be right and never run. Proving the two separately, because a
-sibling agent spent today finding that everything they had proved the DECISION
-and nothing proved anything CALLED it:
+review elsewhere in this tree found guards proved as a DECISION with nothing
+proving anything CALLED them:
 
 | guard | correct | reached |
 |---|---|---|
@@ -711,8 +714,8 @@ Nothing here proves that each of N windows is showing a DIFFERENT session. The
 rig creates N sessions, opens N windows each carrying a distinct
 `vitrum://session/<id>`, asserts both counts and requires them to agree, but
 "window 7 is displaying session 7" is the client's own state and is not visible
-from outside it. GOAL.md records that exact mistake costing a measurement once
-already. If you need the 398 MB figure to mean what it says, check the windows
+from outside it. That exact mistake has cost a measurement here once already.
+If you need the 398 MB figure to mean what it says, check the windows
 by eye on the first run, or have the client expose what it is showing.
 
 Install the packages the probe names for whichever host you pick, then run

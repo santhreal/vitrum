@@ -24,7 +24,7 @@ Read the [Code of Conduct](CODE_OF_CONDUCT.md) before you open anything.
   the supporting crates: UI state, formatting, platform calls, scrollback
   search, recorded sessions, benchmarks.
 - `vendor/` and `vendor-pty/` - vendored forks. See the fork policy below.
-- `harness/` - the measurement scripts the README's numbers come from.
+- `harness/` - the measurement scripts `docs/performance.md` reports.
 - `packaging/` - the release archive script CI runs on every push.
 
 ## Build and test
@@ -38,7 +38,7 @@ The toolchain is pinned by `rust-toolchain.toml`. `rustup` reads it and
 installs the right nightly by itself, so you do not pick a version.
 
 Two system dependencies, not one. The client links the system webview, and
-`README.md` lists the package name for each platform.
+`docs/install.md` lists the package name for each platform.
 
 `vitrum-vt` also needs a **Zig toolchain, exactly 0.15.2**, because its default
 `vendored` feature builds libghostty from source and pins the engine commit the
@@ -47,11 +47,11 @@ tests ran against. Without `zig` on your `PATH` the two commands above stop at
 directory`, which comes from that crate's build script and does not say what
 to install.
 
-The version is not advice. It is the one Ghostty pins, and a newer Zig fails
-Ghostty's own build-version check, so installing the latest release is a
-different failure rather than a safer one. CI pins 0.15.2 in every workflow
-that builds the engine, and a test asserts this paragraph still names the same
-version they do.
+The version is fixed by Ghostty's own pin, and a newer Zig fails Ghostty's
+build-version check, so installing the latest release is a different failure
+rather than a safer one. CI pins 0.15.2 in every workflow that builds the
+engine, and a test asserts this paragraph still names the same version they
+do.
 
 The `system` feature links a libghostty the platform already provides and
 needs no Zig, but only when one is actually discoverable:
@@ -73,8 +73,9 @@ Everything outside `vitrum-vt` builds without Zig, which is why
 
 CI runs the same two commands with `RUSTFLAGS: -D warnings`, so a warning is
 a failed build. A helper that is only reachable on one platform is dead code
-on the other two and will fail there while passing for you. `RELEASING.md`
-gives the cross-target `cargo check` lines that catch that before you push.
+on the other two and will fail there while passing for you. The
+`macos compiles` and `windows compiles` jobs in `.github/workflows/ci.yml`
+cross-check both targets on every push.
 
 Clippy is advisory. CI runs `cargo clippy --release --workspace` with
 `continue-on-error`, and it reports rather than blocks. Fix the findings that
@@ -103,8 +104,8 @@ back.
   Ship the whole path or do not ship it.
 - **No em dashes in prose.** Docs, comments, and commit messages use commas,
   colons, or a second sentence.
-- **No hype.** A number in the docs is one somebody measured on a named host,
-  and `harness/` holds the way to measure it again.
+- **No hype.** A number in the docs was measured on a named host, and
+  `harness/` holds the way to measure it again.
 
 ## Vendored forks
 
@@ -122,7 +123,7 @@ declared list. `vendor-pty/README.md` names its single divergence, in
 
 - Do not fix an unrelated bug inside a vendored tree. Send it upstream.
 - Do not reformat, restructure, or tidy vendored files. Every diff against
-  upstream has to be one somebody chose.
+  upstream has to be a deliberate one.
 - If you do need a new divergence, write it down where that fork records
   them, with the reason and the condition under which it can be dropped.
 - Never change the license or the copyright header in either tree.
@@ -135,8 +136,9 @@ declared list. `vendor-pty/README.md` names its single divergence, in
 2. Work on a branch off `main`.
 3. Keep the change to one thing. A rename and a fix in one diff cost more to
    review than both separately.
-4. Update `README.md` and `CHANGELOG.md` in the same change when
-   the observable behaviour moves.
+4. Update `CHANGELOG.md` and the page under `docs/` that owns the behaviour in
+   the same change. Edit `README.md` only when what the product is, or how it
+   is installed, changed.
 5. Commit messages say why the change is being made.
 
 Before you open a pull request:

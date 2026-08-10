@@ -6,7 +6,7 @@ Copyright holder:
 Contributors are listed in the git history. See:
   https://github.com/santhreal/vitrum/graphs/contributors
 
-vitrum carries two vendored forks that are somebody else's work, kept under
+vitrum carries two vendored forks that are other projects' work, kept under
 their own upstream copyright and their own MIT license:
 
   vendor/      a fork of Dioxus desktop

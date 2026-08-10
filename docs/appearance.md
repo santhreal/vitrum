@@ -57,7 +57,6 @@ release.
 </p>
 
 `assets/logo/vitrum.svg` is the only place the mark's shape is written down.
-Every raster the platforms need — the window icon, the Windows `.ico`, the
-macOS `.icns`, the freedesktop hicolor PNGs — is computed from that geometry at
-build time by `vitrum-os`, so there is no second copy of the mark to drift from
-this one.
+The window icon, the Windows `.ico`, the macOS `.icns` and the freedesktop
+hicolor PNGs are computed from that geometry at build time by `vitrum-os`. No
+raster of the mark is committed.

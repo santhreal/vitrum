@@ -48,10 +48,10 @@ one in `vitrum-proto` and a second in JavaScript.
 cell grid to reconstruct a screen, and it agrees with libghostty about how many
 columns a character takes because the tests take their samples from the engine.
 The wgpu renderer in the same crate does not yet paint a session: the window
-draws terminals with xterm.js. `app/src/pane` is the replacement — a native GTK
-drawing area, its XID, and a wgpu surface on it — behind the `native-pane`
-feature until it can host a session, and the reason to make that move is one
-parser and OSC 7 and OSC 133 semantics a webview cannot have, not frame rate.
+draws terminals with xterm.js. `app/src/pane` is the replacement, a native GTK
+drawing area with its XID and a wgpu surface on it, behind the `native-pane`
+feature until it can host a session. The move buys one parser and OSC 7 and
+OSC 133 semantics a webview cannot have, not frame rate.
 
 Development, testing and the fork policy are in
 [CONTRIBUTING.md](../CONTRIBUTING.md).

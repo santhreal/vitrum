@@ -57,8 +57,9 @@ Both scripts resolve the latest release, check the archive against the release
 `SHA256SUMS`, install nothing on a mismatch, place `vitrum` and `vitrum-server`
 on `PATH`, and add a launcher entry. `vitrum update` repeats that in place.
 
-Linux needs a WebKit runtime: `libwebkit2gtk-4.1` on Debian and Ubuntu,
-`webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch. macOS and Windows ship one.
+Linux needs a WebKit runtime. The installer names the package for your
+distribution and stops before downloading if it is missing. macOS and Windows
+ship one.
 
 Building from source: [docs/install.md](docs/install.md).
 
@@ -99,8 +100,11 @@ anywhere in the app.
 
 ## Status
 
-Pre-release, version 0.1.2. Linux is exercised end to end. macOS and Windows
-compile and are untested. Collision detection is Linux only.
+vitrum is at version 0.1.2. Linux, macOS and Windows build and pass the full
+test suite: Linux on every push, macOS and Windows on every release tag and
+nightly. Interactive use is exercised on Linux. Collision detection is Linux
+only. Compositor blur is Linux only; Mica, Acrylic and `NSVisualEffectView`
+are not in this release.
 
 ## License
 

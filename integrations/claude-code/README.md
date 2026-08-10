@@ -19,23 +19,26 @@ Copy the hook onto your path:
 
 Then merge `settings.json` into `~/.claude/settings.json`, or into
 `.claude/settings.json` inside a project to scope it there. If you already have
-a `hooks` block, add these three entries to it rather than replacing it.
+a `hooks` block, add these entries to it rather than replacing it.
 
 The events map to states like this:
 
-| Claude Code event  | vitrum state | what the row shows      |
-| ------------------ | ------------ | ----------------------- |
-| `Notification`     | `approval`   | amber, counted as waiting |
-| `UserPromptSubmit` | `working`    | working                 |
-| `Stop`             | `ready`      | finished                |
+| Claude Code event                        | vitrum state | what the row shows        |
+| ---------------------------------------- | ------------ | ------------------------- |
+| `Notification` / `permission_prompt`     | `approval`   | amber, counted as waiting |
+| `Notification` / `elicitation_dialog`    | `input`      | amber, counted as waiting |
+| `UserPromptSubmit`                       | `working`    | working                   |
+| `Stop`                                   | `ready`      | finished                  |
 
-`input` is the fourth state and nothing here emits it. Claude Code raises one
-`Notification` event for both "may I run this" and "answer my question", and
-guessing which one it was from the message text would put the wrong badge on the
-row. A wrong badge is worse than a general one: `approval` and `input` both mean
-you are being waited on, and `approval` says so without inventing a distinction
-Claude Code did not make. Emit `vitrum hint input` yourself if you have a
-harness that knows the difference.
+`Notification` fires for several unrelated things, so each entry matches one
+`notification_type` rather than the event. Without a matcher, an
+`auth_success` notification puts an `approval` badge on a row that is not
+waiting for anything, and a wrong badge is worse than no badge.
+
+The types nothing here emits a hint for are `idle_prompt`, which `Stop` has
+already reported, and `auth_success`, `elicitation_complete`,
+`elicitation_response`, `agent_needs_input` and `agent_completed`, none of
+which say anything about the session in the pane.
 
 ## Checking it works
 

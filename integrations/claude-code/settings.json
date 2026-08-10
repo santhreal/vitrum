@@ -2,10 +2,20 @@
   "hooks": {
     "Notification": [
       {
+        "matcher": "permission_prompt",
         "hooks": [
           {
             "type": "command",
             "command": "vitrum-claude-hook approval"
+          }
+        ]
+      },
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vitrum-claude-hook input"
           }
         ]
       }

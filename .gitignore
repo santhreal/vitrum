@@ -13,12 +13,8 @@
 # never committed: the digest changes on every rebuild of the same source.
 /dist/
 
-# Review notes, one per project, deliberately not shared.
+# Local notes. Not published.
 BACKLOG.md
-
-# Internal operating notes: how work is staged, gated and landed here. The
-# public repository carries contributor-facing rules only, so this directory
-# is deliberately not shared and must never be committed.
 /.internal/
 
 # Capture artifacts. Scoped, NOT a global *.png: a blanket rule would silently

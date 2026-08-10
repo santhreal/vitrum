@@ -255,6 +255,22 @@ impl<'a> ParallelSearch<'a> {
         truncated |= all_hits.len() > query_ref.max_hits;
         all_hits.truncate(query_ref.max_hits);
 
+        // Each worker enforced the byte budget over its own partition, so the
+        // concatenation may hold up to one budget per worker. The returned
+        // answer carries one, which is the number the caller was promised;
+        // the peak during aggregation is worker count times that, and is what
+        // this path trades for its throughput.
+        let mut spent = 0usize;
+        let affordable = all_hits
+            .iter()
+            .take_while(|hit| {
+                spent += hit.answer_bytes();
+                spent <= query_ref.max_answer_bytes
+            })
+            .count();
+        truncated |= affordable < all_hits.len();
+        all_hits.truncate(affordable);
+
         let sessions_hit = all_hits
             .windows(2)
             .filter(|pair| pair[0].session != pair[1].session)
@@ -474,6 +490,14 @@ struct ScanState {
     session: Option<u64>,
     /// Hits taken from `session` so far, across every haystack it was split into.
     session_hits: usize,
+    /// Line text still affordable, in bytes, across the whole sweep.
+    ///
+    /// Spent by every line a hit carries: the hit's own line twice, and each
+    /// context line as it is attached. Reaching zero ends the sweep the same
+    /// way the hit cap does, because the hit cap alone bounds rows and not
+    /// bytes, and a client picks the size of a row by choosing which session
+    /// to search.
+    answer_budget: usize,
 }
 
 impl ScanState {
@@ -486,6 +510,7 @@ impl ScanState {
             pending: Vec::with_capacity(pending_cap),
             session: None,
             session_hits: 0,
+            answer_budget: query.max_answer_bytes,
         }
     }
 }
@@ -523,6 +548,11 @@ fn scan_one(
     // after-context, then leave.
     let mut draining = false;
     let mut global_cap_reached = false;
+    // Set when the answer has grown as large as it may. Unlike the hit cap
+    // this ends the sweep outright, including the after-context of hits
+    // already found: every one of those is more line text, which is the exact
+    // quantity that has run out.
+    let mut budget_spent = false;
 
     let mut chunk_possible_stack = [true; 16];
     let chunk_possible_vec: Vec<bool>;
@@ -574,6 +604,11 @@ fn scan_one(
         // one or two lines ago.
         let mut slot = 0;
         while slot < state.pending.len() {
+            if bytes.len() > state.answer_budget {
+                budget_spent = true;
+                break;
+            }
+            state.answer_budget -= bytes.len();
             let hit = state.pending[slot];
             results.hits[hit].after.push(ContextLine {
                 seq: haystack.base_seq + span.offset,
@@ -585,6 +620,12 @@ fn scan_one(
             } else {
                 slot += 1;
             }
+        }
+        if budget_spent {
+            results.truncated = true;
+            state.pending.clear();
+            global_cap_reached = true;
+            break;
         }
 
         if draining {
@@ -607,6 +648,18 @@ fn scan_one(
         while let Some(range) = matcher.find_at(visible, from) {
             let original_range = map.range(range.clone());
             let line_seq = haystack.base_seq + span.offset;
+
+            // Priced from the spans before anything is copied, so a hit that
+            // cannot be afforded costs no allocation at all.
+            let context_bytes: usize = state.before.iter().map(|context| context.len).sum();
+            let cost = bytes.len() + visible.len() + context_bytes;
+            if cost > state.answer_budget {
+                budget_spent = true;
+                results.truncated = true;
+                global_cap_reached = true;
+                break;
+            }
+            state.answer_budget -= cost;
 
             // `collect` from an ExactSizeIterator already reserves exactly
             // once, so spelling the loop out by hand buys nothing.
@@ -660,6 +713,11 @@ fn scan_one(
             if from > visible.len() {
                 break;
             }
+        }
+
+        if budget_spent {
+            state.pending.clear();
+            break;
         }
 
         if draining && state.pending.is_empty() {

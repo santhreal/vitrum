@@ -46,6 +46,21 @@ impl Pattern {
 /// thousand lines of context is asking for the scrollback, not for a search.
 pub const MAX_CONTEXT: usize = 64;
 
+/// Line text one search may return, in bytes, across every hit.
+///
+/// The hit and context caps bound how many rows come back; they do not bound
+/// how big a row is. A session may hold ten megabytes of one-kilobyte lines,
+/// and a pattern matching every one of them then returns ten thousand hits
+/// each carrying its line twice plus sixty-four context lines on each side:
+/// measured at 1.27 GB of heap from a 10 MiB ring, before the answer is
+/// projected onto the wire, which copies it again. Every factor in that
+/// product is chosen by the client, so the product needs a cap of its own.
+///
+/// Eight megabytes is far more than a result list anyone reads and far less
+/// than one session's ring. A sweep that reaches it stops and reports
+/// `truncated`, exactly as it does for the hit cap.
+pub const DEFAULT_MAX_ANSWER_BYTES: usize = 8 * 1024 * 1024;
+
 /// A search request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Query {
@@ -71,6 +86,12 @@ pub struct Query {
     /// Off by default: a log line that says `error` six times is one finding,
     /// and six rows of identical context is noise.
     pub all_matches_per_line: bool,
+    /// Line text this search may return in total, in bytes.
+    ///
+    /// The other caps count rows. This one counts what the rows weigh, which
+    /// is the only quantity the client does not also choose. Defaults to
+    /// [`DEFAULT_MAX_ANSWER_BYTES`].
+    pub max_answer_bytes: usize,
 }
 
 impl Query {
@@ -95,6 +116,7 @@ impl Query {
             max_hits: 1_000,
             max_hits_per_session: 200,
             all_matches_per_line: false,
+            max_answer_bytes: DEFAULT_MAX_ANSWER_BYTES,
         }
     }
 
@@ -132,6 +154,12 @@ impl Query {
 
     pub fn max_hits_per_session(mut self, hits: usize) -> Self {
         self.max_hits_per_session = hits;
+        self
+    }
+
+    /// Cap the line text the answer may carry, in bytes.
+    pub fn max_answer_bytes(mut self, bytes: usize) -> Self {
+        self.max_answer_bytes = bytes;
         self
     }
 

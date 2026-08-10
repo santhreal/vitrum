@@ -89,5 +89,5 @@ pub use chunks::{Chunked, Haystack, LineSpan, Lines};
 pub use error::{Error, Result};
 pub use hit::{ContextLine, Hit, SearchResults};
 pub use matcher::Matcher;
-pub use query::{MAX_CONTEXT, Pattern, Query};
-pub use search::{Sweep, search, search_with};
+pub use query::{DEFAULT_MAX_ANSWER_BYTES, MAX_CONTEXT, Pattern, Query};
+pub use search::{Sweep, search, search_parallel, search_with, search_with_parallel};

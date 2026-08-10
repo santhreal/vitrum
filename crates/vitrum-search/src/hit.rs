@@ -113,6 +113,24 @@ impl Hit {
     pub fn order_key(&self) -> (u64, u64, u64) {
         (self.session, self.line_seq, self.match_seq)
     }
+
+    /// Bytes of line text this hit owns: the line twice, plus every context
+    /// line on both sides.
+    ///
+    /// This is what a hit costs the heap, and it is what
+    /// [`Query::max_answer_bytes`](crate::Query::max_answer_bytes) is spent
+    /// on. The fixed fields are not counted: they are a constant per hit and
+    /// the cap already bounds how many hits there are, while the line text is
+    /// the part a session's own output decides the size of.
+    pub fn answer_bytes(&self) -> usize {
+        let context: usize = self
+            .before
+            .iter()
+            .chain(self.after.iter())
+            .map(|line| line.bytes.len())
+            .sum();
+        self.line.len() + self.visible.len() + context
+    }
 }
 
 /// Everything a search found, plus what it cost.
@@ -147,6 +165,14 @@ impl SearchResults {
     /// Throughput helper: megabytes examined.
     pub fn megabytes_scanned(&self) -> f64 {
         self.bytes_scanned as f64 / (1024.0 * 1024.0)
+    }
+
+    /// Total line text carried by every hit.
+    ///
+    /// Bounded by [`Query::max_answer_bytes`](crate::Query::max_answer_bytes)
+    /// for results this crate produced.
+    pub fn answer_bytes(&self) -> usize {
+        self.hits.iter().map(Hit::answer_bytes).sum()
     }
 }
 

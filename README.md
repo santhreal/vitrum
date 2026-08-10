@@ -9,12 +9,15 @@ and opencode. Every agent gets a row in a sidebar carrying its branch, its
 working directory and its state, grouped by project.
 
 <p align="center">
-  <img src="assets/screenshots/hero-sidebar-five-states.png" alt="Three projects in the vitrum sidebar, each holding several agents: one Claude Code session waiting for approval, one Codex session working, one Gemini CLI session ready, one waiting for input and one failed, beside the transcript of the session stopped on an approval prompt" width="900" />
+  <img src="assets/screenshots/hero-sidebar-five-states.png" alt="Three projects in the vitrum sidebar, each holding several agents: a Claude Code session stopped on an approval prompt, two working, one waiting for input, one failed and two ready, each row carrying its working directory and its branch, beside the transcript of the session waiting for approval" width="900" />
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over a sidebar where a Claude Code session waits for approval and a Codex session is working: a directory, a name to run, saved entries for Claude Code, Codex, Gemini CLI, opencode and veyyon, and a numbered list of agents to start in each project" width="440" />
-  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings over a sidebar where a Codex session is working and a Claude Code session waits for approval: theme, density, text scale, reduce motion and window opacity" width="440" />
+  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher: a directory to start in, a name to run, saved entries for Claude Code, Codex, Gemini CLI, opencode and veyyon, and a numbered list of running agents to switch to, each with its project and branch" width="720" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings on the Appearance tab: theme, density, text scale and reduce motion, with Sidebar, Workspaces, Presets, Terminal, Notifications, Keyboard, Advanced and About beside them" width="845" />
 </p>
 
 ## Install

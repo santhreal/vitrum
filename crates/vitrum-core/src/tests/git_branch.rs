@@ -110,3 +110,87 @@ fn an_empty_head_reports_none() {
     dir.write(".git/HEAD", "");
     assert_eq!(git_branch(&dir.path), None);
 }
+
+// A repository is untrusted input.
+//
+// The class these close: `git_branch` treating `.git` as data the product
+// wrote. It is not. The directory arrives on `createSession` from the client,
+// resolution then walks up from it, and the two files it reads are named by
+// whatever is on disk there. Reading them with `fs::read_to_string` makes the
+// size of the allocation and the duration of the call properties of that
+// directory, and this runs on the spawn path, on a Tokio worker.
+//
+// What they do not catch: a file that is regular and under the cap and still
+// hostile. That is the parser's problem, and the cases above cover it.
+
+/// A HEAD larger than the cap must report no branch.
+///
+/// Truncating it instead would be worse than refusing: the first line of a
+/// large file is a perfectly plausible ref name, so a truncated read reports a
+/// branch the repository is not on.
+#[test]
+fn an_oversized_head_reports_none() {
+    let dir = TempDir::new("hugehead");
+    let mut head = String::from("ref: refs/heads/");
+    head.push_str(&"a".repeat(64 * 1024));
+    dir.write(".git/HEAD", &head);
+    assert_eq!(git_branch(&dir.path), None);
+}
+
+/// An oversized `.git` pointer file must report no branch. It is read before
+/// HEAD is, so it is the first of the two files a directory chooses the size
+/// of.
+///
+/// This one also passes against an unbounded read, because the padding makes
+/// the path bogus and the parse refuses it anyway. It is here to pin the
+/// outcome against a later parser that tolerates trailing junk and would then
+/// hand a directory-sized string to that parse.
+#[test]
+fn an_oversized_gitdir_file_reports_none() {
+    let dir = TempDir::new("hugegitdir");
+    let real = TempDir::new("hugegitdir-real");
+    real.write("HEAD", "ref: refs/heads/main\n");
+    let mut pointer = format!("gitdir: {}\n", real.path.display());
+    pointer.push_str(&"#".repeat(64 * 1024));
+    dir.write(".git", &pointer);
+    assert_eq!(git_branch(&dir.path), None);
+}
+
+/// A HEAD that is a fifo must report no branch, and must do so now.
+///
+/// Opening a reader-side fifo with no writer blocks until one arrives. Nobody
+/// is going to write to this one, so a blocking open parks the calling thread
+/// for the life of the process. The failure this asserts against is therefore
+/// a hang, and the assertion is that the call returns at all.
+#[cfg(unix)]
+#[test]
+fn a_fifo_head_does_not_park_the_caller() {
+    use std::ffi::CString;
+
+    let dir = TempDir::new("fifohead");
+    std::fs::create_dir_all(dir.join(".git")).expect("creating .git");
+    let path = CString::new(dir.join(".git/HEAD").into_os_string().into_encoded_bytes())
+        .expect("a temp path holds no interior nul");
+    // SAFETY: a nul-terminated path into a directory this test just created.
+    let made = unsafe { libc::mkfifo(path.as_ptr(), 0o644) };
+    assert_eq!(made, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let probe = dir.path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(git_branch(&probe));
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(branch) => assert_eq!(branch, None, "a fifo is not a ref"),
+        Err(_) => panic!("git_branch has not returned after 5s: a fifo in .git parks the spawn path"),
+    }
+}
+
+/// A directory at HEAD must report no branch rather than an io error path that
+/// depends on the platform.
+#[test]
+fn a_directory_at_head_reports_none() {
+    let dir = TempDir::new("dirhead");
+    std::fs::create_dir_all(dir.join(".git/HEAD")).expect("creating a HEAD directory");
+    assert_eq!(git_branch(&dir.path), None);
+}

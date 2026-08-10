@@ -1965,6 +1965,46 @@ fn spawn_failure(command: &str, e: &anyhow::Error) -> SessionError {
     }
 }
 
+/// Longest repository pointer file this daemon will read, in bytes.
+///
+/// `.git/HEAD` holds a ref name or an object id and a `.git` file holds one
+/// `gitdir:` line, so a kilobyte is already absurd and eight is beyond
+/// argument. Without a bound the size of the read is chosen by the directory,
+/// and the directory is chosen by whoever sent `createSession`.
+const REPO_FILE_MAX: u64 = 8 * 1024;
+
+/// Read a repository file, bounded, and never blocking on it.
+///
+/// Two properties, both of which `fs::read_to_string` lacks and both of which
+/// matter because this runs on the spawn path with a directory a client named:
+///
+/// - **Bounded.** At most [`REPO_FILE_MAX`] bytes are read, and a larger file
+///   is refused rather than truncated: half a ref name names another branch.
+/// - **Regular files only.** A fifo at `.git/HEAD` parks the caller until
+///   somebody writes to it, and the caller is a Tokio worker thread inside
+///   `SessionManager::spawn`. Unix opens with `O_NONBLOCK` so the fifo case is
+///   detected instead of waited on; the type check then refuses it, along with
+///   a directory, a device and a socket.
+fn read_repo_file(path: &Path) -> Option<String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    // Interrogated through the open handle, so the answer is about the file
+    // that was opened rather than about whatever the path named a moment ago.
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > REPO_FILE_MAX {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(REPO_FILE_MAX).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
 /// Current branch of the repository containing `dir`, if any.
 ///
 /// This reads `.git/HEAD` directly and walks up at most as far as the
@@ -1977,14 +2017,14 @@ pub(crate) fn git_branch(dir: &Path) -> Option<String> {
         let git_dir = match std::fs::metadata(&dot) {
             Ok(m) if m.is_dir() => Some(dot.clone()),
             // A worktree or submodule has `.git` as a file pointing elsewhere.
-            Ok(m) if m.is_file() => std::fs::read_to_string(&dot).ok().and_then(|s| {
+            Ok(m) if m.is_file() => read_repo_file(&dot).and_then(|s| {
                 let p = Path::new(s.trim().strip_prefix("gitdir:")?.trim()).to_path_buf();
                 Some(if p.is_absolute() { p } else { d.join(p) })
             }),
             _ => None,
         };
         if let Some(git_dir) = git_dir {
-            let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+            let head = read_repo_file(&git_dir.join("HEAD"))?;
             let head = head.trim();
             return match head.strip_prefix("ref:") {
                 // The whole branch name, not its last component. Dropping the

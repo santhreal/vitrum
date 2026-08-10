@@ -250,6 +250,14 @@ jobs:
       - name: the abi gate holds its fixtures
         run: ./tools/release/check-abi-test.sh
 
+      # The step that turns `curl | sh` into one command: it acquires root and
+      # runs a package manager, and everything it decides before doing that
+      # needs a machine this runner is not. Each case is an os-release file, a
+      # stubbed `id` and a stubbed package manager, asserting the exit status
+      # and the exact sentence.
+      - name: the dependency step holds its fixtures
+        run: ./tools/release/install-deps-test.sh
+
       # The version literal lives in 23 places and the published target set in
       # three files. Both are checked here rather than discovered by the first
       # person to run an installer against a release.

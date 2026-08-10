@@ -19,10 +19,14 @@
 #
 # Everything this script writes is recorded in an install manifest, and
 # `--uninstall` removes exactly what the manifest lists. A machine that has a
-# proxy, no write permission, a running vitrum, a truncated download, an
-# unsupported libc, or a library this build needs and this machine has not
-# got, is told which of those it is, and the installer exits non-zero without
-# installing half of anything.
+# proxy, no write permission, a running vitrum, a truncated download or an
+# unsupported libc is told which of those it is, and the installer exits
+# non-zero without installing half of anything.
+#
+# A shared library this build needs and this machine has not got is installed
+# with the distribution's own package manager. Every command that acquires
+# root is printed before it runs, and the library is checked again afterwards.
+# `--no-deps` turns that off and names the command to run by hand instead.
 
 set -eu
 
@@ -32,10 +36,18 @@ INSTALL_DIR="${VITRUM_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="${VITRUM_BASE_URL:-}"
 INTEGRATE=1
 RUNTIME_CHECK=1
+INSTALL_DEPS=1
 UNINSTALL=0
 if [ -n "${VITRUM_NO_INTEGRATE:-}" ]; then INTEGRATE=0; fi
 if [ -n "${VITRUM_NO_RUNTIME_CHECK:-}" ]; then RUNTIME_CHECK=0; fi
+if [ -n "${VITRUM_NO_DEPS:-}" ]; then INSTALL_DEPS=0; fi
 TMPDIR_SELF=""
+
+# The root this installer reads this machine's identity and shared libraries
+# from. Empty in every real install, which means `/`. Pointing it at a
+# directory tree shows what the installer does on another machine, which is
+# how its refusals are checked without one of each distribution to hand.
+SYSROOT="${VITRUM_SYSROOT:-}"
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 MANIFEST="$DATA_DIR/vitrum/install-manifest"
@@ -113,6 +125,8 @@ Options:
   --no-runtime-check      install even though this machine is missing a
                           library the build needs, for an image that adds it
                           separately
+  --no-deps               do not install missing libraries; print the command
+                          that installs them and stop
   --uninstall             remove everything this installer wrote, and nothing
                           else
   -h, --help              show this help and exit
@@ -124,19 +138,27 @@ Environment:
   GITHUB_TOKEN            bearer token for the GitHub API
   VITRUM_NO_INTEGRATE     set to anything for --no-integrate
   VITRUM_NO_RUNTIME_CHECK set to anything for --no-runtime-check
+  VITRUM_NO_DEPS          set to anything for --no-deps
+  VITRUM_SYSROOT          read this machine's identity and shared libraries
+                          from under this directory instead of from `/`, to
+                          see what this installer does on another machine
 
 Beyond the binaries, the installer adds a launcher entry, puts the install
 directory on your `PATH` for bash, zsh and fish, and defines `vu` as
 `vitrum update`. Each step is idempotent and each is skipped by
 --no-integrate.
 
+On Linux, a shared library the build needs and this machine has not got is
+installed with the distribution's own package manager, as root through `sudo`
+when this is not already root. Each command is printed before it runs.
+
 The installer downloads `vitrum-<version>-<target>.tar.gz` and the release
 `SHA256SUMS`, refuses to install if the digests disagree, and then places
 `vitrum` and `vitrum-server` in the install directory. Both are needed: the
 client will not run without the daemon beside it or on your `PATH`.
 
-Published targets are x86_64 Linux (glibc), Apple silicon macOS, Intel macOS,
-and x86_64 Windows. On any other platform, build from source:
+Published targets are x86_64 and arm64 Linux (glibc), Apple silicon macOS,
+Intel macOS, and x86_64 Windows. On any other platform, build from source:
 
   git clone https://github.com/santhreal/vitrum && cd vitrum && cargo build --release
 EOF
@@ -184,6 +206,9 @@ while [ $# -gt 0 ]; do
             ;;
         --no-runtime-check)
             RUNTIME_CHECK=0
+            ;;
+        --no-deps)
+            INSTALL_DEPS=0
             ;;
         --uninstall)
             UNINSTALL=1
@@ -560,28 +585,7 @@ need() {
     command -v "$1" >/dev/null 2>&1 || die "$1 is required and was not found" "$2"
 }
 
-case "$BASE_URL" in
-    file://*)
-        # A local copy of the assets is read, not downloaded, so an air-gapped
-        # host with neither curl nor wget can still install. Requiring a
-        # downloader here would contradict the advice the failure below gives.
-        FETCH="file"
-        ;;
-    *)
-        if command -v curl >/dev/null 2>&1; then
-            FETCH="curl"
-        elif command -v wget >/dev/null 2>&1; then
-            FETCH="wget"
-        else
-            die "neither curl nor wget is available, so nothing can be downloaded" \
-                "Install one of them: 'sudo apt install curl', 'sudo dnf install curl'," \
-                "'sudo pacman -S curl' or 'brew install curl'." \
-                "Or download the archive and its SHA256SUMS by hand from" \
-                "https://github.com/$REPO/releases, put them in one directory, and run" \
-                "this script again with --base-url=file:///that/directory --version=X.Y.Z"
-        fi
-        ;;
-esac
+FETCH=""
 
 need tar "Install tar, or unpack the release archive by hand."
 
@@ -670,16 +674,18 @@ fetch_api() {
 # platform
 # ============================================================
 
-# Exactly the four triples `.github/workflows/release.yml` builds and uploads.
+# Exactly the triples `.github/workflows/release.yml` builds and uploads.
 # Anything else has no asset to download, so it is told what it is and what to
 # do about it, rather than being sent to a URL that answers 404.
 case "$os" in
     Linux)
         case "$arch" in
             x86_64 | amd64) TARGET="x86_64-unknown-linux-gnu" ;;
+            aarch64 | arm64) TARGET="aarch64-unknown-linux-gnu" ;;
             *)
                 die "there is no published build for Linux on $arch" \
-                    "Releases carry x86_64 Linux only, so no archive exists to download." \
+                    "Releases carry x86_64 and arm64 Linux, so no archive exists to" \
+                    "download for this one." \
                     "Build from source on this machine instead:" \
                     "  https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
                     "You will need a WebKitGTK 4.1 development package first."
@@ -689,10 +695,10 @@ case "$os" in
         # install cleanly and then fail to start with a loader error naming a
         # file nobody has, so the libc is checked here instead.
         libc="glibc"
-        for loader in /lib/ld-musl-*.so.1; do
+        for loader in "$SYSROOT"/lib/ld-musl-*.so.1; do
             if [ -e "$loader" ]; then libc="musl"; fi
         done
-        if command -v ldd >/dev/null 2>&1; then
+        if [ -z "$SYSROOT" ] && command -v ldd >/dev/null 2>&1; then
             case "$(ldd --version 2>&1 | head -1)" in
                 *musl*) libc="musl" ;;
             esac
@@ -736,52 +742,70 @@ esac
 runtime_ids() {
     ri_id=""
     ri_like=""
-    if [ -r /etc/os-release ]; then
-        ri_id=$(sed -n 's/^ID=//p' /etc/os-release | head -1 | tr -d '"')
-        ri_like=$(sed -n 's/^ID_LIKE=//p' /etc/os-release | head -1 | tr -d '"')
+    ri_file="$SYSROOT/etc/os-release"
+    if [ -r "$ri_file" ]; then
+        ri_id=$(sed -n 's/^ID=//p' "$ri_file" | head -1 | tr -d '"')
+        ri_like=$(sed -n 's/^ID_LIKE=//p' "$ri_file" | head -1 | tr -d '"')
     fi
     printf '%s %s' "$ri_id" "$ri_like"
 }
 
-# The command this distribution installs packages with, or nothing when it is
-# not one this script can name a command for.
-runtime_pm() {
+# One token naming the package manager this distribution uses, or nothing when
+# it is not one this script knows. Every other decision about packages is made
+# from this token, so a distribution is recognised in one place.
+runtime_pm_id() {
     for rm_candidate in $(runtime_ids); do
         case "$rm_candidate" in
             debian | ubuntu | linuxmint | pop | elementary | raspbian | kali)
-                printf 'sudo apt install'
+                printf 'apt'
                 return 0
                 ;;
             fedora | rhel | centos | rocky | almalinux)
-                printf 'sudo dnf install'
+                printf 'dnf'
                 return 0
                 ;;
             arch | manjaro | endeavouros | cachyos)
-                printf 'sudo pacman -S'
+                printf 'pacman'
                 return 0
                 ;;
             opensuse | opensuse-tumbleweed | opensuse-leap | suse | sles)
-                printf 'sudo zypper install'
+                printf 'zypper'
                 return 0
                 ;;
             alpine)
-                printf 'sudo apk add'
+                printf 'apk'
                 return 0
                 ;;
             void)
-                printf 'sudo xbps-install -S'
+                printf 'xbps'
                 return 0
                 ;;
             gentoo)
-                printf 'sudo emerge'
+                printf 'emerge'
                 return 0
                 ;;
             nixos)
-                printf 'nix-env -iA'
+                printf 'nix'
                 return 0
                 ;;
         esac
     done
+}
+
+# The command a person runs by hand to install a package here, or nothing when
+# this distribution is not one this script can name a command for. This is the
+# line printed when the installer is not the one doing the installing.
+runtime_pm() {
+    case "$(runtime_pm_id)" in
+        apt) printf 'sudo apt install' ;;
+        dnf) printf 'sudo dnf install' ;;
+        pacman) printf 'sudo pacman -S' ;;
+        zypper) printf 'sudo zypper install' ;;
+        apk) printf 'sudo apk add' ;;
+        xbps) printf 'sudo xbps-install -S' ;;
+        emerge) printf 'sudo emerge' ;;
+        nix) printf 'nix-env -iA' ;;
+    esac
 }
 
 # The package that carries the shared library $1 on this distribution, or
@@ -876,16 +900,193 @@ webkit_package() {
 }
 
 have_webkit() {
-    if command -v ldconfig >/dev/null 2>&1; then
+    if [ -z "$SYSROOT" ] && command -v ldconfig >/dev/null 2>&1; then
         if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then return 0; fi
     fi
     for wdir in /usr/lib /usr/lib64 /lib /lib64 /usr/local/lib \
-        /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
-        for wlib in "$wdir"/libwebkit2gtk-4.1.so*; do
+        /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu \
+        /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
+        for wlib in "$SYSROOT$wdir"/libwebkit2gtk-4.1.so*; do
             if [ -e "$wlib" ]; then return 0; fi
         done
     done
     return 1
+}
+
+# ============================================================
+# installing what is missing
+# ============================================================
+#
+# Resolving the package name and then telling someone to go and run a package
+# manager themselves is half an installer. The distribution is known, the
+# package name is resolved, and the machine has the tool that installs it, so
+# the installer installs it.
+#
+# Two rules make that fit in a `curl | sh`. Every command that acquires root
+# is printed before it runs, so nothing happens off screen. And the library is
+# looked for again afterwards, so success means the library is there rather
+# than the package manager having exited zero.
+
+# `sudo`, or nothing when this is already root. Fails when it is neither: a
+# machine with no root and no sudo installs its own packages.
+#
+# No `id` is read as not root. Guessing root there runs a package manager as
+# this user and turns a sentence into a permission error.
+privilege() {
+    if [ "$(id -u 2>/dev/null)" = 0 ]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        printf 'sudo'
+        return 0
+    fi
+    return 1
+}
+
+# Prints the command in $2.. and then runs it, through $1 when $1 is set.
+run_privileged() {
+    rp_priv="$1"
+    shift
+    if [ -n "$rp_priv" ]; then
+        say "  $rp_priv $*"
+        "$rp_priv" "$@"
+    else
+        say "  $*"
+        "$@"
+    fi
+}
+
+# The packages carrying the sonames in $@, in DEPS_PKGS, and the sonames this
+# distribution packages under no name at all, in DEPS_UNPACKAGED.
+DEPS_PKGS=""
+DEPS_UNPACKAGED=""
+resolve_packages() {
+    DEPS_PKGS=""
+    DEPS_UNPACKAGED=""
+    for rl_lib in "$@"; do
+        rl_pkg=$(runtime_pkg "$rl_lib")
+        if [ -n "$rl_pkg" ]; then
+            case " $DEPS_PKGS " in
+                *" $rl_pkg "*) ;;
+                *) DEPS_PKGS="${DEPS_PKGS:+$DEPS_PKGS }$rl_pkg" ;;
+            esac
+        else
+            DEPS_UNPACKAGED="${DEPS_UNPACKAGED:+$DEPS_UNPACKAGED }$rl_lib"
+        fi
+    done
+}
+
+# Installs the packages named in $@ with this distribution's package manager,
+# asking nothing: a `curl | sh` has the script on its standard input, so a
+# package manager that stops for an answer stops for good. sudo is unaffected,
+# because it reads a password from /dev/tty and not from stdin.
+#
+# Returns 1 without running anything when there is no package manager here or
+# no way to become root, with DEPS_WHY naming which. Otherwise it returns what
+# the package manager returned.
+DEPS_WHY=""
+APT_UPDATED=0
+install_packages() {
+    DEPS_WHY=""
+    ip_pm=$(runtime_pm_id)
+    if [ -z "$ip_pm" ]; then
+        DEPS_WHY="No package manager on this distribution is known to this installer."
+        return 1
+    fi
+    # Nix installs into a user profile, so it is the one package manager here
+    # that wants no root at all.
+    if [ "$ip_pm" = nix ]; then
+        run_privileged "" nix-env -iA "$@"
+        return $?
+    fi
+    if ! ip_priv=$(privilege); then
+        DEPS_WHY="This is not root and there is no sudo on this machine, so no package can be installed from here."
+        return 1
+    fi
+    case "$ip_pm" in
+        apt)
+            # The index first: a container image ships none, and
+            # `apt-get install` on an empty index fails on a package that is
+            # in the archive. Once per run, because this is called again for
+            # the runtime after it has been called for a downloader.
+            if [ "$APT_UPDATED" = 0 ]; then
+                run_privileged "$ip_priv" apt-get update || return $?
+                APT_UPDATED=1
+            fi
+            run_privileged "$ip_priv" env DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y "$@"
+            ;;
+        dnf) run_privileged "$ip_priv" dnf install -y "$@" ;;
+        pacman)
+            if ! run_privileged "$ip_priv" pacman -S --noconfirm --needed "$@"; then
+                # A machine whose package database has never been synced,
+                # which is every container image, answers "target not found"
+                # for a package that is in the repository. Refreshing the
+                # database is the smallest thing that fixes it: `-Syu` would
+                # upgrade a machine that asked to install one program.
+                run_privileged "$ip_priv" pacman -Sy --noconfirm || return $?
+                run_privileged "$ip_priv" pacman -S --noconfirm --needed "$@"
+            fi
+            ;;
+        zypper) run_privileged "$ip_priv" zypper -n in "$@" ;;
+        apk) run_privileged "$ip_priv" apk add "$@" ;;
+        xbps) run_privileged "$ip_priv" xbps-install -Sy "$@" ;;
+        emerge) run_privileged "$ip_priv" emerge "$@" ;;
+    esac
+}
+
+# The package carrying curl. Every distribution here calls it `curl`, bar the
+# two that name a category or an attribute path.
+curl_package() {
+    case "$(runtime_pm_id)" in
+        '') ;;
+        emerge) printf 'net-misc/curl' ;;
+        nix) printf 'nixpkgs.curl' ;;
+        *) printf 'curl' ;;
+    esac
+}
+
+# curl or wget, and the one this machine has not got installed the same way
+# the runtime is. A container image ships neither, and "install curl first" is
+# the manual step this installer exists to take away.
+#
+# A `file://` base needs no downloader at all, which is what keeps an
+# air-gapped install possible, so it is answered before anything is looked for.
+resolve_downloader() {
+    case "$BASE_URL" in
+        file://*)
+            FETCH="file"
+            return 0
+            ;;
+    esac
+    if command -v curl >/dev/null 2>&1; then
+        FETCH="curl"
+        return 0
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        FETCH="wget"
+        return 0
+    fi
+    if [ "$os" = "Linux" ] && [ "$INSTALL_DEPS" = 1 ]; then
+        rd_pkg=$(curl_package)
+        if [ -n "$rd_pkg" ]; then
+            say "Nothing on this machine can download the release."
+            say "Installing $rd_pkg."
+            rd_rc=0
+            install_packages "$rd_pkg" || rd_rc=$?
+            if [ "$rd_rc" = 0 ] && command -v curl >/dev/null 2>&1; then
+                FETCH="curl"
+                say ""
+                return 0
+            fi
+        fi
+    fi
+    die "neither curl nor wget is available, so nothing can be downloaded" \
+        "Install one of them: 'sudo apt install curl', 'sudo dnf install curl'," \
+        "'sudo pacman -S curl' or 'brew install curl'." \
+        "Or download the archive and its SHA256SUMS by hand from" \
+        "https://github.com/$REPO/releases, put them in one directory, and run" \
+        "this script again with --base-url=file:///that/directory --version=X.Y.Z"
 }
 
 # A directory the installer can really write into, rather than one the mode
@@ -923,9 +1124,10 @@ assert_writable() {
 
 assert_writable "$INSTALL_DIR"
 refuse_if_client_running
+resolve_downloader
 
-if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ]; then
-    if ! have_webkit; then
+if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ] && ! have_webkit; then
+    if [ "$INSTALL_DEPS" = 0 ]; then
         die "vitrum needs a WebKit runtime and this machine has none" \
             "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
             "it the binary installs and then fails to open a window." \
@@ -935,6 +1137,49 @@ if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ]; then
             "To install anyway, for an image that adds the runtime separately, pass" \
             "--no-runtime-check."
     fi
+
+    resolve_packages libwebkit2gtk-4.1.so.0
+    if [ -n "$DEPS_UNPACKAGED" ]; then
+        die "vitrum needs a WebKit runtime and this installer cannot install one" \
+            "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
+            "it the binary installs and then fails to open a window." \
+            "No package on this distribution is known to provide it." \
+            "Install it yourself, then run this installer again." \
+            "To install anyway, for an image that adds the runtime separately, pass" \
+            "--no-runtime-check."
+    fi
+
+    say "vitrum needs libwebkit2gtk-4.1.so.0, and this machine has none."
+    say "Installing $DEPS_PKGS."
+    deps_rc=0
+    install_packages $DEPS_PKGS || deps_rc=$?
+    if [ -n "$DEPS_WHY" ]; then
+        die "vitrum needs a WebKit runtime and this installer cannot install one" \
+            "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
+            "it the binary installs and then fails to open a window." \
+            "$DEPS_WHY" \
+            "Install it yourself, then run this installer again:" \
+            "  $(webkit_package)" \
+            "To install anyway, for an image that adds the runtime separately, pass" \
+            "--no-runtime-check."
+    fi
+    if [ "$deps_rc" != 0 ]; then
+        die "the package manager could not install $DEPS_PKGS" \
+            "It exited $deps_rc, and what it printed is above this line. Nothing of" \
+            "vitrum was installed." \
+            "Install the package another way and run this installer again with" \
+            "--no-deps, which skips this step."
+    fi
+    if ! have_webkit; then
+        die "$DEPS_PKGS installed and libwebkit2gtk-4.1.so.0 is still not here" \
+            "The package manager exited zero, so the package this installer names" \
+            "for this distribution does not carry that library. Nothing of vitrum" \
+            "was installed." \
+            "Report it at https://github.com/$REPO/issues" \
+            "To install anyway, pass --no-runtime-check."
+    fi
+    say "libwebkit2gtk-4.1.so.0 is installed."
+    say ""
 fi
 
 # A re-install is normal and is stated, so the operator knows the version they
@@ -1152,30 +1397,39 @@ host_glibc() {
 # Always measured, never always acted on: --no-runtime-check turns the refusal
 # into the closing warning, so an image that adds the libraries separately
 # still gets told what it is committing to add.
-: > "$TMPDIR_SELF/unmet"
-for bin in vitrum vitrum-server; do
-    runtime_report "$TMPDIR_SELF/$bin" >> "$TMPDIR_SELF/unmet"
-done
-
+#
+# A function because it is measured twice: once to find out what is missing,
+# and again once the packages carrying it have been installed. The second pass
+# reads the loader again rather than assuming the package manager was right.
 glibc_need=""
 libs_missing=""
-while read -r ukind uvalue; do
-    case "$ukind" in
-        glibc)
-            if [ -z "$glibc_need" ]; then
-                glibc_need="$uvalue"
-            else
-                glibc_need=$(version_max "$glibc_need" "$uvalue")
-            fi
-            ;;
-        lib)
-            case " $libs_missing " in
-                *" $uvalue "*) ;;
-                *) libs_missing="${libs_missing:+$libs_missing }$uvalue" ;;
-            esac
-            ;;
-    esac
-done < "$TMPDIR_SELF/unmet"
+measure_unmet() {
+    : > "$TMPDIR_SELF/unmet"
+    for bin in vitrum vitrum-server; do
+        runtime_report "$TMPDIR_SELF/$bin" >> "$TMPDIR_SELF/unmet"
+    done
+    glibc_need=""
+    libs_missing=""
+    while read -r ukind uvalue; do
+        case "$ukind" in
+            glibc)
+                if [ -z "$glibc_need" ]; then
+                    glibc_need="$uvalue"
+                else
+                    glibc_need=$(version_max "$glibc_need" "$uvalue")
+                fi
+                ;;
+            lib)
+                case " $libs_missing " in
+                    *" $uvalue "*) ;;
+                    *) libs_missing="${libs_missing:+$libs_missing }$uvalue" ;;
+                esac
+                ;;
+        esac
+    done < "$TMPDIR_SELF/unmet"
+}
+
+measure_unmet
 
 if [ "$RUNTIME_CHECK" = 1 ]; then
     # The C library comes with the distribution release and cannot be installed
@@ -1191,32 +1445,58 @@ if [ "$RUNTIME_CHECK" = 1 ]; then
             "  https://github.com/$REPO/blob/main/CONTRIBUTING.md"
     fi
 
-    if [ -n "$libs_missing" ]; then
-        # Every missing library in one command, because being told them one
-        # install at a time is how three failed installs happen in a row.
-        pkgs=""
-        unpackaged=""
-        for mlib in $libs_missing; do
-            mpkg=$(runtime_pkg "$mlib")
-            if [ -n "$mpkg" ]; then
-                pkgs="${pkgs:+$pkgs }$mpkg"
-            else
-                unpackaged="${unpackaged:+$unpackaged }$mlib"
+    # Every missing library in one command, because being told them one
+    # install at a time is how three failed installs happen in a row.
+    if [ -n "$libs_missing" ] && [ "$INSTALL_DEPS" = 1 ]; then
+        resolve_packages $libs_missing
+        if [ -z "$DEPS_UNPACKAGED" ]; then
+            say "The build needs shared libraries this machine has not got:"
+            say "  $libs_missing"
+            say "Installing $DEPS_PKGS."
+            deps_rc=0
+            install_packages $DEPS_PKGS || deps_rc=$?
+            if [ -z "$DEPS_WHY" ] && [ "$deps_rc" != 0 ]; then
+                die "the package manager could not install $DEPS_PKGS" \
+                    "It exited $deps_rc, and what it printed is above this line." \
+                    "Nothing of vitrum was installed." \
+                    "Install the packages another way and run this installer again" \
+                    "with --no-deps, which skips this step."
             fi
-        done
-        if [ -z "$unpackaged" ]; then
+            if [ "$deps_rc" = 0 ]; then
+                measure_unmet
+                if [ -z "$libs_missing" ]; then
+                    say "Every library the build needs is now here."
+                    say ""
+                fi
+            fi
+        fi
+    fi
+
+    if [ -n "$libs_missing" ]; then
+        resolve_packages $libs_missing
+        if [ -z "$DEPS_UNPACKAGED" ] && [ -n "$DEPS_WHY" ]; then
+            die "the published build needs shared libraries this machine does not have" \
+                "Missing: $libs_missing" \
+                "$DEPS_WHY" \
+                "Nothing was installed. Install them first:" \
+                "  $(runtime_command $DEPS_PKGS)" \
+                "Then run this installer again." \
+                "To install anyway, for an image that adds them separately, pass" \
+                "--no-runtime-check."
+        fi
+        if [ -z "$DEPS_UNPACKAGED" ]; then
             die "the published build needs shared libraries this machine does not have" \
                 "Missing: $libs_missing" \
                 "Nothing was installed. Install them first:" \
-                "  $(runtime_command $pkgs)" \
+                "  $(runtime_command $DEPS_PKGS)" \
                 "Then run this installer again." \
                 "To install anyway, for an image that adds them separately, pass" \
                 "--no-runtime-check."
         fi
         die "the published build needs shared libraries this distribution does not package" \
             "Missing: $libs_missing" \
-            "Of those, $unpackaged has no package here, so there is nothing to install" \
-            "that would make this build start. Nothing was installed." \
+            "Of those, $DEPS_UNPACKAGED has no package here, so there is nothing to" \
+            "install that would make this build start. Nothing was installed." \
             "Build from source on this machine, which links against the libraries" \
             "you have:" \
             "  https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
@@ -1254,6 +1534,45 @@ if [ -n "$PREVIOUS" ]; then
     say "Replaced $PREVIOUS with vitrum $VERSION in $INSTALL_DIR."
 else
     say "Installed vitrum and vitrum-server into $INSTALL_DIR."
+fi
+
+# ============================================================
+# macOS: the download mark, and whether it starts
+# ============================================================
+#
+# macOS refuses to run a file carrying `com.apple.quarantine`, and that mark
+# is put on by whatever downloaded the file. curl does not set it and tar does
+# not invent one, so an archive this script fetched arrives unmarked; an
+# archive a browser downloaded, or one handed to --base-url from somewhere
+# else, arrives marked and passes the mark to everything unpacked out of it.
+#
+# So the mark is read rather than assumed, and cleared when it is there. Then
+# the installed binary is asked for its version, because that is the only way
+# to find out whether this machine runs it: a refusal arrives as the kernel
+# killing the process, not as a message.
+if [ "$os" = "Darwin" ]; then
+    if command -v xattr >/dev/null 2>&1; then
+        for bin in vitrum vitrum-server; do
+            if xattr -p com.apple.quarantine "$INSTALL_DIR/$bin" >/dev/null 2>&1; then
+                xattr -d com.apple.quarantine "$INSTALL_DIR/$bin" 2>/dev/null || true
+                say "Cleared the download mark on $INSTALL_DIR/$bin."
+            fi
+        done
+    fi
+    started_rc=0
+    "$INSTALL_DIR/vitrum" --version >/dev/null 2>&1 || started_rc=$?
+    if [ "$started_rc" != 0 ]; then
+        manifest_commit
+        die "the installed vitrum does not run on this machine (exit $started_rc)" \
+            "It was killed rather than answering --version, which is what macOS" \
+            "does to a binary it refuses to run." \
+            "Clear the download mark by hand and try it again:" \
+            "  xattr -dr com.apple.quarantine $INSTALL_DIR/vitrum $INSTALL_DIR/vitrum-server" \
+            "  $INSTALL_DIR/vitrum --version" \
+            "If it is still killed, this build is not signed for this machine." \
+            "Report it at https://github.com/$REPO/issues" \
+            "Remove what was written with 'sh install.sh --uninstall'."
+    fi
 fi
 
 if server_pid=$(running_pid "$INSTALL_DIR/vitrum-server"); then
@@ -1418,7 +1737,6 @@ EOF
             ln -sf "$INSTALL_DIR/vitrum-server" "$app/Contents/MacOS/vitrum-server"
             manifest_add tree "$app"
             say "  $app"
-            say "  the bundle is unsigned; the first launch needs right-click, then Open"
         else
             warn "could not write $app, so there is no launcher entry"
         fi

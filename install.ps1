@@ -8,23 +8,29 @@
 #   .\install.ps1 -Version 0.1.0      install a specific version
 #   .\install.ps1 -InstallDir C:\bin  install somewhere else
 #   .\install.ps1 -NoIntegrate        binaries only: no PATH, shortcut or `vu`
+#   .\install.ps1 -NoDeps             do not install the WebView2 runtime
 #   .\install.ps1 -Uninstall          remove everything the installer wrote
 #
 # Beyond the binaries, the installer puts the install directory on your user
 # PATH, adds a Start menu shortcut, and defines `vu` as `vitrum update`. Each
 # step is idempotent.
 #
+# WebView2 is the one system dependency on Windows. A machine without it gets
+# the Evergreen bootstrapper, downloaded from Microsoft and run unattended.
+# `-NoDeps` turns that off and names the command to run by hand instead.
+#
 # Everything written is recorded in an install manifest, so -Uninstall removes
 # exactly that and nothing else. A machine that has a proxy, no write
 # permission, a running vitrum, a truncated download, an unsupported
-# architecture or no WebView2 runtime is told which of those it is, and the
-# installer exits non-zero without installing half of anything.
+# architecture or no WebView2 runtime it can install is told which of those it
+# is, and the installer exits non-zero without installing half of anything.
 #
 # Env overrides:
 #   $env:VITRUM_VERSION       same as -Version
 #   $env:VITRUM_INSTALL_DIR   same as -InstallDir
 #   $env:VITRUM_BASE_URL      same as -BaseUrl
 #   $env:VITRUM_NO_INTEGRATE  same as -NoIntegrate
+#   $env:VITRUM_NO_DEPS       same as -NoDeps
 #   $env:GITHUB_TOKEN         bearer token for the GitHub API
 
 [CmdletBinding()]
@@ -34,6 +40,7 @@ param(
     [string]$BaseUrl = $env:VITRUM_BASE_URL,
     [switch]$NoIntegrate = [bool]$env:VITRUM_NO_INTEGRATE,
     [switch]$NoRuntimeCheck = [bool]$env:VITRUM_NO_RUNTIME_CHECK,
+    [switch]$NoDeps = [bool]$env:VITRUM_NO_DEPS,
     [switch]$Uninstall
 )
 
@@ -265,7 +272,11 @@ if ($Uninstall) {
         foreach ($name in @('vitrum.exe', 'vitrum-server.exe', 'vitrum.exe.old', 'vitrum-server.exe.old')) {
             Remove-Recorded 'file' (Join-Path $InstallDir $name)
         }
-        Remove-Recorded 'file' (Join-Path $DataRoot 'icons\vitrum.ico')
+        # The whole icon directory, not one file in it. `vitrum icons` writes
+        # a theme tree beside the .ico, the names in it come from the binary
+        # rather than from this script, and nothing else puts anything under
+        # the vitrum data directory.
+        Remove-Recorded 'tree' (Join-Path $DataRoot 'icons')
         try {
             $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'vitrum.lnk'
             Remove-Recorded 'file' $lnk
@@ -416,11 +427,55 @@ function Have-WebView2 {
     return $false
 }
 
+# PowerShell 5.1 defaults to TLS 1.0 against microsoft.com and github.com,
+# which fails the handshake rather than the download.
+function Use-Tls12 {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch {
+        # Newer runtimes negotiate this themselves and may not expose the enum.
+    }
+}
+
+# Installs the WebView2 runtime with Microsoft's Evergreen bootstrapper, the
+# same 2 MB installer `winget install Microsoft.EdgeWebView2Runtime` runs.
+# Returns nothing on success, or a sentence saying what stopped it.
+#
+# It installs per user when this session is not elevated and machine wide when
+# it is, and it asks for elevation itself if it wants it. Both register the
+# runtime where Have-WebView2 looks, which is why the answer is read from the
+# registry afterwards rather than taken from an exit status.
+function Install-WebView2 {
+    $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+    $exe = Join-Path ([IO.Path]::GetTempPath()) `
+        ('MicrosoftEdgeWebview2Setup-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    Say "  downloading $url"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing -TimeoutSec 300
+    } catch {
+        return "it could not be downloaded: $($_.Exception.Message)"
+    }
+    try {
+        Say '  MicrosoftEdgeWebview2Setup.exe /silent /install'
+        $p = Start-Process -FilePath $exe -ArgumentList '/silent', '/install' -Wait -PassThru
+        if ($p.ExitCode -ne 0) {
+            return "the bootstrapper exited $($p.ExitCode)"
+        }
+    } catch {
+        return "the bootstrapper could not be run: $($_.Exception.Message)"
+    } finally {
+        Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+    }
+    return $null
+}
+
 Assert-Writable $InstallDir
 Refuse-IfClientRunning
+Use-Tls12
 
-if (-not $NoRuntimeCheck) {
-    if (-not (Have-WebView2)) {
+if (-not $NoRuntimeCheck -and -not (Have-WebView2)) {
+    if ($NoDeps) {
         Fail 'vitrum needs the WebView2 runtime and this machine has none' @(
             'It is vitrum''s only system dependency on Windows, and without it the',
             'binary installs and then fails to open a window.',
@@ -433,6 +488,31 @@ if (-not $NoRuntimeCheck) {
             '-NoRuntimeCheck.'
         )
     }
+    Say 'vitrum needs the WebView2 runtime, and this machine has none.'
+    $problem = Install-WebView2
+    if ($problem) {
+        Fail "the WebView2 runtime could not be installed: $problem" @(
+            'Nothing of vitrum was installed.',
+            'Install the runtime yourself, then run this installer again:',
+            '  winget install Microsoft.EdgeWebView2Runtime',
+            'or download the Evergreen Runtime from',
+            '  https://go.microsoft.com/fwlink/p/?LinkId=2124703',
+            'To install anyway, for an image that adds the runtime separately, pass',
+            '-NoRuntimeCheck.'
+        )
+    }
+    if (-not (Have-WebView2)) {
+        Fail 'the WebView2 bootstrapper exited zero and the runtime is not registered' @(
+            'It reported success and left nothing behind that vitrum can use, so a',
+            'policy on this machine removed it again or the install went somewhere',
+            'this installer does not look. Nothing of vitrum was installed.',
+            'Install the runtime yourself, then run this installer again:',
+            '  winget install Microsoft.EdgeWebView2Runtime',
+            'To install anyway, pass -NoRuntimeCheck.'
+        )
+    }
+    Say '  the WebView2 runtime is installed'
+    Say ''
 }
 
 # A re-install is normal and is stated, so the operator knows the version they
@@ -556,15 +636,6 @@ New-Item -ItemType Directory -Path $work -Force | Out-Null
 try {
     $archivePath = Join-Path $work $Archive
     $sumsPath = Join-Path $work 'SHA256SUMS'
-
-    # PowerShell 5.1 defaults to TLS 1.0 against github.com, which fails the
-    # handshake rather than the download.
-    try {
-        [Net.ServicePointManager]::SecurityProtocol =
-            [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    } catch {
-        # Newer runtimes negotiate this themselves and may not expose the enum.
-    }
 
     Say "Downloading $Archive."
     try {
@@ -826,4 +897,5 @@ if ($NoRuntimeCheck -and -not (Have-WebView2)) {
 Say ''
 Say "Run 'vitrum', or open it from the Start menu."
 Say "Update with 'vitrum update', or 'vu' in a new terminal."
-Say "Remove it with '.\install.ps1 -Uninstall'."
+Say "Remove it with '.\install.ps1 -Uninstall', or without a copy of this file:"
+Say "  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$Repo/main/install.ps1))) -Uninstall"

@@ -1,25 +1,125 @@
 # Installing, updating, removing
 
-The install command is in the [README](../README.md).
+## One command
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh
+```
+
+Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 | iex
+```
+
+Nothing has to be installed first. The installer adds what the build needs on
+the machine it is running on, and refuses only when it cannot.
+
+On a container image that ships no downloader, fetch one in the same line:
+
+```sh
+command -v curl >/dev/null || { apt-get update && apt-get install -y curl; } || dnf install -y curl || apk add curl; curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh
+```
+
+A checkout needs no downloader at all. `sh install.sh` installs curl for
+itself when the machine has neither curl nor wget.
+
+## System dependencies
+
+vitrum draws its windows with a WebView, and the installer installs the one
+this machine is missing rather than naming it and stopping.
+
+| Platform | What it installs | Command |
+|---|---|---|
+| Debian, Ubuntu, Mint, Pop, Raspbian | `libwebkit2gtk-4.1-0` | `apt-get install -y` |
+| Fedora, RHEL, Rocky, Alma | `webkit2gtk4.1` | `dnf install -y` |
+| Arch, Manjaro, EndeavourOS | `webkit2gtk-4.1` | `pacman -S --noconfirm --needed` |
+| openSUSE, SLES | `libwebkit2gtk-4_1-0` | `zypper -n in` |
+| Alpine | `webkit2gtk-4.1` | `apk add` |
+| Void | `webkit2gtk` | `xbps-install -Sy` |
+| Gentoo | `net-libs/webkit-gtk:4.1` | `emerge` |
+| NixOS | `nixpkgs.webkitgtk_4_1` | `nix-env -iA` |
+| Windows | WebView2 Evergreen runtime | the Microsoft bootstrapper, `/silent /install` |
+| macOS | nothing | |
+
+Each command is printed before it runs. `sudo` is prefixed only when the
+installer is not already root, and sudo reads its password from the terminal,
+so it works inside `curl ... | sh`. NixOS installs into a user profile and
+uses no root.
+
+Afterwards the library is looked for again. A package manager that exits zero
+and leaves nothing behind is a failed install, not a finished one.
+
+The refusals that remain:
+
+| Condition | What it says |
+|---|---|
+| not root, and no sudo | `This is not root and there is no sudo on this machine, so no package can be installed from here.` |
+| a distribution with no entry above | `No package on this distribution is known to provide it.` |
+| the package manager exits non-zero | `the package manager could not install <package>`, with its status |
+| the package installs and the library is still absent | `<package> installed and libwebkit2gtk-4.1.so.0 is still not here` |
+
+Pass `--no-deps` (`-NoDeps`) to install nothing. The installer then prints the
+command that installs the runtime and exits non-zero, which is what a
+provisioning script that owns its own packages wants.
+
+The published Linux build links other shared libraries as well, and needs a C
+library new enough for the symbol versions it references. No version is
+written down here, because the installer reads both from the archive it just
+downloaded: it resolves every library the build links against this machine's
+loader, installs the packages carrying the ones that are missing, and reads
+the loader again. A build that stops linking something stops needing it, and
+a build that starts linking something new is handled the first time anyone
+installs it.
+
+A C library older than the build needs cannot be fixed by installing
+anything: it comes with the distribution release. That failure names the
+version the build requires, the version this machine has, and the two things
+that resolve it.
+
+Published x86-64 builds target the base instruction set, so they run on any
+x86-64 processor. They do not use AVX2 or AVX-512 even where the processor
+has them. A build you make yourself may target your own processor and fail
+with `SIGILL` on an older one.
+
+Published Linux builds link glibc. A musl host, such as Alpine or Void, is
+told so and pointed at a source build, rather than being handed an archive
+whose loader it does not have.
+
+## macOS
+
+The archive is fetched with curl and unpacked with tar, and neither marks
+what it writes with `com.apple.quarantine`. An archive that arrives some
+other way carries the mark and passes it to everything unpacked out of it, so
+the installer reads the mark rather than assuming it, clears it when it is
+there, and says so.
+
+It then runs the installed binary once. macOS refuses a binary it will not
+run by killing it rather than by printing anything, so asking for
+`--version` is the only way to find out. When that fails the installer names
+the exact commands that clear the mark by hand and try again.
 
 ## What the installer does
 
 1. Checks this machine before downloading anything: the architecture and libc
-   have a published build, the install directory can really be written to,
-   no `vitrum` is running from it, and the WebKit or WebView2 runtime is
-   present.
+   have a published build, the install directory can really be written to, no
+   `vitrum` is running from it, there is something to download with, and the
+   WebKit or WebView2 runtime is present or can be installed.
 2. Resolves the latest published release.
 3. Downloads the platform archive and the release `SHA256SUMS`.
 4. Checks the archive arrived whole, then compares digests. On a mismatch it
    stops, having installed nothing.
 5. Checks the downloaded build against this machine: every shared library it
    links can be resolved, and the C library is new enough for the symbol
-   versions it references. This runs before anything is written, so a machine
-   that cannot run the build keeps the copy it already had.
+   versions it references. Missing libraries are installed and the check is
+   repeated. This runs before anything is written, so a machine that cannot
+   run the build keeps the copy it already had.
 6. Places `vitrum` and `vitrum-server` in the install directory.
 7. Adds that directory to `PATH`: in `~/.profile`, in `~/.bash_profile` when
    bash has one, and in the rc of every shell you have among bash, zsh and
-   fish.
+   fish. On Windows, in the user `Path` environment variable.
 8. Adds a launcher entry: a `.desktop` file on Linux, an app bundle in
    `~/Applications` on macOS, a Start menu shortcut on Windows.
 9. Defines `vu` as `vitrum update`.
@@ -41,63 +141,28 @@ nothing, and it is recorded as created, so `--uninstall` takes it away. When
 no login file takes the entry at all, the installer says so at the end and
 prints the line to add.
 
-Default install directory:
+## What gets written, and where
 
-| Platform | Directory |
+| Path | What |
 |---|---|
-| Linux, macOS | `~/.local/bin` |
-| Windows | `%LOCALAPPDATA%\vitrum\bin` |
+| `~/.local/bin/vitrum`, `~/.local/bin/vitrum-server` | the binaries, Linux and macOS |
+| `%LOCALAPPDATA%\vitrum\bin\vitrum.exe`, `vitrum-server.exe` | the binaries, Windows |
+| `~/.local/share/icons/hicolor/*/apps/vitrum.png` | the icon set, Linux |
+| `~/.local/share/applications/vitrum.desktop` | the launcher entry, Linux |
+| `~/Applications/vitrum.app` | the app bundle, macOS |
+| `%LOCALAPPDATA%\vitrum\icons\` | the icon set, Windows |
+| Start menu `vitrum.lnk` | the launcher entry, Windows |
+| `~/.profile`, `~/.bashrc`, `~/.zshrc`, `config.fish` | one marked block each, `PATH` and `vu` |
+| `$PROFILE` | one marked block, `vu`, Windows |
+| user `Path` | the install directory, Windows |
+| `~/.local/share/vitrum/install-manifest` | every path above, as it is written |
+| `%LOCALAPPDATA%\vitrum\install-manifest` | the same, Windows |
 
-## Requirements
+The install directory is `--install-dir=PATH` or `VITRUM_INSTALL_DIR`.
 
-vitrum draws its windows with a WebView, and the installer refuses to install
-without one rather than leaving you a binary that opens no window. It names
-the package for the distribution it is running on:
-
-| Distribution | Package |
-|---|---|
-| Debian, Ubuntu, Mint, Pop, Raspbian | `sudo apt install libwebkit2gtk-4.1-0` |
-| Fedora, RHEL, Rocky, Alma | `sudo dnf install webkit2gtk4.1` |
-| Arch, Manjaro, EndeavourOS | `sudo pacman -S webkit2gtk-4.1` |
-| openSUSE, SLES | `sudo zypper install libwebkit2gtk-4_1-0` |
-| Alpine | `sudo apk add webkit2gtk-4.1` |
-| Void | `sudo xbps-install -S webkit2gtk` |
-| Gentoo | `sudo emerge net-libs/webkit-gtk:4.1` |
-| NixOS | `nix-env -iA nixpkgs.webkitgtk_4_1` |
-| Windows | `winget install Microsoft.EdgeWebView2Runtime` |
-| macOS | nothing extra |
-
-Pass `--no-runtime-check` (`-NoRuntimeCheck`) to install anyway, for an image
-that installs the runtime separately. The installer then says what is still
-missing instead of pretending the install is complete.
-
-The published Linux build links other shared libraries as well, and needs a C
-library new enough for the symbol versions it references. No version is
-written down here, because the installer reads both from the archive it just
-downloaded rather than from a list: it resolves every library the build links
-against this machine's loader, and refuses before writing anything when one
-cannot be found or the C library is too old. A build that stops linking
-something stops being refused for it, and a build that starts linking
-something new is caught the first time anyone installs it.
-
-When the missing library has a package on this distribution, the failure
-names the one command that installs all of them. When it has none, the
-failure says so and points at a source build rather than naming a package
-that would leave the binary exactly as broken as it was.
-
-A C library older than the build needs cannot be fixed by installing
-anything: it comes with the distribution release. That failure names the
-version the build requires, the version this machine has, and the two things
-that resolve it.
-
-Published x86-64 builds target the base instruction set, so they run on any
-x86-64 processor. They do not use AVX2 or AVX-512 even where the processor
-has them. A build you make yourself may target your own processor and fail
-with `SIGILL` on an older one.
-
-Published Linux builds link glibc. A musl host, such as Alpine or Void, is
-told so and pointed at a source build, rather than being handed an archive
-whose loader it does not have.
+The system packages the installer installs are not recorded and are not
+removed by `--uninstall`. A WebKit runtime and the WebView2 runtime are
+shared with everything else on the machine.
 
 ## Options
 
@@ -111,11 +176,12 @@ sh install.sh --help
 | `--install-dir=PATH` | `VITRUM_INSTALL_DIR` | put the binaries elsewhere |
 | `--base-url=URL` | `VITRUM_BASE_URL` | take the archive and `SHA256SUMS` from a mirror or a local directory |
 | `--no-integrate` | `VITRUM_NO_INTEGRATE` | binaries only: skip steps 7 to 9 |
+| `--no-deps` | `VITRUM_NO_DEPS` | install no system packages; print the command and stop |
 | `--no-runtime-check` | `VITRUM_NO_RUNTIME_CHECK` | install without checking the runtime this machine has |
 | `--uninstall` | | remove everything the installer wrote |
 
 PowerShell takes the same as `-Version`, `-InstallDir`, `-BaseUrl`,
-`-NoIntegrate`, `-NoRuntimeCheck` and `-Uninstall`.
+`-NoIntegrate`, `-NoDeps`, `-NoRuntimeCheck` and `-Uninstall`.
 
 `--no-integrate` is for images, provisioning scripts and headless hosts, where
 a `PATH` edit in a home directory and a launcher entry on a machine with no
@@ -129,8 +195,8 @@ checked, so a mirror is trusted no further than the release is:
 sh install.sh 1.2.3 --base-url=file:///srv/vitrum
 ```
 
-With a `file://` base the installer needs no `curl` and no `wget`, which is
-what makes an air-gapped install possible.
+With a `file://` base the installer needs no curl and no wget, which is what
+makes an air-gapped install possible.
 
 ## When the install fails
 
@@ -139,7 +205,7 @@ having installed nothing.
 
 | What happened | What it says |
 |---|---|
-| no `curl` and no `wget` | `neither curl nor wget is available, so nothing can be downloaded` |
+| no downloader, and none can be installed | `neither curl nor wget is available, so nothing can be downloaded` |
 | a proxy variable that is not a URL | `https_proxy is set to 'proxy.corp:8080', which is not a URL a proxy can be reached at` |
 | a proxy that blocks the download | the download error, followed by `A proxy is in force: https_proxy=...` |
 | the transfer stopped early | `the download of ... did not arrive intact: it is truncated: the gzip stream ends part way through (N bytes)` |
@@ -149,12 +215,13 @@ having installed nothing.
 | the digest disagrees | `checksum mismatch for ...; nothing was installed` |
 | the install directory refuses a write | `<dir> cannot be written to` |
 | `vitrum` is running from there | `vitrum is running from <dir>/vitrum (pid N)` |
-| no WebKit or WebView2 runtime | `vitrum needs a WebKit runtime and this machine has none`, with the package for your distribution |
-| an architecture with no build | `there is no published build for Linux on aarch64` |
+| the WebKit runtime cannot be installed | `vitrum needs a WebKit runtime and this installer cannot install one`, with the reason |
+| the WebView2 runtime cannot be installed | `the WebView2 runtime could not be installed: ...` |
+| an architecture with no build | `there is no published build for Linux on riscv64` |
 | a libc with no build | `there is no published build for Linux with musl libc` |
-| a shared library the build links is absent | `the published build needs shared libraries this machine does not have`, then `Missing:` and one command that installs them |
-| that library has no package here | `the published build needs shared libraries this distribution does not package` |
+| a shared library has no package here | `the published build needs shared libraries this distribution does not package` |
 | the C library is older than the build needs | `the published build needs a newer C library than this machine has`, with both versions |
+| macOS will not run the installed binary | `the installed vitrum does not run on this machine (exit N)`, with the commands that clear the download mark |
 
 A running `vitrum-server` never blocks an install. Its file is replaced by
 rename, the running daemon keeps the image it started with, and the installer
@@ -203,13 +270,11 @@ To leave nightly for a specific stable build, install that version directly.
 direction, run the installer with it:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh
-sh install.sh 1.2.3
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh -s -- 1.2.3
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 -OutFile install.ps1
-.\install.ps1 -Version 1.2.3
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1))) -Version 1.2.3
 ```
 
 Both binaries are replaced together, so the client and daemon never end up on
@@ -219,12 +284,15 @@ replaced. Restart it, and the sessions it holds, to complete a rollback.
 ## Removing
 
 ```sh
-sh install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh -s -- --uninstall
 ```
 
 ```powershell
-.\install.ps1 -Uninstall
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1))) -Uninstall
 ```
+
+With a copy of the script on disk, `sh install.sh --uninstall` and
+`.\install.ps1 -Uninstall` do the same thing.
 
 This removes what the install wrote and nothing else. Every file was recorded
 as it was created, including the icon files, whose names come from the binary
@@ -247,6 +315,7 @@ directory: `sh install.sh --uninstall --install-dir=PATH`. Uninstalling
 something that is not there is an error rather than a silent success.
 
 What remains is config and state, listed in
-[configuration.md](configuration.md).
+[configuration.md](configuration.md), and the WebKit or WebView2 runtime,
+which is shared with the rest of the machine.
 
 Building from source is in [CONTRIBUTING.md](../CONTRIBUTING.md).

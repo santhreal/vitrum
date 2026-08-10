@@ -1,0 +1,82 @@
+name: install
+
+# The install is one command or it is not an install.
+#
+# Every other gate in this repository answers a question about the source. This
+# one answers the only question a person who has never seen vitrum asks: does
+# the command in the README leave a working binary on a machine that had
+# nothing. It runs the installer from the checkout, so a change to `install.sh`
+# is judged by what it does rather than by what it says.
+#
+# Each distribution is a separate job because each one is a separate package
+# manager, a separate package name, and a separate way of failing. A matrix
+# that stops at the first red hides the other three answers.
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - docs/install.md
+      - .github/workflows/install.yml
+  pull_request:
+    paths:
+      - install.sh
+      - docs/install.md
+      - .github/workflows/install.yml
+  schedule:
+    # A published release can rot without a commit: an asset is deleted, a
+    # checksum stops matching, a base image drops a library. Weekly is often
+    # enough to catch that before somebody reports it.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: install-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:24.04
+          - debian:12
+          - fedora:latest
+          - archlinux:latest
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      # Nothing is installed into the image first. A base image without curl is
+      # exactly the case under test: the installer resolves and installs both
+      # the tool it downloads with and vitrum's own runtime dependency, rather
+      # than printing a second command for someone else to run.
+
+      - uses: actions/checkout@v4
+
+      - name: install
+        run: sh install.sh
+
+      # The installer writes to ~/.local/bin and edits the login files, which
+      # this shell has not read. Naming the path proves the binary, and the
+      # next step proves the path.
+      - name: the binaries run
+        run: |
+          "$HOME/.local/bin/vitrum" --version
+          "$HOME/.local/bin/vitrum-server" --version
+
+      - name: a login shell finds them
+        run: sh -lc 'command -v vitrum && command -v vitrum-server'
+
+      # Removing it must leave nothing behind, or the install is a change to
+      # the machine that cannot be undone.
+      - name: uninstall
+        run: |
+          sh install.sh --uninstall
+          if [ -e "$HOME/.local/bin/vitrum" ]; then
+            echo "uninstall left the binary behind" >&2
+            exit 1
+          fi

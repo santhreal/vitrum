@@ -25,6 +25,13 @@ Before 1.0, a minor bump may break compatibility.
   `aarch64-unknown-linux-gnu` beside the x86-64 archive, built on a runner of
   that architecture rather than cross-compiled, so the same gates that judge a
   native build judge it too.
+- **The install is one command, with nothing to install first.** On Linux the
+  installer adds the WebKit runtime this machine is missing using the
+  distribution's own package manager, printing every command that takes root
+  first, and fetches a downloader for itself when the machine has neither curl
+  nor wget. On Windows it installs the WebView2 runtime the same way. Refusing
+  and naming a second command was the previous behaviour and is still available
+  as `--no-deps`.
 
 ### Changed
 

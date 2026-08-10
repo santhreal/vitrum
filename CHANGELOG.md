@@ -1,12 +1,88 @@
 # Changelog
 
-Notable changes per release. Versions follow [semver](https://semver.org);
-before 1.0 a minor bump may break things, and this file says when it does.
+Notable changes per release. Versions follow [semver](https://semver.org).
+Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+### Security
+
+- **The daemon authenticates every connection.** `vitrum-server` listens on
+  loopback and accepted anything that reached it. A browser allows a
+  cross-origin WebSocket with no preflight, so any page open on the same
+  machine could speak the protocol, start a session running a command of its
+  choosing and read every transcript; another user on the machine could do the
+  same. Two checks now guard it. A handshake carrying an `Origin` header is
+  refused with 403, which a native client never sends and a browser always
+  sends. Every connection presents a per-user token, 32 random bytes the
+  daemon writes at startup with mode 0600 inside a 0700 directory, compared in
+  constant time. The client reads it from `VITRUM_TOKEN`, then `--token-file`,
+  then the default path. There is no `--token` flag, because argv is readable
+  by every other user on the machine.
+- **A connection that says nothing no longer costs a task and a descriptor.**
+  A peer could open a socket, send no handshake, and hold both until the
+  daemon exited. The handshake now has a deadline. An inbound message is also
+  capped at 4 MiB, where the default allowed a peer to choose 64 MiB of the
+  daemon's heap per connection.
+
+### Changed
+
+- **`PROTOCOL_VERSION` is 3.** This breaks compatibility with a 0.1.x client
+  or daemon. The two refuse each other and name which is older. Restarting the
+  daemon ends every session it holds, so do it when the agents are idle.
+
+### Added
+
+- **A fresh profile starts with the agents already listed.** The launcher's
+  first run showed an empty list and asked for a command. It now seeds a
+  preset per known agent, installed ones first, and captions the rest as not
+  installed. Deleting a seeded row is a decision, so seeding is keyed on the
+  launch store never having existed rather than on it being empty.
+
 ### Fixed
 
+- **The Linux build ran on almost no Linux.** Both binaries were built on the
+  newest Ubuntu, so they required `GLIBC_2.39` and died with `version
+  GLIBC_2.39 not found` on Debian 12, Ubuntu 22.04 and RHEL 9. Exactly two
+  symbols asked for it, `pidfd_spawnp` and `pidfd_getpid`, which the standard
+  library uses when the machine it is built on offers them; nothing here asked
+  for either. The client also linked `libxdo.so.3`, a default feature of two
+  menu crates, and Arch ships only `libxdo.so.4`, so it did not start there at
+  all. The Linux target is now built against a 2.28 floor, `libxdo` is out of
+  the dependency graph along with a second TLS stack that came with it, and
+  the floor and the shared-library list are both asserted on the built
+  artifact so neither can come back unnoticed.
+- **`vitrum` was installed and `command -v vitrum` found nothing.** bash reads
+  one login file and stops at the first that exists, so a `~/.bash_profile`,
+  which rustup, nvm and bun each create, shadowed the `~/.profile` the
+  installer wrote to, while `~/.bashrc` is skipped by a login shell that is
+  not interactive. The installer now writes the file bash actually reads. It
+  also checks the downloaded binary against the machine before installing it,
+  rather than checking a list of distributions.
+- **A refused connection retried forever.** The backoff counter was reset when
+  the socket opened, and a daemon that rejects a handshake accepts the socket
+  first and closes it afterwards, so the delay never grew: 75 attempts in 20
+  seconds, each writing a refusal to the log. The reset moved to the accepted
+  handshake. The same case now makes 7 attempts, backs off to 8 seconds, stops
+  and offers Retry.
+- **A failed session also announced that it had finished.** A row drew a red
+  Failed pill and a green Done badge beside each other, saying opposite things
+  about the same turn.
+- **The sidebar's attention chip printed a sliced word.** At the resting width
+  the chip read `5 wa...`, because it absorbed the whole width deficit. The
+  search field is now the only part that gives up space, and the chip reads
+  whole below the previous width.
+- **An unread row drew a dot beside a dot.** The unread marker sat eight
+  pixels from the status pill's own leading dot, two hues, neither reading as
+  a category, and only on one of the two row shapes. Unread is now the title's
+  weight and colour, which both shapes get.
+- **Settings prose wrapped at four different right edges** under one straight
+  column of controls, because each row was its own grid sized by its own
+  control. All of it now wraps against one measure.
+- **Every CI job named a toolchain it did not use.** The jobs asked for stable
+  and then built with the nightly pinned in `rust-toolchain.toml`, which
+  outranks what the setup step selects, so the toolchain in the logs was not
+  the toolchain in the build. They now install exactly what that file names.
 - **An applied update is the build that keeps running.** Applying a staged
   update renames the new binary over the running one, which unlinks the image
   the process is executing. From that moment Linux answers `/proc/self/exe`
@@ -131,7 +207,7 @@ before 1.0 a minor bump may break things, and this file says when it does.
 - **A contiguous run of output no longer reports missing history.** The
   backlog splice measured every buffered frame against the resume offset,
   which is only the right question for the first one, so the second frame of
-  any healthy run was announced to the operator as evicted history. A false
+  any healthy run was announced as evicted history. A false
   hole is worse than a silent one: it says the transcript has bytes missing
   when it does not, and gives nobody a way to check.
 - **A session with no title draws a whole row.** The fallback lives at the one
@@ -147,8 +223,8 @@ before 1.0 a minor bump may break things, and this file says when it does.
   later. Six per push accumulated into 233 unservable jobs that starved the
   servable ones, and the v0.1.0 release matrix died the same way on a retired
   macOS image, which is why that tag carries no assets. Labels now come from a
-  repository variable that falls back to a hosted runner, and two guards — one
-  in the pipeline, one in the test suite — refuse a label the project has not
+  repository variable that falls back to a hosted runner, and two guards, one
+  in the pipeline and one in the test suite, refuse a label the project has not
   agreed on. The suite also parses every workflow, because a workflow that
   does not parse produces a run with zero jobs, no annotation and no log.
 - **A tooltip no longer survives the row it belonged to.** A platform tooltip
@@ -173,8 +249,8 @@ before 1.0 a minor bump may break things, and this file says when it does.
   MB/s. The read chunk is argued from the line discipline's 4096-byte bound,
   which is why raising it buys no syscalls.
 - **One owner per primitive.** The data plane leaves the `vitrum-proto` crate
-  root for its own module, and three duplicated helpers — a millisecond clock,
-  a seeded RNG, a scrollback corpus — collapse to one each.
+  root for its own module, and three duplicated helpers, a millisecond clock,
+  a seeded RNG and a scrollback corpus, collapse to one each.
 - **The launcher offers agents, not a shell.** A row whose command is a shell
   argues this is a terminal multiplexer, which is a category where tmux and
   Zellij already win and where nothing this product does is visible.
@@ -228,10 +304,10 @@ before 1.0 a minor bump may break things, and this file says when it does.
 - **First launch now walks through the product, not just the machine.**
   Onboarding was one screen of three derived rows: is the daemon up, what is
   on your PATH, how to start a session. Everything that makes this different
-  from a terminal with tabs — that the sidebar is an inbox, that a row's
-  colour is its agent's state, that one chord jumps to whichever agent wants
-  you, that sessions outlive the window, that workspaces and the three bands
-  exist at all — was discoverable only by accident. It is now four short
+  from a terminal with tabs was discoverable only by accident: that the sidebar
+  is an inbox, that a row's colour is its agent's state, that one chord jumps
+  to whichever agent wants you, that sessions outlive the window, that
+  workspaces and the three bands exist at all. It is now four short
   pages: what this machine has, then the inbox, then workspaces, then the
   keyboard and search. Every keystroke it teaches is looked up in the live
   keymap at render time, so a rebind cannot leave it teaching a dead key, and

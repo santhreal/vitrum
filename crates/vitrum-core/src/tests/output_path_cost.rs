@@ -436,9 +436,9 @@ async fn an_idle_session_costs_the_output_path_no_wakeups_at_all() {
 /// which is why the harness bounds the wait and returns whether the loop came
 /// back rather than asserting on what it produced.
 ///
-/// Does not cover the ordering where the close is observed by the read loop
-/// instead, which is the ordinary path and is covered by every other test that
-/// closes a session.
+/// Covers only the wait after the read loop. The read loop has its own wait
+/// with the same shape, pinned by
+/// [`closing_ends_a_coalescer_whose_reader_is_still_parked`].
 #[cfg(not(windows))]
 #[tokio::test]
 async fn closing_ends_a_coalescer_whose_child_was_never_reaped() {
@@ -453,5 +453,44 @@ async fn closing_ends_a_coalescer_whose_child_was_never_reaped() {
         returned,
         "the coalescer never returned: it is still waiting for a child that \
          nothing will reap, holding the session and its threads"
+    );
+}
+
+/// Closing a session ends its coalescer even while the terminal is still open.
+///
+/// The sibling of the test above, and the other half of the class: a wait that
+/// cannot observe a close. Here the loop never reaches the wait for an exit at
+/// all, because there is no end of stream to send it there. The reader thread
+/// is still parked on a master a child is holding open, which is what every
+/// live session looks like, and the read loop's own wait is unbounded once the
+/// settle window has expired.
+///
+/// A child that ignores the hangup makes this reachable in production: closing
+/// the session does not end the reader, so nothing closes the channel, and
+/// nothing reaps the child either. Against a read loop with no close arm this
+/// hangs rather than failing an assertion, so the harness bounds the wait.
+///
+/// Pins the unbounded park only, which is the one wait where a missed close
+/// is a leak rather than a delay. The read loop's other two answers to a
+/// close are deliberately not pinned here and no test distinguishes them: the
+/// arm on the settle-window wait has a timer under it, so missing a close
+/// there costs one settle window and then falls into the park this test does
+/// pin, and the flag check at the top of the loop closes the window where a
+/// close lands between two waits, which a hang test cannot observe because
+/// the park behind it catches the same close.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn closing_ends_a_coalescer_whose_reader_is_still_parked() {
+    let coalescer = crate::session::Coalescer::new().expect("a pty for the harness");
+    coalescer.queue(b"some output while the terminal was open");
+
+    let returned = coalescer
+        .close_while_reading(std::time::Duration::from_secs(5))
+        .await;
+
+    assert!(
+        returned,
+        "the coalescer never returned: it is still waiting to read a terminal \
+         that was closed, holding the session and its threads"
     );
 }

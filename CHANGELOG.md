@@ -10,9 +10,11 @@ Before 1.0, a minor bump may break compatibility.
 - **Closing a session no longer leaks the thread that reads it.** A session
   whose child was never reaped left its output coalescer parked forever
   waiting for an exit status that nothing would deliver, holding the session
-  and its threads for the life of the process. Closing a session now wakes
-  that wait directly, so the coalescer returns whether or not the child was
-  reaped.
+  and its threads for the life of the process. The same gap sat in the read
+  loop itself: a child that ignores the hangup keeps its terminal open, so
+  nothing ends the read and nothing reaps the child, and the loop waited on
+  both. Every wait in the output path now observes the close, so a closed
+  session ends whether or not the child cooperates.
 
 ## v0.2.0 - 2026-08-10
 

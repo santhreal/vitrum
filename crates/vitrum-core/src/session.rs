@@ -1529,6 +1529,40 @@ impl Coalescer {
         let _ = lock(&session.killer).kill();
         returned
     }
+
+    /// Run the loop with the terminal still open and the child never reaped,
+    /// and close the session part way through.
+    ///
+    /// [`Self::close_while_unreaped`] drops the read sender, so the loop ends
+    /// its read and reaches the wait for an exit. Here the sender is held for
+    /// the whole run, which is the ordinary shape of a live session: a reader
+    /// thread still parked on a master that a child is holding open. The loop
+    /// never leaves `next_read`, so a close arm on the wait after it proves
+    /// nothing; this is the wait that has to observe the close.
+    ///
+    /// Reports whether the loop returned within `patience`.
+    pub(crate) async fn close_while_reading(self, patience: std::time::Duration) -> bool {
+        let Coalescer {
+            session,
+            raw,
+            raw_rx,
+            exit_tx,
+            exit_rx,
+        } = self;
+        let running = tokio::spawn({
+            let session = Arc::clone(&session);
+            async move { coalesce_loop(session, raw_rx, exit_rx).await }
+        });
+        // Long enough for the settle window to expire and the loop to reach
+        // the unbounded park, which is the wait with no timer under it.
+        tokio::time::sleep(SETTLE_WINDOW + std::time::Duration::from_millis(50)).await;
+        session.mark_closed();
+        let returned = tokio::time::timeout(patience, running).await.is_ok();
+        drop(raw);
+        drop(exit_tx);
+        let _ = lock(&session.killer).kill();
+        returned
+    }
 }
 
 /// Wait for the child to be reaped, or for the session to be closed.
@@ -1738,6 +1772,16 @@ async fn next_read(
     code: &mut Option<Option<i32>>,
 ) -> Option<BytesMut> {
     loop {
+        // A close ends every wait below, not just the ones that happen to be
+        // parked on a notification. `closed` is a bare `Notify` with a single
+        // permit, so a coalescer that consumed it once cannot be woken twice;
+        // the flag is the durable answer and this is the only place that has
+        // to ask. What was already read is still published: the reader may
+        // have handed over a burst that now has nobody to wake us for it, and
+        // a session being discarded still owes its transcript.
+        if session.is_closed() {
+            return raw.try_recv().ok();
+        }
         // Once the child is gone there is nothing left to classify, only the
         // bytes it already wrote.
         if code.is_some() {
@@ -1768,8 +1812,10 @@ async fn next_read(
         match *settle_at {
             None => {
                 tokio::select! {
+                    biased;
                     chunk = raw.recv() => return chunk,
                     reaped = &mut *exit => *code = Some(reaped.unwrap_or(None)),
+                    () = session.closed.notified() => return None,
                     () = session.activity.notified() => {
                         *settle_at = Some(Instant::now() + SETTLE_WINDOW);
                     }
@@ -1777,6 +1823,7 @@ async fn next_read(
             }
             Some(deadline) => {
                 tokio::select! {
+                    biased;
                     chunk = timeout_at(deadline, raw.recv()) => match chunk {
                         Ok(chunk) => return chunk,
                         Err(_) => {
@@ -1785,6 +1832,7 @@ async fn next_read(
                         }
                     },
                     reaped = &mut *exit => *code = Some(reaped.unwrap_or(None)),
+                    () = session.closed.notified() => return None,
                     () = session.activity.notified() => {
                         *settle_at = Some(Instant::now() + SETTLE_WINDOW);
                     }

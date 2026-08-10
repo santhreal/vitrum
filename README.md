@@ -100,7 +100,7 @@ anywhere in the app.
 
 ## Status
 
-vitrum is at version 0.2.0. Linux, macOS and Windows build and pass the full
+vitrum is at version 0.2.1. Linux, macOS and Windows build and pass the full
 test suite: Linux on every push, macOS and Windows on every release tag and
 nightly. Interactive use is exercised on Linux. Collision detection is Linux
 only. Compositor blur is Linux only; Mica, Acrylic and `NSVisualEffectView`

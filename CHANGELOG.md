@@ -3,10 +3,23 @@
 Notable changes per release. Versions follow [semver](https://semver.org).
 Before 1.0, a minor bump may break compatibility.
 
-## Unreleased
+## v0.2.1 - 2026-08-10
+
+The first published release of the 0.2 line. `v0.2.0` is a tag and never
+became a release: the gate that reads a built binary for the oldest system it
+can start on demanded a tool that does not exist on macOS, so both macOS legs
+failed after their builds had already succeeded and no archive was ever
+uploaded. Everything below `v0.2.0` in this file shipped here.
 
 ### Fixed
 
+- **A macOS build no longer fails the release.** `check-abi.sh` resolved
+  `readelf` before it knew whether there was an ELF to read. macOS has
+  neither, so the check exited before it could report that there was nothing
+  to check. It now asks for the tool at the first ELF binary, and runs it once
+  for real before believing it: pointing `READELF` at something that does not
+  exist previously reported every archive clean, because each invocation
+  discards its errors and reads an empty answer as "requires nothing".
 - **Closing a session no longer leaks the thread that reads it.** A session
   whose child was never reaped left its output coalescer parked forever
   waiting for an exit status that nothing would deliver, holding the session

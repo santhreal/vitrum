@@ -242,6 +242,14 @@ jobs:
       - name: the instruction-set gate holds its fixtures
         run: ./tools/release/check-isa-test.sh
 
+      # Its sibling, and the same lesson twice over. The ABI gate died on the
+      # macOS legs because it demanded a readelf before it knew whether there
+      # was an ELF, so a build that had already succeeded published nothing;
+      # and a READELF naming a binary that does not exist made it report every
+      # archive clean. Both are a stub saying those words, not a real binary.
+      - name: the abi gate holds its fixtures
+        run: ./tools/release/check-abi-test.sh
+
       # The version literal lives in 23 places and the published target set in
       # three files. Both are checked here rather than discovered by the first
       # person to run an installer against a release.

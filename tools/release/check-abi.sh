@@ -146,6 +146,12 @@ esac
 # GNU readelf and llvm-readelf print the two sections this reads in the same
 # shape. Either will do, and one of them is on every runner that builds a
 # Linux archive.
+#
+# Resolved here and demanded later. A macOS leg of the release runs this gate
+# over Mach-O binaries, where there is no ELF to read and no readelf to read
+# it with, and the answer for that leg is "nothing to check" rather than "the
+# tool is missing". Requiring it up front turned every macOS build into a
+# failed release, which is a gate failing the thing it was meant to protect.
 if [ -n "${READELF:-}" ]; then
     readelf_bin=$READELF
 elif command -v readelf >/dev/null 2>&1; then
@@ -153,7 +159,7 @@ elif command -v readelf >/dev/null 2>&1; then
 elif command -v llvm-readelf >/dev/null 2>&1; then
     readelf_bin=llvm-readelf
 else
-    die 'no readelf; install binutils or the llvm-tools rustup component'
+    readelf_bin=
 fi
 
 # `sort -V` orders 2.9 below 2.28, which plain string or numeric comparison
@@ -216,6 +222,16 @@ for file in $files; do
     # anything else is skipped rather than failed.
     head=$(dd if="$file" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
     [ "$head" = "7f454c46" ] || continue
+    # An ELF is here, so now the tool is genuinely required: skipping the
+    # check for want of it would pass a binary nobody looked at. The tool is
+    # also run once for real, because every invocation below discards stderr
+    # and reads an empty answer as "asks for nothing". A READELF naming a
+    # binary that does not exist therefore reported every archive clean, which
+    # is the one failure a gate must never have.
+    [ -n "$readelf_bin" ] ||
+        die 'no readelf; install binutils or the llvm-tools rustup component'
+    "$readelf_bin" --version >/dev/null 2>&1 ||
+        die "$readelf_bin does not run; it cannot answer for what ships"
     checked=$((checked + 1))
     name=$(basename "$file")
 

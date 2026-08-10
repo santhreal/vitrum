@@ -34,48 +34,25 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 /// sequences with the echoed input, so the assertion is on the child's reply
 /// appearing exactly once rather than on the whole stream.
 ///
-/// The reply is printed by a nested `cmd /V:ON` because `cmd` expands `%L%` when
-/// it parses the whole `&&` line, which is before `set /p` has assigned it. The
-/// child inherits `L` through the environment and delayed expansion reads it at
-/// the moment it runs.
-///
-/// IT HAS FAILED TWICE, BOTH TIMES UNDER LOAD ON A HOSTED RUNNER, AND NEVER
-/// HERE. The first run stopped dead at 78 bytes, with the prompt present and
-/// then nothing:
-///
-/// ```text
-/// \e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[Hask:\e[1C\e]0;C:\Windows\system32\cmd.exe\a\e[?25h
-/// ```
-///
-/// That reads like broken input delivery, because a console echoes what it
-/// reads in cooked mode and not even the echo arrived. It is not: the test is
-/// UNCHANGED and passes in 0.06 s as one of two rather than one of 152.
-///
-/// The second stopped at 85 bytes, which is the same stream plus `hello\r\n`.
-/// The echo of the typed line was there, so every byte had gone through the
-/// session queue, the writer thread and the console; what never arrived was
-/// the reply of the nested `cmd`. The raw probe at the bottom of this file
-/// passed in that same run, which by the discriminator below puts the fault on
-/// scheduling a second process, not on delivery.
-///
-/// So the fault is contention, and the deadline is what noticed. A hosted
-/// Windows runner has two cores and every pty here starts a pseudoconsole host
-/// process, so a suite that opens many at once can leave a child unscheduled
-/// for a long time. `helpers::DEADLINE` is three times longer on Windows for
-/// that reason; a real stall inside ConPTY would still be a stall at ninety
-/// seconds.
-///
-/// It gates with everything else rather than being quarantined, because a
-/// quarantined flake is one nobody sees again. The raw probe is the
-/// discriminator: the pair failing together means the pty, this one failing
-/// alone means the session layer or scheduling.
+/// Delayed expansion is on for the child itself. `cmd` expands `%L%` when it
+/// parses the whole `&&` line, which is before `set /p` has assigned it, so the
+/// reply has to be written `!L!` and `/V:ON` has to be in force. It used to get
+/// that from a nested `cmd /V:ON /C`, and that second process is what the test
+/// kept dying on: three hosted runs stopped with 78 or 85 bytes collected —
+/// the prompt, then on two of them the echo of the typed line — and nothing
+/// after it, while the raw pseudoconsole probe at the bottom of this file
+/// passed in the same run. Delivery was never the fault; the reply of a second
+/// `cmd` was. The outer shell carries `/V:ON` now, so there is one process, and
+/// what the test measures is the round trip rather than whether a two-core
+/// runner got around to scheduling a grandchild.
 #[cfg(windows)]
 #[tokio::test]
 async fn input_reaches_the_child_and_its_reply_returns() {
     let mgr = SessionManager::new(64 * 1024);
-    let id = mgr
-        .spawn(shell_spec("set /p L=ask: && cmd /V:ON /C echo got=!L!"))
-        .expect("spawn");
+    let mut spec = shell_spec("set /p L=ask: && echo got=!L!");
+    // Ahead of `/C`, which takes the rest of the line as the command.
+    spec.args.insert(0, "/V:ON".to_string());
+    let id = mgr.spawn(spec).expect("spawn");
     let mut c = collect(&mgr, id);
     // The prompt is what makes the ordering observable. Writing straight after
     // spawn types into a console whose child may not be reading yet, and the

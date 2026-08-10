@@ -1,7 +1,7 @@
 //! Home-relative rewriting and component elision, including the Windows-shaped
 //! paths a daemon on another platform can hand us.
 
-use crate::path::{base_name, home_relative, shorten, shorten_home_relative};
+use crate::path::{Place, base_name, home_relative, shorten, shorten_home_relative, under};
 use crate::text::display_width;
 
 /// A path under the home directory is rewritten with `~`.
@@ -320,4 +320,81 @@ fn a_multibyte_home_directory_matches_safely() {
         "/home/ユーザーズ/src",
         "a longer name that shares a prefix is a different directory"
     );
+}
+
+/// A directory inside the root reports the part the root does not already say.
+///
+/// This is the whole point of the function: the sidebar groups by project, so
+/// a row repeating the project's own path spends columns on what the header
+/// above it already said. What it must show is the remainder.
+#[test]
+fn a_directory_inside_the_root_reports_the_remainder() {
+    assert_eq!(
+        under("/src/vitrum/crates/vitrum-fmt", "/src/vitrum"),
+        Place::Under("crates/vitrum-fmt")
+    );
+    assert_eq!(under("/src/vitrum/app", "/src/vitrum"), Place::Under("app"));
+}
+
+/// The root itself is `At`, not an empty `Under`.
+///
+/// The caller draws nothing for `At` and something for `Under`, so collapsing
+/// the two into an empty string would make "at the project root" and "one
+/// directory in, named nothing" indistinguishable.
+#[test]
+fn the_root_itself_is_at_not_an_empty_remainder() {
+    assert_eq!(under("/src/vitrum", "/src/vitrum"), Place::At);
+    assert_eq!(under("/src/vitrum", "/src/vitrum/"), Place::At);
+    assert_eq!(under("/src/vitrum/", "/src/vitrum"), Place::Under(""));
+}
+
+/// A prefix match that is not a component boundary is outside.
+///
+/// The same rule home matching has, and for the same reason: `/src/vitrum2`
+/// is a different project, and reporting it as `2` inside `/src/vitrum` would
+/// be worse than saying nothing.
+#[test]
+fn a_partial_component_match_is_outside_the_root() {
+    assert_eq!(under("/src/vitrum2", "/src/vitrum"), Place::Outside);
+    assert_eq!(under("/src/vitrum2/app", "/src/vitrum"), Place::Outside);
+    assert_eq!(under("/src/vit", "/src/vitrum"), Place::Outside);
+}
+
+/// A worktree beside the project is outside it.
+///
+/// The case this was written for. A session in a git worktree runs on another
+/// branch in another directory, and it is the one row where the project's own
+/// path says nothing true about where the work is.
+#[test]
+fn a_worktree_beside_the_project_is_outside() {
+    assert_eq!(under("/src/worktrees/topic", "/src/vitrum"), Place::Outside);
+    assert_eq!(under("/opt/elsewhere", "/src/vitrum"), Place::Outside);
+}
+
+/// An empty root is outside, not a match on everything.
+#[test]
+fn an_empty_root_matches_nothing() {
+    assert_eq!(under("/src/vitrum", ""), Place::Outside);
+    assert_eq!(under("/src/vitrum", "/"), Place::Outside);
+}
+
+/// Windows roots fold case and separator direction, exactly as home does.
+#[test]
+fn windows_roots_ignore_case_and_separator_direction() {
+    assert_eq!(
+        under("C:\\src\\Vitrum\\app", "c:/src/vitrum"),
+        Place::Under("app")
+    );
+    assert_eq!(under("C:\\src\\vitrum", "C:\\src\\vitrum"), Place::At);
+    assert_eq!(
+        under("C:\\src\\vitrum2\\app", "C:\\src\\vitrum"),
+        Place::Outside,
+        "case folding must not weaken the component-boundary rule"
+    );
+}
+
+/// Unix roots are case-sensitive, because the filesystem is.
+#[test]
+fn unix_roots_are_case_sensitive() {
+    assert_eq!(under("/src/Vitrum/app", "/src/vitrum"), Place::Outside);
 }

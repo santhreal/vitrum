@@ -97,6 +97,55 @@ fn windows_shaped(path: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
+/// Where a path sits relative to a directory it may be inside.
+///
+/// Returned by [`under`], which exists so a caller can tell "this is the
+/// directory itself" from "this is somewhere else entirely". Those two want
+/// opposite treatment on screen and a bare `Option` cannot say which is which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place<'a> {
+    /// The path IS the directory.
+    At,
+    /// The path is inside it. The suffix has no leading separator.
+    Under(&'a str),
+    /// The path is not inside it at all.
+    Outside,
+}
+
+/// Locate `path` relative to `root`.
+///
+/// `("/src/vitrum/crates/vitrum-fmt", "/src/vitrum")` is
+/// `Under("crates/vitrum-fmt")`, `("/src/vitrum", "/src/vitrum")` is [`Place::At`],
+/// and anything else is [`Place::Outside`]. An empty `root` is `Outside`,
+/// because everything is trivially under nothing and saying so would relabel
+/// every path in the product.
+///
+/// Separators and case are treated exactly as [`home_relative`] treats them,
+/// because a session's directory and a project's root arrive from the same
+/// daemon and one of them being Windows-shaped makes both of them so.
+#[must_use]
+pub fn under<'a>(path: &'a str, root: &str) -> Place<'a> {
+    let root = root.trim_end_matches(['/', '\\']);
+    if root.is_empty() || path.len() < root.len() {
+        return Place::Outside;
+    }
+    let fold_case = windows_shaped(path) || windows_shaped(root);
+    let matches = path.as_bytes()[..root.len()]
+        .iter()
+        .zip(root.as_bytes())
+        .all(|(&a, &b)| normalize_byte(a, fold_case) == normalize_byte(b, fold_case));
+    if !matches {
+        return Place::Outside;
+    }
+    match path.as_bytes().get(root.len()) {
+        None => Place::At,
+        // The separator is dropped: what a reader wants is `crates/foo`, and a
+        // leading slash reads as an absolute path that this is not.
+        Some(b'/' | b'\\') => Place::Under(&path[root.len() + 1..]),
+        Some(_) => Place::Outside,
+    }
+}
+
 /// Shorten to `budget` columns by eliding middle components.
 ///
 /// Returns the path unchanged when it already fits. Otherwise keeps the first

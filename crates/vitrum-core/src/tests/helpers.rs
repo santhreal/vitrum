@@ -26,7 +26,18 @@ pub(crate) use crate::test_support::kernel_reports_other_processes;
 /// taken twenty, with the difference being how long a shell waits to be
 /// scheduled, so a ten second bound was measuring the runner rather than the
 /// product.
+///
+/// Thirty was still measuring the runner. `pty_input` blew it a second time on
+/// a hosted Windows runner with the echo of the typed line already collected
+/// and only the nested child's reply missing, while the raw pseudoconsole
+/// probe beside it passed in the same run. Delivery worked; a second `cmd`
+/// had not been scheduled yet. Windows gets three times the bound, because a
+/// real hang there is still a hang at ninety seconds and everything short of
+/// one is this runner.
+#[cfg(not(windows))]
 pub(crate) const DEADLINE: Duration = Duration::from_secs(30);
+#[cfg(windows)]
+pub(crate) const DEADLINE: Duration = Duration::from_secs(90);
 
 /// Window used by negative assertions ("nothing should arrive"). Deliberately
 /// short because it is a bound on absence, not a wait for a result.

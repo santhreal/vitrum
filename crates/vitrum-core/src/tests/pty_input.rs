@@ -39,31 +39,36 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 /// child inherits `L` through the environment and delayed expansion reads it at
 /// the moment it runs.
 ///
-/// FAILED ONCE, UNDER LOAD, AND HAS NOT REPRODUCED. Its first run stopped dead
-/// at 78 bytes, with the prompt present and then nothing:
+/// IT HAS FAILED TWICE, BOTH TIMES UNDER LOAD ON A HOSTED RUNNER, AND NEVER
+/// HERE. The first run stopped dead at 78 bytes, with the prompt present and
+/// then nothing:
 ///
 /// ```text
 /// \e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[Hask:\e[1C\e]0;C:\Windows\system32\cmd.exe\a\e[?25h
 /// ```
 ///
 /// That reads like broken input delivery, because a console echoes what it
-/// reads in cooked mode and not even the echo arrived. It is not. The test is
-/// UNCHANGED from that run and now passes in 0.06 s. The only thing that
-/// differed is how many tests shared the process: it failed as one of 152
-/// running concurrently and passes as one of two.
+/// reads in cooked mode and not even the echo arrived. It is not: the test is
+/// UNCHANGED and passes in 0.06 s as one of two rather than one of 152.
 ///
-/// So the fault is contention, not delivery, and the 30 s deadline is what
-/// noticed. A hosted Windows runner has two cores and every pty here starts a
-/// pseudoconsole host process, so a suite that opens many at once can leave one
-/// child unscheduled long enough to blow the deadline. Whether that is only
-/// slowness or a real stall inside ConPTY is unproven either way, and one
-/// unreproducible occurrence does not settle it.
+/// The second stopped at 85 bytes, which is the same stream plus `hello\r\n`.
+/// The echo of the typed line was there, so every byte had gone through the
+/// session queue, the writer thread and the console; what never arrived was
+/// the reply of the nested `cmd`. The raw probe at the bottom of this file
+/// passed in that same run, which by the discriminator below puts the fault on
+/// scheduling a second process, not on delivery.
+///
+/// So the fault is contention, and the deadline is what noticed. A hosted
+/// Windows runner has two cores and every pty here starts a pseudoconsole host
+/// process, so a suite that opens many at once can leave a child unscheduled
+/// for a long time. `helpers::DEADLINE` is three times longer on Windows for
+/// that reason; a real stall inside ConPTY would still be a stall at ninety
+/// seconds.
 ///
 /// It gates with everything else rather than being quarantined, because a
-/// quarantined flake is one nobody sees again. If it returns, the raw probe at
-/// the bottom of this file is the discriminator: that one bypasses the session
-/// queue, so the pair failing together means the pty and this one failing alone
-/// means the session layer.
+/// quarantined flake is one nobody sees again. The raw probe is the
+/// discriminator: the pair failing together means the pty, this one failing
+/// alone means the session layer or scheduling.
 #[cfg(windows)]
 #[tokio::test]
 async fn input_reaches_the_child_and_its_reply_returns() {

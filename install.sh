@@ -281,6 +281,18 @@ shell_present() {
     return 1
 }
 
+# The file a bash login shell actually reads: the first of `~/.bash_profile`,
+# `~/.bash_login`, `~/.profile` that exists, and only that one. Empty when
+# neither of the first two is there, because then `~/.profile` is the file bash
+# reads and `each_rc` already writes it.
+bash_login_rc() {
+    if [ -e "$HOME/.bash_profile" ]; then
+        printf '%s\n' "$HOME/.bash_profile"
+    elif [ -e "$HOME/.bash_login" ]; then
+        printf '%s\n' "$HOME/.bash_login"
+    fi
+}
+
 # Calls $1 as `$1 <syntax> <file>` for every rc that should carry the block.
 #
 # `~/.profile` is read by login shells and by most desktop sessions, so it is
@@ -288,8 +300,16 @@ shell_present() {
 # shell is what makes an open terminal find it. bash alone was not enough:
 # zsh is the default on macOS, and fish is neither POSIX nor willing to read
 # `export PATH=`.
+#
+# `~/.profile` alone was not enough either. bash reads one login file and stops,
+# so a `~/.bash_profile` — which rustup, nvm and bun each create — shadows
+# `~/.profile`, and `~/.bashrc` is skipped by a login shell that is not
+# interactive. Between them that left `vitrum` off `PATH` in exactly the shell
+# someone opens a terminal to, on a machine that had ever installed rust.
 each_rc() {
     "$1" posix "$HOME/.profile"
+    bash_login=$(bash_login_rc)
+    if [ -n "$bash_login" ]; then "$1" posix "$bash_login"; fi
     if shell_present bash "$HOME/.bashrc"; then "$1" posix "$HOME/.bashrc"; fi
     if shell_present zsh "${ZDOTDIR:-$HOME}/.zshrc"; then "$1" posix "${ZDOTDIR:-$HOME}/.zshrc"; fi
     if shell_present fish "$(fish_config)"; then "$1" fish "$(fish_config)"; fi

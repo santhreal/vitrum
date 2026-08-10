@@ -646,8 +646,18 @@ fn the_installer_answers_for_what_a_real_machine_does() {
     // Every shell that gets a PATH edit, in the syntax that shell parses.
     // bash alone left zsh users (every macOS default shell) and fish users
     // with binaries they could not run by name.
+    //
+    // `.bash_profile` and `.bash_login` are here because bash reads exactly one
+    // login file and stops at the first that exists, so either of them shadows
+    // `~/.profile` outright, while `.bashrc` is skipped by a login shell that is
+    // not interactive. A machine that had ever run rustup, nvm or bun has a
+    // `.bash_profile`, and on those the PATH edit landed only in files bash
+    // never opened: `vitrum` was installed and `command -v vitrum` found
+    // nothing.
     for (rc, syntax) in [
         (".bashrc", "export PATH="),
+        (".bash_profile", "export PATH="),
+        (".bash_login", "export PATH="),
         (".zshrc", "export PATH="),
         ("config.fish", "set -gx PATH"),
     ] {

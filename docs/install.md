@@ -13,8 +13,9 @@ The install command is in the [README](../README.md).
 4. Checks the archive arrived whole, then compares digests. On a mismatch it
    stops, having installed nothing.
 5. Places `vitrum` and `vitrum-server` in the install directory.
-6. Adds that directory to `PATH`, in `~/.profile` and in the rc of every
-   shell you have among bash, zsh and fish.
+6. Adds that directory to `PATH`: in `~/.profile`, in `~/.bash_profile` when
+   bash has one, and in the rc of every shell you have among bash, zsh and
+   fish.
 7. Adds a launcher entry: a `.desktop` file on Linux, an app bundle in
    `~/Applications` on macOS, a Start menu shortcut on Windows.
 8. Defines `vu` as `vitrum update`.

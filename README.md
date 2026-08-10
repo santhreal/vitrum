@@ -34,6 +34,9 @@ Windows:
 irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 | iex
 ```
 
+Nothing has to be installed first. The installer adds the WebKit or WebView2
+runtime this machine is missing, using its own package manager.
+
 `vitrum update` installs the next release in place. Options, source builds and
 uninstall: [docs/install.md](docs/install.md).
 

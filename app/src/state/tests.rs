@@ -1162,6 +1162,72 @@ fn a_session_blocked_on_the_operator_cannot_be_snoozed_and_the_menu_says_why() {
     );
 }
 
+/// WHY: no control may name the tab strip, because there is no tab strip.
+///
+/// The strip was deleted and its vocabulary was not. `keymap::tests`
+/// caught the shortcut list and reworded `Ctrl+Shift+W` to "Stop viewing;
+/// the session keeps running"; the row menu was left holding "Close tab" and
+/// "Close other tabs", and the exit bar a "Close tab" button, so the product
+/// named one action three ways and two of them pointed at a surface the
+/// operator cannot see. It also read as destructive next to "Terminate
+/// session", which is the entry that actually kills the agent.
+///
+/// The assertion is over the WHOLE menu and both of its shapes rather than
+/// over the two entries that were wrong, because the defect is a word and a
+/// word spreads: a fourth entry saying "tab" is the same bug. The row is
+/// driven through every disposition, because the menu adds and drops entries
+/// with it, and the bulk menu is included because a different function builds
+/// it.
+///
+/// What it does NOT catch: the word reaching a surface that is not a menu.
+/// The exit bar's button is markup, and `ui::terminal` owns it.
+#[test]
+fn nothing_in_a_menu_names_a_tab() {
+    let park = |st: &mut UiState| {
+        st.snooze(&[SessionId(10)], NOW + HOUR, NOW);
+    };
+    let drain = |st: &mut UiState| {
+        st.settle(&[SessionId(10)], NOW);
+    };
+    let none = |_: &mut UiState| {};
+    let arms: [(&str, &dyn Fn(&mut UiState)); 3] =
+        [("inbox", &none), ("snoozed", &park), ("settled", &drain)];
+
+    for (arm, put) in arms {
+        let mut st = with(&[1], &[(10, 1, 0), (11, 1, 1)]);
+        st.click_row(SessionId(10), Click::Plain, clock());
+        put(&mut st);
+        let single = st.menu_items(SessionId(10), clock());
+
+        st.select_all_visible(clock());
+        let bulk = st.menu_items(SessionId(11), clock());
+
+        for (which, items) in [("row", &single), ("bulk", &bulk)] {
+            assert!(!items.is_empty(), "the {which} menu on a {arm} row is empty");
+            for item in items {
+                assert!(
+                    !item.label.to_ascii_lowercase().contains("tab"),
+                    "the {which} menu on a {arm} row offers {:?}, and this \
+                     product has no tabs",
+                    item.label
+                );
+            }
+        }
+
+        // The action is still offered, under the wording the shortcut list
+        // already chose for it, so the rule above cannot be satisfied by
+        // deleting the entry.
+        assert_eq!(
+            single
+                .iter()
+                .find(|i| i.action == MenuAction::CloseTab)
+                .map(|i| i.label.as_str()),
+            Some("Stop viewing"),
+            "the stop-viewing entry left the menu on a {arm} row"
+        );
+    }
+}
+
 /// The presets offered are the model's, with the model's labels and wake
 /// instants. Reimplementing "tomorrow 9:00" in the client is how a snooze
 /// set the evening before a clock change lands an hour out.

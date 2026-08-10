@@ -230,11 +230,16 @@ pub fn WhatsNew(props: WhatsNewProps) -> Element {
 
                 div { class: "rg-sheet__head",
                     span { class: "rg-sheet__title", "{heading}" }
+                    // The same control, in the same corner, as the one on
+                    // the shortcuts, search and settings sheets, and it says
+                    // the same word. "Dismiss" here made this the one sheet
+                    // whose corner control was named differently, next to a
+                    // footer button that runs the same handler.
                     button {
                         class: "rg-btn-inline",
                         r#type: "button",
                         onclick: move |_| props.on_dismiss.call(()),
-                        "Dismiss"
+                        "Close"
                     }
                 }
 
@@ -494,9 +499,11 @@ Prose that belongs to no release.
         assert_eq!(intro(&[]), "");
     }
 
-    /// The sheet must expose a header dismiss control. Escape is covered by
-    /// `dismiss_persists`; the header is the mouse-reachable equivalent of
-    /// onboarding's Skip, so an operator is not forced onto Got it alone.
+    /// The sheet must expose a header dismiss control, and it must be named
+    /// the way every other sheet names that corner: "Close". Escape is
+    /// covered by `dismiss_persists`; the corner control is the
+    /// mouse-reachable equivalent, so an operator is not forced onto the
+    /// footer button alone.
     #[test]
     fn the_sheet_offers_a_header_dismiss() {
         use dioxus::prelude::*;
@@ -522,8 +529,8 @@ Prose that belongs to no release.
             "intro copy missing from {html}"
         );
         assert!(
-            html.contains(">Dismiss<") || html.contains(">Dismiss</"),
-            "header dismiss missing from {html}"
+            html.contains("rg-btn-inline") && html.contains(">Close<"),
+            "header close missing from {html}"
         );
     }
 }

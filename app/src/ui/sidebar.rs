@@ -177,8 +177,16 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     let st = props.state.read();
     let model_clock = inbox::model_clock(props.clock);
     let collapsed = st.window.sidebar_collapsed;
+    // Three arrangements, and the third is the same mechanism as the second.
+    // `--collapsed` is the 48px rail; `--narrow` is the panel dragged below
+    // its default, where the toolbar and a row's tail line both run out of
+    // columns. See `crate::state::SIDEBAR_NARROW_PX` for what gives way and
+    // why it is those two elements.
+    let narrow = !collapsed && st.window.sidebar_width < crate::state::SIDEBAR_NARROW_PX;
     let root_class = if collapsed {
         "rg-sidebar rg-sidebar--collapsed"
+    } else if narrow {
+        "rg-sidebar rg-sidebar--narrow"
     } else {
         "rg-sidebar"
     };
@@ -336,12 +344,18 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                             class: "rg-sidebar__search-input",
                             id: "rg-filter",
                             r#type: "text",
-                            // One word. "Filter sessions" is clipped mid-glyph
-                            // by the Ctrl+K keycap at the panel's narrower
-                            // widths, and a placeholder ending in a sliced "n"
-                            // reads as a rendering fault rather than as an
-                            // ellipsis. This fits at every width the panel has.
-                            placeholder: "Filter",
+                            // One word, and none at all at the panel's
+                            // narrower widths. A placeholder is drawn against
+                            // the field's shrunk base width rather than the
+                            // width it ends up with, so below the threshold
+                            // "Filter" lands in about 40px and paints as
+                            // "Filte" with half the field empty after it,
+                            // which reads as a rendering fault. Typed text is
+                            // unaffected and fills the field. The magnifier
+                            // beside it says what the field is, and the
+                            // accessible name below says it in words.
+                            placeholder: if narrow { "" } else { "Filter" },
+                            aria_label: "Filter sessions",
                             value: "{query}",
                             oninput: move |e| props.on_filter.call(e.value()),
                             onkeydown: move |e| {
@@ -351,11 +365,18 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                 }
                             },
                         }
-                        // Always emitted: the stylesheet hides the chip itself
-                        // once the field has focus, so conditionally rendering
-                        // it here would fight the CSS and flicker the field's
-                        // width.
-                        span { class: "rg-sidebar__search-kbd", "Ctrl+K" }
+                        // Emitted at every width the field can hold it, and
+                        // hidden by the stylesheet once the field has focus:
+                        // conditionally rendering it on focus would fight the
+                        // CSS and flicker the field's width.
+                        //
+                        // Below the narrow threshold it leaves the tree
+                        // rather than the paint. The field is 110px wide
+                        // there and the keycap is 46 of them, spent on a
+                        // chord the shortcuts sheet already lists.
+                        if !narrow {
+                            span { class: "rg-sidebar__search-kbd", "Ctrl+K" }
+                        }
                     }
                     // The jump key's own affordance, and it says what it means
                     // now. It used to read "3 -> you", which nobody could

@@ -141,6 +141,27 @@ pub const MAX_TABS: usize = 8;
 /// Default sidebar width, matching `--rg-sidebar-width` (16rem).
 pub const SIDEBAR_DEFAULT_PX: f64 = 256.0;
 
+/// Below this width the toolbar drops its keycap hint and a row drops its
+/// working directory, in CSS pixels.
+///
+/// Not a taste. The toolbar band holds a filter field and, when anything is
+/// waiting, the attention chip. Measured at the 224px floor with six sessions
+/// waiting: the chip takes 77px, the panel inset 32 and the band gap 6, which
+/// leaves the field 109px against the 106 its own inset, magnifier, gaps and
+/// `Ctrl+K` keycap already spend. The placeholder is then drawn into 3px and
+/// clips mid-word, which reads as a rendering fault rather than as an
+/// abbreviation. A row's tail line runs out at the same place, and both of the
+/// strings it truncates — the working directory and the branch — end up one
+/// glyph long, so the column says nothing at the width where space is
+/// scarcest.
+///
+/// So the two least informative elements give way first. The keycap repeats a
+/// chord the shortcut list already carries, and the directory is still in the
+/// row's hover detail in full. Both come back the moment the panel is wide
+/// enough to hold them, which [`SIDEBAR_DEFAULT_PX`] is: this fires only below
+/// the default, when the operator has dragged the panel toward its floor.
+pub const SIDEBAR_NARROW_PX: f64 = SIDEBAR_DEFAULT_PX;
+
 /// Largest share of the window the sidebar may take, as a fraction.
 ///
 /// The absolute cap in [`SIDEBAR_MAX_PX`] is about legibility and knows
@@ -2485,9 +2506,15 @@ impl WindowState {
         let mut v = Vec::with_capacity(16);
 
         v.push(MenuItem::new(MenuAction::Focus, "Open").enable(self.focused != Some(id)));
-        v.push(MenuItem::new(MenuAction::CloseTab, "Close tab").enable(open));
+        // NOT "Close tab". There is no tab strip and has not been one since
+        // the switcher moved into this list, so a row offering to close a tab
+        // names a control the operator cannot see, and "close" reads as
+        // killing the agent when the next entry down is the one that does.
+        // `help_rows_for(Group::Switching)` already settled the wording for
+        // the chord that runs this action; these two say the same thing.
+        v.push(MenuItem::new(MenuAction::CloseTab, "Stop viewing").enable(open));
         v.push(
-            MenuItem::new(MenuAction::CloseOthers, "Close other tabs")
+            MenuItem::new(MenuAction::CloseOthers, "Stop viewing the others")
                 .enable(open && self.tabs.len() > 1),
         );
 

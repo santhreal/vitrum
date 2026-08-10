@@ -264,13 +264,13 @@ pub fn opacity_note(a: &crate::state::AppearancePrefs) -> &'static str {
     if a.needs_transparent_window() {
         "How much of the desktop shows through, unblurred. Blur belongs to your \
          compositor: Hyprland, KWin and picom can all frost this window, and \
-         README has the one-line rule for each. Without a compositor running, a \
-         see-through window has nothing to blend with."
+         docs/appearance.md has the one-line rule for each. Without a compositor \
+         running, a see-through window has nothing to blend with."
     } else {
         "How much of the desktop shows through, unblurred. The window is created \
          opaque, so the first change here applies to the next window you open; \
-         after that it moves live. Blur belongs to your compositor; README has \
-         the rule for Hyprland, KWin and picom."
+         after that it moves live. Blur belongs to your compositor; \
+         docs/appearance.md has the rule for Hyprland, KWin and picom."
     }
 }
 

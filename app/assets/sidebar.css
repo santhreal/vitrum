@@ -1889,8 +1889,16 @@
   transition: opacity var(--rg-t-fast) linear;
 }
 
+/* KEYBOARD REACHES THE SAME CELL THE POINTER DOES, and it has to reach ALL of
+ * it. `:focus-within` is on the SLOT rather than on the group, because the
+ * swap has three halves and one of them is the timestamp, which is the
+ * group's SIBLING: a selector rooted at the group can reveal the controls and
+ * cannot hide the string underneath them. Tabbing to the close button used to
+ * do exactly that — the group came up, the timestamp stayed, and the two drew
+ * in one grid cell with a focus ring around the pair. The slot is the nearest
+ * element that is an ancestor of both, and `:has()` is not available here. */
 .rg-session:hover .rg-session__actions,
-.rg-session__actions:focus-within {
+.rg-session__slot:focus-within .rg-session__actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1899,7 +1907,8 @@
  * this the two draw on top of each other, which is the one overlap a
  * one-cell grid cannot prevent on its own: the grid guarantees they share a
  * column, not that only one of them is opaque. */
-.rg-session:hover .rg-session__time {
+.rg-session:hover .rg-session__time,
+.rg-session__slot:focus-within .rg-session__time {
   opacity: 0;
 }
 
@@ -2094,8 +2103,12 @@
     opacity var(--rg-t-fast) linear;
 }
 
+/* Keyed on the slot for the reason given at `.rg-session__actions`, and on
+ * `:focus-within` rather than the button's own `:focus-visible` so the button
+ * and the group it lives in are revealed by ONE condition. Two conditions is
+ * how the glyph came to be transparent while its ring was drawn. */
 .rg-session:hover .rg-session__close,
-.rg-session__close:focus-visible {
+.rg-session__slot:focus-within .rg-session__close {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2394,6 +2407,38 @@
 .rg-sidebar--collapsed .rg-session__line--title {
   justify-content: center;
   gap: 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* Narrow                                                                */
+/* -------------------------------------------------------------------- */
+
+/* THE PANEL DRAGGED BELOW ITS DEFAULT, which is the same mechanism as the
+ * rail above and stops at two elements.
+ *
+ * Between 224px and the 256px default the toolbar and a row's tail line both
+ * run out of columns, and what they do about it is clip. Measured at the
+ * floor with six sessions waiting: the filter field is drawn 109px wide
+ * against the 106 its own inset, magnifier, gaps and keycap already spend, so
+ * the placeholder lands in 3px and reads "Filte" with no ellipsis. On a row,
+ * the working directory and the branch shrink together until both are one
+ * glyph and an ellipsis.
+ *
+ * So the two least informative elements are dropped rather than clipped. The
+ * keycap repeats a chord `.rg-sheet--shortcuts` already lists and the field is
+ * the obvious target for it; the directory is still carried in full by
+ * `.rg-session__tip`, and dropping it is what lets the branch keep its whole
+ * name, which is what the rule on `.rg-session__place` says should happen and
+ * could not while both were shrinking at once.
+ *
+ * Only the directory is dropped here. The keycap and the placeholder are left
+ * out of the markup instead, in `ui::sidebar`: a placeholder is painted
+ * against the field's base width rather than its used width, so no rule here
+ * can stop it reading "Filte".
+ *
+ * A leaf, not a container, for the reason stated above the collapsed list. */
+.rg-sidebar--narrow .rg-session__place {
+  display: none;
 }
 
 /* -------------------------------------------------------------------- */

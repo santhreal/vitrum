@@ -211,11 +211,22 @@
 }
 
 /* Full-bleed rows inside a box that clips, plus the resize handle, which is
- * an edge and has no outside to put a ring on. Same ring, drawn inward. */
+ * an edge and has no outside to put a ring on. Same ring, drawn inward.
+ *
+ * `.rg-session__close` is here and not in the list above, and it is the one
+ * entry that is neither full-bleed nor an edge. It is a 24px control centred
+ * in a 20px line box, so it already overhangs its slot by 2px top and bottom;
+ * an outward ring costs 3 more and the card's padding does not have them, so
+ * the ring came out cut off along the row's bottom edge. It was in NEITHER
+ * list before, which is worse than the wrong offset: with nothing in this
+ * file answering for it the engine drew its own default ring, in its own
+ * colour, at its own radius, on the one control in the product that is
+ * invisible until it is reached. */
 .rg-menu__item:focus-visible,
 .rg-project__header:focus-visible,
 .rg-project__section-head:focus-visible,
 .rg-project__more:focus-visible,
+.rg-session__close:focus-visible,
 .rg-sidebar__resizer:focus-visible {
   outline: var(--rg-focus-ring-w) solid var(--rg-focus-ring);
   outline-offset: calc(-1 * var(--rg-focus-ring-w));

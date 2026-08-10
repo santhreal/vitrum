@@ -263,7 +263,10 @@ pub fn TerminalPane(props: TerminalPaneProps) -> Element {
                             class: "rg-btn-inline",
                             r#type: "button",
                             onclick: move |_| props.on_close_tab.call(id),
-                            "Close tab"
+                            // Same wording as the row menu and the shortcut
+                            // list: this stops drawing the transcript, and
+                            // the session it belongs to has already exited.
+                            "Stop viewing"
                         }
                     }
                 }

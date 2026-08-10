@@ -470,3 +470,86 @@ fn nothing_in_the_reorderable_list_asks_the_platform_for_a_tooltip() {
          rather than moving it"
     );
 }
+
+/// WHY: at the panel's floor the toolbar clipped its own placeholder to
+/// `Filte` and a row's tail line drew `/src…  h…`, and nothing in the suite
+/// could see either.
+///
+/// The mechanism is one threshold, `crate::state::SIDEBAR_NARROW_PX`, and it
+/// drives three removals. The row's working directory goes out through the
+/// class and `sidebar.css`. The keycap and the placeholder go out of the
+/// MARKUP: the keycap because a hidden element still has to be reasoned about
+/// every time the field is measured, and the placeholder because the engine
+/// paints it against the field's base width rather than its used width, so
+/// styling cannot save it. Typed text is unaffected, which is why only the
+/// placeholder had to go.
+///
+/// The boundary is asserted from the constant rather than from a literal,
+/// because the number this fires at is the one decision here and a copy of it
+/// in a test cannot disagree with itself. Both sides of the boundary are
+/// checked, including the exact value: the default width is the common case
+/// and it must NOT be narrow, so an off-by-one that made every shipped window
+/// drop its keycap turns this red.
+///
+/// What it does NOT catch: whether the widths in between actually fit, which
+/// is a measurement and lives on the rig.
+#[test]
+fn the_panel_says_when_it_is_too_narrow_to_hold_everything() {
+    let at = |w: f64| {
+        let mut st = state_with(2);
+        st.window.sidebar_width = w;
+        render(st)
+    };
+    let floor = crate::state::SIDEBAR_MIN_PX;
+    let edge = crate::state::SIDEBAR_NARROW_PX;
+
+    for w in [floor, edge - 1.0] {
+        let html = at(w);
+        assert!(
+            html.contains("rg-sidebar--narrow"),
+            "a {w}px panel does not say it is narrow, so it clips instead of dropping"
+        );
+        assert!(
+            !html.contains("rg-sidebar__search-kbd"),
+            "a {w}px panel still emits the keycap, which spends field width \
+             on a chord the shortcuts sheet already lists"
+        );
+        assert!(
+            !html.contains(r#"placeholder="Filter""#),
+            "a {w}px panel still sets a placeholder, and the engine paints it \
+             against the field's base width as \"Filte\""
+        );
+        assert!(
+            html.contains(r#"aria-label="Filter sessions""#),
+            "a {w}px panel dropped the placeholder and left the field unnamed"
+        );
+    }
+    for w in [edge, crate::state::SIDEBAR_MAX_PX] {
+        let html = at(w);
+        assert!(
+            !html.contains("rg-sidebar--narrow"),
+            "a {w}px panel calls itself narrow and drops elements that fit"
+        );
+        assert!(
+            html.contains("rg-sidebar__search-kbd"),
+            "a {w}px panel dropped the keycap it has room for"
+        );
+        assert!(
+            html.contains(r#"placeholder="Filter""#),
+            "a {w}px panel dropped the placeholder it has room for"
+        );
+    }
+    assert_eq!(
+        edge,
+        crate::state::SIDEBAR_DEFAULT_PX,
+        "the threshold left the default width, so a stock window now hides \
+         elements it has room for"
+    );
+
+    let css = include_str!("../../../assets/sidebar.css");
+    assert!(
+        css.contains(".rg-sidebar--narrow .rg-session__place"),
+        "nothing styles the working directory for a narrow panel, so the \
+         class is inert"
+    );
+}

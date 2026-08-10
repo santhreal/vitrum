@@ -190,9 +190,19 @@ esac
 ok "prerelease of $next, which is above $old: sorts strictly between them"
 
 # Each runner writes it into the workspace before building, which is what puts
-# it into the archive name; a nightly the check rejects is four builds that
-# publish nothing.
-( cd "$repo" && tools/release/versions.sh bump "$nv" ) | sed 's/^/  ok  /'
+# it into the archive name; a nightly the check rejects is a release build on
+# every runner that publishes nothing.
+#
+# Its output is captured rather than piped. On the left of a pipe the exit
+# status belongs to `sed`, so a bump that died took its failure with it and
+# this step reported `ok`: that is exactly how a nightly bump that rewrote
+# SECURITY.md into a line that cannot exist reached main.
+bump_log=$work/nightly-bump
+if ! ( cd "$repo" && tools/release/versions.sh bump "$nv" ) > "$bump_log" 2>&1; then
+    sed 's/^/  /' < "$bump_log" >&2
+    die "the nightly bump to $nv failed"
+fi
+sed 's/^/  ok  /' < "$bump_log"
 ok "archive would be vitrum-$nv-<target>.tar.gz"
 git -C "$repo" checkout --quiet -- .
 [ -z "$(git -C "$repo" status --porcelain)" ] ||

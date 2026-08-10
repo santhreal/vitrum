@@ -209,8 +209,16 @@ bump() {
     rewrite README.md "s/^vitrum is at version $old\\./vitrum is at version $new./"
     # A patch release leaves the policy alone; a minor or major changes the
     # line it names, in all three places it names it.
-    old_series=${old%.*}
-    new_series=${new%.*}
+    #
+    # The prerelease is stripped before the series is taken. A nightly is
+    # `0.2.2-nightly.<date>.<sha>`, whose dots are not version components, and
+    # `${new%.*}` read the last of them: the series came out as
+    # `0.2.2-nightly.20260810`, SECURITY.md was rewritten to name a line that
+    # cannot exist, and every nightly build then failed its own version check
+    # with `<missing>`.
+    series_of() { s_core=${1%%-*}; printf '%s' "${s_core%.*}"; }
+    old_series=$(series_of "$old")
+    new_series=$(series_of "$new")
     if [ "$old_series" != "$new_series" ]; then
         rewrite SECURITY.md "s/\\b$old_series\\.x\\b/$new_series.x/g"
     fi

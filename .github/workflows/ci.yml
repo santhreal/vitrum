@@ -89,7 +89,7 @@ jobs:
       # the rig warm means keeping the target directory out of the workspace
       # checkout deletes, which is a decision about the machine rather than
       # about this file.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
         with:
           shared-key: linux
@@ -106,7 +106,7 @@ jobs:
       # pins: a newer Zig fails Ghostty's own build-version check, so this is
       # not a floating "latest".
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           # On a runner we own the cache is kept below, so uploading it to
@@ -189,7 +189,7 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
       # The same key as the build job: this compiles the same crate with the
       # same flags, so a second cache would be a second copy of it.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
         with:
           shared-key: linux
@@ -200,7 +200,7 @@ jobs:
         run: ./.github/system-webview.sh
 
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           use-cache: ${{ runner.environment == 'github-hosted' }}
@@ -233,7 +233,7 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
         with:
           shared-key: release
@@ -387,14 +387,14 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
         with:
           targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
         with:
           shared-key: macos-check
       # `vitrum-core` depends on `vitrum-vt`, which builds the Ghostty engine
       # from source, so this needs Zig exactly as the build job does.
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           # On a runner we own the cache is kept below, so uploading it to
@@ -447,12 +447,12 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
         with:
           targets: x86_64-pc-windows-gnu
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
         with:
           shared-key: windows-check
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           # On a runner we own the cache is kept below, so uploading it to
@@ -504,11 +504,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: windows-test
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
 
@@ -538,7 +538,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/runner-hygiene
       - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: linux
           # The test job on this platform is the one that populates the cache.
@@ -546,7 +546,7 @@ jobs:
       - name: system webview
         run: ./.github/system-webview.sh
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           # On a runner we own the cache is kept below, so uploading it to
@@ -630,6 +630,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check licenses sources bans advisories

@@ -219,7 +219,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
 
@@ -230,7 +230,7 @@ jobs:
       # `vitrum-vt` builds the Ghostty engine from source. Every release target
       # needs the toolchain, not just Linux.
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           # On a runner we own the cache is kept below, so uploading it to
@@ -604,7 +604,7 @@ jobs:
             echo "no leftover $RELEASE_TAG draft"
           fi
 
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.CHANNEL == 'stable' && env.TAG || format('nightly {0}', github.sha) }}

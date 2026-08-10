@@ -282,6 +282,48 @@ fn a_permissions_block_is_read_wherever_it_sits() {
     );
 }
 
+/// Every third-party action is pinned to a commit, not to a tag.
+///
+/// WHY: `uses: someone/thing@v2` resolves at run time to whatever `v2` points
+/// at that morning. The owner can move it, and an account takeover moves it
+/// for them; the action then runs in the publish job, which holds a token that
+/// can write to this repository, sign artifacts and upload release assets. A
+/// commit SHA is the one reference that cannot be repointed.
+///
+/// GitHub's own `actions/*` are taken on trust, as is any local `./` action in
+/// this repository: those are the two publishers a compromise of this pipeline
+/// already implies. Everything else names a commit, with the version it was
+/// at in a comment beside it, because a bare SHA nobody can date is a pin
+/// nobody will ever update.
+#[test]
+fn every_third_party_action_is_pinned_to_a_commit() {
+    for (name, text) in workflows() {
+        for line in text.lines() {
+            let Some((_, uses)) = line.trim().split_once("uses:") else {
+                continue;
+            };
+            let reference = uses.trim();
+            if reference.starts_with("./") || reference.starts_with("actions/") {
+                continue;
+            }
+            let (action, version) = reference
+                .split_once('@')
+                .unwrap_or_else(|| panic!("{name} uses `{reference}` with no version at all"));
+            let sha = version.split('#').next().unwrap_or("").trim();
+            assert!(
+                sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "{name} pins {action} to `{sha}`, which is a tag the owner can \
+                 move under us, not a commit"
+            );
+            assert!(
+                version.contains('#'),
+                "{name} pins {action} to a commit with no version beside it, so \
+                 nobody can tell how old the pin is"
+            );
+        }
+    }
+}
+
 /// Every Zig pin agrees with every other one, and with the contributor guide.
 ///
 /// The version is load-bearing rather than cosmetic: it is the one Ghostty

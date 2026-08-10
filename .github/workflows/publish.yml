@@ -46,14 +46,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: system webview
         run: ./.github/system-webview.sh
 
       # `vitrum-vt` builds the Ghostty engine from source when it is packaged.
       - name: zig toolchain
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
           # On a runner we own the cache is kept below, so uploading it to

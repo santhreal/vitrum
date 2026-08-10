@@ -207,7 +207,11 @@ fn a_wrong_flag_is_a_failure_and_help_is_not() {
     let bad = Options::parse(vec!["--bogus".to_string()]).expect_err("must not parse");
     assert_eq!(bad.exit, Exit::Usage);
     assert_ne!(bad.exit.code(), 0, "a typo exited successfully");
-    assert!(bad.message.starts_with("unknown argument --bogus"), "{bad}");
+    assert_eq!(
+        bad.message.lines().next(),
+        Some("vitrum: unknown argument --bogus"),
+        "{bad}"
+    );
 
     for asked in [vec!["--help"], vec!["-h"], vec!["--version"], vec!["-V"]] {
         let told = Options::parse(asked.iter().map(|s| s.to_string()))

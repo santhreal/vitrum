@@ -34,7 +34,11 @@ fn every_state_token_is_accepted_as_itself() {
 fn an_unknown_state_is_an_error() {
     for bad in ["approve", "Approval", "APPROVAL", "", "idle", "42"] {
         let err = parse(&[bad]).expect_err("{bad} must not parse");
-        assert!(err.contains("approval, input, working or ready"), "{err}");
+        assert!(
+            err.contains("The states are approval, input, working and ready."),
+            "{err}"
+        );
+        assert!(err.starts_with("vitrum hint: "), "{err}");
     }
 }
 
@@ -80,7 +84,8 @@ fn clear_declares_working_alone() {
 #[test]
 fn a_missing_state_is_an_error() {
     let err = parse(&[]).expect_err("must fail");
-    assert!(err.contains("needs a state"), "{err}");
+    assert!(err.starts_with("vitrum hint: no state was given"), "{err}");
+    assert!(err.contains("usage: vitrum hint <state>"), "{err}");
 }
 
 /// Help is asked for, so it is not an error, whichever flag is used and

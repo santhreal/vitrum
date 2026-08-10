@@ -364,13 +364,21 @@ mod tests {
 
     /// Pins the handshake. A wrong field name here means the server never
     /// replies `Welcome` and the app sits on "connecting" with no explanation.
+    ///
+    /// The token is part of it. A client that omitted the field, or spelled it
+    /// differently, would be refused by every daemon and the window would show
+    /// an authentication failure it could do nothing about.
     #[test]
     fn hello_and_list_encode_exactly() {
         assert_eq!(
             encode(&ClientMsg::Hello {
-                protocol: PROTOCOL_VERSION
+                protocol: PROTOCOL_VERSION,
+                token: "a".repeat(vitrum_proto::token::TOKEN_HEX_LEN),
             }),
-            r#"{"t":"hello","protocol":2}"#
+            format!(
+                r#"{{"t":"hello","protocol":3,"token":"{}"}}"#,
+                "a".repeat(vitrum_proto::token::TOKEN_HEX_LEN)
+            )
         );
         assert_eq!(encode(&ClientMsg::List), r#"{"t":"list"}"#);
     }
@@ -806,8 +814,8 @@ mod tests {
     ///
     /// Reads the shipped source because the send site is inside a Dioxus
     /// component path with no seam to call. Anchored on tokens rather than on
-    /// quote pairing, which `GOAL.md` records as the way this codebase's other
-    /// source scans go wrong.
+    /// quote pairing, which is how this codebase's other source scans have
+    /// gone wrong.
     #[test]
     fn the_send_site_computes_the_budget_from_the_operators_setting() {
         let main_src = crate::testkit::shell();

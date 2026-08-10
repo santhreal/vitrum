@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use vitrum_core::SessionManager;
 use vitrum_proto::exit::{self, Exit};
-use vitrum_server::{DEFAULT_PORT, DEFAULT_SCROLLBACK_BYTES, serve};
+use vitrum_server::{DEFAULT_PORT, DEFAULT_SCROLLBACK_BYTES, serve_until};
 use tokio::net::TcpListener;
 
 /// Why the daemon did not get as far as serving.
@@ -43,6 +43,12 @@ enum StartupError {
     NoAddress(std::io::Error),
     /// The serving loop ended in an error.
     Serving(anyhow::Error),
+    /// The authentication token could not be written.
+    ///
+    /// Fatal rather than degraded. A daemon that served without a token would
+    /// accept a session-creating connection from any account on the machine,
+    /// so there is no useful thing to do without one.
+    NoToken(vitrum_proto::token::TokenError),
 }
 
 impl StartupError {
@@ -60,6 +66,7 @@ impl StartupError {
             }
             StartupError::CannotBind { .. }
             | StartupError::NoAddress(_)
+            | StartupError::NoToken(_)
             | StartupError::Serving(_) => Exit::Failed,
         }
     }
@@ -100,6 +107,13 @@ impl fmt::Display for StartupError {
                  Nothing is serving. Start the daemon again; if it repeats, the \
                  socket layer on this machine is not answering and the client \
                  will not be able to connect either."
+            ),
+            StartupError::NoToken(cause) => write!(
+                f,
+                "could not write the client authentication token: {cause}\n\
+                 Nothing is serving. The daemon runs commands for whoever \
+                 connects to it, so it will not listen without a secret only \
+                 you can read."
             ),
             StartupError::Serving(cause) => write!(
                 f,
@@ -154,14 +168,71 @@ async fn run() -> Result<(), StartupError> {
         })?;
     let addr = listener.local_addr().map_err(StartupError::NoAddress)?;
 
+    // After the bind, so the loser of a two-daemon race does not overwrite the
+    // winner's token and lock out the client that is already connected to it.
+    let token = vitrum_proto::token::create().map_err(StartupError::NoToken)?;
+    let token_path = vitrum_proto::token::path().map_err(StartupError::NoToken)?;
+
     let manager = Arc::new(SessionManager::new(config.scrollback_bytes));
     tracing::info!(
-        "vitrum-server {} listening on ws://{} with {} bytes of scrollback per session",
+        "vitrum-server {} listening on ws://{} with {} bytes of scrollback per session; \
+         clients authenticate with the token at {}",
         env!("CARGO_PKG_VERSION"),
         addr,
-        config.scrollback_bytes
+        config.scrollback_bytes,
+        token_path.display()
     );
-    serve(listener, manager).await.map_err(StartupError::Serving)
+    serve_until(listener, manager, token, shutdown_signal())
+        .await
+        .map_err(StartupError::Serving)
+}
+
+/// Resolves when the operating system asks this daemon to stop.
+///
+/// `SIGTERM` because that is what `systemctl stop`, `systemctl restart` and a
+/// logout send, and `SIGINT` because that is what an operator running the
+/// daemon in a terminal sends. Both mean the same thing here: end the hosted
+/// sessions deliberately rather than leave the kernel to hang their terminals
+/// up, which a child that ignores `SIGHUP` outlives.
+///
+/// A failure to install a handler is reported and then waited out forever,
+/// which is exactly the behaviour the daemon had before handlers existed. It
+/// is not a reason to refuse to serve.
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for SIGTERM; sessions will end with the process");
+            return std::future::pending().await;
+        }
+    };
+    let mut int = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for SIGINT");
+            term.recv().await;
+            return;
+        }
+    };
+    let which = tokio::select! {
+        _ = term.recv() => "SIGTERM",
+        _ = int.recv() => "SIGINT",
+    };
+    tracing::info!("{which}: stopping, and ending every session this daemon holds");
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => tracing::info!("Ctrl-C: stopping, and ending every session this daemon holds"),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for Ctrl-C");
+            std::future::pending().await
+        }
+    }
 }
 
 /// What `--help` prints.

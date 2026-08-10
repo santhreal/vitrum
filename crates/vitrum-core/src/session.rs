@@ -1090,6 +1090,32 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Close every session, and report how many there were.
+    ///
+    /// What the daemon does on its way out. Process exit alone is nearly
+    /// enough on Unix — the last master descriptor closing hangs the terminal
+    /// up and the kernel signals each session leader — but nearly is the
+    /// problem: a child that ignores `SIGHUP`, which is every agent started
+    /// under `nohup` and anything that installs a handler, survives with a
+    /// dead terminal and no way for the operator to reach it again. Sessions
+    /// are ended deliberately here instead of being left to the kernel's
+    /// courtesy.
+    ///
+    /// Takes the whole registry in one lock and then kills outside it, so a
+    /// slow kill cannot hold up the second session's.
+    pub fn close_all(&self) -> usize {
+        let sessions: Vec<Arc<Session>> = std::mem::take(&mut *write_lock(&self.sessions))
+            .into_values()
+            .collect();
+        for s in &sessions {
+            if let Err(e) = lock(&s.killer).kill() {
+                tracing::debug!(session = s.id.0, error = %e, "kill on shutdown");
+            }
+            s.closed.notify_one();
+        }
+        sessions.len()
+    }
+
     pub(crate) fn get(&self, id: SessionId) -> Option<Arc<Session>> {
         read_lock(&self.sessions).get(&id).map(Arc::clone)
     }

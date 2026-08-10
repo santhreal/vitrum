@@ -10,25 +10,28 @@
 [advisories]
 version = 2
 yanked = "deny"
-# Vulnerabilities stay deny. Unmaintained advisories are off (`none`): the
-# shipping Linux path still needs gtk3 through wry/dioxus-desktop, and
-# vitrum-grid still needs ttf-parser through fontdue/fontdb (plus a direct
-# Face::parse for underline metrics). Neither has a drop-in upgrade; gtk4 and
-# skrifa are separate migrations. cargo-deny 0.19 scopes unmaintained with
-# all|workspace|transitive|none rather than warn/deny. Add an ignore only for
-# a vulnerability this tree is not exposed to, with the advisory id and a
-# sentence saying why.
-unmaintained = "none"
+# Vulnerabilities stay deny. Unmaintained advisories are scoped to `workspace`,
+# which is every crate a member of this workspace depends on directly. Off
+# (`none`) is what this used to say, and it turns the check into a no-op: a
+# newly unmaintained direct dependency arrives green, which is the opposite of
+# what an advisory database is for. The two that are known and unfixable are
+# ignored by id below, and anything else is red until somebody writes down why
+# it is acceptable. cargo-deny 0.19 scopes this with all|workspace|transitive|
+# none rather than warn/deny.
+unmaintained = "workspace"
 ignore = [
-    # RUSTSEC-2024-0429: `glib::VariantStrIter`'s `Iterator` implementation
-    # passes `&p` to a C function that writes through it, which recent
-    # compilers may discard. glib 0.18 is what gtk3 binds, which is what tao
-    # and wry bind, which is the toolkit this application's window is; nothing
-    # here can move to glib 0.19 before wry does. Nothing in this workspace
-    # constructs a `VariantStrIter` or iterates a `VariantStrIter`: the only
-    # glib this product calls directly is the native pane's `MainContext` and
-    # `ObjectExt` on a drawing area. Re-check when wry moves.
-    "RUSTSEC-2024-0429",
+    # RUSTSEC-2024-0415: the gtk3 bindings are unmaintained in favour of gtk4.
+    # gtk3 is what wry and tao bind, which is what the shipping Linux window
+    # is; the tray reaches it a second way through libappindicator. gtk4 is a
+    # migration of the whole webview stack and cannot start here. Re-check
+    # when wry moves.
+    "RUSTSEC-2024-0415",
+    # RUSTSEC-2026-0192: ttf-parser is unmaintained, with skrifa named as the
+    # replacement. vitrum-grid reaches it through fontdue and fontdb as well
+    # as calling `Face::parse` directly for underline metrics, so moving means
+    # moving all three. No vulnerability is claimed and the parser is fed
+    # font files the machine already trusts enough to render.
+    "RUSTSEC-2026-0192",
 ]
 
 [licenses]

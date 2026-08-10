@@ -41,14 +41,33 @@ pub(crate) const DEADLINE: Duration = Duration::from_secs(30);
 /// Window for negative assertions. A bound on absence, not a wait for a result.
 const QUIET: Duration = Duration::from_millis(200);
 
+/// The token every harness daemon serves with.
+///
+/// A fixed value rather than a generated one: the suite has to be able to
+/// present a WRONG token as well as the right one, and "wrong" is only
+/// definable against something known. Generation itself is proved in
+/// `vitrum-proto`, where the entropy source lives.
+pub(crate) const TEST_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 /// A daemon listening on an ephemeral port, plus the manager behind it.
 pub(crate) struct Harness {
     pub(crate) port: u16,
     pub(crate) manager: Arc<SessionManager>,
+    /// Aborting this stops the daemon, which is what a restart needs.
+    serving: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
 impl Harness {
     pub(crate) async fn start(scrollback_bytes: usize) -> Self {
+        Self::start_with_token(scrollback_bytes, TEST_TOKEN.to_string()).await
+    }
+
+    /// A daemon serving with a token the caller chose.
+    ///
+    /// The token is a parameter rather than a constant so a test can serve
+    /// with one that a real `vitrum_proto::token::create_at` produced, which
+    /// is the only way to exercise the restart sequence end to end.
+    pub(crate) async fn start_with_token(scrollback_bytes: usize, token: String) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("binding an ephemeral loopback port");
@@ -57,8 +76,30 @@ impl Harness {
             .expect("reading the bound address")
             .port();
         let manager = Arc::new(SessionManager::new(scrollback_bytes));
-        tokio::spawn(serve(listener, Arc::clone(&manager)));
-        Self { port, manager }
+        let serving = tokio::spawn(serve(listener, Arc::clone(&manager), token));
+        Self {
+            port,
+            manager,
+            serving,
+        }
+    }
+
+    /// Stop the daemon and wait until its port is free again.
+    ///
+    /// Waiting matters: a restart test that rebinds before the kernel has
+    /// released the listener is a flake, and one that does not wait is
+    /// asserting against two daemons at once.
+    pub(crate) async fn stop(self) {
+        let port = self.port;
+        self.serving.abort();
+        let deadline = tokio::time::Instant::now() + DEADLINE;
+        while TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the daemon on {port} was still accepting after it was stopped"
+            );
+            tokio::task::yield_now().await;
+        }
     }
 
     pub(crate) async fn client(&self) -> Client {
@@ -238,8 +279,14 @@ impl Client {
 
     /// Greet the server and assert the reply.
     pub(crate) async fn hello(&mut self) {
+        self.hello_with(TEST_TOKEN).await
+    }
+
+    /// Greet with a token the caller chose, and assert the reply.
+    pub(crate) async fn hello_with(&mut self, token: &str) {
         self.send(ClientMsg::Hello {
             protocol: PROTOCOL_VERSION,
+            token: token.to_string(),
         })
         .await;
         self.until("welcome", |s| {
@@ -353,6 +400,20 @@ impl Client {
             }
         }
         self.closed = true;
+    }
+
+    /// Send a frame that the daemon may reject by resetting the socket.
+    ///
+    /// `send_raw` asserts the write succeeded, which is right for every test
+    /// where the daemon is expected to answer. It is wrong for a frame the
+    /// daemon is expected to refuse at the transport, where losing the race
+    /// between our write and its reset is an ordinary outcome and not a
+    /// failure.
+    pub(crate) async fn ws_send_allowing_failure(
+        &mut self,
+        frame: Message,
+    ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+        self.ws.send(frame).await
     }
 
     // The helpers from here to the end of this block drive a live child

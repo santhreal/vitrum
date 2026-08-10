@@ -4,7 +4,7 @@
 use super::*;
 
 use vitrum_proto::exit::{self, Exit};
-use vitrum_proto::HintState;
+use vitrum_proto::{HintState, token};
 
 /// The parser stopped, and this is what the process says on the way out.
 ///
@@ -63,6 +63,36 @@ impl std::fmt::Display for CliExit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
+}
+
+/// How to call `vitrum`, in three lines.
+///
+/// One owner, read by [`usage`] and by every diagnostic, so a caller told how
+/// to call this program is told the same thing whichever way they arrived.
+pub(crate) const SYNOPSIS: &str = "\
+usage: vitrum [--server URL] [--fixture] [--renderer webgl|dom]\n              \
+[--ui-scale auto|N] [--standalone] [--no-autostart]\n              \
+[--token-file PATH]\n       \
+vitrum update|hint|icons";
+
+/// A diagnostic, in the shape a Unix tool writes one.
+///
+/// Three lines: what went wrong, how the command is called, and where the
+/// rest of the manual is. `command` is the program as the operator typed it,
+/// including the subcommand, so a line on a shared stderr says who wrote it.
+///
+/// The whole manual used to follow the first line instead. Forty options went
+/// to stderr for one mistyped flag, and on a short terminal the sentence
+/// naming the mistake had scrolled off by the time the shell prompt came
+/// back. The four surfaces also disagreed about whether to name themselves at
+/// all: `icons` did, `update` and the option parser did not.
+pub(crate) fn diagnostic(command: &str, problem: &str, synopsis: &str) -> String {
+    format!("{command}: {problem}\n{synopsis}\nRun '{command} --help' for the options.")
+}
+
+/// [`diagnostic`] for the option parser, which has no subcommand name.
+fn misuse(problem: impl AsRef<str>) -> CliExit {
+    CliExit::misuse(diagnostic("vitrum", problem.as_ref(), SYNOPSIS))
 }
 
 /// Which xterm.js renderer to mount.
@@ -147,6 +177,92 @@ pub(crate) struct Options {
     /// daemon under a supervisor or a debugger, who want a failure to connect
     /// to stay a failure rather than be papered over with a second copy.
     pub(crate) autostart: bool,
+    /// Where to read the daemon token from, overriding the default file.
+    ///
+    /// Leaked for the same reason `server` is. `None` means the file
+    /// [`vitrum_proto::token::path`] resolves, which is where a daemon on this
+    /// machine writes it.
+    pub(crate) token_file: Option<&'static str>,
+}
+
+/// The environment variable that outranks every token file.
+pub(crate) const TOKEN_VAR: &str = "VITRUM_TOKEN";
+
+/// What a handshake presents, and whose problem a missing token is.
+#[derive(Debug)]
+pub(crate) enum Token {
+    /// Found and well formed.
+    Present(String),
+    /// Nothing named a token, and the file a daemon on this machine would have
+    /// written could not be used.
+    ///
+    /// The handshake still goes ahead, with an empty token, because this
+    /// client only guessed at the path and the daemon knows it. An older
+    /// daemon wants no token at all and answers with the version skew; a
+    /// current one answers by naming the file it actually wrote and who can
+    /// read it. Refusing here instead put a guess on the screen in place of
+    /// either answer, and against a daemon from an earlier release it reported
+    /// a missing token when the real problem was that the daemon predated
+    /// tokens entirely.
+    Unnamed(token::TokenError),
+    /// `VITRUM_TOKEN` or `--token-file` named a token that cannot be used.
+    ///
+    /// Nothing is sent. A named source is this client's own configuration, and
+    /// a typo in it is not a question for the daemon.
+    Named(token::TokenError),
+}
+
+/// The token this client presents to the daemon.
+///
+/// Three inputs, in one order, and every one of them ends in
+/// [`vitrum_proto::token::validate`] so there is a single definition of what a
+/// token is:
+///
+/// 1. `VITRUM_TOKEN`, which is how a token reaches a client talking to a
+///    daemon on another machine through a tunnel. The value, not a path,
+///    because a path is only useful on the machine that has the file.
+/// 2. `--token-file`, for a copied file that is not where a local daemon would
+///    have written one.
+/// 3. The file a daemon on this machine writes.
+///
+/// The secret is never an argument. `ps` is readable by every account on the
+/// machine, so a token on a command line is a token published to the machine
+/// the token exists to keep out.
+///
+/// Read at each handshake rather than once at startup: the daemon writes a
+/// fresh token every time it starts, so a client that cached one at launch
+/// would fail to reconnect to a daemon that had been restarted, which is the
+/// one moment a reconnect matters.
+pub(crate) fn resolve_token(opts: Options) -> Token {
+    resolve_token_from(std::env::var(TOKEN_VAR).ok().as_deref(), opts.token_file)
+}
+
+/// [`resolve_token`] with the environment supplied rather than read.
+///
+/// The environment is process-global and a test suite is not, so the order of
+/// precedence is proved here, against values, instead of against a variable
+/// every other test in the binary would see.
+pub(crate) fn resolve_token_from(from_env: Option<&str>, from_flag: Option<&str>) -> Token {
+    // An empty value is treated as unset. An exported but blank variable is a
+    // script that meant to set it and did not, and refusing on the empty
+    // string rather than falling through to the file would break a local
+    // client over a variable nobody meant to set.
+    if let Some(value) = from_env.filter(|v| !v.trim().is_empty()) {
+        return match token::validate(value, TOKEN_VAR) {
+            Ok(token) => Token::Present(token),
+            Err(e) => Token::Named(e),
+        };
+    }
+    match from_flag {
+        Some(path) => match token::load_from(std::path::Path::new(path)) {
+            Ok(token) => Token::Present(token),
+            Err(e) => Token::Named(e),
+        },
+        None => match token::load() {
+            Ok(token) => Token::Present(token),
+            Err(e) => Token::Unnamed(e),
+        },
+    }
 }
 
 /// Is this argument a `vitrum://` URL rather than an option?
@@ -170,63 +286,64 @@ impl Options {
             ui_scale: None,
             standalone: false,
             autostart: true,
+            token_file: None,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--fixture" => opts.fixture = true,
+                "--token-file" => {
+                    let v = args
+                        .next()
+                        .ok_or_else(|| misuse("--token-file needs a path"))?;
+                    if v.is_empty() {
+                        return Err(misuse("--token-file needs a path, and it was empty"));
+                    }
+                    opts.token_file = Some(v.leak());
+                }
                 "--server" => {
-                    let v = args.next().ok_or_else(|| {
-                        CliExit::misuse(format!("--server needs a URL\n\n{}", usage()))
-                    })?;
+                    let v = args
+                        .next()
+                        .ok_or_else(|| misuse("--server needs a ws:// or wss:// URL"))?;
                     if !v.starts_with("ws://") && !v.starts_with("wss://") {
-                        return Err(CliExit::misuse(format!(
-                            "--server {v} is not a WebSocket URL; expected ws:// or wss://\n\n{}",
-                            usage()
+                        return Err(misuse(format!(
+                            "--server {v} is not a WebSocket URL. Use ws:// for a daemon on \
+                             this machine, or wss:// for one reached through a tunnel."
                         )));
                     }
                     opts.server = v.leak();
                 }
                 "--renderer" => {
-                    let v = args.next().ok_or_else(|| {
-                        CliExit::misuse(format!(
-                            "--renderer needs a value: webgl or dom\n\n{}",
-                            usage()
-                        ))
-                    })?;
+                    let v = args
+                        .next()
+                        .ok_or_else(|| misuse("--renderer needs a value: webgl or dom"))?;
                     opts.renderer = match v.as_str() {
                         "webgl" => Renderer::Webgl,
                         "dom" => Renderer::Dom,
                         other => {
-                            return Err(CliExit::misuse(format!(
-                                "unknown renderer {other}, expected webgl or dom\n\n{}",
-                                usage()
+                            return Err(misuse(format!(
+                                "unknown renderer {other}. The renderers are dom and webgl."
                             )));
                         }
                     };
                 }
                 "--ui-scale" => {
-                    let v = args.next().ok_or_else(|| {
-                        CliExit::misuse(format!(
-                            "--ui-scale needs a value: auto or a number\n\n{}",
-                            usage()
-                        ))
-                    })?;
+                    let v = args
+                        .next()
+                        .ok_or_else(|| misuse("--ui-scale needs a value: auto or a number"))?;
                     opts.ui_scale = match v.as_str() {
                         "auto" => None,
                         other => {
                             let n: f64 = other.parse().map_err(|_| {
-                                CliExit::misuse(format!(
-                                    "--ui-scale {other} is not a number; expected auto or a \
-                                     value between {MIN_UI_SCALE} and {MAX_UI_SCALE}\n\n{}",
-                                    usage()
+                                misuse(format!(
+                                    "--ui-scale {other} is not a number. Pass auto, or a value \
+                                     between {MIN_UI_SCALE} and {MAX_UI_SCALE}."
                                 ))
                             })?;
                             if !(MIN_UI_SCALE..=MAX_UI_SCALE).contains(&n) {
-                                return Err(CliExit::misuse(format!(
-                                    "--ui-scale {n} is outside {MIN_UI_SCALE}..={MAX_UI_SCALE}\
-                                     \n\n{}",
-                                    usage()
+                                return Err(misuse(format!(
+                                    "--ui-scale {n} is outside {MIN_UI_SCALE} to {MAX_UI_SCALE}. \
+                                     Pass auto to read the panel's physical size."
                                 )));
                             }
                             Some(n)
@@ -261,10 +378,7 @@ impl Options {
                     // the URL. "unknown argument" would name the wrong problem.
                 }
                 other => {
-                    return Err(CliExit::misuse(format!(
-                        "unknown argument {other}\n\n{}",
-                        usage()
-                    )));
+                    return Err(misuse(format!("unknown argument {other}")));
                 }
             }
         }
@@ -278,8 +392,7 @@ impl Options {
 pub(crate) fn usage() -> String {
     format!(
         "vitrum - a terminal shell for coding agents\n\n\
-         usage: vitrum [--server URL] [--fixture] [--renderer webgl|dom]\n                \
-         [--ui-scale auto|N] [--standalone]\n\n\
+         {SYNOPSIS}\n\n\
          Launching again while vitrum is running opens another window in the\n\
          running process rather than a second copy of the program.\n\n\
          options:\n  \
@@ -300,6 +413,12 @@ pub(crate) fn usage() -> String {
          starts the session daemon if nothing is listening,\n                       \
          reuses one that already is, and never kills it on\n                       \
          exit: your agents outlive the window.\n  \
+         --token-file <path>  read the daemon token from this file instead of\n                       \
+         the one a daemon on this machine writes. Set\n                       \
+         {TOKEN_VAR} to pass the token itself, which is what\n                       \
+         a daemon reached through a tunnel needs. A token is\n                       \
+         never taken as an argument: ps is readable by every\n                       \
+         account on the machine.\n  \
          -h, --help           show this message\n\n\
          commands:\n  \
          update               install the newest published release\n  \
@@ -346,6 +465,7 @@ pub(crate) enum HintRequest {
 /// silently declaring `ready` when the caller asked for `approvel` would put a
 /// wrong badge on a row and never mention it.
 pub(crate) fn parse_hint(args: &[String]) -> Result<HintRequest, String> {
+    let bad = |problem: String| diagnostic("vitrum hint", &problem, HINT_SYNOPSIS);
     let mut state: Option<HintState> = None;
     let mut label: Option<String> = None;
     let mut cleared = false;
@@ -363,44 +483,44 @@ pub(crate) fn parse_hint(args: &[String]) -> Result<HintRequest, String> {
             // A label may well start with a dash, so only the words before a
             // state are read as options. After one, everything is text.
             other if state.is_none() && other.starts_with('-') => {
-                return Err(format!("unknown option {other}\n\n{}", hint_usage()));
+                return Err(bad(format!("unknown option {other}")));
             }
             other if state.is_none() => {
                 state = Some(HintState::parse(other).ok_or_else(|| {
-                    format!(
-                        "unknown state {other}; expected approval, input, working or ready\
-                         \n\n{}",
-                        hint_usage()
-                    )
+                    bad(format!(
+                        "unknown state {other}. The states are approval, input, working \
+                         and ready."
+                    ))
                 })?);
             }
             other if cleared => {
-                return Err(format!(
-                    "--clear takes no other arguments, and {other} is one\n\n{}",
-                    hint_usage()
-                ));
+                return Err(bad(format!(
+                    "--clear takes no other arguments, and {other} is one"
+                )));
             }
             other if label.is_none() => label = Some(other.to_string()),
             other => {
-                return Err(format!(
-                    "unexpected argument {other}; the label is one argument, so quote it\
-                     \n\n{}",
-                    hint_usage()
-                ));
+                return Err(bad(format!(
+                    "unexpected argument {other}. The label is one argument, so quote it."
+                )));
             }
         }
     }
     match state {
         Some(state) => Ok(HintRequest::Declare { state, label }),
-        None => Err(format!("vitrum hint needs a state\n\n{}", hint_usage())),
+        None => Err(bad("no state was given".to_string())),
     }
 }
+
+/// How to call `vitrum hint`.
+pub(crate) const HINT_SYNOPSIS: &str = "\
+usage: vitrum hint <state> [label]\n       \
+vitrum hint --clear";
 
 pub(crate) fn hint_usage() -> String {
     format!(
         "vitrum hint - tell the sidebar what this session is doing\n\n\
-         usage: vitrum hint <state> [label]\n       \
-         vitrum hint --clear\n\n\
+         {HINT_SYNOPSIS}\n\n\
          Writes an OSC {} sequence to stdout. Any terminal that does not know\n\
          it ignores it, so a harness can emit it unconditionally.\n\n\
          Approval and Input exist ONLY here. They cannot be observed from a\n\
@@ -442,3 +562,8 @@ mod what_the_command_line_accepts;
 /// really returns.
 #[cfg(test)]
 mod what_each_command_exits_with;
+
+/// Where a client's token comes from, in which order, and what each way of
+/// getting it wrong says.
+#[cfg(test)]
+mod how_a_token_reaches_the_daemon;

@@ -26,6 +26,7 @@ pub mod b64;
 pub mod exit;
 pub mod frame;
 pub mod text;
+pub mod token;
 pub use exit::Exit;
 pub use frame::{
     FRAME_KIND_OUTPUT, FrameError, OUTPUT_HEADER_LEN, decode_output, encode_output,
@@ -38,7 +39,12 @@ use serde::{Deserialize, Serialize};
 /// Control-plane schema version. Bump only when old clients and servers must
 /// refuse each other; additive fields do not warrant a bump because both sides
 /// tolerate unknown fields.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// 3 added the authentication token to [`ClientMsg::Hello`]. That is not an
+/// additive field: a version-2 client omits it, and a daemon that accepted the
+/// omission would keep the hole the token exists to close, so the two versions
+/// must refuse each other outright.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Identifier for a live or exited terminal session, assigned by the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -299,7 +305,13 @@ pub struct SessionInfo {
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ClientMsg {
     /// First message on a connection. The server replies [`ServerMsg::Welcome`].
-    Hello { protocol: u32 },
+    ///
+    /// `token` is the shared secret from [`token::path`], which proves the
+    /// sender can read a file only this user can read. It is not optional:
+    /// the daemon spawns arbitrary commands on request, and an omitted token
+    /// that the daemon tolerated would be the whole vulnerability back again.
+    /// An empty string is refused exactly as a wrong one is.
+    Hello { protocol: u32, token: String },
     /// Request the current project and session lists.
     List,
     /// Create and spawn a new session.
@@ -1177,6 +1189,7 @@ mod tests {
         let all = vec![
             ClientMsg::Hello {
                 protocol: PROTOCOL_VERSION,
+                token: "0123456789abcdef".repeat(4),
             },
             ClientMsg::List,
             ClientMsg::CreateSession {

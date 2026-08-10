@@ -6,6 +6,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "The vitrum desktop client: sidebar and terminal panes."
+# crates.io shows a crate by its keywords, categories and floor, and the ones
+# left unset are the ones a search never turns up. The floor is the highest in
+# this workspace rather than this package's own: `cargo install vitrum` builds
+# the whole graph, and a number that only covers the client is a floor that
+# fails at a dependency.
+rust-version = "1.90"
+keywords = ["terminal", "agents", "sessions", "pty", "desktop"]
+categories = ["command-line-utilities", "development-tools", "gui"]
 
 # The package and the binary are both `vitrum`, so there is no `[[bin]]` here:
 # `src/main.rs` in a package named `vitrum` already produces `vitrum`.
@@ -62,7 +70,8 @@ dioxus = "0.7"
 #
 # Measured consequence: 55.1 MB per window, of which 9.1 MB is this. Fifteen
 # windows fit in 1 GB; twenty are 1263.9 MB. Even with this recovered, twenty
-# would be ~1090 MB, so it is necessary and NOT sufficient. See GOAL.md.
+# would be ~1090 MB, so it is necessary and NOT sufficient. `docs/performance.md`
+# carries the published figures for the build that shares one web process.
 vitrum-dioxus-desktop = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -292,3 +292,36 @@ fn the_capture_list_covers_every_variable_resolution_reads() {
     // means the loop above tested nothing.
     assert!(checked > 0, "no directory variable was set, so nothing was verified");
 }
+
+/// The daemon's token file lands where this crate says the runtime directory
+/// is.
+///
+/// WHY: `vitrum_proto::token` resolves that path itself, because the daemon
+/// cannot depend on this crate — doing so would link zbus, ksni and the tray
+/// into a headless process. Two resolvers for one path is exactly the drift
+/// that ends with a client reading a file no daemon ever writes, and the
+/// symptom is an authentication failure nobody can explain. This is the pin
+/// that makes such a drift a red test in the same commit that causes it.
+///
+/// What it does not catch: a change made to both sides at once. That is a
+/// deliberate move of the file and is meant to be possible.
+#[test]
+fn the_token_file_is_where_this_crate_puts_the_runtime_directory() {
+    let ours = AppPaths::resolve(Platform::current(), &PathEnv::from_process())
+        .map(|p| p.runtime_dir.join("token"));
+    let theirs = vitrum_proto::token::path();
+    match (ours, theirs) {
+        (Ok(ours), Ok(theirs)) => assert_eq!(
+            ours, theirs,
+            "vitrum-os resolves the runtime directory to one place and \
+             vitrum_proto::token resolves the token to another"
+        ),
+        // An environment with neither a home nor a runtime directory is a real
+        // outcome; both sides must reach it, not one of them.
+        (Err(_), Err(_)) => {}
+        (ours, theirs) => panic!(
+            "the two resolvers disagree about whether a path exists at all: \
+             vitrum-os {ours:?}, vitrum-proto {theirs:?}"
+        ),
+    }
+}

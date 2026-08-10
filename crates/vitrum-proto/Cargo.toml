@@ -14,3 +14,10 @@ categories = ["network-programming", "encoding", "data-structures"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+getrandom = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# geteuid, to tell our own stale token file from one another account planted.
+# `std` has no way to ask, and this is the same rustix the daemon and
+# `vitrum-os` already link.
+rustix = { version = "1", default-features = false, features = ["std", "process"] }

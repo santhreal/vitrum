@@ -3,7 +3,7 @@
 use vitrum_proto::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::tests::client::Harness;
+use crate::tests::client::{Harness, TEST_TOKEN};
 
 /// Hello must be answered with Welcome carrying the version pair.
 ///
@@ -15,6 +15,7 @@ async fn hello_is_answered_with_welcome() {
     let mut c = h.client().await;
     c.send(ClientMsg::Hello {
         protocol: PROTOCOL_VERSION,
+        token: TEST_TOKEN.to_string(),
     })
     .await;
     c.until("welcome", |s| !s.ctl.is_empty()).await;
@@ -41,7 +42,11 @@ async fn hello_is_answered_with_welcome() {
 async fn a_mismatched_protocol_is_refused_and_the_socket_closes() {
     let h = Harness::start(4096).await;
     let mut c = h.client().await;
-    c.send(ClientMsg::Hello { protocol: 9999 }).await;
+    c.send(ClientMsg::Hello {
+        protocol: 9999,
+        token: TEST_TOKEN.to_string(),
+    })
+    .await;
     c.until("the refusal", |s| !s.ctl.is_empty()).await;
     let errors = c.seen.errors();
     assert_eq!(errors.len(), 1, "expected exactly one error: {errors:?}");
@@ -66,6 +71,7 @@ async fn a_refused_client_cannot_create_sessions() {
     // client is refused.
     c.send(ClientMsg::Hello {
         protocol: PROTOCOL_VERSION + 1,
+        token: TEST_TOKEN.to_string(),
     })
     .await;
     c.until("the refusal", |s| !s.ctl.is_empty()).await;

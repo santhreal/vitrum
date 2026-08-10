@@ -486,6 +486,12 @@ impl Bridge {
         net.write().connect(url);
     }
 
+    /// Close the session socket without opening another.
+    fn hang_up(&self) {
+        let mut net = self.net;
+        net.write().hang_up();
+    }
+
     /// Which socket generation is current, so a dying one's events can be
     /// discarded rather than allowed to overwrite the new one's state.
     fn epoch(&self) -> u64 {
@@ -1026,10 +1032,17 @@ fn App() -> Element {
                 w.window.index = seed.ordinal;
                 prefs.restore_window(&mut w.window);
             }
-            if let Some(detail) = why {
-                st.write().window.flash = Some(Flash::error(format!(
-                    "Settings not fully restored: {detail}"
-                )));
+            // Two files, one strip, and the launch store goes second because
+            // the settings one is the wider failure. Neither is silent: a
+            // state file this build could not read is a thing the operator has
+            // to be told about, or the first save writes defaults over it and
+            // the loss is permanent.
+            let problem = why
+                .as_deref()
+                .map(|detail| format!("Settings not fully restored: {detail}"))
+                .or_else(|| launch::store_problem().map(str::to_string));
+            if let Some(text) = problem {
+                st.write().window.flash = Some(Flash::error(text));
             }
             // Pushes the restored text scale, terminal options and key bindings
             // into the webview that just mounted.

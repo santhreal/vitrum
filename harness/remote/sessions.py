@@ -28,7 +28,7 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 # Must equal `vitrum_proto::PROTOCOL_VERSION`. The daemon refuses any other
 # number outright, so a bump that misses this file makes every measurement run
 # fail at the handshake. `harness_protocol.rs` asserts the two agree.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 class Ws:
@@ -152,10 +152,40 @@ class Ws:
         self.sock.close()
 
 
+def read_token():
+    """The daemon's shared secret, the way vitrum_proto::token resolves it.
+
+    The daemon spawns commands for anyone who completes the handshake, so it
+    refuses a connection that cannot present this. The harness is a client
+    like any other and reads the same file.
+    """
+    explicit = os.environ.get("VITRUM_TOKEN")
+    if explicit:
+        return explicit.strip()
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if run and os.path.isabs(run):
+        path = os.path.join(run, "vitrum", "token")
+    else:
+        cache = os.environ.get("XDG_CACHE_HOME")
+        if not (cache and os.path.isabs(cache)):
+            cache = os.path.join(os.path.expanduser("~"), ".cache")
+        path = os.path.join(cache, "vitrum", "run", "token")
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except OSError as e:
+        raise RuntimeError(
+            f"cannot read the vitrum token at {path}: {e}; "
+            "start vitrum-server as this user, or set VITRUM_TOKEN"
+        )
+
+
 def connect():
     port = int(os.environ.get("VITRUM_PORT", "7737"))
     ws = Ws("127.0.0.1", port)
-    ws.send_json({"t": "hello", "protocol": PROTOCOL_VERSION})
+    ws.send_json(
+        {"t": "hello", "protocol": PROTOCOL_VERSION, "token": read_token()}
+    )
     welcome = ws.wait_for("welcome")
     if welcome.get("protocol") != PROTOCOL_VERSION:
         raise RuntimeError(f"daemon speaks protocol {welcome.get('protocol')}")
@@ -186,7 +216,7 @@ def cmd_count():
     """How many sessions the daemon holds, one number on stdout.
 
     This exists because "twenty windows" and "twenty windows each showing its
-    OWN session" are different measurements, and GOAL.md records mistaking the
+    OWN session" are different measurements, and this project has mistaken the
     second for the first: a 1059.2 MB result had fewer sessions than windows,
     so several windows showed the same session and the figure was not the
     workload it claimed. Counting the windows cannot catch that. Counting both

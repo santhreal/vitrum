@@ -74,7 +74,10 @@ serde_json = "1"
 # above. See `vendor-pty/README.md`; the version tracks the upstream release it
 # forks.
 portable-pty = { package = "vitrum-portable-pty", path = "vendor-pty", version = "0.9.0" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
+# `signal` so the daemon can end its sessions deliberately on SIGTERM rather
+# than leaving the kernel to hang up their terminals, which a child that
+# ignores SIGHUP survives.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1"
@@ -82,6 +85,15 @@ futures-util = "0.3"
 tokio-tungstenite = "0.24"
 regex = "1"
 memchr = "2"
+
+# The daemon's authentication token, and nothing else. A CSPRNG crate would
+# bring a generator this has no use for: the token is 32 bytes read once per
+# daemon start, so the operating system's own entropy source is the whole
+# requirement, and `getrandom` is already in the lockfile through the TLS
+# stack.
+# `std` so its error type is a `std::error::Error` and can be the source of
+# one of ours.
+getrandom = { version = "0.3", features = ["std"] }
 
 # The updater's HTTP client. `rustls` rather than the platform TLS because
 # `rustls` is already in the lockfile through tokio-tungstenite, so this adds a

@@ -13,6 +13,9 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::{StatusCode, header};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::hub::Hub;
@@ -34,6 +37,63 @@ const OUT_QUEUE: usize = 256;
 /// that a refusal or a final exit notice actually reaches a live one.
 const SHUTDOWN_FLUSH: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long a peer may take to complete the HTTP upgrade.
+///
+/// Without a deadline a peer that opens a socket and sends nothing holds a
+/// task, a file descriptor and a slot in the accept loop for as long as the
+/// daemon runs, and it costs one `nc` to do it. Ten seconds is far longer than
+/// a loopback upgrade needs and short enough that the leak is not one.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Largest control message the daemon will assemble from a peer.
+///
+/// tungstenite's own default is 64 MiB per message and 16 MiB per frame, which
+/// is a peer choosing how much of this daemon's heap to take. The largest
+/// legitimate inbound message is a paste, base64 encoded, and 4 MiB of pasted
+/// text is already far past what a terminal can usefully receive at once.
+///
+/// Outbound is unaffected: this bounds what is read, and scrollback answers
+/// are bounded by the ring they come from.
+const MAX_INBOUND_MESSAGE: usize = 4 * 1024 * 1024;
+
+/// The websocket limits every accepted connection runs under.
+fn socket_limits() -> WebSocketConfig {
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(MAX_INBOUND_MESSAGE);
+    config.max_frame_size = Some(MAX_INBOUND_MESSAGE);
+    config
+}
+
+/// Refuse any handshake that carries an `Origin` header.
+///
+/// A browser attaches `Origin` to every cross-origin WebSocket handshake and
+/// cannot be made not to. It also sends that handshake with no preflight and
+/// no same-origin check, so without this any page the operator visits can open
+/// `ws://127.0.0.1:7737`, create a session running any command, and read every
+/// agent's transcript. A native client never sends the header, so refusing it
+/// costs nothing and closes the entire browser-borne case at the upgrade,
+/// before a single control message is parsed.
+///
+/// This is the outer of two layers. It does not defend against another local
+/// user, who simply omits the header; the token does that.
+fn refuse_browsers(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+    let Some(origin) = request.headers().get(header::ORIGIN) else {
+        return Ok(response);
+    };
+    tracing::warn!(
+        origin = %String::from_utf8_lossy(origin.as_bytes()),
+        "refused a handshake carrying Origin"
+    );
+    let mut refusal = ErrorResponse::new(Some(
+        "vitrum-server refuses cross-origin connections. This daemon runs commands on \
+         request, so it accepts only local native clients, which never send an Origin \
+         header.\n"
+            .to_string(),
+    ));
+    *refusal.status_mut() = StatusCode::FORBIDDEN;
+    Err(refusal)
+}
+
 /// Whether the connection continues after a message.
 #[derive(PartialEq, Eq, Debug)]
 enum Flow {
@@ -43,9 +103,22 @@ enum Flow {
 
 /// Run one accepted TCP connection to completion.
 pub async fn serve_connection(stream: TcpStream, hub: Arc<Hub>) -> anyhow::Result<()> {
-    let ws = tokio_tungstenite::accept_async(stream)
-        .await
-        .context("websocket handshake")?;
+    // Bounded, because the upgrade is the one phase a peer controls the
+    // duration of. Everything after it is driven by messages this daemon can
+    // refuse.
+    let ws = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async_with_config(
+            stream,
+            refuse_browsers,
+            Some(socket_limits()),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!("a peer did not finish the websocket handshake within {HANDSHAKE_TIMEOUT:?}")
+    })?
+    .context("websocket handshake")?;
     let (sink, mut incoming) = ws.split();
     let (out_tx, out_rx) = mpsc::channel::<Message>(OUT_QUEUE);
     let mut writer = tokio::spawn(write_loop(sink, out_rx));
@@ -162,7 +235,7 @@ impl Conn {
         }
 
         match msg {
-            ClientMsg::Hello { protocol } => {
+            ClientMsg::Hello { protocol, token } => {
                 if protocol != PROTOCOL_VERSION {
                     // Refuse rather than guess. A version skew that is papered
                     // over surfaces later as corrupted output.
@@ -185,6 +258,20 @@ impl Conn {
                         ),
                     )
                     .await?;
+                    return Ok(Flow::Close);
+                }
+                // The version is checked first on purpose: a client that is
+                // simply out of date must be told so rather than told its
+                // credentials are wrong, because the two send an operator to
+                // opposite places. Version 2 carried no token at all, so a
+                // version-2 client never reaches this line.
+                if !self.hub.token_matches(&token) {
+                    // Constant in what it says, whatever was presented. An
+                    // error that distinguished "no token" from "wrong token"
+                    // from "wrong length" would answer questions a caller has
+                    // no legitimate reason to be asking.
+                    tracing::warn!("refused a hello with an invalid token");
+                    self.error(None, self.hub.token_refusal()).await?;
                     return Ok(Flow::Close);
                 }
                 self.greeted = true;

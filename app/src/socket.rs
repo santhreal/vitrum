@@ -566,6 +566,18 @@ impl Net {
         runtime.spawn(run(url, epoch, rx, events));
     }
 
+    /// Close the current socket without opening another.
+    ///
+    /// Dropping the sender is the whole mechanism, the same one
+    /// [`Net::connect`] relies on: the socket task's outbound receiver returns
+    /// `None` and it shuts the connection down without reporting a close,
+    /// because the close is ours. Used when the client has decided it cannot
+    /// complete the handshake, where leaving the socket open would hold a
+    /// connection that will never say anything.
+    pub(crate) fn hang_up(&mut self) {
+        self.out = None;
+    }
+
     /// Send one control-plane message.
     pub(crate) fn send(&self, text: String) {
         let Some(out) = &self.out else {

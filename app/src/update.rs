@@ -1186,6 +1186,13 @@ pub const EXIT_CODES: &[Exit] = &[
 /// Returns a code from the one table in [`vitrum_proto::exit`]. "Already up to
 /// date" is [`Exit::Ok`], because nothing is wrong.
 pub fn run_update(args: &[String]) -> i32 {
+    let complain = |problem: String| {
+        eprintln!(
+            "{}",
+            crate::cli::diagnostic("vitrum update", &problem, SYNOPSIS)
+        );
+        Exit::Usage.code()
+    };
     let mut check_only = false;
     let mut channel = None;
     let mut args = args.iter();
@@ -1196,12 +1203,12 @@ pub fn run_update(args: &[String]) -> i32 {
                 Some("stable") => channel = Some(Channel::Stable),
                 Some("nightly") => channel = Some(Channel::Nightly),
                 Some(other) => {
-                    eprintln!("unknown channel {other}\n\n{}", update_usage());
-                    return Exit::Usage.code();
+                    return complain(format!(
+                        "unknown channel {other}. The channels are stable and nightly."
+                    ));
                 }
                 None => {
-                    eprintln!("--channel needs stable or nightly\n\n{}", update_usage());
-                    return Exit::Usage.code();
+                    return complain("--channel needs a value: stable or nightly".to_string());
                 }
             },
             "-h" | "--help" => {
@@ -1209,8 +1216,7 @@ pub fn run_update(args: &[String]) -> i32 {
                 return Exit::Ok.code();
             }
             other => {
-                eprintln!("unknown argument {other}\n\n{}", update_usage());
-                return Exit::Usage.code();
+                return complain(format!("unknown argument {other}"));
             }
         }
     }
@@ -1302,10 +1308,13 @@ pub fn run_update(args: &[String]) -> i32 {
     }
 }
 
+/// How to call `vitrum update`.
+const SYNOPSIS: &str = "usage: vitrum update [--check] [--channel stable|nightly]";
+
 pub(crate) fn update_usage() -> String {
     format!(
         "vitrum update - stage the newest published release\n\n\
-         usage: vitrum update [--check] [--channel stable|nightly]\n\n\
+         {SYNOPSIS}\n\n\
          Reads a published release of {}, never the branch, because the tip of\n\
          a branch carries work that has not been released.\n\n\
          The archive's SHA-256 must match the SHA256SUMS published beside it.\n\

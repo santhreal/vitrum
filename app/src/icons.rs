@@ -19,6 +19,17 @@
 
 use vitrum_proto::exit::{self, Exit};
 
+use crate::cli::diagnostic;
+
+/// How to call `vitrum icons`.
+const SYNOPSIS: &str = "usage: vitrum icons <directory>";
+
+/// One diagnostic, on stderr, in the shape the other three commands use.
+fn complain(problem: &str) -> Exit {
+    eprintln!("{}", diagnostic("vitrum icons", problem, SYNOPSIS));
+    Exit::Usage
+}
+
 /// `vitrum icons` - write the platform icon set under a directory.
 ///
 /// Returns a code from the one table in [`vitrum_proto::exit`], because the
@@ -38,23 +49,20 @@ pub(crate) fn run_icons(args: &[String]) -> i32 {
                 return Exit::Ok.code();
             }
             other if other.starts_with('-') => {
-                eprintln!("vitrum icons: unknown option {other}\n\n{}", icons_usage());
-                return Exit::Usage.code();
+                return complain(&format!("unknown option {other}")).code();
             }
             other if dir.is_none() => dir = Some(std::path::PathBuf::from(other)),
             other => {
-                eprintln!(
-                    "vitrum icons: unexpected argument {other}\n\n{}",
-                    icons_usage()
-                );
-                return Exit::Usage.code();
+                return complain(&format!(
+                    "unexpected argument {other}. One directory is written at a time."
+                ))
+                .code();
             }
         }
     }
 
     let Some(dir) = dir else {
-        eprintln!("vitrum icons needs a directory\n\n{}", icons_usage());
-        return Exit::Usage.code();
+        return complain("no directory was given").code();
     };
 
     match vitrum_os::iconfile::write_icon_set(&dir) {
@@ -85,8 +93,13 @@ pub(crate) fn run_icons(args: &[String]) -> i32 {
 fn refusal(e: &std::io::Error) -> Exit {
     use std::io::ErrorKind;
     match e.kind() {
+        // `NotADirectory` is here for the same reason as the rest: an
+        // operator who passed the path of a file was one argument away from a
+        // working command, and reporting that as a flat failure told a script
+        // to stop rather than to fix the path and run again.
         ErrorKind::PermissionDenied
         | ErrorKind::NotFound
+        | ErrorKind::NotADirectory
         | ErrorKind::ReadOnlyFilesystem
         | ErrorKind::StorageFull => Exit::Unavailable,
         _ => Exit::Failed,
@@ -100,7 +113,7 @@ pub(crate) const EXIT_CODES: &[Exit] = &[Exit::Ok, Exit::Failed, Exit::Usage, Ex
 pub(crate) fn icons_usage() -> String {
     format!(
         "vitrum icons - write the platform icon set\n\n\
-         usage: vitrum icons <directory>\n\n\
+         {SYNOPSIS}\n\n\
          Rasterises the vitrum mark and writes, under <directory>:\n  \
          icons/hicolor/<n>x<n>/apps/vitrum.png   the freedesktop theme sizes\n  \
          icons/vitrum.ico                        the Windows icon\n  \

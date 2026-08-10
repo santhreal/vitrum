@@ -49,6 +49,12 @@ pub struct Hub {
     /// Holds nothing at all until subscribed: no thread, no watcher, no watch
     /// descriptor. See `overlap.rs`.
     pub overlap: Arc<OverlapService>,
+    /// The shared secret every client must present in `Hello`.
+    ///
+    /// Held here rather than read per connection: the file is written once at
+    /// startup, and re-reading it per handshake would let anyone who can
+    /// replace it take over a running daemon's sessions.
+    token: String,
     events: broadcast::Sender<Event>,
     /// Sessions that already have a status watcher, so one is spawned per
     /// session rather than per session per connection.
@@ -56,15 +62,39 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub fn new(manager: Arc<SessionManager>) -> Arc<Self> {
+    pub fn new(manager: Arc<SessionManager>, token: String) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_QUEUE);
         Arc::new(Self {
             manager,
             projects: ProjectRegistry::default(),
             overlap: OverlapService::new(),
+            token,
             events,
             watched: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// Whether `presented` is this daemon's token, compared in constant time.
+    pub fn token_matches(&self, presented: &str) -> bool {
+        vitrum_proto::token::matches(&self.token, presented)
+    }
+
+    /// What a client that failed to authenticate is told.
+    ///
+    /// Names the file and the field, because the only honest corrective action
+    /// is "read the file you are allowed to read". It does not say what was
+    /// wrong with what arrived.
+    pub fn token_refusal(&self) -> String {
+        match vitrum_proto::token::path() {
+            Ok(path) => format!(
+                "authentication failed: hello must carry the token from {}. Read that file \
+                 and send its contents as hello.token; only the user running vitrum-server \
+                 can read it.",
+                path.display()
+            ),
+            Err(e) => format!("authentication failed, and this daemon cannot say where its \
+                 token lives: {e}"),
+        }
     }
 
     /// A callback that puts a message on this hub's bus.

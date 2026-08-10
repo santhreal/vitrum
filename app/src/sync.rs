@@ -366,6 +366,19 @@ pub(crate) fn on_bridge_event(
             // reporting are the ones nobody has on screen.
             badge::publish(st.peek().daemon.attention_total(now.model));
             if welcome && !opts.fixture && matches!(st.peek().daemon.conn, ConnState::Live { .. }) {
+                // The schedule starts from zero again, here and nowhere else.
+                //
+                // It used to reset when the SOCKET opened, which is not the
+                // same event: a daemon that refuses the handshake accepts the
+                // socket first and closes it after saying why. The reset
+                // therefore fired on every attempt, the backoff never grew,
+                // and a client facing a permanent refusal reconnected about
+                // four times a second forever. Measured against a daemon one
+                // release behind: 75 attempts in 20 seconds, each one a
+                // refusal written to the log. Resetting on the accepted
+                // handshake keeps the blip case that this exists for, since a
+                // dropped link that comes back does reach Welcome.
+                reconnect.set(0);
                 bridge.msg(&ClientMsg::List);
                 // Subscribe, on every connect.
                 //
@@ -416,24 +429,51 @@ pub(crate) fn on_bridge_event(
 
         BridgeEvent::Conn { state, detail } => match state {
             ConnEvent::Open => {
+                // The token is resolved here, on the open socket, and not at
+                // startup. The daemon writes a new one every time it starts,
+                // so a reconnect after a daemon restart needs the token that
+                // daemon wrote, not the one that was on disk when this window
+                // opened.
+                let token = match cli::resolve_token(opts) {
+                    cli::Token::Present(token) => token,
+                    // The daemon gets to answer. It knows the path it wrote,
+                    // and an older one wants no token at all.
+                    cli::Token::Unnamed(e) => {
+                        tracing::info!(
+                            "no token to present ({e}); the daemon will say what it wants"
+                        );
+                        String::new()
+                    }
+                    cli::Token::Named(e) => {
+                        // Nothing is sent. The daemon refuses every message
+                        // before a hello, so holding the socket open would be
+                        // a window that looks connected and answers nothing.
+                        bridge.hang_up();
+                        st.write().daemon.conn = ConnState::failed(e.to_string());
+                        schedule_reconnect(bridge, st, reconnect, opts);
+                        return;
+                    }
+                };
                 st.write().daemon.conn = ConnState::Connecting;
                 bridge.msg(&ClientMsg::Hello {
                     protocol: PROTOCOL_VERSION,
+                    token,
                 });
                 bridge.msg(&ClientMsg::List);
                 // A fresh socket knows nothing about our previous attachment.
                 attached.set(None);
-                // The link came back, so the schedule starts from zero next
-                // time. Without this a laptop that drops once an hour reaches
-                // the cap by lunchtime and then waits a minute to recover from
-                // a blip that lasted a second.
-                reconnect.set(0);
                 reconcile(bridge, st, attached, opts);
             }
             ConnEvent::Closed | ConnEvent::Error => {
-                st.write().daemon.conn = ConnState::Failed {
-                    detail: detail.unwrap_or_else(|| "connection lost".to_string()),
-                };
+                // A reason already recorded wins over this one. The daemon
+                // says why it is refusing and then closes, and the close
+                // carries no reason at all, so overwriting here replaced
+                // "restart vitrum-server, and that ends every session it
+                // holds" with "the connection dropped".
+                if !matches!(st.peek().daemon.conn, ConnState::Failed { .. }) {
+                    st.write().daemon.conn =
+                        ConnState::failed(detail.unwrap_or_else(|| "connection lost".to_string()));
+                }
                 attached.set(None);
                 schedule_reconnect(bridge, st, reconnect, opts);
             }

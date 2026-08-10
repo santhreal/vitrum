@@ -17,6 +17,7 @@
 //! scrollback stay per-attachment, because that traffic belongs to whoever is
 //! drawing the pane.
 
+use std::future::Future;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -57,14 +58,47 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Accept clients until the listener fails.
+/// Accept clients until the listener fails or `shutdown` resolves.
 ///
 /// Connections share the hub and nothing else: dropping one never disturbs a
 /// session or another client, but every one of them sees the same registry.
-pub async fn serve(listener: TcpListener, manager: Arc<SessionManager>) -> anyhow::Result<()> {
-    let hub = Hub::new(manager);
-    loop {
-        let (stream, peer) = match listener.accept().await {
+///
+/// `token` is the shared secret every client must present. It is passed in
+/// rather than read here so the binary owns the decision to write a fresh one
+/// at startup, and so a test can serve with a token it knows.
+pub async fn serve(
+    listener: TcpListener,
+    manager: Arc<SessionManager>,
+    token: String,
+) -> anyhow::Result<()> {
+    serve_until(listener, manager, token, std::future::pending()).await
+}
+
+/// [`serve`], ending when `shutdown` resolves.
+///
+/// Every session is closed on the way out. Process exit alone very nearly
+/// does that on Unix, because the last master descriptor closing hangs each
+/// terminal up, but a child that ignores `SIGHUP` outlives it holding a dead
+/// terminal, and the operator has no way left to reach it. Ending them here
+/// makes the outcome the same on every platform and for every child.
+///
+/// `shutdown` is a future rather than a channel so the binary can hand it a
+/// signal and a test can hand it something it controls, without either of
+/// them learning about the other's mechanism.
+pub async fn serve_until(
+    listener: TcpListener,
+    manager: Arc<SessionManager>,
+    token: String,
+    shutdown: impl Future<Output = ()>,
+) -> anyhow::Result<()> {
+    let hub = Hub::new(Arc::clone(&manager), token);
+    tokio::pin!(shutdown);
+    let outcome = loop {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            () = &mut shutdown => break Ok(()),
+        };
+        let (stream, peer) = match accepted {
             Ok(pair) => pair,
             // A connection lost during the accept, or a signal interrupting it,
             // says nothing about the listener. Returning here would take the
@@ -73,7 +107,7 @@ pub async fn serve(listener: TcpListener, manager: Arc<SessionManager>) -> anyho
                 tracing::debug!(error = %e, "transient accept failure");
                 continue;
             }
-            Err(e) => return Err(e).context("accepting a client connection"),
+            Err(e) => break Err(e).context("accepting a client connection"),
         };
         // Nagle would add up to 40ms to every keystroke echo on a loopback
         // socket, which is exactly the latency a terminal must not have.
@@ -87,7 +121,12 @@ pub async fn serve(listener: TcpListener, manager: Arc<SessionManager>) -> anyho
                 tracing::warn!(%peer, error = %format!("{e:#}"), "connection failed");
             }
         });
+    };
+    let ended = manager.close_all();
+    if ended > 0 {
+        tracing::info!(sessions = ended, "ended every hosted session on shutdown");
     }
+    outcome
 }
 
 #[cfg(test)]

@@ -296,7 +296,7 @@ async fn concurrent_sessions_report_independently() {
 #[tokio::test]
 async fn an_exited_session_gets_no_status_watcher() {
     let manager = std::sync::Arc::new(vitrum_core::SessionManager::new(4096));
-    let hub = crate::Hub::new(std::sync::Arc::clone(&manager));
+    let hub = crate::Hub::new(std::sync::Arc::clone(&manager), crate::tests::client::TEST_TOKEN.to_string());
     let id = manager
         .spawn(spec("exit 0"))
         .expect("spawning a shell that exits at once");
@@ -317,7 +317,7 @@ async fn an_exited_session_gets_no_status_watcher() {
 #[tokio::test]
 async fn a_status_that_is_already_terminal_is_still_reported() {
     let manager = std::sync::Arc::new(vitrum_core::SessionManager::new(4096));
-    let hub = crate::Hub::new(manager);
+    let hub = crate::Hub::new(manager, crate::tests::client::TEST_TOKEN.to_string());
     let mut events = hub.subscribe();
 
     // Exactly the state the race produces: subscribed to a channel whose value
@@ -375,4 +375,99 @@ async fn wait_until_dead(manager: &vitrum_core::SessionManager, id: SessionId) {
         assert!(tokio::time::Instant::now() < deadline, "the child never exited");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+}
+
+/// Shutting the daemon down must end a child that ignores the terminal hangup.
+///
+/// WHY: closing the last master descriptor hangs the terminal up, and that
+/// alone ends almost every child, which makes the explicit `close_all` on the
+/// way out of `serve_until` look redundant. It is not. A child that traps
+/// `SIGHUP` survives the hangup holding a terminal nothing is attached to any
+/// more, and with the daemon gone the operator has no session left to reach it
+/// through: it has to be found by pid and killed by hand. This test traps
+/// `SIGHUP` in the child precisely so the hangup cannot be what ends it, which
+/// makes the assertion a statement about the kill and nothing else.
+///
+/// Does not cover: a child that survives `SIGKILL` as well, such as one wedged
+/// in an uninterruptible driver wait, or a grandchild the shell left in its
+/// own process group, which `close_all` does not signal.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn shutting_down_ends_a_child_that_ignores_the_hangup() {
+    use std::sync::Arc;
+    use vitrum_core::{SessionManager, SessionSpec};
+
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("binding an ephemeral loopback port");
+    let manager = Arc::new(SessionManager::new(4096));
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(crate::serve_until(
+        listener,
+        Arc::clone(&manager),
+        "unused-no-client-connects".to_string(),
+        async move {
+            let _ = stopped.await;
+        },
+    ));
+
+    // A trailing command after the sleep so the shell cannot exec-optimise
+    // itself away and drop the trap with itself.
+    let id = manager
+        .spawn(SessionSpec {
+            project_id: vitrum_proto::ProjectId(1),
+            cwd: std::env::temp_dir(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "trap '' HUP; sleep 300; :".into()],
+            env: Vec::new(),
+            cols: 80,
+            rows: 24,
+            title: None,
+        })
+        .expect("spawning a child that ignores the hangup");
+    let pid = manager.child_pid(id).expect("the child's pid");
+    assert!(alive(pid), "the child was not running before shutdown");
+
+    stop.send(()).expect("the serve task is still receiving");
+    serving
+        .await
+        .expect("the serve task panicked")
+        .expect("serving ended with an error");
+
+    let deadline = std::time::Instant::now() + DEADLINE;
+    while alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pid {pid} ignored SIGHUP and outlived the daemon that spawned it"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Whether `pid` names a process that is still running.
+///
+/// A terminated child whose parent has not reaped it is a zombie: it keeps its
+/// entry in the process table, so it still has a `/proc/<pid>` directory and
+/// `kill -0` still succeeds on it. That is indistinguishable from a healthy
+/// process by either test, and the first version of this helper used `kill -0`
+/// and so could not tell "the daemon killed it" from "the daemon left it
+/// running" — it reported the correct code as broken. The state letter is the
+/// distinction, and `Z` means ended.
+///
+/// Reaping is the parent's job and the parent here is the test binary, which
+/// never waits, so a zombie is the EXPECTED outcome of a successful kill in
+/// this harness and asserting it away would be asserting the bug back in.
+///
+/// Linux only, for `/proc/<pid>/stat`. The state is the field after the
+/// executable name, which is parenthesised and may itself contain spaces and
+/// parentheses, so it is split on the LAST `)` rather than on whitespace.
+#[cfg(target_os = "linux")]
+fn alive(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some((_, after_name)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    !matches!(after_name.split_whitespace().next(), None | Some("Z"))
 }

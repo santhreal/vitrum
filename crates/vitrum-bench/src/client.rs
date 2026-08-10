@@ -122,6 +122,10 @@ impl Client {
         };
         c.send(&ClientMsg::Hello {
             protocol: PROTOCOL_VERSION,
+            // The same file the GUI reads. A benchmark that carried its own
+            // credential would be measuring a path the product does not have.
+            token: vitrum_proto::token::load()
+                .context("reading the daemon's authentication token")?,
         })
         .await?;
         match c.next_control(Duration::from_secs(10)).await? {

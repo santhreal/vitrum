@@ -245,6 +245,8 @@ impl Client {
         client
             .send(&ClientMsg::Hello {
                 protocol: PROTOCOL_VERSION,
+                token: vitrum_proto::token::load()
+                    .map_err(|e| anyhow::anyhow!("reading the daemon's authentication token: {e}"))?,
             })
             .await?;
         client.until(|msg| matches!(msg, ServerMsg::Welcome { .. })).await?;

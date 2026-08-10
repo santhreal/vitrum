@@ -26,6 +26,21 @@ ignore = [
     # migration of the whole webview stack and cannot start here. Re-check
     # when wry moves.
     "RUSTSEC-2024-0415",
+    # RUSTSEC-2024-0412: the gdk3 bindings, the same gtk3 stack one layer
+    # down, and the id this graph actually resolves to. Same reason and same
+    # exit as RUSTSEC-2024-0415: it goes when wry moves to gtk4.
+    "RUSTSEC-2024-0412",
+    # RUSTSEC-2024-0429: `glib::VariantStrIter`'s `Iterator` implementation
+    # passes `&p` to a C function that writes through it, which a recent
+    # compiler may discard. This is `unsound`, a category of its own, so
+    # scoping `unmaintained` does not cover it and removing this entry made it
+    # fail. glib 0.18 is what gtk3 binds, which is what tao and wry bind, which
+    # is this application's window; nothing here can reach glib 0.19 before wry
+    # does. Nothing in this workspace constructs or iterates a
+    # `VariantStrIter`: the only glib this product calls directly is the native
+    # pane's `MainContext` and `ObjectExt` on a drawing area. Re-check when wry
+    # moves.
+    "RUSTSEC-2024-0429",
     # RUSTSEC-2026-0192: ttf-parser is unmaintained, with skrifa named as the
     # replacement. vitrum-grid reaches it through fontdue and fontdb as well
     # as calling `Face::parse` directly for underline metrics, so moving means

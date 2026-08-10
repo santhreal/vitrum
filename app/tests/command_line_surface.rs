@@ -31,7 +31,6 @@
 //! Not the window, which no test here opens. Not `update`'s network paths: an
 //! invocation that reaches GitHub is not a unit of this suite.
 
-use std::path::Path;
 use std::process::{Command, Output};
 
 /// Exit codes, from `vitrum_proto::exit`. Repeated rather than imported
@@ -264,6 +263,7 @@ fn icons_into_something_that_is_not_a_directory_is_unavailable() {
 #[test]
 fn icons_is_idempotent_and_a_read_only_directory_is_unavailable() {
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     let scratch = std::env::temp_dir().join(format!("vitrum-icons-ro-{}", std::process::id()));
     std::fs::remove_dir_all(&scratch).ok();

@@ -176,6 +176,14 @@ fn a_crash_after_the_daemon_rename_is_also_finished() {
 /// The second rename is made to fail the way a real one does — the
 /// destination cannot be replaced — by putting a non-empty directory where
 /// the daemon binary goes.
+///
+/// That alone obstructs only Unix, where the swap is the one rename. Windows
+/// cannot replace a running image, so it renames the target aside first, and
+/// moving a directory to a name nothing holds succeeds: the apply completed
+/// there and this test read the success as a defect in the recovery. A
+/// non-empty directory at the displaced name obstructs that first rename, so
+/// both platforms stop at the same point in the loop, for the reason each one
+/// really stops for.
 #[test]
 fn an_apply_interrupted_inside_the_rename_loop_resumes() {
     let dir = scratch("midapply");
@@ -186,6 +194,10 @@ fn an_apply_interrupted_inside_the_rename_loop_resumes() {
     // client and before the daemon.
     fs::remove_file(dir.join("vitrum-server")).unwrap();
     fs::create_dir_all(dir.join("vitrum-server/in-the-way")).unwrap();
+    let displaced = dir.join("vitrum-server").with_extension("old");
+    if cfg!(windows) {
+        fs::create_dir_all(displaced.join("in-the-way")).unwrap();
+    }
 
     let e = apply_staged(&dir).unwrap_err();
     assert!(
@@ -202,8 +214,11 @@ fn an_apply_interrupted_inside_the_rename_loop_resumes() {
         "the record was removed while work remained; nothing would ever finish it"
     );
 
-    // The obstruction goes, the machine restarts, and the pair is whole.
+    // The obstruction goes, the machine restarts, and the pair is whole. The
+    // displaced name goes with it: sweep_displaced deletes a file, and what
+    // stands here is a directory, which is a case only this test creates.
     fs::remove_dir_all(dir.join("vitrum-server")).unwrap();
+    let _ = fs::remove_dir_all(&displaced);
     assert_eq!(
         apply_staged(&dir).expect("resumed"),
         Some(Version::parse("9.9.9").unwrap())

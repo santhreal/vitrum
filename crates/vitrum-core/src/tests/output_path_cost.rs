@@ -415,3 +415,43 @@ async fn an_idle_session_costs_the_output_path_no_wakeups_at_all() {
         "a session that wrote nothing still did work: {counts:?}",
     );
 }
+/// A closed session must reach a terminal state even if its child is never
+/// reaped.
+///
+/// WHY: the coalescer leaves its read loop when the raw channel closes, which
+/// happens once every descriptor on the terminal is gone. That is not the same
+/// event as the child exiting. A child that redirected its own output
+/// elsewhere and carried on closes the terminal while still running, and the
+/// loop then waits for an exit code that nothing is going to produce.
+///
+/// Waiting only on that exit makes the terminal state depend on the child
+/// eventually dying. It parks forever otherwise, holding the session, its
+/// reader thread and its writer thread, and the row never leaves the sidebar.
+/// Closing is the operator saying it is over and has to be sufficient by
+/// itself.
+///
+/// The child here is genuinely never reaped: the harness holds the exit sender
+/// for the whole run, so the close is the only thing that can end the loop.
+/// Against the previous code this does not fail on an assertion, it hangs,
+/// which is why the harness bounds the wait and returns whether the loop came
+/// back rather than asserting on what it produced.
+///
+/// Does not cover the ordering where the close is observed by the read loop
+/// instead, which is the ordinary path and is covered by every other test that
+/// closes a session.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn closing_ends_a_coalescer_whose_child_was_never_reaped() {
+    let coalescer = crate::session::Coalescer::new().expect("a pty for the harness");
+    coalescer.queue(b"some output before the terminal closed");
+
+    let returned = coalescer
+        .close_while_unreaped(std::time::Duration::from_secs(5))
+        .await;
+
+    assert!(
+        returned,
+        "the coalescer never returned: it is still waiting for a child that \
+         nothing will reap, holding the session and its threads"
+    );
+}

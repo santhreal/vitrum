@@ -5,6 +5,15 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+### Fixed
+
+- **Closing a session no longer leaks the thread that reads it.** A session
+  whose child was never reaped left its output coalescer parked forever
+  waiting for an exit status that nothing would deliver, holding the session
+  and its threads for the life of the process. Closing a session now wakes
+  that wait directly, so the coalescer returns whether or not the child was
+  reaped.
+
 ## v0.2.0 - 2026-08-10
 
 ### Security

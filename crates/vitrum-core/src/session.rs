@@ -366,6 +366,15 @@ pub(crate) struct Session {
     /// finished, so it does not wait to find out whether this kernel offers
     /// it.
     closed: Notify,
+    /// The same fact as `closed`, in a form that survives not being observed.
+    ///
+    /// `Notify` carries at most one permit and `next_read` consumes it, so a
+    /// coalescer that has already left the read loop and is waiting for the
+    /// child to be reaped can no longer learn that the session was closed. It
+    /// then waits for an exit that only arrives if a kill lands, which makes a
+    /// terminal state depend on a signal rather than on the operator's
+    /// decision. Anything waiting on `closed` checks this first.
+    closed_now: AtomicBool,
     /// Queue to the dedicated writer thread. Input is queued rather than
     /// written inline because a child that has stopped reading its stdin makes
     /// a PTY write block indefinitely, which would wedge a runtime worker.
@@ -564,6 +573,21 @@ impl Session {
         lock(&self.input).is_some()
     }
 
+    /// Record that the operator is finished with this session, and wake
+    /// whatever is waiting on it.
+    ///
+    /// The flag is set before the notification, so a waiter that checks the
+    /// flag and then parks cannot miss the wake by arriving between the two.
+    fn mark_closed(&self) {
+        self.closed_now.store(true, Ordering::Release);
+        self.closed.notify_one();
+    }
+
+    /// Whether [`Self::mark_closed`] has run.
+    fn is_closed(&self) -> bool {
+        self.closed_now.load(Ordering::Acquire)
+    }
+
     /// Move the session to a terminal state and wake anyone watching status.
     fn finish(&self, code: Option<i32>) {
         let status = SessionStatus::Exited { code };
@@ -752,6 +776,7 @@ impl SessionManager {
             probes: AtomicU64::new(0),
             activity: Notify::new(),
             closed: Notify::new(),
+            closed_now: AtomicBool::new(false),
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(killer),
             last_focus_ms: AtomicU64::new(0),
@@ -1091,7 +1116,7 @@ impl SessionManager {
         if let Err(e) = lock(&s.killer).kill() {
             tracing::debug!(session = s.id.0, error = %e, "kill on close");
         }
-        s.closed.notify_one();
+        s.mark_closed();
         #[cfg(unix)]
         if let Some(pid) = s.child_pid {
             std::thread::spawn(move || {
@@ -1126,7 +1151,7 @@ impl SessionManager {
             if let Err(e) = lock(&s.killer).kill() {
                 tracing::debug!(session = s.id.0, error = %e, "kill on shutdown");
             }
-            s.closed.notify_one();
+            s.mark_closed();
         }
         #[cfg(unix)]
         {
@@ -1356,6 +1381,7 @@ pub(crate) struct Coalescer {
     session: Arc<Session>,
     raw: mpsc::UnboundedSender<BytesMut>,
     raw_rx: mpsc::UnboundedReceiver<BytesMut>,
+    exit_tx: oneshot::Sender<Option<i32>>,
     exit_rx: oneshot::Receiver<Option<i32>>,
 }
 
@@ -1422,6 +1448,7 @@ impl Coalescer {
             probes: AtomicU64::new(0),
             activity: Notify::new(),
             closed: Notify::new(),
+            closed_now: AtomicBool::new(false),
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(killer),
             last_focus_ms: AtomicU64::new(0),
@@ -1429,11 +1456,12 @@ impl Coalescer {
             pump: PumpTally::default(),
         });
         let (raw, raw_rx) = mpsc::unbounded_channel::<BytesMut>();
-        let (_exit_tx, exit_rx) = oneshot::channel::<Option<i32>>();
+        let (exit_tx, exit_rx) = oneshot::channel::<Option<i32>>();
         Ok(Self {
             session,
             raw,
             raw_rx,
+            exit_tx,
             exit_rx,
         })
     }
@@ -1455,13 +1483,80 @@ impl Coalescer {
             session,
             raw,
             raw_rx,
+            exit_tx,
             exit_rx,
         } = self;
+        // Dropped, so the wait for an exit resolves at once: this harness is
+        // about what the read path costs, not about reaping.
+        drop(exit_tx);
         drop(raw);
         coalesce_loop(Arc::clone(&session), raw_rx, exit_rx).await;
         let counts = session.pump.snapshot();
         let _ = lock(&session.killer).kill();
         counts
+    }
+
+    /// Run the loop with the child never reaped, and close the session part
+    /// way through.
+    ///
+    /// [`Self::drain`] drops the exit sender before starting, so the wait for
+    /// an exit resolves immediately and the unreaped case never arises there.
+    /// Here the sender is held for the whole run, which is a child still alive
+    /// after every descriptor on its terminal has closed. The close is then the
+    /// only thing that can end the loop.
+    ///
+    /// Reports whether the loop returned within `patience`. A coalescer that
+    /// waits only on the exit does not return at all, which is the regression.
+    pub(crate) async fn close_while_unreaped(self, patience: std::time::Duration) -> bool {
+        let Coalescer {
+            session,
+            raw,
+            raw_rx,
+            exit_tx,
+            exit_rx,
+        } = self;
+        drop(raw);
+        let running = tokio::spawn({
+            let session = Arc::clone(&session);
+            async move { coalesce_loop(session, raw_rx, exit_rx).await }
+        });
+        // Reach the wait before closing, so a parked waiter is exercised and
+        // not the flag shortcut in front of it.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        session.mark_closed();
+        let returned = tokio::time::timeout(patience, running).await.is_ok();
+        drop(exit_tx);
+        let _ = lock(&session.killer).kill();
+        returned
+    }
+}
+
+/// Wait for the child to be reaped, or for the session to be closed.
+///
+/// The coalescer reaches here when the stream ended without an exit code:
+/// every descriptor on the terminal is closed, so there is nothing left to
+/// read, and the child may still be running. A child that put its own output
+/// somewhere else and carried on is exactly that case.
+///
+/// Waiting only on `exit` makes reaching a terminal state depend on the child
+/// eventually dying. Closing the session is the operator saying it is over,
+/// and that has to be enough on its own: otherwise the task parks forever
+/// holding the session, its reader thread and its writer thread, and the row
+/// never leaves the sidebar. Before the escalation in `close_all` this was
+/// unbounded; even with it, a terminal state must not be owed to a signal.
+///
+/// `None` for the close arm because there is no exit code: nothing reaped the
+/// child, and inventing one would report an exit that never happened.
+async fn wait_for_exit_or_close(
+    session: &Session,
+    exit: oneshot::Receiver<Option<i32>>,
+) -> Option<i32> {
+    if session.is_closed() {
+        return None;
+    }
+    tokio::select! {
+        reaped = exit => reaped.unwrap_or(None),
+        () = session.closed.notified() => None,
     }
 }
 
@@ -1621,7 +1716,7 @@ async fn coalesce_loop(
     // seen and drained past, or the channel closed first and it is due now.
     let code = match code {
         Some(code) => code,
-        None => exit.await.unwrap_or(None),
+        None => wait_for_exit_or_close(&session, exit).await,
     };
     session.finish(code);
 }

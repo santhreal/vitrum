@@ -77,7 +77,7 @@ commit, the tag, the bumped literals and the rolled changelog section, breaks
 each version literal in turn to confirm the check catches it, and drives every
 refusal `make release` owes you including both halves of the tag guard.
 
-It captures what a cut can touch before and after: the four release files, the
+It captures what a cut can touch before and after: every release file, the
 git ref and index state, and the temporary names this tooling is the only
 writer of. It fails if any of it moved. It deliberately does not guard the
 rest of the tree: this tree is shared, and a check that aborts because another
@@ -91,13 +91,13 @@ CI runs it on every push.
 Pushing the tag starts `.github/workflows/release.yml`. It:
 
 - refuses a tag whose version is not the workspace version, before building;
-- builds `vitrum-<version>-<target>.tar.gz` on the runner for each of the four
-  published targets, and refuses a runner whose host triple is not the target
-  it is building;
-- refuses a set of archives that is not exactly those four;
+- builds `vitrum-<version>-<target>.tar.gz` on the runner for each published
+  target, and refuses a runner whose host triple is not the target it is
+  building;
+- refuses a set of archives that is not exactly the published set;
 - disassembles every binary in every archive and refuses anything above the
-  CPU floor, on the runner that built it and again over all four together;
-- writes one `SHA256SUMS` over all four;
+  CPU floor, on the runner that built it and again over the whole set;
+- writes one `SHA256SUMS` over the whole set;
 - uploads everything to a draft, confirms the draft holds every asset, and
   only then publishes it.
 
@@ -130,7 +130,7 @@ registers. A machine with AVX2 and no AVX-512, which is every Intel desktop
 part since Rocket Lake, passes the CPUID check for that kernel, calls it, and
 dies with `SIGILL` on the first character it draws.
 
-The build pins zig to `-Dcpu=baseline` on all four targets. Raising that needs
+The build pins zig to `-Dcpu=baseline` on every target. Raising that needs
 a measurement showing what it buys and a note of which CPUs it drops.
 
 `tools/release/check-isa.sh` disassembles binaries and fails on anything above
@@ -143,7 +143,7 @@ AVX2 is what dispatch looks like and anything above it is what host detection
 looks like. A gate at the true baseline would fire on every build ever made
 here, and a gate that always fires gets deleted.
 
-It runs on each builder, again over all four archives before the draft is
+It runs on each builder, again over every archive before the draft is
 promoted, and inside `make verify-artifacts`. It gates the artifact rather than
 the flag, because a flag can be dropped in a refactor and nothing says so,
 while the disassembly is what a reader receives. Run it by hand with

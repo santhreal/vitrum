@@ -184,9 +184,9 @@ Nothing has been pushed. Publish with:
 
   git push $REMOTE $BRANCH tag v$new
 
-That tag starts .github/workflows/release.yml, which builds the four
-published targets, writes SHA256SUMS over all four, and publishes the
-release only once every asset is uploaded.
+That tag starts .github/workflows/release.yml, which builds every published
+target, writes SHA256SUMS over all of them, and publishes the release only
+once every asset is uploaded.
 
 To undo instead:
 

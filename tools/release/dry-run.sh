@@ -12,7 +12,7 @@
 # That footprint is deliberately narrow. This tree is shared, six other lanes
 # write to it while this runs, and a check that aborts because someone else
 # saved a file in another crate is a check that gets switched off. So it
-# guards exactly what a cut touches — the four release files, the git ref and
+# guards exactly what a cut touches — every release file, the git ref and
 # index state, and the temporary files this tooling is the only writer of —
 # and merely reports anything else that moved.
 #
@@ -46,7 +46,7 @@ footprint() {
     printf 'strays %s\n' "$(strays | tr '\n' ' ')"
 }
 
-# `sites` is asked of the same script the cut asks, so a fourth release file
+# `sites` is asked of the same script the cut asks, so a new release file
 # joins this guard the moment it joins the cut.
 sites() { tools/release/versions.sh sites; }
 
@@ -285,13 +285,19 @@ ok "commit subject: $subject"
 
 # A first release moves no version literal, because the workspace already
 # carries the version being released, so its commit is the changelog alone.
-# Asserting the same four files for both modes would let a silent bump on the
+# Asserting the same files for both modes would let a silent bump on the
 # first-release path through.
+#
+# SECURITY.md names a release LINE rather than a version, so a patch cut
+# leaves it alone and a minor or major cut rewrites it. Deriving that here
+# rather than listing it keeps the assertion exact for both.
 touched=$(git -C "$repo" show --name-only --format= HEAD | LC_ALL=C sort | tr '\n' ' ')
 if [ "$mode" = first ]; then
     expected='CHANGELOG.md '
-else
+elif [ "${old%.*}" = "${new%.*}" ]; then
     expected='CHANGELOG.md Cargo.lock Cargo.toml README.md '
+else
+    expected='CHANGELOG.md Cargo.lock Cargo.toml README.md SECURITY.md '
 fi
 [ "$touched" = "$expected" ] ||
     die "commit touched [$touched], expected [$expected]"
@@ -427,7 +433,7 @@ printf '  footprint: %s\n' "$after_sum"
 if [ "$before_sum" != "$after_sum" ]; then
     diff --label before --label after -u "$before" "$after" >&2 || true
     rm -f "$after" "$after_neighbours"
-    printf '\nOne of the four files a cut edits, or the git state, moved while\n' >&2
+    printf '\nOne of the files a cut edits, or the git state, moved while\n' >&2
     printf 'this ran. Either a release script wrote outside its clone, or\n' >&2
     printf 'another lane touched a release file — Cargo.lock in particular\n' >&2
     printf 'moves whenever someone adds a dependency or a workspace member.\n' >&2

@@ -45,21 +45,22 @@ async fn attach_streams_the_exact_child_bytes() {
 ///
 /// The child's line must still cross the socket exactly once, unaltered, and the
 /// stream must still start at offset zero.
+///
+/// The Linux fixture holds the child at `read -r x` so the attach is provably in
+/// place before the first byte exists. `set /p` was the Windows counterpart and
+/// is not one: it returned immediately on a pseudoconsole often enough that the
+/// whole child ran and exited with code 0 before the attach landed, and the
+/// stream this test is about was then never live at all. A child that sleeps
+/// before it speaks buys the same ordering without depending on how a shell
+/// built-in treats a console it has just been handed.
 #[cfg(windows)]
 #[tokio::test]
 async fn attach_streams_the_exact_child_bytes() {
     let h = Harness::start(64 * 1024).await;
     let mut c = h.greeted().await;
-    let id = c.create(create(1, "set /p x=ask: && echo streamed")).await;
+    let id = c.create(create(1, "ping -n 3 127.0.0.1 >NUL && echo streamed")).await;
 
     c.attach(id, 80, 24).await;
-    c.until("the prompt", |s| s.carries(id, b"ask:")).await;
-
-    c.send(ClientMsg::Input {
-        session: id,
-        data: b"go\r\n".to_vec(),
-    })
-    .await;
     c.until("the child's output", |s| s.carries(id, b"streamed\r\n"))
         .await;
 

@@ -26,6 +26,20 @@ command -v curl >/dev/null || { apt-get update && apt-get install -y curl; } || 
 A checkout needs no downloader at all. `sh install.sh` installs curl for
 itself when the machine has neither curl nor wget.
 
+## Published builds
+
+| Platform | Target |
+|---|---|
+| Linux, 64-bit x86 | `x86_64-unknown-linux-gnu` |
+| Linux, 64-bit ARM | `aarch64-unknown-linux-gnu` |
+| macOS, Apple silicon | `aarch64-apple-darwin` |
+| macOS, Intel | `x86_64-apple-darwin` |
+| Windows, 64-bit x86 | `x86_64-pc-windows-msvc` |
+
+Anything else is told there is no build for it and pointed at a source build.
+`tools/release/targets.sh check` fails if this table, the release matrix and
+the two installers stop agreeing.
+
 ## System dependencies
 
 vitrum draws its windows with a WebView, and the installer installs the one

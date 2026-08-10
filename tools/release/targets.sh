@@ -4,13 +4,15 @@
 #   tools/release/targets.sh list    print the published triples
 #   tools/release/targets.sh check   fail if any file names a different set
 #
-# Four files have an opinion about which platforms a release carries: the build
+# Five files have an opinion about which platforms a release carries: the build
 # matrix in `.github/workflows/release.yml`, the `uname` mapping in
-# `install.sh`, the architecture gate in `install.ps1`, and `update.rs` inside
-# the app. A triple that exists in the matrix and not in an installer is an
-# asset nobody downloads; a triple in an installer and not in the matrix is a
-# 404 at the end of a `curl | sh`. Neither shows up until someone runs the
-# installer on that platform, which is after the release is published.
+# `install.sh`, the architecture gate in `install.ps1`, the table in
+# `docs/install.md`, and `update.rs` inside the app. A triple that exists in
+# the matrix and not in an installer is an asset nobody downloads; a triple in
+# an installer and not in the matrix is a 404 at the end of a `curl | sh`.
+# Neither shows up until someone runs the installer on that platform, which is
+# after the release is published. A table that names a build nobody publishes
+# is the same failure with a longer delay.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -69,6 +71,7 @@ case "${1:-check}" in
         compare .github/workflows/release.yml "$want" 'every published target'
         compare install.sh "$want_posix" 'every Linux and macOS target'
         compare install.ps1 "$want_windows" 'every Windows target'
+        compare docs/install.md "$want" 'every published target'
         printf 'targets: %s\n' "$(printf '%s' "$want" | tr '\n' ' ')"
         ;;
     *) die "unknown command: $1" ;;

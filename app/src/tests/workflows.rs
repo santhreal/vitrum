@@ -234,8 +234,9 @@ fn the_zig_version_is_pinned_consistently_and_documented() {
 /// retired image, an image that does not exist yet and a self-hosted name all
 /// look identical to GitHub — accepted, queued, abandoned — and identical
 /// here: red.
-const ALLOWED_RUNNERS: [&str; 4] = [
+const ALLOWED_RUNNERS: [&str; 5] = [
     "ubuntu-latest",
+    "ubuntu-24.04-arm",
     "macos-latest",
     "macos-15-intel",
     "windows-latest",

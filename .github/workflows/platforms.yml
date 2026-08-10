@@ -1,11 +1,12 @@
 name: platforms
 
-# macOS and Windows, on the cadence they are worth.
+# The platforms we ship and do not develop on, at the cadence they are worth.
 #
-# `ci.yml` gates every push on Linux, because that is where a defect is found
-# per minute of runner time. This workflow answers the other question, which is
-# whether the tree still builds and passes on the platforms we ship but do not
-# develop on. It runs:
+# `ci.yml` gates every push on x86-64 Linux, because that is where a defect is
+# found per minute of runner time. This workflow answers the other question,
+# which is whether the tree still builds and passes on macOS, on Windows, and
+# on ARM Linux, which is a different code generator against the same
+# libraries. It runs:
 #
 #   - on every release tag, because a platform break must never reach a user
 #   - nightly, so the worst case is one day of main being broken on a platform
@@ -59,7 +60,7 @@ jobs:
       # must not cancel the other.
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v7
 
@@ -70,6 +71,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.os }}
+
+      # ARM Linux is Linux: it links the same system webview, and the image
+      # does not ship it.
+      - name: system webview
+        if: runner.os == 'Linux'
+        run: ./.github/system-webview.sh
 
       # The terminal engine is built from Ghostty source by `vitrum-vt`, whose
       # default `vendored` route needs Zig. The version is the one Ghostty

@@ -21,6 +21,10 @@ Before 1.0, a minor bump may break compatibility.
   on the same pass it writes the status hint, so a session launched in one
   directory and sent to work in another moves to where the work is and picks
   up that directory's branch. No hostname is sent.
+- **A build for 64-bit ARM Linux.** Every release now carries
+  `aarch64-unknown-linux-gnu` beside the x86-64 archive, built on a runner of
+  that architecture rather than cross-compiled, so the same gates that judge a
+  native build judge it too.
 
 ### Changed
 
@@ -28,6 +32,18 @@ Before 1.0, a minor bump may break compatibility.
   one install command per platform, and links out. The five-state table, the
   key bindings, the installer's steps, the compositor rules and the measured
   footprint moved to the document that owns each of them; nothing was lost.
+- **The row tail behaves the same under the keyboard as under the pointer.**
+  Moving focus to a row's trailing control reveals it and hides the timestamp,
+  the way hovering already did, and the focus ring is drawn inside the card
+  instead of being clipped by its edge.
+- **A narrow sidebar drops what it cannot draw.** Below the default width the
+  working directory, the filter's keycap and the filter's placeholder are not
+  emitted, in place of a clipped word and a one-glyph path. The field keeps its
+  name for a screen reader.
+- **Nothing in the interface calls a session a tab.** The row menu and the exit
+  bar say "Stop viewing" and "Stop viewing the others", the wording the
+  shortcut help already used, and the What's New sheet closes with the same
+  word as every other sheet.
 
 ## v0.2.1 - 2026-08-10
 

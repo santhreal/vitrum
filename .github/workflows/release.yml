@@ -7,7 +7,7 @@ name: release
 #    build reads, publish to one moving `nightly` tag, marked prerelease so
 #    the "latest release" lookup both installers use walks past it.
 #
-# Both build the same four archives with the same script and publish the same
+# Both build the same set of archives with the same script and publish the same
 # `SHA256SUMS` shape, because `install.sh`, `install.ps1` and `vitrum update`
 # know one asset layout: `vitrum-<version>-<target>.tar.gz` from the release,
 # refused unless that release's `SHA256SUMS` covers it by that exact name.
@@ -17,8 +17,8 @@ name: release
 #  - the version in the archive name comes from `Cargo.toml`, the version in a
 #    stable URL comes from the tag, and a release where those differ is a 404
 #    for every client, so the tag and the workspace version are compared first;
-#  - `SHA256SUMS` is written once, over all four archives, by the job that has
-#    all four, because a builder only ever sees its own;
+#  - `SHA256SUMS` is written once, over every archive, by the job that has
+#    them all, because a builder only ever sees its own;
 #  - a release with some of its assets is worse than no release, so everything
 #    is uploaded to a draft and the draft is published only after the assets
 #    are confirmed to be on it.
@@ -28,7 +28,7 @@ name: release
 # release back into draft and strips its assets first, because the tag is
 # fixed and nobody can install a draft. Nightly cannot do that: `nightly` is
 # the tag an operator installs from at any hour, and emptying its release for
-# the length of four uploads is a window where that tag has no assets. So a
+# the length of every upload is a window where that tag has no assets. So a
 # nightly builds a complete draft on a staging tag and swaps it onto `nightly`
 # at the end, which is why the tag holds one build and never holds none.
 on:
@@ -71,12 +71,13 @@ env:
   # set, the matrix below, `install.sh` and `install.ps1` stop agreeing.
   TARGETS: >-
     aarch64-apple-darwin
+    aarch64-unknown-linux-gnu
     x86_64-apple-darwin
     x86_64-pc-windows-msvc
     x86_64-unknown-linux-gnu
 
 jobs:
-  # Cheap, and it runs before four cold release builds rather than after them.
+  # Cheap, and it runs before the cold release builds rather than after them.
   contract:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -117,9 +118,9 @@ jobs:
             # from the asset name alone.
             version=$(./tools/release/versions.sh nightly)
             # A push to main that changed nothing a build reads is not worth
-            # four cold release builds. A schedule always builds, and so does
-            # the first push after a force-push, where there is no range to
-            # compare against.
+            # a cold release build on every runner. A schedule always builds,
+            # and so does the first push after a force-push, where there is no
+            # range to compare against.
             #
             # Every path a build reads has to be here or the skip is wrong.
             # `vendor-ghostty-vt-sys/` is a workspace member and is the fork
@@ -171,7 +172,7 @@ jobs:
         run: ./tools/release/targets.sh check
 
       # The publish job reads the same section with the same matcher. Failing
-      # here costs five minutes; failing there costs four release builds.
+      # here costs five minutes; failing there costs every release build.
       - name: CHANGELOG.md has a section for this tag
         if: steps.channel.outputs.channel == 'stable'
         run: ./tools/release/changelog.sh notes "${{ steps.channel.outputs.version }}"
@@ -190,6 +191,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          # ARM Linux is a machine people actually run agents on, and until
+          # this leg existed there was no archive for it at all: every install
+          # path ended in a 404 there. `ubuntu-24.04-arm` is a hosted runner of
+          # that architecture, so this is a native build and not a
+          # cross-compile, which is what the note below rules out.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
           # `macos-15-intel`, not `macos-13`. The x86_64 mac image was
@@ -287,8 +295,8 @@ jobs:
           fi
           echo "default xcode: $(xcodebuild -version 2>/dev/null | head -1)"
 
-      # The nightly version is decided once, in `contract`, so all four
-      # archives carry the same one rather than four different timestamps.
+      # The nightly version is decided once, in `contract`, so every archive
+      # carries the same one rather than one timestamp per runner.
       # Writing it into the workspace here is what puts it into the archive
       # name — which is always the workspace version — and into
       # `vitrum --version`. Nothing commits it; the checkout is thrown away
@@ -338,8 +346,8 @@ jobs:
             exit 1
           }
 
-      # Fail on the runner that produced it. The publish job checks all four
-      # again, but by then four builds have run and the job that has the
+      # Fail on the runner that produced it. The publish job checks them all
+      # again, but by then every build has run and the job that has the
       # evidence — this runner's toolchain and its CPU — has exited. This is
       # also the check that names which runner emitted the bad instructions.
       - name: the archive runs on every CPU its triple promises
@@ -389,7 +397,7 @@ jobs:
   publish:
     needs: [contract, build]
     runs-on: ubuntu-latest
-    # It downloads four archives and creates a release. Anything longer is a
+    # It downloads the archives and creates a release. Anything longer is a
     # stuck upload.
     timeout-minutes: 20
     env:
@@ -415,8 +423,8 @@ jobs:
           merge-multiple: true
 
       # `needs: build` already fails on a builder that errored. This catches
-      # the other shape: four jobs that all succeeded and produced three
-      # archives, or one archive under a name no installer will ask for.
+      # the other shape: every job succeeding and one archive missing, or one
+      # archive under a name no installer will ask for.
       - name: exactly the published archives arrived
         run: |
           cd staged
@@ -444,13 +452,13 @@ jobs:
           fi
           ls -l
 
-      # Disassemble all four archives before anything is uploaded. This is the
+      # Disassemble every archive before anything is uploaded. This is the
       # last point where every published artifact exists in one place, and it
       # is the only check that looks at what a user receives rather than at the
       # flags that were supposed to produce it.
       #
       # It runs here as well as on each builder because a per-target check only
-      # ever proves the target that ran it, and a release is all four or none.
+      # ever proves the target that ran it, and a release is all of them or none.
       # llvm-objdump reads Mach-O and PE as happily as ELF, so one Linux runner
       # can disassemble every archive; GNU objdump on this image cannot.
       - name: llvm-objdump
@@ -555,7 +563,7 @@ jobs:
       # Nightly does the opposite: it does not touch the published `nightly`
       # release at all until the replacement is complete. `nightly` is a tag
       # someone installs from at an arbitrary hour, and stripping its assets
-      # up front would leave it holding none for as long as four uploads take.
+      # up front would leave it holding none for as long as the uploads take.
       #
       # The staging draft is deleted rather than reused, for the reason a
       # stable re-run strips its assets: a leftover from a failed run can hold

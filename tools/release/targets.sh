@@ -1,7 +1,7 @@
 #!/bin/sh
 # The published target triples, and the check that everything agrees on them.
 #
-#   tools/release/targets.sh list    print the four triples
+#   tools/release/targets.sh list    print the published triples
 #   tools/release/targets.sh check   fail if any file names a different set
 #
 # Four files have an opinion about which platforms a release carries: the build
@@ -17,6 +17,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
 
 TARGETS='aarch64-apple-darwin
+aarch64-unknown-linux-gnu
 x86_64-apple-darwin
 x86_64-pc-windows-msvc
 x86_64-unknown-linux-gnu'
@@ -30,7 +31,7 @@ sorted() { LC_ALL=C sort -u; }
 # A triple that follows a `/` is a multiarch library directory, not a target:
 # `/usr/lib/x86_64-linux-gnu` is where a Debian derivative keeps the WebKit
 # this installer probes for, and reading it as a published target failed this
-# check on a file that named the right four.
+# check on a file that named the right set.
 found_in() {
     grep -oE '(^|[^/[:alnum:]_.-])(aarch64|x86_64|i686|armv7)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9]+)?' "$1" |
         grep -oE '(aarch64|x86_64|i686|armv7)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9]+)?' |

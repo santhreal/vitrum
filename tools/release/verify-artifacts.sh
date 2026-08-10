@@ -78,6 +78,13 @@ rm -rf "$isa"
 mkdir -p "$isa"
 tar xzf "$serve/$archive" -C "$isa"
 tools/release/check-isa.sh "$isa" || die 'the archive is not portable to its own target'
+
+# The other half of portability, and the one a user meets first: an archive
+# whose binaries the loader will not even open, because they were linked
+# against a newer glibc than the target has or name a shared library it does
+# not ship. On a non-Linux host there is no ELF here and this passes over it.
+step "the archive loads on the oldest system it claims"
+tools/release/check-abi.sh "$isa" || die 'the archive will not load on a supported system'
 rm -rf "$isa"
 
 # The installer builds the archive name from the version and the host triple.

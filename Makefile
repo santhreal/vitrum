@@ -14,9 +14,9 @@ PROBE_RUN ?= harness/out/probe-20260806T035911Z
 MEMORY_RUNS ?= harness/out/memory-20260806T192242Z harness/out/memory-20260806T192658Z
 IDLE_RUN ?= harness/out/idle-cpu-20260806T192751Z
 
-.PHONY: help build test clippy fast gate lanes plan perf-tables perf-tables-check \
+.PHONY: help build test clippy fast gate perf-tables perf-tables-check \
 	measure package release release-dry-run release-check verify-artifacts \
-	check-isa clean
+	check-isa check-abi clean
 
 help:
 	@echo 'build              release build of every crate, warnings fatal'
@@ -30,17 +30,12 @@ help:
 	@echo 'package            build the release archive and verify its checksum'
 	@echo 'verify-artifacts   build the archive and install it through install.sh'
 	@echo 'check-isa          disassemble built binaries; fail above the CPU floor'
+	@echo 'check-abi          read built binaries; fail above the glibc floor or'
+	@echo '                   on a shared library no supported distribution has'
 	@echo 'release-check      every version literal and target triple agrees'
 	@echo 'release-dry-run    rehearse a cut in a scratch clone; VERSION=x.y.z'
 	@echo 'release            cut it here: bump, changelog, commit, tag; VERSION=x.y.z'
-	@echo 'lanes              every worktree, what is uncommitted, what is unpushed'
-	@echo 'plan               group open pull requests into non-overlapping waves'
-	@echo
-	@echo 'a wave is staged, gated once and landed with tools/integrate.py:'
-	@echo '  tools/integrate.py stage 56 52 57   merge each onto a staging branch'
-	@echo '  tools/integrate.py gate             build and test the wave once'
-	@echo '  tools/integrate.py attribute        if red, find which one did it'
-	@echo '  tools/integrate.py land --push      move main onto it, nothing squashed'
+	@echo 'clean              cargo clean'
 
 build:
 	RUSTFLAGS='$(RUSTFLAGS_STRICT)' $(CARGO) build --release --workspace --locked
@@ -50,12 +45,6 @@ test:
 
 clippy:
 	$(CARGO) clippy --release --workspace --all-targets
-
-lanes:
-	$(PYTHON) tools/integrate.py lanes
-
-plan:
-	$(PYTHON) tools/integrate.py plan
 
 gate: build test
 
@@ -135,6 +124,13 @@ release-check:
 # which is where that archive lands.
 check-isa:
 	./tools/release/check-isa.sh $(if $(DIR),$(DIR),dist)
+
+# The same shape, for the other half of "will this artifact run there": the
+# glibc version the binaries were linked against and the shared libraries they
+# name. Skips anything that is not ELF, so pointing it at a directory of mixed
+# archives checks the Linux ones and passes over the rest.
+check-abi:
+	./tools/release/check-abi.sh $(if $(DIR),$(DIR),dist)
 
 verify-artifacts:
 	./tools/release/verify-artifacts.sh

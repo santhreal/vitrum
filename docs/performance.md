@@ -23,7 +23,7 @@ Where the 20-window client tree goes:
 | `vitrum` | 1 | 140.8 MB |
 | `WebKitNetworkProcess` | 1 | 21.3 MB |
 
-The daemon side of the same run is 40.6 MB across 21 processes, and the shells the operator asked for are most of it:
+The daemon side of the same run is 40.6 MB across 21 processes, and the session shells are most of it:
 
 | Process | Count | PSS |
 |---|---:|---:|

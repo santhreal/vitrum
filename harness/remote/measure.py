@@ -2,14 +2,14 @@
 """Memory and CPU for a process tree, read straight out of /proc.
 
 This runs on the measurement host, never on a developer desktop. It takes the
-same two numbers GOAL.md's table is built from:
+same two numbers `docs/performance.md` publishes:
 
   pss   The sum of `Pss` across `/proc/<pid>/smaps_rollup` for a root process
         and every descendant. Pss divides a shared page by the number of
         processes mapping it, so twenty windows sharing one WebKitWebProcess
         are counted once between them rather than twenty times. That is the
-        only reason the 398 MB figure in GOAL.md means anything: RSS would
-        count the shared engine twenty times over.
+        only reason a 398 MB figure for twenty windows means anything: RSS
+        would count the shared engine twenty times over.
 
   cpu   The sum of utime + stime deltas across the same tree over a
         wall-clock window, as a percentage of ONE core. A twenty-window client

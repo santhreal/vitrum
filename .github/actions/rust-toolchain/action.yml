@@ -1,0 +1,85 @@
+name: rust toolchain
+description: >
+  Install exactly the toolchain rust-toolchain.toml pins, plus any extra
+  components and targets this job needs.
+
+# WHY THIS EXISTS
+#
+# Every job here used `dtolnay/rust-toolchain@stable`, and no job ever built
+# with stable. That action installs a toolchain and runs `rustup default`; a
+# `rust-toolchain.toml` in the working directory outranks `rustup default`, so
+# cargo took the pinned toolchain from the file, rustup downloaded it on first
+# use, and the stable install was a download nobody used. The workflow named
+# one toolchain and the artifact was built with another, which is the kind of
+# thing that is only ever discovered while debugging something else.
+#
+# So the file is the single source of truth and this reads it. There is no
+# version to keep in step with anything, because there is no second place to
+# write one.
+#
+# The file's own `components` and `targets` are installed as well as the ones a
+# job asks for. rustup applies those only when it installs a toolchain FROM the
+# file, and a toolchain installed here by name is already present by then, so
+# leaving them out would silently produce a toolchain without clippy on a job
+# that runs clippy.
+
+inputs:
+  components:
+    description: extra components, comma separated
+    required: false
+    default: ""
+  targets:
+    description: extra target triples, comma separated
+    required: false
+    default: ""
+
+outputs:
+  channel:
+    description: the toolchain that rust-toolchain.toml pins
+    value: ${{ steps.pin.outputs.channel }}
+
+runs:
+  using: composite
+  steps:
+    - id: pin
+      shell: bash
+      env:
+        EXTRA_COMPONENTS: ${{ inputs.components }}
+        EXTRA_TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+
+        file=rust-toolchain.toml
+        [ -f "$file" ] || { echo "::error::no $file at the repository root"; exit 1; }
+
+        channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)
+        [ -n "$channel" ] || { echo "::error::$file names no channel"; exit 1; }
+
+        # Reads both the inline form and the one-entry-per-line form, because
+        # this file uses one for `components` and the other for `targets`.
+        declared() {
+          awk -v key="$1" '
+            $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { on = 1 }
+            on { print }
+            on && /\]/ { exit }
+          ' "$file" | grep -o '"[^"]*"' | tr -d '"' | tr '\n' ' '
+        }
+
+        args=""
+        for c in $(declared components) ${EXTRA_COMPONENTS//,/ }; do
+          args="$args --component $c"
+        done
+        for t in $(declared targets) ${EXTRA_TARGETS//,/ }; do
+          args="$args --target $t"
+        done
+
+        echo "rust-toolchain.toml pins $channel"
+        # shellcheck disable=SC2086
+        rustup toolchain install "$channel" --profile minimal --no-self-update $args
+        rustup default "$channel"
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+    # What actually ran, not what was asked for. The two disagreeing is the
+    # defect this action was written for.
+    - shell: bash
+      run: rustc --version --verbose

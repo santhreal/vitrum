@@ -1,9 +1,10 @@
 [Unit]
 Description=vitrum session daemon
 Documentation=https://github.com/santhreal/vitrum
-# Ordered after the network is up, but NOT dependent on it: the daemon binds
-# loopback and must come up on a machine with no network at all.
-After=network.target
+# No After=: this is a user unit, and the user manager has no network.target to
+# be ordered against, so naming one is a dependency that never applies. The
+# daemon binds loopback and comes up on a machine with no network at all, so it
+# needs no ordering either way.
 
 [Service]
 Type=simple
@@ -28,6 +29,13 @@ OOMScoreAdjust=-500
 # each with a master and a slave descriptor plus whatever they open themselves,
 # clears the usual 1024 soft limit without much room to spare.
 LimitNOFILE=65536
+
+# No sandboxing directives, and that is the design rather than an omission.
+# This daemon exists to spawn coding agents as the account that started it,
+# with that account's PATH, credentials, editor and repositories in reach.
+# ProtectHome, PrivateTmp, NoNewPrivileges or a ReadOnlyPaths list would break
+# the agents rather than contain them, and the token file is what actually
+# stands between another local process and this socket.
 
 [Install]
 WantedBy=default.target

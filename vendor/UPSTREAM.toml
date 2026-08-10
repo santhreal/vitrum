@@ -14,6 +14,16 @@ version = "0.7.10"
 # rewritten for the rename and to switch doctests off, `README.md` documents the
 # fork, and `LICENSE` is upstream's MIT carried explicitly because the packaged
 # crate omits it.
+#
+# `Cargo.toml` also turns off three default features, and that is not
+# cosmetic, so re-apply it on every absorption. `muda` and `tray-icon` are
+# taken with `default-features = false` because muda's default pulls `libxdo`,
+# which puts `libxdo.so.3` in the client's DT_NEEDED list; Arch ships only
+# `libxdo.so.4`, so 0.1.2 could not start there at all. `tungstenite` is taken
+# with only `handshake` because its default pulls `native-tls` and OpenSSL
+# into a tree that otherwise uses rustls, and `libssl.so.3` does not exist on
+# Debian 10 or RHEL 8. `tools/release/check-abi.sh` fails the release archive
+# if any of the three comes back.
 compare = "src"
 
 # Every file in `vendor/src` that differs from upstream. The check fails on a

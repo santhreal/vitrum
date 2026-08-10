@@ -451,8 +451,8 @@ open_windows() {
   # The window count catches a handoff that silently did nothing. But it is
   # weaker than it reads: `wait_windows` has already established `have >= want`
   # by the time this runs, so on its own it only really catches an EXTRA
-  # window. What it cannot catch at all is the failure GOAL.md already records:
-  # a 1059.2 MB result taken with fewer sessions than windows, so several
+  # window. What it cannot catch at all is a failure this project has already
+  # had: a 1059.2 MB result taken with fewer sessions than windows, so several
   # windows showed the same session and the number was not the workload it
   # claimed. "Twenty windows" and "twenty windows each showing its own session"
   # are different measurements and only one of them is the target.

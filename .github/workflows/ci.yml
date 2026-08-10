@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/runner-hygiene
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
         with:
           components: clippy
 
@@ -179,7 +179,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/runner-hygiene
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
       # The same key as the build job: this compiles the same crate with the
       # same flags, so a second cache would be a second copy of it.
       - uses: Swatinem/rust-cache@v2
@@ -225,7 +225,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -359,7 +359,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/runner-hygiene
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
         with:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
@@ -419,7 +419,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/runner-hygiene
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
         with:
           targets: x86_64-pc-windows-gnu
       - uses: Swatinem/rust-cache@v2
@@ -472,7 +472,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-test
@@ -506,7 +506,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/runner-hygiene
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux
@@ -534,8 +534,46 @@ jobs:
           mkdir -p "$dir"
           echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
           echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+      # The Linux archive is built against zig's glibc stubs rather than the
+      # runner's. `packaging/build-release-asset.sh` refuses to build a Linux
+      # archive without this.
+      - name: cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked --version 0.23.0
+
       - name: build the archive and install it through install.sh
         run: ./tools/release/verify-artifacts.sh
+
+      # The archive, run on distributions this project claims and the runner is
+      # not. 0.1.2 shipped a Linux binary that required GLIBC_2.39 and a
+      # `libxdo.so.3` nobody has on Arch, and every gate in this pipeline was
+      # green: an ubuntu-latest runner satisfies both by definition, so no
+      # amount of testing on it could see either. `check-abi.sh` reads the
+      # artifact for those two properties, and this executes it somewhere the
+      # runner's assumptions do not hold.
+      #
+      # Debian 12 is the oldest glibc among the distributions with a packaged
+      # WebKitGTK 4.1; Arch is the newest of everything and the one whose
+      # library sonames move first. `--version` is enough: the loader resolves
+      # every DT_NEEDED before main runs, which is exactly what failed.
+      - name: the archive starts on Debian 12 and on Arch
+        run: |
+          set -eu
+          archive=$(ls dist/vitrum-*-x86_64-unknown-linux-gnu.tar.gz)
+          rm -rf distro-check
+          mkdir -p distro-check
+          tar xzf "$archive" -C distro-check
+          docker run --rm -v "$PWD/distro-check:/a:ro" debian:12 sh -c '
+            set -eu
+            apt-get update -qq
+            apt-get install -y -qq libwebkit2gtk-4.1-0 libayatana-appindicator3-1 >/dev/null
+            /a/vitrum-server --version
+            /a/vitrum --version'
+          docker run --rm -v "$PWD/distro-check:/a:ro" archlinux:latest sh -c '
+            set -eu
+            pacman -Syu --noconfirm --needed webkit2gtk-4.1 libayatana-appindicator >/dev/null
+            /a/vitrum-server --version
+            /a/vitrum --version'
+          rm -rf distro-check
 
   # The README's performance tables are generated from a checked-in snapshot of
   # real harness runs. This job re-renders them and fails if what is committed

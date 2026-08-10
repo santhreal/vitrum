@@ -125,12 +125,14 @@ jobs:
             # `vendor-ghostty-vt-sys/` is a workspace member and is the fork
             # that pins the instruction set of the shipped binaries, so a
             # change to it is exactly the change that most needs rebuilding.
-            # `tools/release/` supplies the version bump and the ISA check
-            # that run inside the build job, and this file is the build.
+            # `tools/release/` supplies the version bump and the ISA and ABI
+            # checks that run inside the build job, `.github/actions/` supplies
+            # the toolchain the build uses and the runner it uses it on, and
+            # this file is the build.
             if [ "$GITHUB_EVENT_NAME" = push ] &&
                git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then
               changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" |
-                grep -E '^(app/|crates/|vendor/|vendor-pty/|vendor-ghostty-vt-sys/|packaging/|tools/release/|\.github/workflows/release\.yml$|Cargo\.(toml|lock)$)' || true)
+                grep -E '^(app/|crates/|vendor/|vendor-pty/|vendor-ghostty-vt-sys/|packaging/|tools/release/|\.github/actions/|\.github/workflows/release\.yml$|Cargo\.(toml|lock)$)' || true)
               if [ -z "$changed" ]; then
                 build=false
                 echo "no crate, app or packaging change since $BEFORE; skipping"
@@ -208,7 +210,7 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -298,6 +300,16 @@ jobs:
           ./tools/release/versions.sh bump "${{ needs.contract.outputs.version }}"
           git --no-pager diff --stat
 
+      # The Linux archive is linked against zig's glibc stubs rather than the
+      # runner's glibc, so that it starts on the distributions this project
+      # says it supports rather than only on the runner's own. `check-abi.sh`
+      # holds the floor and `packaging/build-release-asset.sh` is what calls
+      # this; the version is pinned because a build tool that floats is a
+      # release that differs from the last one for a reason nobody recorded.
+      - name: cargo-zigbuild
+        if: runner.os == 'Linux'
+        run: cargo install cargo-zigbuild --locked --version 0.23.0
+
       # The script names the archive from the host triple, which is the same
       # rule the installers use to look for it. Cross-compiling is not
       # attempted: both binaries link against the platform's own webview and
@@ -346,6 +358,27 @@ jobs:
           tar xzf "$archive" -C isa-check
           ./tools/release/check-isa.sh isa-check
           rm -rf isa-check
+
+      # And the other half of "will this run there". A binary linked against
+      # the runner's glibc is refused by the loader on every older system, and
+      # that is what shipped in 0.1.2: GLIBC_2.39 from ubuntu-latest, dead on
+      # Debian 12, Ubuntu 22.04 and RHEL 9. Not Linux-only as a step, because
+      # the script skips anything that is not ELF, but `--expect-elf` is, since
+      # a check that finds nothing must not read as a pass on the one platform
+      # where it means something.
+      - name: the archive loads on every system its triple promises
+        shell: bash
+        run: |
+          rm -rf abi-check
+          mkdir -p abi-check
+          archive="dist/vitrum-${{ needs.contract.outputs.version }}-${{ matrix.target }}.tar.gz"
+          tar xzf "$archive" -C abi-check
+          if [ "$RUNNER_OS" = Linux ]; then
+            ./tools/release/check-abi.sh --expect-elf 2 abi-check
+          else
+            ./tools/release/check-abi.sh abi-check
+          fi
+          rm -rf abi-check
 
       - uses: actions/upload-artifact@v7
         with:
@@ -436,6 +469,29 @@ jobs:
             mkdir unpacked
             tar xzf "$archive" -C unpacked
             ../tools/release/check-isa.sh unpacked
+            rm -rf unpacked
+          done
+
+      # Same argument, the other floor: a binary the loader refuses is a
+      # release that installs and then does nothing. The Linux archive is the
+      # one with ELF in it, and it is asserted to hold two of them, so an
+      # archive that arrived without them fails here rather than reading as a
+      # clean pass over nothing. The other three are still walked, because the
+      # day one of them starts carrying an ELF binary is a day to look.
+      - name: no archive requires a newer glibc or a library nobody ships
+        run: |
+          cd staged
+          for archive in *.tar.gz; do
+            echo "== $archive"
+            rm -rf unpacked
+            mkdir unpacked
+            tar xzf "$archive" -C unpacked
+            case "$archive" in
+              *-linux-gnu.tar.gz)
+                ../tools/release/check-abi.sh --expect-elf 2 unpacked ;;
+              *)
+                ../tools/release/check-abi.sh unpacked ;;
+            esac
             rm -rf unpacked
           done
 

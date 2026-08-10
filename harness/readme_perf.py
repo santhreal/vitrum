@@ -281,8 +281,8 @@ def render_footprint(snap: dict) -> str:
     lines += [
         "",
         f"The daemon side of the same run is {_mb(biggest['daemon']['pss_mb'])} "
-        f"across {biggest['daemon']['processes']} processes, and the shells the "
-        f"operator asked for are most of it:",
+        f"across {biggest['daemon']['processes']} processes, and the session "
+        f"shells are most of it:",
         "",
         "| Process | Count | PSS |",
         "|---|---:|---:|",

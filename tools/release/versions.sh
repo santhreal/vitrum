@@ -130,10 +130,15 @@ observed() {
         printf 'Cargo.lock:%s %s\n' "$m" "${lit:-<missing>}"
     done
 
+    # The sentence that opens README.md's Status section. It is spelled out in
+    # three places: this locator, the bump rewrite, and the self-test mutation.
+    # All three have to agree with the document, and a `<missing>` report here
+    # is what an edit to that sentence produces.
+    #
     # `[^ ]*` rather than a dotted shape: a nightly version carries three
     # extra dot-separated fields after the patch, and a locator that counts
     # dots would silently capture a prefix of it and report agreement.
-    lit=$(sed -n 's/^Pre-release, version \([^ ]*\)\..*/\1/p' README.md | head -1)
+    lit=$(sed -n 's/^vitrum is at version \([^ ]*\)\..*/\1/p' README.md | head -1)
     printf 'README.md:status-line %s\n' "${lit:-<missing>}"
 }
 
@@ -179,7 +184,7 @@ bump() {
         rewrite Cargo.toml \
             "s|^\($dep = { path = \"[^\"]*\", version = \)\"$old\"|\1\"$new\"|"
     done
-    rewrite README.md "s/^Pre-release, version $old\\./Pre-release, version $new./"
+    rewrite README.md "s/^vitrum is at version $old\\./vitrum is at version $new./"
 
     # Cargo owns the lock file. `--workspace --offline` rewrites the version of
     # every workspace member and touches no dependency, which is exactly the
@@ -218,7 +223,7 @@ mutate() {
             ' Cargo.lock > Cargo.lock.versions.tmp
             mv Cargo.lock.versions.tmp Cargo.lock ;;
         'README.md:status-line')
-            rewrite README.md "s/^Pre-release, version [^ ]*\\./Pre-release, version $fake./" ;;
+            rewrite README.md "s/^vitrum is at version [^ ]*\\./vitrum is at version $fake./" ;;
         *) die "no mutation for site $site" ;;
     esac
 }

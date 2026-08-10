@@ -10,7 +10,7 @@
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-7aa2f7?style=flat-square&labelColor=0a0a0a" alt="License: MIT OR Apache-2.0" /></a>
 </p>
 <p align="center">
-  <img src="assets/screenshots/hero-sidebar-five-states.png" alt="Three projects in the vitrum sidebar: an agent working, one blocked on approval, one finished, one snoozed with a countdown, and one that failed, beside a Codex transcript" width="900" />
+  <img src="assets/screenshots/hero-sidebar-five-states.png" alt="Three projects in the vitrum sidebar, each with several agents: one working, one blocked on approval, one waiting for input, one finished, one failed, beside a Claude Code transcript stopped on an approval prompt" width="900" />
 </p>
 
 
@@ -29,11 +29,11 @@ directory, and the state.
 `Ctrl+Shift+Down` selects the next session in one of the blocked states.
 
 <p align="center">
-  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over a sidebar of codex and gemini sessions, some ready, one waiting for approval, one failed, one snoozed: recent agents per project, and the agents installed on this machine" width="900" />
+  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over the sidebar: a directory field, a command field, saved presets for Claude Code, Codex, Gemini CLI, opencode and veyyon, and the agents recently run in each project" width="900" />
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over a sidebar of codex and gemini sessions: several ready, one waiting for approval, one failed, one snoozed" width="900" />
+  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over the sidebar: theme, density, text scale, reduce motion and window opacity, beside a Codex transcript" width="900" />
 </p>
 
 Sessions run in a daemon. Closing the window, or updating vitrum, does not stop

@@ -52,6 +52,23 @@ Before 1.0, a minor bump may break compatibility.
   shortcut help already used, and the What's New sheet closes with the same
   word as every other sheet.
 
+### Fixed
+
+- **A search answer is bounded by bytes, not by rows.** A query against a large
+  scrollback could be asked for 200 rows and return a gigabyte, because the cap
+  counted rows and a row can be as long as the ring. Lines are priced against
+  an 8 MiB budget before they are copied, so a pathological line ends the
+  answer instead of the process.
+- **A repository pointer file cannot stall a session.** The branch a row shows
+  is read from `.git` and `.git/HEAD` in a directory the client names. Either
+  could be any size, and either could be a fifo, which parked the thread
+  starting the session for as long as nothing wrote to it. Both are opened
+  without blocking, refused unless they are regular files, and read to 8 KiB.
+- **An unterminated escape sequence no longer slows a session for good.** A
+  session that printed an OSC introducer and never closed it moved its whole
+  output path to one byte at a time, permanently. The capture gives up after
+  4 KiB and the fast path resumes.
+
 ## v0.2.1 - 2026-08-10
 
 The first published release of the 0.2 line. `v0.2.0` is a tag and never

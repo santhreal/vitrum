@@ -180,48 +180,106 @@ fn workflows() -> Vec<(String, String)> {
 /// downloads. Five of the seven workflows here only read, and three of those
 /// run on pull requests from forks.
 ///
-/// The decision is recorded per workflow rather than as a rule about which
-/// ones "look like" a release, so adding a workflow turns this red until
-/// somebody says what its token is for. What it cannot check is a job-level
-/// `permissions:` that widens the top-level one; nothing here writes one, and
-/// a job that did would be a second place the answer lives.
+/// Every block is read, top level and per job, and compared against what is
+/// recorded for that workflow, so a job cannot quietly widen what the file
+/// says at the top. The decision is recorded per workflow rather than as a
+/// rule about which ones "look like" a release, so adding a workflow turns
+/// this red until somebody says what its token is for.
 #[test]
 fn every_workflow_declares_the_token_it_needs() {
-    // The two that publish. `cut.yml` pushes the release commit and tag and
-    // dispatches the publish; `release.yml` uploads the assets.
-    let may_write: [(&str, &[&str]); 2] = [
+    // What each workflow is allowed to ask for, anywhere in the file. The two
+    // that publish: `cut.yml` pushes the release commit and tag and dispatches
+    // the publish; `release.yml` uploads the assets, and its publish job also
+    // signs them, which needs an OIDC token and the attestations store.
+    let recorded: [(&str, &[&str]); 2] = [
         ("cut.yml", &["contents: write", "actions: write"]),
-        ("release.yml", &["contents: write"]),
+        (
+            "release.yml",
+            &[
+                "contents: write",
+                "id-token: write",
+                "attestations: write",
+            ],
+        ),
     ];
 
     for (name, text) in workflows() {
-        let block: Vec<String> = text
-            .lines()
-            .skip_while(|line| !line.starts_with("permissions:"))
-            .skip(1)
-            .take_while(|line| line.starts_with(' ') || line.trim().is_empty())
-            .map(|line| line.split('#').next().unwrap_or("").trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect();
-
+        let blocks = permission_blocks(&text);
         assert!(
-            !block.is_empty(),
+            !blocks.is_empty(),
             "{name} declares no permissions, so its token inherits the \
              repository default and every action it runs gets write access to \
              this repository"
         );
+        assert!(
+            text.lines().any(|line| line.starts_with("permissions:")),
+            "{name} sets permissions per job but not at the top level, so any \
+             job it grows starts from the repository default again"
+        );
 
-        let expected = may_write
+        let allowed: Vec<&str> = recorded
             .iter()
             .find(|(who, _)| *who == name)
-            .map_or(vec!["contents: read".to_string()], |(_, scopes)| {
-                scopes.iter().map(|s| (*s).to_string()).collect()
-            });
-        assert_eq!(
-            block, expected,
-            "{name} asks for a different token than the one recorded for it"
-        );
+            .map_or(vec!["contents: read"], |(_, scopes)| scopes.to_vec());
+        for scope in blocks.iter().flatten() {
+            assert!(
+                allowed.contains(&scope.as_str()),
+                "{name} asks for `{scope}`, which is not recorded for it: \
+                 {allowed:?}"
+            );
+        }
     }
+}
+
+/// Every `permissions:` block in a workflow, top level and per job, as the
+/// scope lines it grants.
+fn permission_blocks(text: &str) -> Vec<Vec<String>> {
+    let mut blocks = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim_start() != "permissions:" {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        let mut scopes = Vec::new();
+        while let Some(next) = lines.peek() {
+            let body = next.split('#').next().unwrap_or("").trim();
+            let deeper = next.len() - next.trim_start().len() > indent;
+            if !body.is_empty() && !deeper {
+                break;
+            }
+            if !body.is_empty() {
+                scopes.push(body.to_string());
+            }
+            lines.next();
+        }
+        blocks.push(scopes);
+    }
+    blocks
+}
+
+/// A job's block is found as well as the file's, and a comment is not a scope.
+#[test]
+fn a_permissions_block_is_read_wherever_it_sits() {
+    let text = concat!(
+        "permissions:\n",
+        "  contents: read\n",
+        "\n",
+        "jobs:\n",
+        "  one:\n",
+        "    # a comment, not a scope\n",
+        "    permissions:\n",
+        "      contents: write\n",
+        "      id-token: write\n",
+        "    steps: []\n",
+    );
+    assert_eq!(
+        permission_blocks(text),
+        vec![
+            vec!["contents: read".to_string()],
+            vec!["contents: write".to_string(), "id-token: write".to_string()],
+        ]
+    );
 }
 
 /// Every Zig pin agrees with every other one, and with the contributor guide.

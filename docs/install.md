@@ -155,6 +155,21 @@ nothing, and it is recorded as created, so `--uninstall` takes it away. When
 no login file takes the entry at all, the installer says so at the end and
 prints the line to add.
 
+## Verifying where a build came from
+
+The digest check says an archive is the file the release published. It says
+nothing about who published it. Every release archive is also signed with the
+identity of the workflow that built it, and GitHub stores the attestation:
+
+```sh
+gh attestation verify vitrum-0.3.0-x86_64-unknown-linux-gnu.tar.gz \
+  --repo santhreal/vitrum
+```
+
+It reports the repository, the workflow and the commit the archive was built
+from. An archive that was not built by that workflow fails, whatever its
+digest says.
+
 ## What gets written, and where
 
 | Path | What |

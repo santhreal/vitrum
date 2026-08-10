@@ -400,6 +400,13 @@ jobs:
     # It downloads the archives and creates a release. Anything longer is a
     # stuck upload.
     timeout-minutes: 20
+    # The token for this job alone. Attesting an artifact needs an OIDC token
+    # to sign with and the attestations scope to store the result; the build
+    # jobs above need neither, so they do not get them.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       CHANNEL: ${{ needs.contract.outputs.channel }}
@@ -514,6 +521,25 @@ jobs:
           sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
           sha256sum -c SHA256SUMS
+
+      # What a checksum cannot say is where the bytes came from. `SHA256SUMS`
+      # proves an archive is the one this release published; it proves nothing
+      # about who published the release, which is the question that matters
+      # when the answer to "where did you get this" is a `curl | sh`.
+      #
+      # The attestation is signed with this run's OIDC identity and covers
+      # every archive by digest, so a downloader can ask GitHub whether the
+      # file in their hands was built by this workflow, from this repository,
+      # at this commit:
+      #
+      #   gh attestation verify vitrum-<version>-<target>.tar.gz --repo santhreal/vitrum
+      #
+      # It runs before the upload: an archive that cannot be attested is not
+      # one to publish.
+      - name: provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: staged/*.tar.gz
 
       # Stable notes are the section of CHANGELOG.md for this version, which is
       # the same text the in-app dialog shows after an update. Two sources

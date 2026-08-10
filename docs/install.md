@@ -12,22 +12,34 @@ The install command is in the [README](../README.md).
 3. Downloads the platform archive and the release `SHA256SUMS`.
 4. Checks the archive arrived whole, then compares digests. On a mismatch it
    stops, having installed nothing.
-5. Places `vitrum` and `vitrum-server` in the install directory.
-6. Adds that directory to `PATH`: in `~/.profile`, in `~/.bash_profile` when
+5. Checks the downloaded build against this machine: every shared library it
+   links can be resolved, and the C library is new enough for the symbol
+   versions it references. This runs before anything is written, so a machine
+   that cannot run the build keeps the copy it already had.
+6. Places `vitrum` and `vitrum-server` in the install directory.
+7. Adds that directory to `PATH`: in `~/.profile`, in `~/.bash_profile` when
    bash has one, and in the rc of every shell you have among bash, zsh and
    fish.
-7. Adds a launcher entry: a `.desktop` file on Linux, an app bundle in
+8. Adds a launcher entry: a `.desktop` file on Linux, an app bundle in
    `~/Applications` on macOS, a Start menu shortcut on Windows.
-8. Defines `vu` as `vitrum update`.
-9. Records every file it wrote, so `--uninstall` can remove exactly those.
+9. Defines `vu` as `vitrum update`.
+10. Records every file it wrote, so `--uninstall` can remove exactly those.
 
-Steps 6 to 8 are idempotent. Re-running the installer rewrites nothing it
+Steps 7 to 9 are idempotent. Re-running the installer rewrites nothing it
 already wrote: the shell edits live in one marked block per file, and a
 re-install replaces that block rather than adding a second one.
 
 Each shell gets its own syntax. bash and zsh get a guarded `export PATH`,
 fish gets `set -gx PATH` inside `if not contains`, and neither grows your
 `PATH` by an entry per nested shell.
+
+An rc file that refuses the edit is a warning, not a failed install. bash
+reads one login file and stops, so when `~/.profile` refuses the write and
+there is no `~/.bash_profile`, the installer writes `~/.bash_profile`
+instead. That file sources `~/.profile` first, so shadowing it changes
+nothing, and it is recorded as created, so `--uninstall` takes it away. When
+no login file takes the entry at all, the installer says so at the end and
+prints the line to add.
 
 Default install directory:
 
@@ -38,9 +50,9 @@ Default install directory:
 
 ## Requirements
 
-vitrum needs one system library, and the installer refuses to install without
-it rather than leaving you a binary that opens no window. It names the package
-for the distribution it is running on:
+vitrum draws its windows with a WebView, and the installer refuses to install
+without one rather than leaving you a binary that opens no window. It names
+the package for the distribution it is running on:
 
 | Distribution | Package |
 |---|---|
@@ -56,8 +68,27 @@ for the distribution it is running on:
 | macOS | nothing extra |
 
 Pass `--no-runtime-check` (`-NoRuntimeCheck`) to install anyway, for an image
-that installs the runtime separately. The installer then says the runtime is
-still missing instead of pretending the install is complete.
+that installs the runtime separately. The installer then says what is still
+missing instead of pretending the install is complete.
+
+The published Linux build links other shared libraries as well, and needs a C
+library new enough for the symbol versions it references. No version is
+written down here, because the installer reads both from the archive it just
+downloaded rather than from a list: it resolves every library the build links
+against this machine's loader, and refuses before writing anything when one
+cannot be found or the C library is too old. A build that stops linking
+something stops being refused for it, and a build that starts linking
+something new is caught the first time anyone installs it.
+
+When the missing library has a package on this distribution, the failure
+names the one command that installs all of them. When it has none, the
+failure says so and points at a source build rather than naming a package
+that would leave the binary exactly as broken as it was.
+
+A C library older than the build needs cannot be fixed by installing
+anything: it comes with the distribution release. That failure names the
+version the build requires, the version this machine has, and the two things
+that resolve it.
 
 Published x86-64 builds target the base instruction set, so they run on any
 x86-64 processor. They do not use AVX2 or AVX-512 even where the processor
@@ -79,8 +110,8 @@ sh install.sh --help
 | `VERSION` | `VITRUM_VERSION` | install that version instead of the latest |
 | `--install-dir=PATH` | `VITRUM_INSTALL_DIR` | put the binaries elsewhere |
 | `--base-url=URL` | `VITRUM_BASE_URL` | take the archive and `SHA256SUMS` from a mirror or a local directory |
-| `--no-integrate` | `VITRUM_NO_INTEGRATE` | binaries only: skip steps 6 to 8 |
-| `--no-runtime-check` | `VITRUM_NO_RUNTIME_CHECK` | install without the WebKit or WebView2 runtime |
+| `--no-integrate` | `VITRUM_NO_INTEGRATE` | binaries only: skip steps 7 to 9 |
+| `--no-runtime-check` | `VITRUM_NO_RUNTIME_CHECK` | install without checking the runtime this machine has |
 | `--uninstall` | | remove everything the installer wrote |
 
 PowerShell takes the same as `-Version`, `-InstallDir`, `-BaseUrl`,
@@ -121,6 +152,9 @@ having installed nothing.
 | no WebKit or WebView2 runtime | `vitrum needs a WebKit runtime and this machine has none`, with the package for your distribution |
 | an architecture with no build | `there is no published build for Linux on aarch64` |
 | a libc with no build | `there is no published build for Linux with musl libc` |
+| a shared library the build links is absent | `the published build needs shared libraries this machine does not have`, then `Missing:` and one command that installs them |
+| that library has no package here | `the published build needs shared libraries this distribution does not package` |
+| the C library is older than the build needs | `the published build needs a newer C library than this machine has`, with both versions |
 
 A running `vitrum-server` never blocks an install. Its file is replaced by
 rename, the running daemon keeps the image it started with, and the installer
@@ -197,6 +231,12 @@ as it was created, including the icon files, whose names come from the binary
 rather than from a list in the script, so the uninstaller takes away the set
 this build produced. Your shell rc keeps everything outside the `# >>> vitrum`
 block, and a directory that still holds anything is left alone.
+
+An rc file the installer created is recorded as created and is deleted once
+its block is taken out, so a machine that had no `~/.profile`, no `~/.zshrc`
+or no `config.fish` before the install has none after the uninstall. An rc
+file that already existed keeps everything outside the block, and one that
+has picked up other content since is kept whole.
 
 It refuses while `vitrum` is running, for the same reason installing does, and
 it says so if `vitrum-server` is still holding sessions from the copy it just

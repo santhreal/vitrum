@@ -20,8 +20,9 @@
 # Everything this script writes is recorded in an install manifest, and
 # `--uninstall` removes exactly what the manifest lists. A machine that has a
 # proxy, no write permission, a running vitrum, a truncated download, an
-# unsupported libc or no WebKit runtime is told which of those it is, and the
-# installer exits non-zero without installing half of anything.
+# unsupported libc, or a library this build needs and this machine has not
+# got, is told which of those it is, and the installer exits non-zero without
+# installing half of anything.
 
 set -eu
 
@@ -109,8 +110,9 @@ Options:
                           needs an explicit VERSION
   --no-integrate          install the binaries only: no launcher entry, no
                           PATH edit, no `vu` shortcut
-  --no-runtime-check      install even though the WebKit runtime is missing,
-                          for an image that installs it separately
+  --no-runtime-check      install even though this machine is missing a
+                          library the build needs, for an image that adds it
+                          separately
   --uninstall             remove everything this installer wrote, and nothing
                           else
   -h, --help              show this help and exit
@@ -306,13 +308,20 @@ bash_login_rc() {
 # `~/.profile`, and `~/.bashrc` is skipped by a login shell that is not
 # interactive. Between them that left `vitrum` off `PATH` in exactly the shell
 # someone opens a terminal to, on a machine that had ever installed rust.
+#
+# A file that refuses the edit is a warning, not a failed install, so the
+# per-file result is captured rather than allowed to end the run. `PROFILE_OK`
+# carries the one result a caller acts on: whether the login file bash reads
+# on a machine with no `~/.bash_profile` took the block.
+PROFILE_OK=1
 each_rc() {
-    "$1" posix "$HOME/.profile"
+    PROFILE_OK=1
+    "$1" posix "$HOME/.profile" || PROFILE_OK=0
     bash_login=$(bash_login_rc)
-    if [ -n "$bash_login" ]; then "$1" posix "$bash_login"; fi
-    if shell_present bash "$HOME/.bashrc"; then "$1" posix "$HOME/.bashrc"; fi
-    if shell_present zsh "${ZDOTDIR:-$HOME}/.zshrc"; then "$1" posix "${ZDOTDIR:-$HOME}/.zshrc"; fi
-    if shell_present fish "$(fish_config)"; then "$1" fish "$(fish_config)"; fi
+    if [ -n "$bash_login" ]; then "$1" posix "$bash_login" || true; fi
+    if shell_present bash "$HOME/.bashrc"; then "$1" posix "$HOME/.bashrc" || true; fi
+    if shell_present zsh "${ZDOTDIR:-$HOME}/.zshrc"; then "$1" posix "${ZDOTDIR:-$HOME}/.zshrc" || true; fi
+    if shell_present fish "$(fish_config)"; then "$1" fish "$(fish_config)" || true; fi
 }
 
 # Removes the vitrum block from $1, and the single blank line that precedes it.
@@ -342,19 +351,28 @@ rc_block_strip() {
 # Writes the block into $2 in the syntax named by $1, replacing any block that
 # is already there. Re-running the installer, or running it with a different
 # --install-dir, leaves exactly one block naming the current directory.
+#
+# The syntax is `posix`, `fish`, or `shadow` for a `~/.bash_profile` written
+# because `~/.profile` refused the write.
+#
+# A file that did not exist is recorded as `rc-created` rather than `rc`, so
+# uninstalling takes it away instead of leaving an empty file behind that
+# nobody put there.
 rc_block_write() {
     rk="$1"
     rf="$2"
     rd=$(dirname "$rf")
+    rkind=existing
     if [ ! -d "$rd" ]; then
         mkdir -p "$rd" 2>/dev/null || { warn "could not create $rd, so $rf was not written"; return 0; }
     fi
     if [ ! -e "$rf" ]; then
-        : > "$rf" 2>/dev/null || { warn "could not create $rf, so PATH and vu are not set for that shell"; return 0; }
+        rkind=created
+        : > "$rf" 2>/dev/null || { warn "could not create $rf, so PATH and vu are not set for that shell"; return 1; }
     fi
     if [ ! -w "$rf" ]; then
         warn "$rf is not writable, so PATH and vu were not added there"
-        return 0
+        return 1
     fi
     rc_block_strip "$rf" >/dev/null 2>&1 || true
     {
@@ -365,6 +383,13 @@ rc_block_write() {
             printf 'end\n'
             printf 'alias vu "vitrum update"\n'
         else
+            if [ "$rk" = shadow ]; then
+                # bash opens one login file and stops, so this one shadows
+                # ~/.profile. Sourcing it first keeps everything in it in
+                # force, which is what makes creating this file safe.
+                printf '# ~/.profile could not be written, so bash reads its PATH entry here.\n'
+                printf 'if [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi\n'
+            fi
             # Guarded, because an rc is read once per shell and an unguarded
             # prepend grows $PATH by one entry every time a shell nests.
             printf 'case ":$PATH:" in\n'
@@ -376,9 +401,13 @@ rc_block_write() {
             fi
         fi
         printf '%s\n' "$BLOCK_END"
-    } >> "$rf" 2>/dev/null || { warn "could not write $rf"; return 0; }
+    } >> "$rf" 2>/dev/null || { warn "could not write $rf"; return 1; }
     say "  $rf"
-    manifest_add rc "$rf"
+    if [ "$rkind" = created ]; then
+        manifest_add rc-created "$rf"
+    else
+        manifest_add rc "$rf"
+    fi
 }
 
 rc_block_remove() {
@@ -432,7 +461,9 @@ prune_dirs() {
         "$DATA_DIR"/icons/hicolor/* \
         "$DATA_DIR/icons/hicolor" \
         "$DATA_DIR/icons" \
-        "$DATA_DIR/vitrum"; do
+        "$DATA_DIR/applications" \
+        "$DATA_DIR/vitrum" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/fish"; do
         if [ -d "$pd" ]; then rmdir "$pd" 2>/dev/null || true; fi
     done
 }
@@ -459,6 +490,15 @@ remove_tree() {
     fi
 }
 
+# An rc file the installer created holds nothing but the block it was created
+# for, so once the block is gone the file is gone too. A file that turned out
+# to have something else in it is kept: someone put it there after the install.
+rc_file_prune() {
+    [ -f "$1" ] || return 0
+    if grep -q '[^[:space:]]' "$1" 2>/dev/null; then return 0; fi
+    remove_file "$1"
+}
+
 # ============================================================
 # uninstall
 # ============================================================
@@ -476,6 +516,10 @@ if [ "$UNINSTALL" = 1 ]; then
                 file) remove_file "$path" ;;
                 tree) remove_tree "$path" ;;
                 rc) rc_block_remove rc "$path" ;;
+                rc-created)
+                    rc_block_remove rc "$path"
+                    rc_file_prune "$path"
+                    ;;
                 *) warn "ignoring an unreadable manifest line: $line" ;;
             esac
         done < "$MANIFEST"
@@ -688,52 +732,147 @@ esac
 # machine has no WebKit, after ninety megabytes have crossed a metered link is
 # a worse experience than the failure itself.
 
-# The package that carries the WebKit runtime, named for this distribution.
-# "install a WebKit runtime" is not an instruction anyone can run.
-webkit_package() {
-    wid=""
-    wlike=""
+# The identifiers this distribution answers to, most specific first.
+runtime_ids() {
+    ri_id=""
+    ri_like=""
     if [ -r /etc/os-release ]; then
-        wid=$(sed -n 's/^ID=//p' /etc/os-release | head -1 | tr -d '"')
-        wlike=$(sed -n 's/^ID_LIKE=//p' /etc/os-release | head -1 | tr -d '"')
+        ri_id=$(sed -n 's/^ID=//p' /etc/os-release | head -1 | tr -d '"')
+        ri_like=$(sed -n 's/^ID_LIKE=//p' /etc/os-release | head -1 | tr -d '"')
     fi
-    for wcandidate in $wid $wlike; do
-        case "$wcandidate" in
+    printf '%s %s' "$ri_id" "$ri_like"
+}
+
+# The command this distribution installs packages with, or nothing when it is
+# not one this script can name a command for.
+runtime_pm() {
+    for rm_candidate in $(runtime_ids); do
+        case "$rm_candidate" in
             debian | ubuntu | linuxmint | pop | elementary | raspbian | kali)
-                printf 'sudo apt install libwebkit2gtk-4.1-0'
+                printf 'sudo apt install'
                 return 0
                 ;;
             fedora | rhel | centos | rocky | almalinux)
-                printf 'sudo dnf install webkit2gtk4.1'
+                printf 'sudo dnf install'
                 return 0
                 ;;
             arch | manjaro | endeavouros | cachyos)
-                printf 'sudo pacman -S webkit2gtk-4.1'
+                printf 'sudo pacman -S'
                 return 0
                 ;;
             opensuse | opensuse-tumbleweed | opensuse-leap | suse | sles)
-                printf 'sudo zypper install libwebkit2gtk-4_1-0'
+                printf 'sudo zypper install'
                 return 0
                 ;;
             alpine)
-                printf 'sudo apk add webkit2gtk-4.1'
+                printf 'sudo apk add'
                 return 0
                 ;;
             void)
-                printf 'sudo xbps-install -S webkit2gtk'
+                printf 'sudo xbps-install -S'
                 return 0
                 ;;
             gentoo)
-                printf 'sudo emerge net-libs/webkit-gtk:4.1'
+                printf 'sudo emerge'
                 return 0
                 ;;
             nixos)
-                printf 'nix-env -iA nixpkgs.webkitgtk_4_1'
+                printf 'nix-env -iA'
                 return 0
                 ;;
         esac
     done
-    printf 'install your distribution package for libwebkit2gtk-4.1.so.0'
+}
+
+# The package that carries the shared library $1 on this distribution, or
+# nothing when there is none. "install a WebKit runtime" is not an instruction
+# anyone can run, and neither is a package name from another distribution.
+#
+# A soname with no entry under a distribution is a distribution that does not
+# package that soname, not an omission: Arch ships libxdo.so.4 and has nothing
+# that provides libxdo.so.3, and naming `xdotool` there would send someone to
+# install a package that leaves the binary exactly as broken as it was.
+runtime_pkg() {
+    rp_lib="$1"
+    for rp_candidate in $(runtime_ids); do
+        case "$rp_candidate" in
+            debian | ubuntu | linuxmint | pop | elementary | raspbian | kali)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'libwebkit2gtk-4.1-0' ;;
+                    libxdo.so.3) printf 'libxdo3' ;;
+                esac
+                return 0
+                ;;
+            fedora | rhel | centos | rocky | almalinux)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk4.1' ;;
+                    libxdo.so.3) printf 'xdotool' ;;
+                esac
+                return 0
+                ;;
+            arch | manjaro | endeavouros | cachyos)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk-4.1' ;;
+                esac
+                return 0
+                ;;
+            opensuse | opensuse-tumbleweed | opensuse-leap | suse | sles)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'libwebkit2gtk-4_1-0' ;;
+                    libxdo.so.3) printf 'libxdo3' ;;
+                esac
+                return 0
+                ;;
+            alpine)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk-4.1' ;;
+                    libxdo.so.3) printf 'xdotool' ;;
+                esac
+                return 0
+                ;;
+            void)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk' ;;
+                    libxdo.so.3) printf 'xdotool' ;;
+                esac
+                return 0
+                ;;
+            gentoo)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'net-libs/webkit-gtk:4.1' ;;
+                    libxdo.so.3) printf 'x11-misc/xdotool' ;;
+                esac
+                return 0
+                ;;
+            nixos)
+                case "$rp_lib" in
+                    libwebkit2gtk-4.1.so.0) printf 'nixpkgs.webkitgtk_4_1' ;;
+                    libxdo.so.3) printf 'nixpkgs.xdotool' ;;
+                esac
+                return 0
+                ;;
+        esac
+    done
+}
+
+# One line to paste that installs every package in $@, or a sentence saying
+# there is none to paste.
+runtime_command() {
+    rc_pm=$(runtime_pm)
+    if [ -n "$rc_pm" ] && [ $# -gt 0 ]; then
+        printf '%s %s' "$rc_pm" "$*"
+    else
+        printf 'no package on this distribution is known to provide it'
+    fi
+}
+
+webkit_package() {
+    wp_pkg=$(runtime_pkg libwebkit2gtk-4.1.so.0)
+    if [ -n "$wp_pkg" ]; then
+        runtime_command "$wp_pkg"
+    else
+        printf 'install your distribution package for libwebkit2gtk-4.1.so.0'
+    fi
 }
 
 have_webkit() {
@@ -956,6 +1095,137 @@ for bin in vitrum vitrum-server; do
             "Report it at https://github.com/$REPO/issues"
 done
 
+# ============================================================
+# will it start
+# ============================================================
+#
+# A verified download is not a working install. The archive is the only place
+# the truth about this build's runtime dependencies lives, so it is asked
+# rather than guessed at: `ldd` names every soname the loader cannot resolve
+# and every symbol version the C library is too old for, which are the two
+# ways a binary that downloaded perfectly still refuses to start.
+#
+# Derived from the binary rather than from a table, so a build that stops
+# linking something stops being refused for it, and a build that starts
+# linking something new is caught the first time anyone installs it.
+#
+# This runs before a byte is written to the install directory, so a machine
+# that cannot run the build keeps the copy it already had.
+
+# Prints one line per unmet dependency of the binary $1: `lib <soname>` for a
+# library the loader cannot find, `glibc <version>` for a symbol version the C
+# library does not carry.
+runtime_report() {
+    command -v ldd >/dev/null 2>&1 || return 0
+    ldd "$1" 2>&1 | awk '
+        /not found/ {
+            if (match($0, /GLIBC_[0-9.]+/)) {
+                print "glibc " substr($0, RSTART + 6, RLENGTH - 6)
+                next
+            }
+            if ($2 == "=>") { print "lib " $1 }
+        }
+    '
+}
+
+# The greater of two dotted versions. `sort -V` is not on every host, and a
+# glibc version is two numbers, so the two numbers are compared.
+version_max() {
+    printf '%s\n%s\n' "$1" "$2" | awk -F. '
+        { if ($1 + 0 > bm || ($1 + 0 == bm && $2 + 0 >= bn)) { bm = $1 + 0; bn = $2 + 0; best = $0 } }
+        END { print best }'
+}
+
+# The C library version this machine has.
+host_glibc() {
+    hg=$(getconf GNU_LIBC_VERSION 2>/dev/null || true)
+    case "$hg" in
+        glibc\ *)
+            printf '%s' "${hg#glibc }"
+            return 0
+            ;;
+    esac
+    ldd --version 2>&1 | head -1 |
+        sed -n 's/.*[^0-9.]\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
+}
+
+# Always measured, never always acted on: --no-runtime-check turns the refusal
+# into the closing warning, so an image that adds the libraries separately
+# still gets told what it is committing to add.
+: > "$TMPDIR_SELF/unmet"
+for bin in vitrum vitrum-server; do
+    runtime_report "$TMPDIR_SELF/$bin" >> "$TMPDIR_SELF/unmet"
+done
+
+glibc_need=""
+libs_missing=""
+while read -r ukind uvalue; do
+    case "$ukind" in
+        glibc)
+            if [ -z "$glibc_need" ]; then
+                glibc_need="$uvalue"
+            else
+                glibc_need=$(version_max "$glibc_need" "$uvalue")
+            fi
+            ;;
+        lib)
+            case " $libs_missing " in
+                *" $uvalue "*) ;;
+                *) libs_missing="${libs_missing:+$libs_missing }$uvalue" ;;
+            esac
+            ;;
+    esac
+done < "$TMPDIR_SELF/unmet"
+
+if [ "$RUNTIME_CHECK" = 1 ]; then
+    # The C library comes with the distribution release and cannot be installed
+    # beside it, so this failure names the two things that do resolve it.
+    if [ -n "$glibc_need" ]; then
+        die "the published build needs a newer C library than this machine has" \
+            "It requires glibc $glibc_need; this machine has $(host_glibc)." \
+            "Nothing was installed, and no package fixes this: the C library comes" \
+            "with the distribution release." \
+            "Upgrade to a distribution release carrying glibc $glibc_need or newer, or" \
+            "build from source on this machine, which links against the C library" \
+            "you already have:" \
+            "  https://github.com/$REPO/blob/main/CONTRIBUTING.md"
+    fi
+
+    if [ -n "$libs_missing" ]; then
+        # Every missing library in one command, because being told them one
+        # install at a time is how three failed installs happen in a row.
+        pkgs=""
+        unpackaged=""
+        for mlib in $libs_missing; do
+            mpkg=$(runtime_pkg "$mlib")
+            if [ -n "$mpkg" ]; then
+                pkgs="${pkgs:+$pkgs }$mpkg"
+            else
+                unpackaged="${unpackaged:+$unpackaged }$mlib"
+            fi
+        done
+        if [ -z "$unpackaged" ]; then
+            die "the published build needs shared libraries this machine does not have" \
+                "Missing: $libs_missing" \
+                "Nothing was installed. Install them first:" \
+                "  $(runtime_command $pkgs)" \
+                "Then run this installer again." \
+                "To install anyway, for an image that adds them separately, pass" \
+                "--no-runtime-check."
+        fi
+        die "the published build needs shared libraries this distribution does not package" \
+            "Missing: $libs_missing" \
+            "Of those, $unpackaged has no package here, so there is nothing to install" \
+            "that would make this build start. Nothing was installed." \
+            "Build from source on this machine, which links against the libraries" \
+            "you have:" \
+            "  https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
+            "Report it at https://github.com/$REPO/issues so the published build" \
+            "stops needing it." \
+            "To install anyway, pass --no-runtime-check."
+    fi
+fi
+
 # Staged inside the install directory and renamed into place, one rename each.
 # A rename within a directory is atomic and works over a file another process
 # is executing, so a running vitrum-server keeps the image it started with
@@ -1007,6 +1277,19 @@ if [ "$INTEGRATE" = 1 ]; then
     say "Setting up."
 
     each_rc rc_block_write
+
+    # bash opens exactly one login file, and on a machine with no
+    # `~/.bash_profile` that file is `~/.profile`. When `~/.profile` refuses
+    # the write there is nowhere left for a login shell to pick the binary up,
+    # and `command -v vitrum` in a fresh terminal finds nothing on a machine
+    # the installer just reported success on. So the block goes into
+    # `~/.bash_profile` instead, which bash reads first and which is not there
+    # to be overwritten. It sources `~/.profile`, so shadowing it costs
+    # nothing, and it is recorded as created, so uninstalling takes it away.
+    LOGIN_PATH_OK="$PROFILE_OK"
+    if [ "$PROFILE_OK" = 0 ] && [ -z "$(bash_login_rc)" ]; then
+        if rc_block_write shadow "$HOME/.bash_profile"; then LOGIN_PATH_OK=1; fi
+    fi
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *)
@@ -1026,7 +1309,8 @@ if [ "$INTEGRATE" = 1 ]; then
     # than a list of names copied into this script.
     icons_written=0
     if [ "$os" = "Linux" ]; then
-        if "$INSTALL_DIR/vitrum" icons "$DATA_DIR" > "$TMPDIR_SELF/icons.list" 2>/dev/null; then
+        if "$INSTALL_DIR/vitrum" icons "$DATA_DIR" > "$TMPDIR_SELF/icons.list" \
+            2> "$TMPDIR_SELF/icons.err"; then
             icons_written=1
             while IFS= read -r written; do
                 if [ -n "$written" ]; then manifest_add file "$written"; fi
@@ -1045,7 +1329,15 @@ if [ "$INTEGRATE" = 1 ]; then
                 fi
             fi
         else
+            # Drawing the icons is the first time the installed binary is run,
+            # so whatever stopped it is what will stop `vitrum` too. Repeating
+            # what it said is the difference between a picture that is missing
+            # and a machine that cannot run the build at all.
             warn "could not write the icon set, so the launcher entry has no picture"
+            while IFS= read -r iline; do
+                [ -n "$iline" ] || continue
+                say "  $iline"
+            done < "$TMPDIR_SELF/icons.err"
         fi
     fi
 
@@ -1071,7 +1363,17 @@ EOF
                 printf 'Icon=vitrum\n' >> "$apps/vitrum.desktop"
             fi
             if command -v update-desktop-database >/dev/null 2>&1; then
+                # Recorded only when this install is what created it, on the
+                # same terms as the icon cache: an existing one indexes other
+                # applications' entries, and taking it away on uninstall would
+                # take theirs with it.
+                mime_cache="$apps/mimeinfo.cache"
+                had_mime=0
+                if [ -e "$mime_cache" ]; then had_mime=1; fi
                 update-desktop-database "$apps" 2>/dev/null || true
+                if [ "$had_mime" = 0 ] && [ -e "$mime_cache" ]; then
+                    manifest_add file "$mime_cache"
+                fi
             fi
             manifest_add file "$apps/vitrum.desktop"
             say "  $apps/vitrum.desktop"
@@ -1122,17 +1424,40 @@ EOF
         fi
     fi
 else
+    LOGIN_PATH_OK=1
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *) warn "$INSTALL_DIR is not on your PATH, so 'vitrum' will not be found." ;;
     esac
 fi
 
+# A login file that refused the edit is warned about where it happened, and
+# again here, because by then it has scrolled past a dozen lines of success
+# and the next thing this script says is "run 'vitrum'".
+if [ "$LOGIN_PATH_OK" = 0 ]; then
+    warn "no login file took the PATH entry, so a login shell will not find vitrum."
+    say "  Add this to a file your login shell reads, or run it by full path:"
+    say "    export PATH=\"$INSTALL_DIR:\$PATH\""
+fi
+
 manifest_commit
 
-if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 0 ] && ! have_webkit; then
-    warn "the WebKit runtime is still missing, so vitrum will not open a window."
-    say "  $(webkit_package)"
+# --no-runtime-check installs on a machine the build cannot start on. Saying
+# what is still missing is the difference between that and pretending the
+# install is finished.
+if [ "$RUNTIME_CHECK" = 0 ]; then
+    if [ -n "$glibc_need" ]; then
+        warn "this build needs glibc $glibc_need and this machine has $(host_glibc), so it will not start."
+    fi
+    if [ -n "$libs_missing" ]; then
+        warn "these shared libraries are still missing, so vitrum will not start: $libs_missing"
+        tail_pkgs=""
+        for mlib in $libs_missing; do
+            mpkg=$(runtime_pkg "$mlib")
+            if [ -n "$mpkg" ]; then tail_pkgs="${tail_pkgs:+$tail_pkgs }$mpkg"; fi
+        done
+        say "  $(runtime_command $tail_pkgs)"
+    fi
 fi
 
 say ""

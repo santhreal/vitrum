@@ -783,6 +783,245 @@ fn every_installer_failure_names_what_to_do_next() {
     );
 }
 
+/// A build this machine cannot start is refused before it is installed.
+///
+/// A clean container matrix found two machines that took the archive,
+/// reported a successful install, and then could not run the binary: one
+/// whose C library was older than the symbol versions the build references,
+/// and one whose only `xdotool` package ships a different soname from the one
+/// the client links. On both, the launcher entry was written without a
+/// picture, because the binary that draws the icon set could not run either.
+///
+/// The requirement is read from the archive rather than written down here, so
+/// a build that stops linking something stops being refused for it. A floor
+/// copied into this script is the failure this test exists to prevent: it
+/// turns a fixed build back into an install failure, on exactly the machines
+/// the fix was for.
+#[test]
+fn the_installer_refuses_a_build_this_machine_cannot_run() {
+    let sh = include_str!("../../../install.sh");
+
+    // Asked of the binary that was just unpacked, so the answer is this
+    // build's rather than this script's idea of this build.
+    let check = sh
+        .find(r#"runtime_report "$TMPDIR_SELF/$bin""#)
+        .expect(
+            "install.sh does not run the runtime check against the unpacked \
+             archive, so what it refuses for is a list in the script rather \
+             than what the build links",
+        );
+
+    // Nothing is written into the install directory until the answer is in.
+    let first_write = sh
+        .find(r#"staged="$INSTALL_DIR/"#)
+        .expect("install.sh stages the binaries inside the install directory");
+    assert!(
+        check < first_write,
+        "install.sh writes into the install directory before it knows whether \
+         the build starts, so a machine that cannot run it loses the copy it \
+         already had"
+    );
+
+    // The one edit that would make the guard go stale without failing.
+    for (n, line) in sh.lines().enumerate() {
+        assert!(
+            !line.contains("GLIBC_2."),
+            "install.sh line {} pins a C library version:\n  {}\nThe floor \
+             belongs to the build, and a copy of it here refuses machines the \
+             next build would have run on",
+            n + 1,
+            line.trim()
+        );
+    }
+
+    // The three ways a verified archive still fails to start, told apart,
+    // because each has a different thing for the operator to do.
+    for (case, needle) in [
+        (
+            "a C library older than the build references",
+            "needs a newer C library than this machine has",
+        ),
+        (
+            "a shared library this machine has not got",
+            "needs shared libraries this machine does not have",
+        ),
+        (
+            "a shared library this distribution does not carry",
+            "needs shared libraries this distribution does not package",
+        ),
+    ] {
+        assert!(
+            sh.contains(needle),
+            "install.sh never says `{needle}`, so {case} is not a case it \
+             answers for"
+        );
+    }
+
+    // Naming a package that does not provide the soname costs an install and
+    // leaves the binary exactly as broken, so nothing is named instead.
+    assert!(
+        sh.contains("no package on this distribution is known to provide it"),
+        "install.sh has no answer for a soname its distribution does not \
+         package, so it falls back to naming a package that does not fix it"
+    );
+
+    // --no-runtime-check installs anyway, and then says what is still wrong.
+    assert!(
+        sh.contains("these shared libraries are still missing"),
+        "install.sh skips the check without saying what it skipped, so an \
+         image is left believing the install is complete"
+    );
+
+    // The first run of the installed binary is the icon set. Whatever stopped
+    // it is what will stop `vitrum`, so it is repeated rather than swallowed.
+    assert!(
+        sh.contains(r#"2> "$TMPDIR_SELF/icons.err""#) && sh.contains("icons.err"),
+        "install.sh throws away what the binary said when the icon set failed, \
+         so a machine that cannot run the build is told only that a picture is \
+         missing"
+    );
+}
+
+/// Every kind of thing the installer records is a kind the uninstaller knows.
+///
+/// The manifest is the whole of `--uninstall`: what is not recorded is not
+/// removed, and a kind recorded without a matching arm is dropped with a
+/// warning, which is how an empty `~/.profile` the installer had created came
+/// to survive its own uninstall on a machine that never had one.
+///
+/// The kinds are read out of the scripts rather than listed here, so a new one
+/// turns this red until someone decides what removing it means.
+#[test]
+fn the_uninstaller_knows_every_kind_the_installer_records() {
+    let sh = include_str!("../../../install.sh");
+    let mut sh_kinds = std::collections::BTreeSet::new();
+    for line in sh.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("manifest_add ") else {
+            continue;
+        };
+        let kind = rest.split_whitespace().next().unwrap_or_default();
+        assert!(
+            !kind.starts_with('"') && !kind.starts_with('$'),
+            "install.sh records a manifest kind through a variable:\n  \
+             {trimmed}\nThe kinds have to be readable here, or a kind the \
+             uninstaller cannot handle passes unnoticed"
+        );
+        sh_kinds.insert(kind.to_string());
+    }
+    assert!(
+        sh_kinds.len() >= 4,
+        "only {} manifest kinds were found in install.sh, so the manifest is \
+         no longer written through `manifest_add` and nothing here is checked",
+        sh_kinds.len()
+    );
+    for kind in &sh_kinds {
+        assert!(
+            sh.contains(&format!("{kind})")),
+            "install.sh records `{kind}` in the manifest and --uninstall has \
+             no arm for it, so what it wrote stays on the machine"
+        );
+    }
+    for kind in ["rc", "rc-created"] {
+        assert!(
+            sh_kinds.contains(kind),
+            "install.sh no longer records `{kind}`, so an rc file it created \
+             and one it edited are removed the same way and the created one is \
+             left behind empty"
+        );
+    }
+
+    let ps1 = include_str!("../../../install.ps1");
+    let mut ps1_kinds = std::collections::BTreeSet::new();
+    for line in ps1.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("Record '") else {
+            continue;
+        };
+        let Some(kind) = rest.split('\'').next() else {
+            continue;
+        };
+        ps1_kinds.insert(kind.to_string());
+    }
+    assert!(
+        ps1_kinds.len() >= 3,
+        "only {} manifest kinds were found in install.ps1, so the manifest is \
+         no longer written through `Record`",
+        ps1_kinds.len()
+    );
+    for kind in &ps1_kinds {
+        assert!(
+            ps1.contains(&format!("'{kind}' {{")),
+            "install.ps1 records `{kind}` in the manifest and -Uninstall has \
+             no arm for it, so what it wrote stays on the machine"
+        );
+    }
+    assert!(
+        ps1_kinds.contains("profile-created"),
+        "install.ps1 no longer records a profile it created, so a machine that \
+         had no PowerShell profile keeps an empty one after -Uninstall"
+    );
+
+    // An empty directory the installer made on its way to a file it removed is
+    // still something it left behind.
+    for dir in [
+        "\"$DATA_DIR/applications\" \\",
+        "\"${XDG_CONFIG_HOME:-$HOME/.config}/fish\"",
+    ] {
+        assert!(
+            sh.contains(dir),
+            "install.sh does not prune {dir} on uninstall, so a directory it \
+             created is left behind empty"
+        );
+    }
+
+    // A cache that indexes other applications' entries is taken away only when
+    // this install is what created it.
+    assert!(
+        sh.contains("mimeinfo.cache"),
+        "install.sh runs update-desktop-database without recording the cache \
+         it may have created, so uninstalling leaves it behind"
+    );
+}
+
+/// A login file that refuses the edit does not cost the operator the PATH.
+///
+/// bash opens exactly one login file and stops. On a machine with no
+/// `~/.bash_profile` that file is `~/.profile`, so a `~/.profile` that refuses
+/// the write leaves nowhere for a login shell to pick the binary up, and
+/// `command -v vitrum` in a fresh terminal finds nothing on a machine the
+/// installer has just reported success on.
+#[test]
+fn a_login_file_that_refuses_the_edit_does_not_cost_the_path() {
+    let sh = include_str!("../../../install.sh");
+
+    assert!(
+        sh.contains(r#"rc_block_write shadow "$HOME/.bash_profile""#),
+        "install.sh has no login file left when ~/.profile refuses the write, \
+         so PATH is set in files a login shell never opens"
+    );
+    assert!(
+        sh.contains(r#"if [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi"#),
+        "the ~/.bash_profile install.sh writes does not source ~/.profile, so \
+         creating it silently drops whatever was in ~/.profile"
+    );
+    assert!(
+        sh.contains("is not writable, so PATH and vu were not added there"),
+        "install.sh does not say which rc refused the edit"
+    );
+    assert!(
+        sh.contains("no login file took the PATH entry"),
+        "install.sh ends by telling the operator to run a command no login \
+         shell can find, without saying so"
+    );
+}
+
 /// The text after a call to one of `names` on `line`, if it is a call.
 ///
 /// A call starts the statement: `die "..."`, or `x || die "..."`. A mention

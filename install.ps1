@@ -147,6 +147,17 @@ function Remove-ProfileBlock {
     return $true
 }
 
+# A profile this installer created holds nothing but the block it was created
+# for, so once the block is gone the file is gone too. A profile that turned
+# out to have something else in it is kept: someone put it there after the
+# install.
+function Remove-CreatedProfile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ((Get-Content -LiteralPath $Path -Raw) -match '\S') { return }
+    Remove-Recorded 'file' $Path
+}
+
 # The install directory is taken off the user PATH only when it is the entry
 # this installer put there. Every other entry is left exactly as it is.
 function Remove-FromUserPath {
@@ -231,6 +242,13 @@ if ($Uninstall) {
                         Say "  $path (vitrum block)"
                         $script:Removed = $true
                     }
+                }
+                'profile-created' {
+                    if (Remove-ProfileBlock $path) {
+                        Say "  $path (vitrum block)"
+                        $script:Removed = $true
+                    }
+                    Remove-CreatedProfile $path
                 }
                 'path' {
                     if (Remove-FromUserPath $path) {
@@ -778,12 +796,20 @@ if ($NoIntegrate) {
     # carry the `update` argument with it. Written inside a marked block, so
     # -Uninstall can take back these lines and no others.
     try {
-        if (-not (Test-Path $PROFILE)) {
+        # A profile that did not exist is recorded as created rather than
+        # edited, so uninstalling takes it away instead of leaving an empty
+        # file behind that nobody put there.
+        $profileExisted = Test-Path $PROFILE
+        if (-not $profileExisted) {
             New-Item -ItemType File -Force -Path $PROFILE | Out-Null
         }
         Remove-ProfileBlock $PROFILE | Out-Null
         Add-Content $PROFILE "`n$BlockBegin`nfunction vu { vitrum update @args }`n$BlockEnd"
-        Record 'profile' $PROFILE
+        if ($profileExisted) {
+            Record 'profile' $PROFILE
+        } else {
+            Record 'profile-created' $PROFILE
+        }
         Say "  $PROFILE"
     } catch {
         Warn "could not write $PROFILE : $($_.Exception.Message)"

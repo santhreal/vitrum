@@ -5,6 +5,8 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+## v0.3.0 - 2026-08-10
+
 ### Added
 
 - **A row shows the directory its session is in.** Only the part the project

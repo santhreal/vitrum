@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/vitrum.svg" alt="vitrum" width="96" height="96" />
+</p>
+
 <h1 align="center">vitrum</h1>
 
 <p align="center">

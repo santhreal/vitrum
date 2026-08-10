@@ -11,7 +11,11 @@
     x = 35.4 and x = 60.6, which is where the lines from the table corners
     (30,24) and (66,24) to the culet (48,84) cross y = 42.
   -->
-  <g fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+  <!-- #4C6EF5 is MARK_COLOUR in crates/vitrum-os/src/mark.rs, which paints the
+       rasterised icons. Stated rather than inherited: a README serves this file
+       as a standalone image, where currentColor resolves to black and the mark
+       disappears against a dark page. -->
+  <g fill="none" stroke="#4C6EF5" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
     <!-- Crown: left shoulder, table, right shoulder. -->
     <path d="M12 42 L30 24 H66 L84 42" />
     <!-- Pavilion: shoulders down to the culet. -->

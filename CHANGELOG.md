@@ -15,6 +15,19 @@ Before 1.0, a minor bump may break compatibility.
   nothing ends the read and nothing reaps the child, and the loop waited on
   both. Every wait in the output path now observes the close, so a closed
   session ends whether or not the child cooperates.
+- **A failed accept no longer takes the daemon down.** Running out of file
+  descriptors made the accept loop return, which ends every hosted agent's
+  terminal for a condition that clears as soon as one connection closes. The
+  loop now pauses and retries, and gives up only after a run of failures with
+  no success between them.
+
+### Changed
+
+- **The daemon serves 64 connections at once.** The accept loop spawned a task
+  per connection with nothing counting them, so anything opening sockets in a
+  loop could exhaust the descriptors of the process that owns every agent's
+  terminal. A client past the ceiling waits for a slot rather than being
+  refused.
 
 ## v0.2.0 - 2026-08-10
 

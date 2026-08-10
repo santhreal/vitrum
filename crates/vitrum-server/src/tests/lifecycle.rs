@@ -485,3 +485,71 @@ fn alive(pid: u32) -> bool {
     };
     !matches!(after_name.split_whitespace().next(), None | Some("Z"))
 }
+
+/// The daemon serves a bounded number of connections, and the ceiling is a
+/// queue rather than a refusal.
+///
+/// WHY: the accept loop spawned a task per connection with nothing counting
+/// them. Every connection costs a descriptor, a task and a websocket buffer,
+/// so a client reconnecting in a loop, or anything else that opens sockets
+/// and does not close them, exhausted the descriptors of the process that
+/// owns every hosted agent's terminal. The agents die with it, which makes an
+/// unbounded accept loop a fault in the thing this daemon exists to protect.
+///
+/// A ceiling is only correct if crossing it delays a client instead of losing
+/// it, so both halves are pinned: the extra client does not get served while
+/// the daemon is full, and it does get served once a slot frees. The first
+/// half needs no deadline of its own beyond patience, because a permit taken
+/// before the accept means the excess sits in the kernel's backlog with the
+/// upgrade never started.
+///
+/// Does not pin what happens beyond the backlog, which is the kernel's answer
+/// and not this crate's.
+#[tokio::test]
+async fn a_client_beyond_the_ceiling_waits_for_a_slot() {
+    let h = Harness::start(4096).await;
+    // Every one of these has completed its upgrade by the time `client`
+    // returns, so each is past the accept and holding a slot. Held in a vec so
+    // that none of them close and give one back.
+    let mut held = Vec::new();
+    for _ in 0..crate::MAX_CONNECTIONS {
+        held.push(h.client().await);
+    }
+
+    let url = format!("ws://127.0.0.1:{}", h.port);
+    let blocked = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        tokio_tungstenite::connect_async(url.clone()),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "the daemon served a connection past its ceiling of {}",
+        crate::MAX_CONNECTIONS
+    );
+
+    // One client goes away, so one slot comes back.
+    held.pop();
+    let served = tokio::time::timeout(DEADLINE, tokio_tungstenite::connect_async(url)).await;
+    assert!(
+        served.is_ok_and(|r| r.is_ok()),
+        "a slot freed and the waiting client was still not served"
+    );
+}
+
+/// The ceiling `docs/remote.md` states is the ceiling the daemon enforces.
+///
+/// WHY: the number is a promise to someone deciding how many windows or
+/// tunnels to point at one daemon, and it lives in two places. Raising the
+/// constant without touching the page leaves the page lying, and a reader has
+/// no way to tell. The document owns the claim, so the test reads the
+/// document.
+#[test]
+fn the_documented_connection_ceiling_is_the_real_one() {
+    let remote = include_str!("../../../../docs/remote.md");
+    let claim = format!("serves {} connections at once", crate::MAX_CONNECTIONS);
+    assert!(
+        remote.contains(&claim),
+        "docs/remote.md does not say the daemon {claim}"
+    );
+}

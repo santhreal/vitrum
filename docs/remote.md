@@ -20,6 +20,9 @@ A WebSocket handshake that carries an `Origin` header is refused with 403. A
 native client sends none and a browser always does, so a web page cannot drive
 the daemon.
 
+The daemon serves 64 connections at once. A client past that waits for a slot
+rather than being refused, and gets one when another connection closes.
+
 `PROTOCOL_VERSION` is 3. A client and a daemon that disagree refuse each other
 and name both versions, which is what a mixed-version pair across two machines
 looks like.

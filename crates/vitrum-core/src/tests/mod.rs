@@ -2,6 +2,7 @@
 
 mod agent_title;
 mod attention;
+mod close_tree;
 mod git_branch;
 mod helpers;
 #[cfg(not(windows))]

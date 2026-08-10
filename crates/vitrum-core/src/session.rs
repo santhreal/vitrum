@@ -406,6 +406,25 @@ pub(crate) struct Session {
     /// pid attributes another process's work to this session, which is worse
     /// than admitting we do not know.
     child_pid: Option<u32>,
+    /// The Win32 job object holding this session's child and every process it
+    /// goes on to spawn.
+    ///
+    /// Dropped by `SessionManager::close` and `close_all`, which closes the
+    /// last handle to the job and, because of
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, terminates every process still in
+    /// it. It is taken out of this `Mutex` explicitly there rather than left to
+    /// `Session`'s own drop: the reader thread holds an `Arc<Session>` for as
+    /// long as its loop runs, and on Windows that loop only ends when the
+    /// session is closed, so waiting for the last `Arc` to go would make the
+    /// kill wait on a thread that is waiting on the kill.
+    ///
+    /// `None` when the job could not be created or the child could not be
+    /// assigned to it. The session still runs; only the tree guarantee is lost,
+    /// and the failure is logged rather than turned into a spawn error, because
+    /// refusing to start a session is worse than starting one whose
+    /// grandchildren may outlive it.
+    #[cfg(windows)]
+    job: Mutex<Option<JobObject>>,
     /// What the output path actually did, in units nothing about it can fake.
     ///
     /// Wall clock cannot be asserted on: a loaded CI box makes any threshold
@@ -716,6 +735,16 @@ impl SessionManager {
         // this is a field read on an already-spawned process: no syscall, no
         // `/proc`, nothing that could run again later.
         let child_pid = child.process_id();
+        // The child's own process handle, not a handle reopened from its pid.
+        // Reopening would leave a window in which the pid could already belong
+        // to something else, and putting an unrelated process in this job would
+        // kill it when the session closes.
+        #[cfg(windows)]
+        let job = Mutex::new(
+            child
+                .as_raw_handle()
+                .and_then(|h| JobObject::containing(h, spec.command.as_str())),
+        );
         // The slave handle must go before the read loop starts: while this
         // process holds it open the master never reports EOF, so the session
         // would never be reaped after its child exits.
@@ -781,6 +810,8 @@ impl SessionManager {
             killer: Mutex::new(killer),
             last_focus_ms: AtomicU64::new(0),
             child_pid,
+            #[cfg(windows)]
+            job,
             pump: PumpTally::default(),
         });
 
@@ -1104,6 +1135,10 @@ impl SessionManager {
     /// handles `SIGHUP` would otherwise keep running with no session left to
     /// reach it through. Closing must not wait for that, so the escalation does
     /// not run here.
+    ///
+    /// On Windows the child is terminated outright, which reaches nothing it
+    /// spawned, so the session's job object is closed here as well. That kills
+    /// the rest of the tree in the same call. See `JobObject`.
     pub fn close(&self, id: SessionId) -> anyhow::Result<()> {
         let s = self
             .sessions
@@ -1124,6 +1159,11 @@ impl SessionManager {
                 kill_survivors(&[pid]);
             });
         }
+        // Windows has no signal to escalate from, so there is nothing to wait
+        // out: the child was already terminated outright above. Closing the job
+        // here takes the rest of the tree with it in the same breath.
+        #[cfg(windows)]
+        drop(lock(&s.job).take());
         Ok(())
     }
 
@@ -1143,6 +1183,10 @@ impl SessionManager {
     /// here rather than detached, because the caller is a process that is about
     /// to exit and a kill scheduled on a thread that never runs again is no
     /// kill at all. It costs one grace period for all sessions, not one each.
+    ///
+    /// Every session's job object is closed here too. Process exit would close
+    /// the handles anyway and kill the same trees; closing them here covers the
+    /// caller that stops the manager without stopping the process.
     pub fn close_all(&self) -> usize {
         let sessions: Vec<Arc<Session>> = std::mem::take(&mut *write_lock(&self.sessions))
             .into_values()
@@ -1161,6 +1205,10 @@ impl SessionManager {
             // session it has just ended.
             let pids: Vec<u32> = sessions.iter().filter_map(|s| s.child_pid).collect();
             wait_then_kill_survivors(&pids, CHILD_EXIT_GRACE);
+        }
+        #[cfg(windows)]
+        for s in &sessions {
+            drop(lock(&s.job).take());
         }
         sessions.len()
     }
@@ -1234,6 +1282,130 @@ fn present(pid: u32) -> bool {
     // SAFETY: signal 0 performs the permission and existence checks and
     // delivers nothing.
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// A Win32 job object that owns a session's child and everything below it.
+///
+/// Windows tracks a parent pid but does not make it a relationship the kernel
+/// enforces: terminating a process leaves its children running, reparented to
+/// nothing and reachable only by searching for them. An agent TUI that started
+/// a language server, a build, or a nested shell therefore survived every
+/// close of its session, kept the working directory pinned, and kept writing
+/// into a pseudoconsole no one was reading.
+///
+/// A job is the kernel's own answer. Membership is inherited by every process
+/// a member creates, at creation time, with no window in which a new
+/// grandchild is outside it, and
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` terminates all of them when the last
+/// handle to the job closes.
+///
+/// The rejected alternative is walking the process table: `CreateToolhelp32-
+/// Snapshot`, build the parent-of map, terminate depth first. That loses two
+/// ways. It is a snapshot, so a member that forks while the walk is in
+/// progress is never seen and survives; and a pid whose process exits during
+/// the walk can be reused before the walk reaches it, so the terminate lands
+/// on an unrelated process. Both failures are timing dependent, which is the
+/// worst shape for something whose whole job is to leave nothing behind.
+/// `TerminateJobObject` was also rejected in favour of closing the handle:
+/// they kill the same set, and tying the kill to the handle means a daemon
+/// that dies without running any shutdown code still takes its sessions' trees
+/// with it, because process exit closes the handle.
+#[cfg(windows)]
+#[derive(Debug)]
+struct JobObject(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a job handle is a kernel handle, valid process-wide and usable from
+// any thread. The raw pointer is what makes it non-Send by default; nothing
+// about the object it names is thread-affine.
+#[cfg(windows)]
+unsafe impl Send for JobObject {}
+#[cfg(windows)]
+unsafe impl Sync for JobObject {}
+
+#[cfg(windows)]
+impl JobObject {
+    /// Create a kill-on-close job and put `process` in it.
+    ///
+    /// `process` must be a handle to the child with `PROCESS_SET_QUOTA` and
+    /// `PROCESS_TERMINATE` access, which is what the handle returned by
+    /// `CreateProcess` carries. `command` names the session's program and is
+    /// only used to make a failure log say which session lost its guarantee.
+    ///
+    /// `None` on any failure, which is the only honest answer: a half-set-up
+    /// job that does not kill on close would be worse than no job, because the
+    /// close path would report a tree kill it never performed.
+    fn containing(process: std::os::windows::io::RawHandle, command: &str) -> Option<Self> {
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+
+        // SAFETY: an unnamed job with default security. A null name is what
+        // asks for an unnamed job, which is what this wants: nothing else may
+        // open it.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            tracing::warn!(
+                command,
+                error = %std::io::Error::last_os_error(),
+                "creating a job object; this session's grandchildren will outlive it"
+            );
+            return None;
+        }
+        let job = JobObject(job);
+
+        let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+            BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // SAFETY: the pointer is to a live local of exactly the type the
+        // information class names, and the length is that type's size.
+        let set = unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(limits).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if set == 0 {
+            tracing::warn!(
+                command,
+                error = %std::io::Error::last_os_error(),
+                "setting kill-on-close on a job object; this session's grandchildren will outlive it"
+            );
+            return None;
+        }
+
+        // SAFETY: `process` is the child's handle, owned by the caller and
+        // still open. Assignment does not take ownership of it.
+        let assigned = unsafe { AssignProcessToJobObject(job.0, process as HANDLE) };
+        if assigned == 0 {
+            tracing::warn!(
+                command,
+                error = %std::io::Error::last_os_error(),
+                "assigning a session's child to its job object; its grandchildren will outlive it"
+            );
+            return None;
+        }
+        // From here the job is armed: dropping it kills the child along with
+        // everything the child has spawned.
+        Some(job)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobObject {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from `CreateJobObjectW`, is closed exactly
+        // once because `JobObject` is not `Clone`, and is not used again.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
 }
 
 /// Blocking PTY read loop, feeding raw bytes to the coalescer.
@@ -1453,6 +1625,12 @@ impl Coalescer {
             killer: Mutex::new(killer),
             last_focus_ms: AtomicU64::new(0),
             child_pid,
+            #[cfg(windows)]
+            job: Mutex::new(
+                child
+                    .as_raw_handle()
+                    .and_then(|h| JobObject::containing(h, "sleep")),
+            ),
             pump: PumpTally::default(),
         });
         let (raw, raw_rx) = mpsc::unbounded_channel::<BytesMut>();

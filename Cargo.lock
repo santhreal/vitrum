@@ -5244,6 +5244,7 @@ dependencies = [
  "vitrum-portable-pty",
  "vitrum-proto",
  "vitrum-vt",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

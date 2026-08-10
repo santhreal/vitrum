@@ -34,6 +34,18 @@ bytes = "1"
 # SIGHUP and offers no way to send anything else.
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Job objects. Killing a session's child leaves its children running, because a
+# Windows process is not the parent of anything the kernel tracks. The child is
+# put in a job at spawn and the job is closed at session close, which is the
+# only mechanism that reaches a grandchild. Already in the dependency graph at
+# this version through tokio, so it costs no new build.
+windows-sys = { version = "0.61", features = [
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [features]
 # The host-capability checks in `test_support`, for the test builds of other
 # crates. Off by default, so a shipped binary never carries them.

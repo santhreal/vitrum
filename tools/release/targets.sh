@@ -4,15 +4,19 @@
 #   tools/release/targets.sh list    print the published triples
 #   tools/release/targets.sh check   fail if any file names a different set
 #
-# Five files have an opinion about which platforms a release carries: the build
-# matrix in `.github/workflows/release.yml`, the `uname` mapping in
-# `install.sh`, the architecture gate in `install.ps1`, the table in
-# `docs/install.md`, and `update.rs` inside the app. A triple that exists in
-# the matrix and not in an installer is an asset nobody downloads; a triple in
-# an installer and not in the matrix is a 404 at the end of a `curl | sh`.
-# Neither shows up until someone runs the installer on that platform, which is
-# after the release is published. A table that names a build nobody publishes
-# is the same failure with a longer delay.
+# Four files have an opinion about which platforms a release carries, and this
+# compares all four: the build matrix in `.github/workflows/release.yml`, the
+# `uname` mapping in `install.sh`, the architecture gate in `install.ps1`, and
+# the table in `docs/install.md`. A triple that exists in the matrix and not in
+# an installer is an asset nobody downloads; a triple in an installer and not
+# in the matrix is a 404 at the end of a `curl | sh`. Neither shows up until
+# someone runs the installer on that platform, which is after the release is
+# published. A table that names a build nobody publishes is the same failure
+# with a longer delay.
+#
+# `update.rs` inside the app is not a fifth site. It builds the asset name from
+# `VITRUM_TARGET`, which the build script takes from the compiler, so it names
+# whatever platform it was compiled for and cannot disagree with this list.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

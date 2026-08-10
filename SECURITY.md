@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Fixes go to the current 0.1.x line, released as a new tag with a prebuilt
-archive and a `SHA256SUMS` file beside it. There is no long-term support
-branch and no backporting to earlier tags.
+Fixes go to the current release line, 0.2.x, released as a new tag with a
+prebuilt archive and a `SHA256SUMS` file beside it. There is no long-term
+support branch and no backporting to earlier tags.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | yes |
+| 0.2.x | yes |
 | anything older | no |
 
 `vitrum update` installs the latest release, and it refuses a release that
@@ -35,7 +35,7 @@ gets from one to the other. A patch is welcome but not required.
 
 The project is maintained by one person, so an answer is not instant. Expect an
 acknowledgement that the report was read, a judgement on whether it is in scope
-with the reasoning either way, and if it is in scope, a fix in a 0.1.x release
+with the reasoning either way, and if it is in scope, a fix in a 0.2.x release
 with the issue named in `CHANGELOG.md`. A credit in the advisory if you want
 one. There is no bounty.
 
@@ -68,11 +68,11 @@ that machine's token. [docs/remote.md](docs/remote.md) has the steps.
 
 ## Scope
 
-vitrum is a terminal. It runs the programs you name, in a real PTY, with your
-privileges. **That a session executes what you told it to execute is the
+vitrum manages agent TUIs, and it does that by running them in a real PTY with
+your privileges. **That a session executes what you told it to execute is the
 product, not a vulnerability.** A report that amounts to "vitrum ran my
-command", "a shell in vitrum can read my files", or "an agent started from the
-launcher deleted something" is not a security issue here.
+command", "a session in vitrum can read my files", or "an agent started from
+the launcher deleted something" is not a security issue here.
 
 What is a security issue is any way for a **remote party, another local user,
 or a less privileged process** to reach that execution, or to read state it

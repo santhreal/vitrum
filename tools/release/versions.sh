@@ -140,6 +140,28 @@ observed() {
     # dots would silently capture a prefix of it and report agreement.
     lit=$(sed -n 's/^vitrum is at version \([^ ]*\)\..*/\1/p' README.md | head -1)
     printf 'README.md:status-line %s\n' "${lit:-<missing>}"
+
+    # The release line SECURITY.md says it fixes. It carries a series rather
+    # than a version, so what is compared is the series: the workspace version
+    # with its own major.minor swapped for the one the policy names. Equal
+    # exactly when the policy is talking about the line being released, and
+    # unequal for a nightly too, whose suffix is carried through untouched.
+    #
+    # It is checked because it went stale in silence once already: the policy
+    # promised fixes for 0.1.x through the whole of the 0.2 line, which is a
+    # published statement that the current release is unsupported.
+    series=$(sed -n \
+        's/^Fixes go to the current release line, \([0-9][0-9]*\.[0-9][0-9]*\)\.x,.*/\1/p' \
+        SECURITY.md | head -1)
+    if [ -n "$series" ]; then
+        cur=$(current)
+        cur_major=${cur%%.*}
+        cur_rest=${cur#*.}
+        cur_series=$cur_major.${cur_rest%%.*}
+        printf 'SECURITY.md:supported-line %s\n' "$series.${cur#"$cur_series".}"
+    else
+        printf 'SECURITY.md:supported-line <missing>\n'
+    fi
 }
 
 check() {
@@ -185,6 +207,13 @@ bump() {
             "s|^\($dep = { path = \"[^\"]*\", version = \)\"$old\"|\1\"$new\"|"
     done
     rewrite README.md "s/^vitrum is at version $old\\./vitrum is at version $new./"
+    # A patch release leaves the policy alone; a minor or major changes the
+    # line it names, in all three places it names it.
+    old_series=${old%.*}
+    new_series=${new%.*}
+    if [ "$old_series" != "$new_series" ]; then
+        rewrite SECURITY.md "s/\\b$old_series\\.x\\b/$new_series.x/g"
+    fi
 
     # Cargo owns the lock file. `--workspace --offline` rewrites the version of
     # every workspace member and touches no dependency, which is exactly the
@@ -198,7 +227,7 @@ bump() {
     check
 }
 
-sites() { printf '%s\n' Cargo.toml Cargo.lock README.md; }
+sites() { printf '%s\n' Cargo.toml Cargo.lock README.md SECURITY.md; }
 
 # Mutate exactly one site to a version nothing else carries, using the same
 # locator `observed` reads it with, so a locator that has gone stale mutates
@@ -224,6 +253,12 @@ mutate() {
             mv Cargo.lock.versions.tmp Cargo.lock ;;
         'README.md:status-line')
             rewrite README.md "s/^vitrum is at version [^ ]*\\./vitrum is at version $fake./" ;;
+        'SECURITY.md:supported-line')
+            # The series, not the version: the site reports a series widened to
+            # a full version, so a fake version here would be read back as a
+            # nonsense series. 9.9 is a line nothing is released from.
+            rewrite SECURITY.md \
+                "s/\\([0-9][0-9]*\\.[0-9][0-9]*\\)\\.x/9.9.x/g" ;;
         *) die "no mutation for site $site" ;;
     esac
 }

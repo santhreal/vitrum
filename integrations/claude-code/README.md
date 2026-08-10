@@ -70,6 +70,19 @@ This is why the hook is Linux-only: it reads `/proc` for the process tree and
 for the file descriptors. The `vitrum hint` command it calls is portable, and a
 harness that already owns its stdout does not need any of this machinery.
 
+## The working directory
+
+The hook reports the directory Claude Code is working in on the same write,
+as OSC 7. vitrum moves the session there and resolves the branch there, so
+the row follows an agent that was launched in one place and sent to work in
+another.
+
+The hook event names the directory. When it does not, the hook reports its
+own, which is the same directory Claude Code spawned it in.
+
+No hostname is sent. `docs/states.md` documents the sequence for a harness
+that wants to report a move without this hook.
+
 ## If nothing appears
 
 - `vitrum` has to be on the hook's path, which is the path Claude Code was

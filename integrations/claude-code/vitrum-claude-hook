@@ -9,7 +9,8 @@ the declaring half for Claude Code.
 usage: vitrum-claude-hook <approval|input|working|ready>
 
 The hook event's JSON arrives on stdin, and its `message` becomes the row's
-label when there is one.
+label when there is one. Its `cwd` is reported to vitrum as well, so a row
+follows an agent that has moved.
 
 Delivery is the awkward part. A hook's stdout belongs to Claude Code, and
 Claude runs hooks with no controlling terminal at all, so /dev/tty is
@@ -21,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 
 STATES = ("approval", "input", "working", "ready")
 LOG = os.environ.get("VITRUM_HOOK_LOG")
@@ -64,6 +66,21 @@ def session_pty(start: int, hops: int = 12) -> str | None:
     return None
 
 
+def pwd_report(cwd: str) -> str:
+    """An OSC 7 sequence naming `cwd`, which is how a row learns it moved.
+
+    Claude Code is launched in one directory and works in whichever one it
+    was pointed at, so the directory a session started in stops being the
+    directory it is in. Shells report the move from their prompt and an agent
+    has no prompt, so it reports it here.
+
+    The authority is left empty rather than filled with this machine's
+    hostname. vitrum ignores it, and a hostname on the wire is a fact about
+    the operator that nothing asked for.
+    """
+    return "\033]7;file://" + urllib.parse.quote(cwd) + "\033\\"
+
+
 def main() -> int:
     if len(sys.argv) != 2 or sys.argv[1] not in STATES:
         print(__doc__, file=sys.stderr)
@@ -72,12 +89,25 @@ def main() -> int:
 
     raw = sys.stdin.read()
     label = None
+    cwd = None
     try:
-        text = json.loads(raw).get("message")
+        event = json.loads(raw)
+        text = event.get("message")
         if isinstance(text, str) and text.strip():
             label = text.strip()
+        where = event.get("cwd")
+        if isinstance(where, str) and where.strip():
+            cwd = where.strip()
     except Exception:
         pass
+    # The event carries the directory Claude Code is working in. Falling back
+    # to this process's own is right rather than merely convenient: hooks are
+    # spawned in that same directory.
+    if cwd is None:
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = None
 
     args = ["vitrum", "hint", state] + ([label] if label else [])
     try:
@@ -93,13 +123,16 @@ def main() -> int:
     if pty is None:
         note(f"{state}: no pty among my ancestors")
         return 0
+    payload = done.stdout
+    if cwd:
+        payload += pwd_report(cwd)
     try:
         with open(pty, "w") as out:
-            out.write(done.stdout)
+            out.write(payload)
     except OSError as exc:
         note(f"{state}: write to {pty} failed: {exc}")
         return 0
-    note(f"{state}: {len(done.stdout)} bytes to {pty}")
+    note(f"{state}: {len(payload)} bytes to {pty}, cwd {cwd}")
     return 0
 
 

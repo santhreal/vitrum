@@ -172,6 +172,58 @@ fn workflows() -> Vec<(String, String)> {
     out
 }
 
+/// Every workflow says what its token may do, and only a release may write.
+///
+/// WHY: a workflow with no `permissions:` block inherits the repository
+/// default, which is a token with write access to the repository handed to
+/// every action, every crate build script and every dependency the job
+/// downloads. Five of the seven workflows here only read, and three of those
+/// run on pull requests from forks.
+///
+/// The decision is recorded per workflow rather than as a rule about which
+/// ones "look like" a release, so adding a workflow turns this red until
+/// somebody says what its token is for. What it cannot check is a job-level
+/// `permissions:` that widens the top-level one; nothing here writes one, and
+/// a job that did would be a second place the answer lives.
+#[test]
+fn every_workflow_declares_the_token_it_needs() {
+    // The two that publish. `cut.yml` pushes the release commit and tag and
+    // dispatches the publish; `release.yml` uploads the assets.
+    let may_write: [(&str, &[&str]); 2] = [
+        ("cut.yml", &["contents: write", "actions: write"]),
+        ("release.yml", &["contents: write"]),
+    ];
+
+    for (name, text) in workflows() {
+        let block: Vec<String> = text
+            .lines()
+            .skip_while(|line| !line.starts_with("permissions:"))
+            .skip(1)
+            .take_while(|line| line.starts_with(' ') || line.trim().is_empty())
+            .map(|line| line.split('#').next().unwrap_or("").trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        assert!(
+            !block.is_empty(),
+            "{name} declares no permissions, so its token inherits the \
+             repository default and every action it runs gets write access to \
+             this repository"
+        );
+
+        let expected = may_write
+            .iter()
+            .find(|(who, _)| *who == name)
+            .map_or(vec!["contents: read".to_string()], |(_, scopes)| {
+                scopes.iter().map(|s| (*s).to_string()).collect()
+            });
+        assert_eq!(
+            block, expected,
+            "{name} asks for a different token than the one recorded for it"
+        );
+    }
+}
+
 /// Every Zig pin agrees with every other one, and with the contributor guide.
 ///
 /// The version is load-bearing rather than cosmetic: it is the one Ghostty

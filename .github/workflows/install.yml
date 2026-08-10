@@ -38,6 +38,12 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# The token this run carries. Nothing here writes to the repository: it builds,
+# tests and reads. A default-write token in a job that only needs to read is a
+# credential handed to every dependency the build downloads.
+permissions:
+  contents: read
+
 concurrency:
   group: install-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
   cancel-in-progress: true

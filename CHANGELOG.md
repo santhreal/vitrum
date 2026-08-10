@@ -17,6 +17,17 @@ Before 1.0, a minor bump may break compatibility.
   prompt, and `docs/states.md` documents the sequence for an agent that wants
   to report a move itself. Off in Settings under Sidebar; the session still
   moves and the branch still follows it.
+- **The Claude Code hook reports where the agent is working.** It writes OSC 7
+  on the same pass it writes the status hint, so a session launched in one
+  directory and sent to work in another moves to where the work is and picks
+  up that directory's branch. No hostname is sent.
+
+### Changed
+
+- **The README is a landing page.** What vitrum is, what it looks like, the
+  one install command per platform, and links out. The five-state table, the
+  key bindings, the installer's steps, the compositor rules and the measured
+  footprint moved to the document that owns each of them; nothing was lost.
 
 ## v0.2.1 - 2026-08-10
 

@@ -5,6 +5,16 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+### Fixed
+
+- **The terminal engine is built optimized in every profile.** The vendored
+  engine took its optimize mode from cargo's profile, so a debug build of the
+  workspace linked a debug build of the engine: that one reads uninitialised
+  stack memory on a scroll, and the debug test binary faulted with an access
+  violation on Windows. Release builds, which already asked for an optimized
+  engine, were never affected. The debug suite for the replay crate also drops
+  from 220 s to 1.2 s.
+
 ## v0.3.0 - 2026-08-10
 
 ### Added

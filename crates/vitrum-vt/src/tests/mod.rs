@@ -9,8 +9,10 @@
 //! - [`vt_pwd`]: decoding an OSC 7 report into a path.
 //! - [`vt_geometry`]: resize, scrollback, and the cursor.
 //! - [`vt_linkage`]: the build's linkage record.
+//! - [`vt_build`]: how the vendored engine is compiled.
 
 mod support;
+mod vt_build;
 mod vt_damage;
 mod vt_events;
 mod vt_geometry;

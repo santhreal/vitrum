@@ -1,0 +1,18 @@
+# The vendored terminal engine is always built optimized, whatever cargo
+# profile the workspace is built with.
+#
+# libghostty-vt-sys picks the zig optimize mode from cargo's DEBUG flag, so a
+# dev build gets a Debug-mode engine. That build reads uninitialised stack
+# memory: valgrind reports "Conditional jump or move depends on uninitialised
+# value(s)" inside the engine on a plain scroll, and the same dev-profile test
+# binary faults with STATUS_ACCESS_VIOLATION on windows-latest. The release
+# profile, which already asked for ReleaseFast, has never shown either.
+#
+# Nothing here steps into the engine with a debugger, and the Debug build is
+# also about four times slower on the replay suite, so the debug variant buys
+# nothing and costs a crash.
+#
+# `[env]` does not override a value already in the environment, so
+# `LIBGHOSTTY_VT_SYS_OPTIMIZE=Debug cargo test` still gets a debug engine.
+[env]
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"

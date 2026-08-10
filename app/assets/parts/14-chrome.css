@@ -224,8 +224,8 @@
 }
 
 /* Reads --rg-dot-size rather than declaring 8px, so the socket's mark stays
- * the same size as every other status mark in the window: the tab dot, the
- * session dot and the unread dot are all that token. */
+ * the same size as every other status mark in the window: the tab dot and the
+ * session dot are both that token. */
 .rg-conn__dot {
   width: var(--rg-dot-size);
   height: var(--rg-dot-size);

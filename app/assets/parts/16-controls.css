@@ -259,31 +259,32 @@
  * 24px from the window edge and this file must not move it. What is added
  * here is the material, the anchor for the keycap, and a floor on the width.
  *
- * The floor is 7.5rem and it is measured, not chosen. At the 224px sidebar
- * minimum the toolbar has 200px of content between its two 12px insets, of
- * which the `+` takes 32 and the two gaps take 8. What is left for the field
- * and the waiting chip together is 160. The field needs 120 to show the word
- * "Filter" without slicing it: 2 border, 14 padding, 16 icon, 8 gap and the
- * 48px keycap reserve leave 32px of text, and "Filter" is 34. So the field
- * floor is 120 and the chip lives on what is left. */
+ * The field is the ONLY item in the toolbar that gives ground; the chip below
+ * is frozen at `flex-shrink: 0`. Shrink factors were tried first and they do
+ * not hold here. The engine hands the low-factor item part of the deficit
+ * anyway: at 20 against the chip's 1 the chip still came out 77px against the
+ * 86 its own content wants, and 77 is a sliced word. A factor cannot express
+ * "last resort", so the chip is taken out of the calculation entirely and the
+ * floor below is what keeps the row from overflowing instead. */
 .rg-sidebar__search {
   position: relative;
   flex: 1 1 auto;
-  /* 116px, and it is the toolbar's arithmetic rather than a preference. At
-   * the 224px sidebar minimum the band has 192px between its 16px insets; the
-   * `+` takes 32, the chip's floor is 36 and the two gaps are 8, so 116 is
-   * exactly what is left. Those 116 give the input 68 after border, padding,
-   * icon and gap, and 68 less the 36 keycap reserve is 32 against the 29 that
-   * "Filter" inks in the running binary.
+  /* 102px, and it is the toolbar's arithmetic rather than a preference. At
+   * the 224px sidebar minimum the band has 192px between its 16px insets, the
+   * single gap takes 4, and the chip takes the 86 it cannot give up. 102 is
+   * what is left, exactly, and one pixel more overflows the panel edge.
    *
-   * It was 120 first, and the row overflowed its right padding by 8px in the
-   * binary: the `+` sat seven pixels from the panel edge against sixteen on
-   * the left, which is the ragged-edge defect this batch exists to remove.
+   * 102 leaves the placeholder 26px of ink against the 29 that "Filter"
+   * measures, so at the sidebar minimum, and only there, the word loses its
+   * last three pixels while the field is empty and unfocused. Clicking it
+   * returns 36 of them at once, because the keycap is absolutely positioned
+   * and its reserve is a `padding-right` that drops on focus. That is the
+   * trade: three pixels off a placeholder at one extreme width, against a
+   * count chip that reads "5 wa..." at every width.
    *
-   * The floor is not the ordinary case. The sidebar resolves near 422 now
-   * that the `vw` bug is fixed, so this is what happens when someone drags
-   * the edge all the way in; there the input has 128px of text room. */
-  min-width: 7.25rem;
+   * The floor is not the ordinary case. The sidebar resolves near 422, where
+   * the field measures 238 and nothing is close to a limit. */
+  min-width: 6.375rem;
 
   /* 4px, not SpacingSystem's 8. Their gap is the right default for a field
    * with room; this one has 120px at the sidebar floor and the placeholder
@@ -530,51 +531,34 @@
 /* -------------------------------------------------------------------- */
 
 /* The only pointer affordance for Ctrl+Shift+Down, and it was a 24px target.
- * It comes up to the control height and takes a pill radius, so against a
- * 32px field and a 32px rounded-square `+` it reads as a third kind of thing
- * rather than as a second primary button.
+ * It comes up to the control height and takes a pill radius, so against the
+ * 32px filter field beside it it reads as a second kind of thing rather than
+ * as a second field.
  *
- * It is the one control in the toolbar allowed to shrink, and it shrinks
- * FIRST. `flex-shrink: 20` against the field's 1 is what enforces that: with
- * equal shrink factors the deficit is shared in proportion to each item's
- * base size, so the field, being the wider of the two, would have given up
- * the most, which is exactly backwards.
+ * It never gives ground. `flex-shrink: 0` is the whole of the fix for a chip
+ * that used to read "5 wa..." at the resting width, and shrink factors were
+ * tried first and did not do it: at 1 against the field's 20 the engine still
+ * handed the chip 9px of the deficit and it came out 77 against the 86 its
+ * content wants, which is still a sliced word. A factor cannot say "last
+ * resort", so the chip is out of the calculation and the field's 102px floor
+ * is what stops the row overflowing at the 224px sidebar minimum.
  *
- * What it degrades to at the 224px floor is a bare orange number, because the
- * word is clipped away before the number is and the number is the part that
- * carries the meaning. The tooltip has the sentence.
+ * Frozen means the word is always whole and never a fragment, at every width
+ * the sidebar can take. There is no degraded rendering left to describe.
  *
  * Hover is a full-strength hairline in the hue the fill is already tinted
  * with, not a different hue. The fill is `--rg-pill-approval-bg`, which is
  * orange, and the hover it had was `--rg-hue-approval-soft`, which is yellow,
  * so the chip changed colour when you pointed at it. */
 .rg-attn-count {
-  flex: 0 20 auto;
-  /* 36px, and the number comes from the toolbar's arithmetic rather than from
-   * taste: 192 of band, less 32 for the `+`, less 8 of gaps, less the 116 the
-   * field needs to print "Filter" whole. 36 is what is left, exactly.
+  flex: 0 0 auto;
+  /* 36px. Nothing asks the chip for less than its content now, so this is a
+   * floor on a one-digit count rather than a shrink limit: it keeps a lone
+   * "1" the same width as the two-digit chip beside it in a rollup.
    *
-   * `overflow: hidden` is what makes a floor this small safe. A flex item
-   * whose overflow is not `visible` has an automatic minimum of zero, so the
-   * chip is free to reach its floor instead of being propped open by the
-   * width of the word "waiting"; `min-width: 0` on the word alone does NOT do
-   * this, because a min-content contribution is clamped by min-width rather
-   * than replaced by it, and the chip measured 67px with the word still
-   * holding it open. The clip also stops the two characters that would
-   * otherwise fit from spilling past the pill's curve: "3 w" reads as a
-   * rendering fault where a bare "3" reads as a badge.
-   *
-   * The word is all-or-nothing rather than a fragment because `__n` below
-   * reserves a fixed 18px slot: number plus gap is 22 against 18 of content,
-   * so at the floor the word begins outside the clip and renders nothing.
-   * Without that slot a one-digit count left 12px over and the chip drew
-   * "1 w", which is exactly the sliced-word reading this avoids.
-   *
-   * The one thing that does clip here is a three-digit count at the 224px
-   * floor, by about a pixel of the last digit. That is the deliberate side of
-   * the trade: the alternative was a 40px floor, which clipped the "r" off
-   * "Filter" on every single frame at that width instead of on the frames
-   * where a hundred sessions are waiting at a 224px sidebar.
+   * `overflow: hidden` stays because `__n` grows past its slot on a
+   * three-digit count and the clip keeps the extra inside the pill's curve
+   * rather than over it.
    *
    * `max-width: none` drops a 4rem cap that ellipsised "3 waiting" at 4K,
    * where there are two thousand spare pixels and nothing to protect. */
@@ -597,8 +581,7 @@
 
 /* A fixed slot, three digits wide, for the same reason `.rg-wsw__count` has
  * one: a strip of counts must not jog sideways the moment one of them reaches
- * ten. Here it does a second job, described above, of making the word beside
- * it either fully present or fully gone. */
+ * ten. */
 .rg-attn-count__n {
   flex: 0 0 auto;
   min-width: 1.125rem;
@@ -732,7 +715,7 @@
  * Selected is a held fill and full foreground, which is exactly how a
  * selected row in the sidebar says the same thing. The accent is rationed to
  * three jobs in this product: the primary button, the real focus ring, and
- * the unread dot. */
+ * the current-item rail. */
 .rg-wsbar__item--active {
   background-color: var(--rg-bg-active);
   box-shadow: none;

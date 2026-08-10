@@ -113,6 +113,21 @@
    * to name the height somewhere. */
   --rg-set-control-h: 1.875rem;
 
+  /* One measure for every line of supporting prose in a panel.
+   *
+   * A row is its own two-column grid and column 2 is sized by that row's
+   * control, so column 1 is a different width on every row. Measured in the
+   * Appearance panel, four descriptions all started at the same x and wrapped
+   * at four different ones, 115px apart, which reads as four ragged right
+   * edges under one straight column of controls. Capping the prose instead of
+   * the column fixes it without making a select and a switch pretend to be
+   * the same width.
+   *
+   * 26rem is 416px at the 12px step, near 70 characters, and it is under the
+   * narrowest column the panel currently produces, so no row's prose gets
+   * wider than it is now. */
+  --rg-set-measure: 26rem;
+
   /* -- The switch ------------------------------------------------------
    * shadcn's Switch verbatim: track w-9 h-5, thumb size-4, 2px inset,
    * translate-x-4 when on. The travel is derived, not measured:
@@ -554,16 +569,18 @@
 
 .rg-sheet--settings .rg-field__desc {
   grid-column: 1;
+  max-width: var(--rg-set-measure);
   color: var(--rg-fg-subtle);
   font-size: var(--rg-text-12);
   line-height: var(--rg-lh-snug);
 }
 
-/* Same step as __desc. app.css sets 10px, which is a caption under a text
- * field and unreadable as the running explanation under every row of a page
- * the operator is reading. Scoped. */
+/* Same step and same measure as __desc. app.css sets 10px, which is a caption
+ * under a text field and unreadable as the running explanation under every
+ * row of a page the operator is reading. Scoped. */
 .rg-sheet--settings .rg-field__hint {
   grid-column: 1;
+  max-width: var(--rg-set-measure);
   font-size: var(--rg-text-12);
   line-height: var(--rg-lh-snug);
 }

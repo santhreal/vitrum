@@ -37,8 +37,7 @@
  *                       .rg-badge gap, .rg-keys__group gap
  *   space-1-5      6    toolbar gap, search gap, search padding-right,
  *                       project header gap and padding, card line gaps,
- *                       unread margin, empty-state gaps, .rg-conn gap,
- *                       .rg-wsw gap
+ *                       empty-state gaps, .rg-conn gap, .rg-wsw gap
  *   space-2-5     10    slim row gap, settings tab padding, settings field
  *                       padding, settings button padding
  *   radius-sm      6    every small control and tile in the product
@@ -51,7 +50,6 @@
  *   card-h        58    two-line card
  *   glyph-w       18    monogram tile and the filter's magnifier box
  *   icon-sm       14    status icon box
- *   unread-size    6    the unread dot
  *   dot-size       7    the tab and connection dots
  *   rail-w         3    the attention rail
  *   row-gap        2    between two session rows
@@ -335,7 +333,6 @@
   --rg-chevron-w: var(--rg-space-3);
   --rg-close-w: 1.5rem; /* 24, was 20, and under the pointer-target floor */
   --rg-slot-min: 2rem; /* 32 */
-  --rg-unread-size: var(--rg-space-2); /* 8, was 6 */
   --rg-dot-size: var(--rg-space-2); /* 8, was 7 */
   --rg-rail-w: var(--rg-space-1); /* 4, was 3 */
   --rg-resizer-w: var(--rg-space-2); /* 8, was 6 */
@@ -777,12 +774,6 @@
   width: var(--rg-close-w);
   height: var(--rg-close-w);
   border-radius: var(--rg-radius-sm);
-}
-
-.rg-session__unread {
-  width: var(--rg-unread-size);
-  height: var(--rg-unread-size);
-  margin-left: var(--rg-space-2);
 }
 
 .rg-pill {

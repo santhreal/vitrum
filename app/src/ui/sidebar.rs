@@ -13,21 +13,22 @@
 //! makes the list dense, not the sidebar second-guessing which of their live
 //! sessions still matters.
 //!
-//! A card is three fixed-height lines — project, title, metadata — and a slim
-//! row is one. Both end in `__slot`, a single grid cell that holds the status
-//! label (card) or the timestamp (slim) stacked with the close button, which
-//! is why nothing on the right of a row can collide at any width.
+//! A card is two fixed-height lines, title and metadata, and a slim row is
+//! one. Both end in `__slot`, a single grid cell that holds the status label
+//! (card) or the timestamp (slim) stacked with the close button, which is why
+//! nothing on the right of a row can collide at any width.
 //!
 //! # Five contracts worth stating because breaking them is silent
 //!
-//! - **Every title starts at the same x.** On a card the title owns its own
-//!   line and is that line's first child; on a slim row the only thing before
-//!   it is the fixed-width project mark. Nothing status-shaped may ever
-//!   precede it. The status word varies from five characters to eight, so a
-//!   status in front of the title gives twenty rows twenty different title
-//!   positions, and that is what makes a list read as a table.
-//! - **A row emits an attention rail or the unread dot, never both.** At the
-//!   14rem width floor there is not room for two markers plus a slot.
+//! - **Every title starts at the same x.** The only thing before it, on
+//!   either shape, is a fixed-width agent mark. Nothing status-shaped may
+//!   ever precede it. The status word varies from five characters to eight,
+//!   so a status in front of the title gives twenty rows twenty different
+//!   title positions, and that is what makes a list read as a table.
+//! - **Unread is typographic, never a marker.** Line one already ends in a
+//!   status pill carrying its own leading dot, so a second dot beside it was
+//!   a dot beside a dot in two hues. The `--unread` modifier brightens the
+//!   title and lifts it to semibold, which both row shapes get.
 //! - **Recede is the whole design.** A row that wants nothing from the
 //!   operator gives up its weight and, if it is still in flight, its opacity;
 //!   hover puts both back. Without it every row is equally bright and the
@@ -1252,14 +1253,21 @@ fn row_class(s: RowState) -> String {
     class
 }
 
-/// Should this row draw the unread dot?
+/// The completion badge a row actually draws.
 ///
-/// The attention rail and the unread dot share one slot on purpose. At the
-/// 14rem width floor the row already carries a status label and a close
-/// button, and a second right-hand marker takes the title box below
-/// legibility.
-fn show_unread_dot(unread: bool, attention: Option<&str>) -> bool {
-    unread && attention.is_none()
+/// A failed row does not also announce a finish. The pill reads "Failed" in
+/// red and the completion badge reads "Done" in green, and the two sat beside
+/// each other on one line saying opposite things about the same turn.
+/// [`inbox::completion_badge`] answers "finished while you were not looking",
+/// which is as true of a crash as of a success, so the suppression belongs
+/// here at the row and not inside that function. The unseen-versus-seen
+/// distinction still reaches the row through `finished_unseen` in
+/// [`recedes`], which holds an unseen failure at full strength.
+fn completion_shown(status: SidebarStatus, badge: Option<inbox::Badge>) -> Option<inbox::Badge> {
+    match status {
+        SidebarStatus::Failed => None,
+        _ => badge,
+    }
 }
 
 /// Which mouse gesture a click on a row was.
@@ -1388,7 +1396,7 @@ fn SessionRow(props: SessionRowProps) -> Element {
     // One status resolution per row per paint. `Pill::of` already ran it, and
     // `SessionView::status()` would run it a second time for the same answer.
     let pill = Pill::of(row);
-    let completion = inbox::completion_badge(row);
+    let completion = completion_shown(pill.status, inbox::completion_badge(row));
     let woke = row.disposition(model_clock, policy) == Disposition::Woke;
     let attention = attention_modifier(&info.attention);
     let card = draws_card(props.section, props.fields.always_slim);
@@ -1419,7 +1427,6 @@ fn SessionRow(props: SessionRowProps) -> Element {
         finished_unseen: row.has_unseen_completion(),
         attention,
     });
-    let show_unread = show_unread_dot(info.unread, attention);
     let age = age(props.clock, info.last_activity_ms);
     // Always emitted, empty when the server has not resolved a branch or the
     // operator switched branches off. It is the flexible box on line one, so
@@ -1505,9 +1512,6 @@ fn SessionRow(props: SessionRowProps) -> Element {
                 div { class: "rg-session__line rg-session__line--title",
                     AgentGlyph { mark: agent_mark, hue: agent_hue }
                     span { class: "rg-session__title", "{title}" }
-                    if show_unread {
-                        span { class: "rg-session__unread" }
-                    }
                     span { class: "rg-session__slot",
                         span {
                             class: "{pill.class}",

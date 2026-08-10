@@ -76,44 +76,68 @@ fn row_markup_tokens() -> Vec<&'static str> {
     out
 }
 
-/// A row must never carry both an attention rail and the unread dot. They
-/// share one slot in a sidebar whose worst-case title box is 102px;
-/// emitting both pushes the timestamp out of the row and over the dot.
+/// Unread is a typographic state, not a second marker.
+///
+/// Line one of a card ends in a status pill whose leading dot sat 8px from
+/// the unread dot, in a different hue, so every unread row without an
+/// attention rail drew a dot beside a dot and neither read as a category.
+/// The `rg-session--unread` modifier brightens the title and lifts it to
+/// semibold, and slim rows never emitted the marker at all, so removing it
+/// also makes the two row shapes agree.
 #[test]
-fn an_attention_row_drops_the_unread_dot() {
-    for attention in [
-        Attention {
-            bell: true,
-            ..Attention::default()
-        },
-        Attention {
-            failed: true,
-            ..Attention::default()
-        },
-        Attention {
-            waiting: Some(true),
-            ..Attention::default()
-        },
-        Attention {
-            idle_ms: IDLE_ATTENTION_MS,
-            ..Attention::default()
-        },
-    ] {
-        let rail = attention_modifier(&attention);
-        assert!(rail.is_some(), "{attention:?} must light a rail");
-        assert!(
-            !show_unread_dot(true, rail),
-            "{attention:?} lit a rail and still drew the unread dot"
-        );
-    }
+fn unread_is_a_class_and_never_a_marker_element() {
+    let class = row_class(RowState {
+        unread: true,
+        ..plain()
+    });
+    assert!(
+        class.contains("rg-session--unread"),
+        "unread must still reach the stylesheet: {class}"
+    );
+    assert!(
+        !row_class(plain()).contains("rg-session--unread"),
+        "a read row must not carry the unread modifier"
+    );
+    assert!(
+        !row_markup_tokens().contains(&"rg-session__unread"),
+        "the row markup still emits an unread marker element"
+    );
 }
 
-/// An unread row with no attention must still draw its dot, or the unread
-/// signal disappears for the common case.
+/// A failed row says one thing about its turn.
+///
+/// The status pill and the completion badge sit on the same line of a card.
+/// A crashed session that nobody had looked at satisfied both, so the row
+/// drew a red "Failed" and a green "Done" together and neither was readable
+/// as the answer. Every other status keeps the badge, because "finished while
+/// you were not looking" is still news on those.
+///
+/// The loop is driven by `ALL_STATUSES`, so a sixth status arrives here as a
+/// decision rather than as silence.
 #[test]
-fn unread_without_attention_keeps_its_dot() {
-    assert!(show_unread_dot(true, None));
-    assert!(!show_unread_dot(false, None));
+fn only_a_failed_row_suppresses_the_completion_badge() {
+    let badge = || {
+        Some(crate::inbox::Badge {
+            class: "rg-badge rg-badge--done".to_string(),
+            icon: Some("\u{2605}"),
+            text: "Done".to_string(),
+            title: "Finished while you were not looking".to_string(),
+        })
+    };
+    for status in vitrum_model::ALL_STATUSES {
+        let shown = completion_shown(status, badge());
+        if status == SidebarStatus::Failed {
+            assert!(shown.is_none(), "a failed row still draws a Done badge");
+        } else {
+            assert_eq!(shown, badge(), "{status:?} lost its completion badge");
+        }
+    }
+
+    // No badge in means no badge out, whatever the status. The gate must not
+    // manufacture one for a row that has not finished unseen.
+    for status in vitrum_model::ALL_STATUSES {
+        assert!(completion_shown(status, None).is_none());
+    }
 }
 
 /// A row state with nothing lit, for tests to vary one field of.
@@ -560,7 +584,6 @@ fn every_emitted_class_is_styled_somewhere() {
         "rg-session__title",
         "rg-session__branch",
         "rg-session__time",
-        "rg-session__unread",
         "rg-session__close",
         "rg-empty__title",
         "rg-empty__hint",
@@ -1151,20 +1174,16 @@ fn the_card_is_exactly_two_lines_and_neither_is_conditional() {
         "the card is no longer exactly two unconditional line boxes"
     );
 
-    // Line one, in order: the title first, then the unread dot, then the
-    // slot. Nothing precedes the title, and the slot is last because it is
-    // the pinned right-hand column.
+    // Line one, in order: the title first, then the slot. Nothing precedes
+    // the title, and the slot is last because it is the pinned right-hand
+    // column.
     let title_line = tokens
         .iter()
         .position(|t| *t == "rg-session__line--title")
         .expect("no title line");
     assert_eq!(
-        &tokens[title_line + 1..title_line + 4],
-        &[
-            "rg-session__title",
-            "rg-session__unread",
-            "rg-session__slot",
-        ]
+        &tokens[title_line + 1..title_line + 3],
+        &["rg-session__title", "rg-session__slot"]
     );
 
     // Line two always carries the branch, which is emitted even when it

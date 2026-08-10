@@ -248,7 +248,6 @@
    * it, so they share one column and cannot collide however narrow the
    * panel gets. */
   --rg-slot-min: 2rem;
-  --rg-unread-size: 0.375rem;
   --rg-dot-size: 0.4375rem;
 
   --rg-resizer-w: 0.375rem;
@@ -466,7 +465,6 @@
   --rg-radius: var(--rg-radius-md);
   --rg-selbar-w: var(--rg-rail-w);
 
-  --rg-unread: var(--rg-accent);
   --rg-status-starting: var(--rg-hue-approval);
   --rg-status-running: var(--rg-hue-done);
   --rg-status-exited: var(--rg-hue-ready);
@@ -777,12 +775,17 @@
   font-weight: var(--rg-weight-medium);
 }
 
+/* WRAPS. The banner is the only place a connection failure is stated, and the
+ * statement is the useful part: it names the file to read, or says that
+ * restarting vitrum-server ends every session it holds. The longest real
+ * reason is about 240 characters, which a single 12px line in a 280px sidebar
+ * cuts to a fragment. The banner is a column child at flex: 0 0 auto, so it
+ * takes the height the text needs. break-word is there for the one token that
+ * is longer than the column: a path. */
 .rg-sidebar__status-text {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
 }
 
 .rg-sidebar__status--ok {
@@ -1922,15 +1925,6 @@
   font-weight: var(--rg-weight-semibold);
   letter-spacing: -0.005em;
   transition: color var(--rg-t-fast) linear;
-}
-
-.rg-session__unread {
-  flex: 0 0 auto;
-  width: var(--rg-unread-size);
-  height: var(--rg-unread-size);
-  margin-left: var(--rg-space-1-5);
-  border-radius: var(--rg-radius-full);
-  background-color: var(--rg-unread);
 }
 
 /* Line two's leading element and its own flex spacer. It is emitted even when

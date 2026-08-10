@@ -89,17 +89,21 @@ LOG="${TMPDIR:-/tmp}/vitrum-shot-$DNUM"
 mkdir -p "$LOG"
 
 # A server left behind by an interrupted run answers on this display number, and
-# you then silently measure ITS geometry rather than the one you asked for. Do
-# not trust the EXIT trap of a script that may have been killed.
-pkill -f "Xvfb :$DNUM " 2>/dev/null || true
-sleep 0.3
+# you then silently measure ITS geometry rather than the one you asked for. The
+# answer is to refuse the number, not to clear it: `pkill -f "Xvfb :$DNUM "`
+# also matches a display somebody else created, and killing that takes their
+# session down. A display belongs to whoever started it.
+if xdpyinfo -display ":$DNUM" >/dev/null 2>&1; then
+  echo "display :$DNUM is already in use; pick a number nothing answers on" >&2
+  exit 2
+fi
 
 Xvfb ":$DNUM" -screen 0 "${GEOM}x24" -dpi 96 >"$LOG/xvfb.log" 2>&1 &
 XPID=$!
 cleanup() {
   [ -n "$APID" ] && kill "$APID" 2>/dev/null
+  # Only the server this run started, by pid. See the refusal above.
   kill "$XPID" 2>/dev/null
-  pkill -f "Xvfb :$DNUM " 2>/dev/null
   return 0
 }
 trap cleanup EXIT INT TERM
@@ -132,10 +136,17 @@ while [ "$i" -lt 600 ]; do
   for w in $(DISPLAY=":$DNUM" xdotool search --name '^vitrum$' 2>/dev/null); do
     p=$(DISPLAY=":$DNUM" xdotool getwindowpid "$w" 2>/dev/null || echo 0)
     [ "$p" = "$APID" ] || continue
-    case $(DISPLAY=":$DNUM" xdotool getwindowgeometry "$w") in
-      *10x10*) ;;
-      *) WIN="$w" ;;
-    esac
+    # Exact fields, not a substring of the human form: `*10x10*` also matches
+    # the geometry line of an 810x102 window, and rejecting the real window
+    # reads as "the app opens no window", which is trap 2 again by another
+    # route.
+    geom=$(DISPLAY=":$DNUM" xdotool getwindowgeometry --shell "$w" 2>/dev/null) || continue
+    gw=$(printf '%s\n' "$geom" | sed -n 's/^WIDTH=//p')
+    gh=$(printf '%s\n' "$geom" | sed -n 's/^HEIGHT=//p')
+    if [ "$gw" = "10" ] && [ "$gh" = "10" ]; then
+      continue
+    fi
+    WIN="$w"
   done
   [ -n "$WIN" ] && break
   i=$((i + 1))
@@ -168,9 +179,19 @@ from PIL import Image
 import numpy as np
 a = np.asarray(Image.open(sys.argv[1]).convert("RGB"))
 mean = a.mean()
-print(f"{sys.argv[1]}  {a.shape[1]}x{a.shape[0]}  mean={mean:.1f}")
+# A mean is not evidence that anything was drawn. Two real captures of an
+# unpainted window came back at standard deviations of 0.033 and 0.0017 and
+# passed a mean-only guard: one flat fill lands wherever its colour lands, and
+# 128 is as easy to hit as 255. Counting distinct colours asks the question
+# that was meant all along, which is whether the image has any content in it.
+# A painted vitrum window has thousands; a fill has one, and one with a border
+# or a cursor artefact has a handful.
+colours = len(np.unique(a.reshape(-1, 3), axis=0))
+print(f"{sys.argv[1]}  {a.shape[1]}x{a.shape[0]}  mean={mean:.1f}  colours={colours}")
 if mean > 250:
     sys.exit("blank capture: occluded window or an unpainted UI")
 if mean < 0.5:
     sys.exit("black capture: the window was never painted")
+if colours < 16:
+    sys.exit(f"flat capture: {colours} distinct colours, so nothing was painted")
 PY

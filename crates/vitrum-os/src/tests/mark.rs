@@ -665,6 +665,45 @@ fn a_failed_write_leaves_nothing_behind() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A destination that is a file is `NotADirectory` on every platform.
+///
+/// WHY: the caller decides between "fix the path and run again" (exit 3) and
+/// "the write failed" (exit 1) from the error's kind, and the two platforms
+/// do not agree on what the first `mkdir` under a file reports. Unix gives
+/// `ENOTDIR`; Windows gives `ERROR_DIRECTORY`, which std leaves
+/// uncategorised, so `vitrum icons <a file>` exited 3 on one and 1 on the
+/// other, and the windows leg of the platform matrix was red on exactly that.
+///
+/// This does NOT cover a file part way up the path, where the kind still
+/// comes from the platform; it covers the destination itself, which is the
+/// argument an operator mistypes.
+#[test]
+fn a_destination_that_is_a_file_is_not_a_directory() {
+    let root = std::env::temp_dir().join(format!(
+        "vitrum-iconset-file-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&root);
+    std::fs::write(&root, b"x").expect("stage the file");
+
+    let err = write_icon_set(&root).expect_err("a file is not a directory");
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::NotADirectory,
+        "a destination that is a file was reported as {:?}, so the caller \
+         cannot tell a wrong argument from a broken write: {err}",
+        err.kind()
+    );
+    assert_eq!(
+        std::fs::read(&root).expect("the file is still there"),
+        b"x",
+        "the refusal wrote through the destination"
+    );
+    let _ = std::fs::remove_file(&root);
+}
+
 /// A clean write must produce every file, and each must be readable back.
 #[test]
 fn a_clean_write_produces_the_whole_set() {

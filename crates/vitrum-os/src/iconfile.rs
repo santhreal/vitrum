@@ -478,8 +478,22 @@ pub fn icon_set() -> Vec<(PathBuf, Vec<u8>)> {
 /// launcher picks up whichever sizes landed and caches them, so the next
 /// install has to fight a stale cache rather than an empty directory.
 ///
+/// The destination is judged here rather than left to the first `mkdir`,
+/// because the two platforms do not agree on what that error is. A path that
+/// is a file gives `ENOTDIR` on Unix and `ERROR_DIRECTORY` on Windows, which
+/// arrives as an uncategorised kind, and the caller decides between "fix the
+/// path and run again" and "this failed" from the kind. That disagreement
+/// made `vitrum icons <a file>` exit 3 on Unix and 1 on Windows, which is a
+/// script stopping on one platform and continuing on the other.
+///
 /// Returns the paths written, in the order they were written.
 pub fn write_icon_set(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    if dir.exists() && !dir.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", dir.display()),
+        ));
+    }
     let files = icon_set();
     let mut written: Vec<PathBuf> = Vec::with_capacity(files.len());
     for (rel, bytes) in files {

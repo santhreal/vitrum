@@ -26,7 +26,7 @@ use std::io::Read;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 /// An agent command this machine actually has.
@@ -583,6 +583,11 @@ pub fn seed_presets(roster: &[AgentAvailability]) -> Vec<SavedPreset> {
 /// surface with a path in it, and refusing to start over it would cost the
 /// operator the session they opened vitrum to start.
 pub fn seed_launch_store_once() -> bool {
+    // Forced before the existence check, not after. A store this build cannot
+    // read is moved aside by the salvage, which leaves no file here, and the
+    // seed then refills the profile rather than leaving the operator with an
+    // empty launcher over a file nothing will ever read again.
+    let _ = store_problem();
     let Ok(path) = launch_store_path() else {
         return false;
     };
@@ -601,20 +606,53 @@ pub fn encode_launch_store(store: &LaunchStore) -> String {
     serde_json::to_string_pretty(store).expect("strings and integers always serialise")
 }
 
-/// Parse the store, defaulting anything unreadable.
+/// What reading the launch store produced.
 ///
-/// Never fails, and that is the point. This file holds convenience, not
-/// truth: a corrupt one costs the operator their command history, and
-/// refusing to open the dialog over it would cost them the ability to start a
-/// session at all.
-pub fn parse_launch_store(text: &str) -> LaunchStore {
-    let Ok(store) = serde_json::from_str::<LaunchStore>(text) else {
-        return LaunchStore::default();
+/// The variants exist so the load path can tell the operator which of them
+/// happened. Before it could, every one of them became `LaunchStore::default()`
+/// and nothing was said: a profile whose `launch.json` had been truncated by a
+/// full disk opened with an empty launcher, and the first preset saved after
+/// that wrote the defaults over the file, which is where the presets, the
+/// history and the recents actually went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreLoad {
+    /// No file. A profile that has never saved anything.
+    Missing,
+    /// Read and understood.
+    Loaded(Box<LaunchStore>),
+    /// Present and not JSON this build can read.
+    Corrupt { detail: String },
+    /// Written by a newer build.
+    Unsupported { version: u32 },
+    /// The file is there and the read failed.
+    Unreadable { detail: String },
+}
+
+/// Parse the store, saying what is wrong with it rather than defaulting.
+pub fn parse_launch_store_load(text: &str) -> StoreLoad {
+    let store = match serde_json::from_str::<LaunchStore>(text) {
+        Ok(store) => store,
+        Err(e) => return StoreLoad::Corrupt { detail: e.to_string() },
     };
     if store.version > LAUNCH_STORE_VERSION {
-        return LaunchStore::default();
+        return StoreLoad::Unsupported {
+            version: store.version,
+        };
     }
-    store
+    StoreLoad::Loaded(Box::new(store))
+}
+
+/// Parse the store, defaulting anything unreadable.
+///
+/// The in-memory half of the contract: a corrupt file costs the operator their
+/// command history, and refusing to open the dialog over it would cost them
+/// the ability to start a session at all. What is NOT defaulted silently is
+/// the file, which [`salvage_launch_store`] moves aside and names.
+pub fn parse_launch_store(text: &str) -> LaunchStore {
+    match parse_launch_store_load(text) {
+        StoreLoad::Loaded(store) => *store,
+        _ => LaunchStore::default(),
+    }
 }
 
 /// Where the launch store lives, beside `ui.json`.
@@ -624,7 +662,87 @@ pub fn launch_store_path() -> Result<PathBuf, vitrum_os::PathError> {
         .join(LAUNCH_STORE_FILE))
 }
 
+/// Read the launch store from `path`, saying what was wrong with it.
+pub fn read_launch_store(path: &Path) -> StoreLoad {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse_launch_store_load(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => StoreLoad::Missing,
+        Err(e) => StoreLoad::Unreadable {
+            detail: e.to_string(),
+        },
+    }
+}
+
+/// Suffix given to a launch store this build cannot read.
+pub const QUARANTINE_SUFFIX: &str = ".unreadable";
+
+/// Move a launch store this build cannot read out of the way, once.
+///
+/// Returns the sentence describing what happened, or `None` when the file was
+/// absent or fine. Renaming rather than deleting is the point: the presets and
+/// the history in that file are the operator's, a JSON error is often one
+/// stray byte, and the alternative already shipped once as data loss. The
+/// seeding pass runs after this one, so a profile whose store was quarantined
+/// starts again with the default presets instead of an empty launcher.
+fn salvage_launch_store() -> Option<String> {
+    salvage_launch_store_at(&launch_store_path().ok()?)
+}
+
+/// [`salvage_launch_store`] against a named file.
+///
+/// Separate so the quarantine can be proved on a directory a test owns. The
+/// alternative is a test that moves the profile of whoever is running it.
+pub fn salvage_launch_store_at(path: &Path) -> Option<String> {
+    let problem = match read_launch_store(path) {
+        StoreLoad::Missing | StoreLoad::Loaded(_) => return None,
+        StoreLoad::Corrupt { detail } => format!("is not readable as JSON: {detail}"),
+        StoreLoad::Unsupported { version } => format!(
+            "is version {version}, and this build writes version {LAUNCH_STORE_VERSION}"
+        ),
+        StoreLoad::Unreadable { detail } => {
+            // Not moved. The read failed, so a rename would probably fail too,
+            // and a file that is merely unreadable this once still holds the
+            // operator's presets.
+            return Some(format!(
+                "The saved commands in {} could not be read: {detail}. The launcher is \
+                 starting empty and that file is left alone.",
+                path.display()
+            ));
+        }
+    };
+    let aside = path.with_file_name(format!("{LAUNCH_STORE_FILE}{QUARANTINE_SUFFIX}"));
+    match std::fs::rename(path, &aside) {
+        Ok(()) => Some(format!(
+            "The saved commands in {} {problem}. That file was moved to {}, and the \
+             launcher is starting with the default commands.",
+            path.display(),
+            aside.display()
+        )),
+        Err(e) => Some(format!(
+            "The saved commands in {} {problem}, and it could not be moved aside: {e}. \
+             Delete or repair that file; until then the launcher starts with the \
+             default commands.",
+            path.display()
+        )),
+    }
+}
+
+/// The salvage, run at most once per process.
+static SALVAGE: LazyLock<Option<String>> = LazyLock::new(salvage_launch_store);
+
+/// What was wrong with this profile's launch store at startup, if anything.
+///
+/// Forced by [`seed_launch_store_once`] before the file is read for real, so
+/// the quarantine happens before the seed and the seed refills the profile.
+pub fn store_problem() -> Option<&'static str> {
+    SALVAGE.as_deref()
+}
+
 /// Read the launch store, or defaults.
+///
+/// Defaulting is safe here and only here: [`salvage_launch_store`] has already
+/// run, so a file this build cannot read has been moved aside and named, and
+/// what is left is either readable or absent.
 pub fn load_launch_store() -> LaunchStore {
     let Ok(path) = launch_store_path() else {
         return LaunchStore::default();
@@ -1786,6 +1904,11 @@ mod daemon_tests;
 
 #[cfg(test)]
 mod store_tests;
+
+/// A launch store this build cannot read is moved aside, not defaulted in
+/// silence and overwritten by the next save.
+#[cfg(test)]
+mod a_store_this_build_cannot_read;
 
 /// The recents list, and the icon slug that rides along with a command.
 #[cfg(test)]

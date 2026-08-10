@@ -167,6 +167,21 @@ pub enum ConnState {
 }
 
 impl ConnState {
+    /// A refused connection, recorded and written to the log.
+    ///
+    /// The reason is the only thing that distinguishes "the daemon is not
+    /// installed" from "the daemon wants a token you cannot read", and until
+    /// this existed it was written to exactly one place: a single line of the
+    /// sidebar banner, where a long sentence is cut off at the width of the
+    /// sidebar. Anyone running this over a forwarded display, or reading a
+    /// support log after the fact, had a red banner and no reason. Every site
+    /// that fails a connection goes through here so the log always has it.
+    pub fn failed(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        tracing::warn!("daemon connection failed: {detail}");
+        ConnState::Failed { detail }
+    }
+
     /// Modifier class for the sidebar banner.
     pub fn banner_class(&self) -> &'static str {
         match self {
@@ -647,11 +662,25 @@ impl DaemonState {
                 self.conn = if protocol == PROTOCOL_VERSION {
                     ConnState::Live { server_version }
                 } else {
-                    ConnState::Failed {
-                        detail: format!(
-                            "protocol mismatch: server speaks {protocol}, client speaks {PROTOCOL_VERSION}"
-                        ),
-                    }
+                    // Named as an upgrade, because that is what it is every
+                    // time: the client applied a staged update on its last
+                    // start and the daemon kept running the release it was
+                    // started from. "protocol mismatch: server speaks 2,
+                    // client speaks 3" was the whole of what this said, and it
+                    // named neither the cause nor the one action that fixes
+                    // it, nor what that action costs.
+                    let age = if protocol < PROTOCOL_VERSION {
+                        "predates"
+                    } else {
+                        "is newer than"
+                    };
+                    ConnState::failed(format!(
+                        "vitrum-server {server_version} {age} this client: it speaks \
+                         protocol {protocol} and this client speaks {PROTOCOL_VERSION}. \
+                         Restart vitrum-server so both come from the same release. That \
+                         ends every session it is holding, so do it when your agents are \
+                         idle."
+                    ))
                 };
                 Broadcast::None
             }
@@ -741,9 +770,26 @@ impl DaemonState {
                 bytes: data,
                 more,
             },
+            // An error that arrives before the daemon has welcomed us is a
+            // refusal of the handshake, not an incident in a working session.
+            // It is the connection's state, so it goes where the banner reads
+            // from and not into the dismissible strip: the daemon says why it
+            // will not talk and then closes, and the close carries no reason,
+            // so the strip used to hold the only copy of the sentence and the
+            // banner said "the connection dropped".
+            //
+            // The common case is an upgrade. A daemon left running from an
+            // older release refuses the client's protocol version and names
+            // the restart, which ends every session it is holding.
             ServerMsg::Error {
                 session, message, ..
-            } => Broadcast::Error { session, message },
+            } => {
+                if session.is_none() && matches!(self.conn, ConnState::Connecting) {
+                    self.conn = ConnState::failed(message);
+                    return Broadcast::None;
+                }
+                Broadcast::Error { session, message }
+            }
             // Folded, not fanned out, for the reason on the field. The
             // broadcast is `None` because there is no EXTRA window reaction to
             // run: each window owns its own `UiState` and the write itself is

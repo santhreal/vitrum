@@ -402,7 +402,7 @@ pub(crate) async fn start_daemon_then_connect(
     if outcome.connectable() {
         bridge.connect(url.to_string());
     } else if let Some(detail) = outcome.failure() {
-        st.write().daemon.conn = ConnState::Failed { detail };
+        st.write().daemon.conn = ConnState::failed(detail);
     }
 }
 

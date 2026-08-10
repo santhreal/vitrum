@@ -985,7 +985,7 @@ fn code_only(css: &str) -> String {
 /// Every row element must be able to give way, or the longest realistic
 /// agent name, project and branch together push each other out of the row.
 ///
-/// This is the P0 in GOAL.md: zero overlap, not unlikely overlap. A flex
+/// The requirement is zero overlap, not unlikely overlap. A flex
 /// child with `min-width: 0` and an ellipsis cannot overlap its neighbours
 /// at any width; one without them can and does.
 ///
@@ -1296,8 +1296,8 @@ fn the_open_path_never_walks_path_or_the_filesystem() {
 ///
 /// Reads the shipped `main.rs`, which this module does not own, because a
 /// guard belongs with the contract it defends rather than with the code it
-/// reads. Anchored on tokens, never on quote pairing, per the note in
-/// GOAL.md about how source scans in this codebase go wrong.
+/// reads. Anchored on tokens, never on quote pairing, which is how source
+/// scans in this codebase go wrong.
 #[test]
 fn the_one_click_control_actually_launches() {
     let main = crate::testkit::shell();

@@ -534,9 +534,17 @@ fn gap_error_for_other_session_does_not_repaint() {
 /// A plain error must surface with its session id attached, and a
 /// connection-wide error without one. Losing the id makes an error about
 /// one of twenty agents unattributable.
+///
+/// Both arrive on an established connection, which is what `Live` here says.
+/// An unscoped error before the daemon has welcomed the client is a refusal
+/// of the handshake rather than an incident, and
+/// [`a_refusal_before_the_welcome_becomes_the_connection_state`] owns that.
 #[test]
 fn plain_errors_are_recorded_with_and_without_a_session() {
     let mut st = UiState::default();
+    st.daemon.conn = ConnState::Live {
+        server_version: "0.1.2".to_string(),
+    };
     apply(
         &mut st,
         ServerMsg::error(Some(SessionId(3)), "spawn failed: No such file"),
@@ -553,6 +561,107 @@ fn plain_errors_are_recorded_with_and_without_a_session() {
         st.window.flash.as_ref().map(|f| f.text.as_str()),
         Some("scrollback budget exhausted")
     );
+}
+
+/// A daemon that refuses the handshake is the connection's state, not a
+/// dismissible strip.
+///
+/// WHY: the daemon says why it will not talk and then closes, and the close
+/// carries no reason of its own. The refusal went to the flash and the close
+/// set the banner, so the banner read "the connection dropped" while the one
+/// sentence naming the cause sat in a strip the operator could dismiss. The
+/// common case is an upgrade: a daemon left running from an older release
+/// refuses the client's protocol version and names the restart, which ends
+/// every session it is holding.
+#[test]
+fn a_refusal_before_the_welcome_becomes_the_connection_state() {
+    let mut st = UiState::default();
+    assert!(matches!(st.daemon.conn, ConnState::Connecting));
+    let refusal = "unsupported protocol 3; this daemon speaks 2 and is version 0.1.2. \
+                   Restart vitrum-server to match your client; that ends every session it \
+                   holds, so do it when your agents are idle.";
+    apply(&mut st, ServerMsg::error(None, refusal));
+
+    match &st.daemon.conn {
+        ConnState::Failed { detail } => assert_eq!(detail, refusal),
+        other => panic!("a refused handshake left the connection at {other:?}"),
+    }
+    assert_eq!(
+        st.window.flash, None,
+        "the refusal is in the banner and in the strip, which is the same sentence twice"
+    );
+
+    // A later close must not overwrite the reason with a generic one. That is
+    // `sync.rs`'s guard; what is provable here is that the state it guards is
+    // already `Failed` by the time the close arrives.
+    assert!(matches!(st.daemon.conn, ConnState::Failed { .. }));
+}
+
+/// A session-scoped error is never mistaken for a handshake refusal, even
+/// before the welcome.
+///
+/// A session cannot exist on a connection that was never welcomed, but the
+/// rule is written on `session.is_none()` and a rule is only as good as its
+/// other branch.
+#[test]
+fn a_session_error_is_never_a_handshake_refusal() {
+    let mut st = UiState::default();
+    apply(&mut st, ServerMsg::error(Some(SessionId(4)), "spawn failed"));
+    assert!(
+        matches!(st.daemon.conn, ConnState::Connecting),
+        "a session error took the connection down"
+    );
+    assert_eq!(
+        st.window.flash.as_ref().map(|f| f.text.as_str()),
+        Some("session 4: spawn failed")
+    );
+}
+
+/// A protocol skew names the cause, the fix and what the fix costs.
+///
+/// WHY: this said "protocol mismatch: server speaks 2, client speaks 3" and
+/// nothing else. It named no cause, no action, and did not mention that the
+/// action ends every session the daemon is holding. It happens on the first
+/// start after an update, which is the moment an operator has the most live
+/// agents to lose.
+#[test]
+fn a_protocol_skew_names_the_restart_and_what_it_costs() {
+    for (protocol, expected_age) in [(PROTOCOL_VERSION - 1, "predates"), (
+        PROTOCOL_VERSION + 1,
+        "is newer than",
+    )] {
+        let mut st = UiState::default();
+        apply(
+            &mut st,
+            ServerMsg::Welcome {
+                protocol,
+                server_version: "0.1.2".to_string(),
+            },
+        );
+        let ConnState::Failed { detail } = &st.daemon.conn else {
+            panic!("a client talked to a daemon speaking protocol {protocol}");
+        };
+        assert!(detail.contains(expected_age), "{detail}");
+        assert!(detail.contains("vitrum-server 0.1.2"), "{detail}");
+        assert!(detail.contains("Restart vitrum-server"), "{detail}");
+        assert!(
+            detail.contains("ends every session it is holding"),
+            "the fix is named without its cost: {detail}"
+        );
+        assert!(!detail.contains(".."), "{detail}");
+    }
+
+    // The matching case stays a connection, or every window would refuse the
+    // daemon it was built with.
+    let mut st = UiState::default();
+    apply(
+        &mut st,
+        ServerMsg::Welcome {
+            protocol: PROTOCOL_VERSION,
+            server_version: "9.9.9".to_string(),
+        },
+    );
+    assert!(matches!(st.daemon.conn, ConnState::Live { .. }));
 }
 
 // ---- Tab strip -------------------------------------------------------
@@ -2176,10 +2285,18 @@ fn a_session_error_flashes_only_where_the_session_is_visible() {
     assert_eq!(elsewhere.flash, None);
 }
 
-/// An error with no session is everyone's problem and flashes everywhere.
+/// An error with no session, on an established connection, is everyone's
+/// problem and flashes everywhere.
+///
+/// `Live` is the precondition and not decoration: before the welcome an
+/// unscoped error is the daemon refusing the handshake, and that belongs in
+/// the connection banner rather than in every window's strip.
 #[test]
 fn an_unscoped_error_flashes_in_every_window() {
     let mut daemon = daemon_with(&[1], &[(10, 1, 0)]);
+    daemon.conn = ConnState::Live {
+        server_version: "0.1.2".to_string(),
+    };
     let other = daemon.workspaces.create("Other").unwrap();
     let mut here = window_on(DEFAULT_WORKSPACE);
     let mut elsewhere = window_on(other);

@@ -631,18 +631,24 @@ async fn a_streaming_session_is_never_probed() {
     // Headroom alone is still not enough, because this box also builds other
     // workspaces: measured at load 145 this failed two runs in five, and the
     // panic message had to talk the reader out of believing it. THE WHOLE
-    // EXPERIMENT is therefore repeatable. Its premise is that the ticks were
-    // continuous, and a run where the burst took far longer than the settle
-    // window did not have continuous ticks, so whatever it observed is not
-    // evidence about the re-arm. Such a run is discarded and repeated.
+    // EXPERIMENT is therefore repeatable. Its premise is that the burst
+    // reached the settle timer continuously, and a run that did not is
+    // discarded and repeated.
+    //
+    // The premise is checked against what the timer saw, which is the arrival
+    // of published chunks, and not against how long the child took. Those are
+    // different measurements and the difference is the whole reason this test
+    // was intermittent: a reader thread descheduled for a moment hands the
+    // pump a silence the child never had, the timer expires on it, and the
+    // burst still finishes in its ideal wall time because the bytes were
+    // waiting in the pty the whole time. Judged on wall time, such a run looks
+    // continuous and is blamed on the product. `Collector::max_gap` is the
+    // silence the timer actually observed, so a run whose largest gap reached
+    // the settle window entitled the probe and proves nothing either way.
     //
     // Nothing is ignored. A run whose burst WAS continuous is judged on the
     // spot, and running out of attempts fails with the timings.
     const ATTEMPTS: usize = 6;
-    // Ten ticks is about 100ms of wall time plus a fork and exec each. Past
-    // twice the settle window the ticks were no longer continuous.
-    // 30 ticks of 10ms, ignoring the fork and exec each one also costs.
-    const IDEAL_BURST: std::time::Duration = std::time::Duration::from_millis(300);
 
     let mut last = String::new();
     for attempt in 1..=ATTEMPTS {
@@ -659,6 +665,9 @@ async fn a_streaming_session_is_never_probed() {
         // Once it stops, exactly one probe answers for the whole run.
         c.until(|b| b.len() >= 120).await;
         let total = started.elapsed();
+        // Sampled here, before the deliberate silence that ends the run. Past
+        // this point the largest gap is the settle window by design.
+        let gap = c.max_gap;
         let deadline = tokio::time::Instant::now() + DEADLINE;
         while mgr.probe_count(id).expect("probe count") == 0 {
             assert!(
@@ -692,20 +701,20 @@ async fn a_streaming_session_is_never_probed() {
         last = format!(
             "attempt {attempt}: {during} probe(s) during the first ten ticks \
              ({burst:?}), {after} in total over the whole {total:?} burst, \
-             waiting={waiting:?}, against a {SETTLE_WINDOW:?} settle window"
+             waiting={waiting:?}, largest gap between published chunks {gap:?}, \
+             against a {SETTLE_WINDOW:?} settle window"
         );
 
-        // A probe fired mid-burst, which means SOME gap between two `printf`s
-        // exceeded the settle window. Either the timer stopped re-arming, or
-        // this machine did not schedule the child for that long. The whole
-        // burst is 30 ticks of 10ms plus a fork and exec each; a run that took
-        // anywhere near the ideal was continuous, so a probe during it is the
-        // bug. A run far past it was starved and proves nothing.
+        // The timer is armed by a published chunk and expires on silence, so a
+        // gap that reached the settle window entitled every probe this run
+        // saw, however the gap arose. Such a run is discarded and repeated.
+        // A run with no such gap is evidence, and it is judged here.
         assert!(
-            total > IDEAL_BURST + SETTLE_WINDOW,
-            "output stopped re-arming the settle timer. {last}. The burst ran \
-             close to its ideal {IDEAL_BURST:?}, so the ticks were continuous \
-             and this is the bug this test exists for, not a stalled machine"
+            gap >= SETTLE_WINDOW,
+            "the burst reached the pump with no silence long enough to expire \
+             the settle timer, so this run is evidence and it says the probe \
+             did not behave. Required: no probe during the burst, exactly one \
+             after it, and the child marked waiting. {last}"
         );
     }
 

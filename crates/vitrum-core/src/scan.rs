@@ -74,7 +74,7 @@ impl OutputScan {
         let mut wants_operator = false;
         let mut at = 0;
         while at < data.len() {
-            if self.matched == 0 && !self.hints.is_mid_sequence() && !self.osc.in_flight() {
+            if !self.mid_sequence() {
                 // Nothing is in flight, so only an ESC or a BEL can change
                 // anything. Skipping to it is what keeps ordinary output cheap.
                 let Some(offset) = data[at..].iter().position(|&b| b == ESC || b == BEL) else {
@@ -99,6 +99,18 @@ impl OutputScan {
             at += 1;
         }
         wants_operator
+    }
+
+    /// Whether a partly-read sequence keeps the scan on the byte-at-a-time
+    /// path.
+    ///
+    /// The fast path is the whole cost model of output: with nothing in
+    /// flight the scan skips to the next ESC or BEL by vector search, and one
+    /// session that is stuck mid-sequence pays a branch per byte instead, for
+    /// as long as it stays stuck. Every bound on how long a sequence may stay
+    /// open is a bound on this, so this is the thing worth asserting about.
+    pub(crate) fn mid_sequence(&self) -> bool {
+        self.matched != 0 || self.hints.is_mid_sequence() || self.osc.in_flight()
     }
 
     /// The most recent window title this session announced, once.
@@ -154,6 +166,24 @@ impl OutputScan {
 /// wrong directory.
 const OSC_PAYLOAD_MAX: usize = 2048;
 
+/// Bytes one OSC string may consume before the scan gives up on it.
+///
+/// The payload cap above bounds what is KEPT. It does not bound how long the
+/// scanner stays inside a string, and the scanner runs byte at a time for as
+/// long as one is open: `printf '\e]x'` with no terminator leaves the capture
+/// in flight for every byte the session writes afterwards, so one three-byte
+/// line moves that session's whole output path off the vectorised skip for
+/// the rest of its life. Twenty agents at eight megabytes a second is the
+/// normal case, and this is the one thing output can do to that budget.
+///
+/// Twice the payload cap: anything past the point where the payload has
+/// already been refused is a stream that lost its terminator, and abandoning
+/// it returns to the fast path immediately. `HintParser` abandons an
+/// unterminated sequence at 256 bytes for the same reason, and, like it, the
+/// terminator that eventually arrives is then ordinary output — a BEL after
+/// an abandoned string reads as a bell.
+const OSC_STRING_MAX: usize = 2 * OSC_PAYLOAD_MAX;
+
 /// Which of the two strings a payload is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Osc {
@@ -194,6 +224,8 @@ struct OscCapture {
     payload: Vec<u8>,
     /// Whether the payload outgrew [`OSC_PAYLOAD_MAX`] and must be refused.
     overflowed: bool,
+    /// Bytes consumed since `ESC ]`, whether kept or not.
+    consumed: usize,
     title: Option<String>,
     pwd: Option<String>,
 }
@@ -206,6 +238,7 @@ impl OscCapture {
             digits: 0,
             payload: Vec::new(),
             overflowed: false,
+            consumed: 0,
             title: None,
             pwd: None,
         }
@@ -217,6 +250,23 @@ impl OscCapture {
     }
 
     fn step(&mut self, byte: u8) {
+        // Counted before the transition, so `consumed` is the number of bytes
+        // seen since the introducer that opened the string currently in
+        // flight, covering its identifier, its payload and a discarded string
+        // alike.
+        if self.phase == Phase::Ground {
+            self.consumed = 0;
+        } else {
+            self.consumed += 1;
+            if self.consumed > OSC_STRING_MAX {
+                // A string this long has lost its terminator. Leaving it open
+                // would hold the whole session on the byte-at-a-time path.
+                self.payload.clear();
+                self.overflowed = false;
+                self.phase = Phase::Ground;
+                return;
+            }
+        }
         self.phase = match self.phase {
             Phase::Ground if byte == ESC => Phase::Introduced,
             Phase::Ground => Phase::Ground,
@@ -224,6 +274,10 @@ impl OscCapture {
                 b']' => {
                     self.ident = 0;
                     self.digits = 0;
+                    // A string that ends by introducing the next one never
+                    // passes through Ground, so the counter is rearmed here
+                    // as well: the bound is per string, not per run of them.
+                    self.consumed = 0;
                     Phase::Ident
                 }
                 // `ESC ESC` is a cancel followed by a fresh introducer, not a

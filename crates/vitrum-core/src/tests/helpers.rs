@@ -164,6 +164,17 @@ pub(crate) struct Collector {
     pub(crate) first_seq: Option<u64>,
     pub(crate) bytes: Vec<u8>,
     pub(crate) chunks: usize,
+    /// When the previous chunk arrived, or when collection started.
+    last_at: Instant,
+    /// Longest silence between two arrivals so far.
+    ///
+    /// The settle timer that classifies a foreground process is armed by
+    /// published output and disarmed by its own expiry, so this is the exact
+    /// quantity that decides whether it was entitled to fire. A test that
+    /// wants to know whether a burst was continuous has to measure the burst
+    /// the daemon saw, not the wall time the child took: a reader thread that
+    /// is descheduled for a moment produces a silence the child never had.
+    pub(crate) max_gap: Duration,
 }
 
 impl Collector {
@@ -174,6 +185,8 @@ impl Collector {
             first_seq: None,
             bytes: Vec::new(),
             chunks: 0,
+            last_at: Instant::now(),
+            max_gap: Duration::ZERO,
         }
     }
 
@@ -205,6 +218,9 @@ impl Collector {
                     self.next_seq = Some(c.seq + c.data.len() as u64);
                     self.bytes.extend_from_slice(&c.data);
                     self.chunks += 1;
+                    let now = Instant::now();
+                    self.max_gap = self.max_gap.max(now - self.last_at);
+                    self.last_at = now;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     panic!("test client lagged and lost {n} chunks")

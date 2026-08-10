@@ -149,6 +149,49 @@ fn a_bad_value_says_which_input_was_bad() {
     cleanup(&dir);
 }
 
+/// A token file far larger than a token is refused without being read whole.
+///
+/// WHY: `load_from` used `read_to_string`, so anything that could write this
+/// path chose how much memory the reader allocated before the 64-character
+/// shape was ever checked. The client reads this file at startup and the
+/// daemon reads it on every connection, so the cost lands on the two paths a
+/// user waits for.
+///
+/// The verdict is its own variant rather than `Malformed`, which is what makes
+/// this testable at all: an unbounded read of a file whose first line is a
+/// valid token also ends in `Malformed`, so a test that accepted `Malformed`
+/// would pass against the defect it is named for. It also says something
+/// different to the operator — something else is writing to that path.
+#[test]
+fn a_token_file_larger_than_a_token_is_refused_by_size() {
+    let dir = scratch("oversized");
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let path = dir.join("token");
+    let good = "0123456789abcdef".repeat(4);
+
+    // The token is there, at the front, followed by a megabyte of anything.
+    std::fs::write(&path, format!("{good}\n{}", "x".repeat(1024 * 1024))).expect("planting");
+    match load_from(&path) {
+        Err(TokenError::TooLarge { path: reported, limit }) => {
+            assert_eq!(reported, path);
+            assert!(limit >= TOKEN_HEX_LEN, "the bound must admit a token: {limit}");
+        }
+        other => panic!("expected TooLarge, got {other:?}"),
+    }
+    let rendered = load_from(&path).unwrap_err().to_string();
+    assert!(
+        rendered.contains("larger than") && rendered.contains(&path.display().to_string()),
+        "the refusal names the size and the file: {rendered}"
+    );
+
+    // A token with a page of trailing newlines is still a token, so the bound
+    // has not become a second format rule.
+    std::fs::write(&path, format!("{good}{}", "\n".repeat(512))).expect("planting");
+    assert_eq!(load_from(&path).expect("still a token"), good);
+
+    cleanup(&dir);
+}
+
 /// The comparison accepts exactly the secret and nothing adjacent to it.
 ///
 /// Every case here is a way a sloppy comparison says yes: a prefix, a

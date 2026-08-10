@@ -282,13 +282,31 @@ impl fmt::Display for StateLoad {
     }
 }
 
+/// Most bytes read from a state file before it is judged corrupt.
+///
+/// The file holds a window rectangle and a handful of flags per window; a
+/// hundred windows do not reach a hundred kilobytes. Reading it whole would
+/// let a file somebody redirected here decide how much memory the client asks
+/// for at startup, before a single field has been looked at.
+const STATE_READ_LIMIT: usize = 1 << 20;
+
 /// Read the state file. Never panics, never silently defaults.
 pub fn load(path: &Path) -> StateLoad {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return StateLoad::Missing,
         Err(e) => return StateLoad::Unreadable { detail: e.to_string() },
     };
+    let mut text = String::new();
+    let mut bounded = std::io::Read::take(&mut file, STATE_READ_LIMIT as u64 + 1);
+    if let Err(e) = std::io::Read::read_to_string(&mut bounded, &mut text) {
+        return StateLoad::Unreadable { detail: e.to_string() };
+    }
+    if text.len() > STATE_READ_LIMIT {
+        return StateLoad::Corrupt {
+            detail: format!("larger than {STATE_READ_LIMIT} bytes"),
+        };
+    }
     parse(&text)
 }
 

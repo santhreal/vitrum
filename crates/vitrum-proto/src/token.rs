@@ -32,6 +32,14 @@ pub const TOKEN_HEX_LEN: usize = 64;
 /// Bytes of entropy behind a token.
 const TOKEN_BYTES: usize = TOKEN_HEX_LEN / 2;
 
+/// Most bytes read from a token file before it is judged malformed.
+///
+/// A token is [`TOKEN_HEX_LEN`] characters; the rest of this budget is the
+/// trailing whitespace a text editor leaves behind. Anything larger is not a
+/// token whatever it contains, and reading it whole would let whoever can
+/// write the path choose this process's allocation.
+const TOKEN_READ_LIMIT: usize = 4096;
+
 // Each of the three is read on exactly one platform, so two of them are dead
 // on any given build. They stay together because they are one fact — the
 // directory layout `vitrum_os::AppPaths` resolves — and splitting them behind
@@ -75,6 +83,15 @@ pub enum TokenError {
     Malformed {
         /// Where it was read from.
         path: PathBuf,
+    },
+    /// The file is too large to be a token, and was refused before it was read
+    /// whole. Distinct from [`TokenError::Malformed`] because the operator's
+    /// next move is different: something else is writing to that path.
+    TooLarge {
+        /// Where it was read from.
+        path: PathBuf,
+        /// The bound it exceeded, in bytes.
+        limit: usize,
     },
     /// A token supplied as a value rather than read from a file — an
     /// environment variable — is not the shape a token has.
@@ -131,6 +148,13 @@ impl core::fmt::Display for TokenError {
             TokenError::Malformed { path } => write!(
                 f,
                 "the vitrum token at {} is not {TOKEN_HEX_LEN} hex characters. Delete it and \
+                 restart vitrum-server, which writes a fresh one",
+                path.display()
+            ),
+            TokenError::TooLarge { path, limit } => write!(
+                f,
+                "the vitrum token at {} is larger than {limit} bytes, so it is not a token and \
+                 was not read. Something else is writing to that path; move it aside and \
                  restart vitrum-server, which writes a fresh one",
                 path.display()
             ),
@@ -246,8 +270,15 @@ pub fn matches(expected: &str, presented: &str) -> bool {
 /// can be proved against a directory a test owns, rather than against the
 /// environment the suite happens to run under.
 pub fn load_from(path: &Path) -> Result<String, TokenError> {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(raw) => raw,
+    // Bounded, because the answer is `TOKEN_HEX_LEN` characters and everything
+    // past the bound is either whitespace or not a token. Reading the file
+    // whole would let anything that can write this path — a symlink to a
+    // device, a log somebody redirected here — decide how much memory this
+    // process asks for before the shape is ever checked. The bound is generous
+    // enough that a file with trailing blank lines still loads, and one byte
+    // over it is `Malformed`, which is what a 400 MB token is.
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Err(TokenError::Missing {
                 path: path.to_path_buf(),
@@ -260,6 +291,20 @@ pub fn load_from(path: &Path) -> Result<String, TokenError> {
             });
         }
     };
+    let mut raw = String::new();
+    let mut bounded = std::io::Read::take(&mut file, TOKEN_READ_LIMIT as u64 + 1);
+    if let Err(cause) = std::io::Read::read_to_string(&mut bounded, &mut raw) {
+        return Err(TokenError::Unreadable {
+            path: path.to_path_buf(),
+            cause,
+        });
+    }
+    if raw.len() > TOKEN_READ_LIMIT {
+        return Err(TokenError::TooLarge {
+            path: path.to_path_buf(),
+            limit: TOKEN_READ_LIMIT,
+        });
+    }
     let token = raw.trim();
     if !is_well_formed(token) {
         return Err(TokenError::Malformed {

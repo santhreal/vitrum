@@ -290,6 +290,52 @@ fn a_missing_file_is_not_a_problem() {
     assert_eq!(StateLoad::Missing.problem(), None);
 }
 
+/// A state file larger than any layout is refused without being read whole.
+///
+/// WHY: `load` used `read_to_string`, so whatever could write this path chose
+/// the client's first allocation of the launch. The path is under the user's
+/// state directory, which makes it a log somebody redirected, a symlink, or a
+/// file a crashed writer left growing — not an attacker on the network, and
+/// not a reason to allocate a gigabyte before looking at a single field.
+///
+/// It does not check the peak allocation, which no test here can observe. It
+/// checks the decision: over the bound is corrupt, and the file is still
+/// judged rather than defaulted away.
+#[test]
+fn a_state_file_larger_than_the_bound_reads_as_corrupt() {
+    let dir = TempDir::new("ws-huge");
+    let path = dir.join("windows.json");
+    let mut text = String::from("{\"version\":1,\"pad\":\"");
+    text.push_str(&"p".repeat(2 * 1024 * 1024));
+    text.push_str("\"}");
+    std::fs::write(&path, &text).expect("a temp file is writable");
+
+    match window_state::load(&path) {
+        StateLoad::Corrupt { detail } => assert!(
+            detail.contains("larger than"),
+            "the refusal names the bound, got {detail}"
+        ),
+        other => panic!("expected Corrupt, got {other:?}"),
+    }
+}
+
+/// A file just under the bound is still parsed, so the bound is not a
+/// second, stricter format rule.
+#[test]
+fn a_state_file_under_the_bound_is_still_read() {
+    let dir = TempDir::new("ws-large-ok");
+    let path = dir.join("windows.json");
+    let saved =
+        WindowState { x: 1, y: 2, width: 800, height: 600, maximized: false, sidebar_width: 200 };
+    let encoded = window_state::encode(&saved);
+    // Whitespace to within a few bytes of the bound: valid JSON, nearly the
+    // largest file that is allowed to load.
+    let padded = format!("{encoded}{}", " ".repeat((1 << 20) - encoded.len() - 16));
+    std::fs::write(&path, padded).expect("a temp file is writable");
+
+    assert_eq!(window_state::load(&path), StateLoad::Loaded(saved));
+}
+
 /// Truncated JSON must be reported as corrupt, not silently defaulted.
 ///
 /// Silent defaulting is how a product loses a user's layout every launch

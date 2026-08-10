@@ -2,13 +2,14 @@ name: ci
 
 # Every push and every pull request, on Linux only.
 #
-# macOS and Windows moved to `platforms.yml`, which runs them nightly, on every
-# release, and on any change that can plausibly break a platform. Running a
-# three-way matrix on every push cost three runners to answer a question that
-# almost always has the same answer, and the queue for those runners was the
-# slowest part of merging anything. What is left here is the gate that actually
-# catches things: a Linux build with warnings fatal, the full test run, and a
-# compile check against macOS that needs no mac.
+# macOS and Windows moved to `platforms.yml`, which runs a subset of the matrix
+# on every push to main and the whole of it nightly, on every release, and on
+# any change that can plausibly break a platform. Running a three-way release
+# build on every push cost three runners to answer a question that almost
+# always has the same answer, and the queue for those runners was the slowest
+# part of merging anything. What is left here is the gate that actually catches
+# things: a Linux build with warnings fatal, the full test run, and a compile
+# check against macOS that needs no mac.
 #
 # These are the gates RELEASING.md names, in the same order.
 on:
@@ -484,9 +485,15 @@ jobs:
   # being a result. It is scoped to `vitrum-core` rather than the workspace on
   # purpose: that is the crate whose behaviour is platform-dependent, and a job
   # that also fails for an unrelated reason answers nothing.
+  #
+  # On a push to main `platforms.yml` now runs the whole workspace suite on a
+  # Windows runner, which contains this one, so running both there would be two
+  # Windows runners per commit for one answer. A pull request gets that run only
+  # when it touches a platform path, and this is what covers the rest of them.
   windows-test:
     name: windows tests
     runs-on: windows-latest
+    if: github.event_name == 'pull_request'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7

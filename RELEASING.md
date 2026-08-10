@@ -5,7 +5,28 @@ platform with a `SHA256SUMS` beside them. `install.sh`, `install.ps1` and
 `vitrum update` all refuse an archive the sums do not cover, so a release
 without them installs for nobody.
 
-Two commands do the whole thing.
+There is one thing that cuts a release, `tools/release/cut.sh`, and two ways to
+start it.
+
+## From GitHub
+
+Run the `cut` workflow and give it the version:
+
+```sh
+gh workflow run cut.yml -f version=x.y.z
+```
+
+It checks out `main`, refuses a commit `ci` or `platforms` has not passed,
+rehearses the whole cut in a throwaway clone, runs `tools/release/cut.sh`,
+pushes `main` and the tag, and asks `.github/workflows/release.yml` to build
+and publish that tag. Every refusal below still applies: the script is the one
+in this repository, run unmodified.
+
+It asks for the publish by name because a tag pushed with the workflow token
+starts no workflow. That is the same dispatch input a failed publish is
+re-run with, not a second way to release.
+
+## From a checkout
 
 ```sh
 make release-dry-run VERSION=x.y.z   # rehearse it; changes nothing
@@ -13,22 +34,30 @@ make release VERSION=x.y.z           # do it here, stopping before the push
 ```
 
 `make release` prints the push that publishes it. Run that, and
-`.github/workflows/release.yml` does the rest.
+`.github/workflows/release.yml` does the rest. Use this when you want to read
+the diff before it moves, or when GitHub is not answering.
 
 ## Before you cut
+
+Write the release into `CHANGELOG.md` under `## Unreleased`, including the
+gaps. A cut refuses an empty Unreleased section, because a release whose known
+gaps are discovered by the first user is a release that should have said them.
+
+Push that to `main` and let the pipeline answer. `ci` runs the release build
+and test of every crate with warnings fatal, and checks every version literal
+and target triple; `platforms` runs the same tree on macOS, Windows and ARM
+Linux. The `cut` workflow refuses a commit either of them has not passed, so
+the state of those checks is the gate rather than a habit. From a checkout,
+run the same two things yourself:
 
 ```sh
 make gate            # release build and test of every crate, warnings fatal
 make release-check   # every version literal and target triple agrees
 ```
 
-Write the release into `CHANGELOG.md` under `## Unreleased`, including the
-gaps. `make release` refuses an empty Unreleased section, because a release
-whose known gaps are discovered by the first user is a release that should
-have said them.
-
 Then launch it and use it. Start two sessions, switch between them, save a
-preset, bind a key, fire it. The suite does not open a window.
+preset, bind a key, fire it. The suite does not open a window, and no workflow
+does this for you.
 
 ## What `make release` does
 
@@ -47,8 +76,9 @@ In this order, refusing before it edits anything:
 5. Makes an annotated tag `v<version>` carrying the release notes.
 6. Prints the push command, and the two commands that undo it.
 
-Nothing is pushed. That is the only step you take by hand, because it is the
-only one that cannot be taken back.
+Nothing is pushed. From a checkout that is the step you take by hand, because
+it is the only one that cannot be taken back; the `cut` workflow takes it for
+you, having refused everything above first.
 
 ### The first release of a version
 

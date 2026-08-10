@@ -427,3 +427,101 @@ fn a_runner_label_is_found_in_every_shape() {
         "the extractor missed a shape a workflow really writes"
     );
 }
+
+/// The lines of a workflow that GitHub acts on, with the prose removed.
+///
+/// Every guard below asks whether a workflow *does* something, and the files
+/// here carry more comment than YAML. `git tag` appears in `release.yml` in a
+/// sentence about the nightly tag moving, and a guard that reads it as a tag
+/// being made is a guard that fires on a paragraph.
+fn instructions(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A platform regression is answered by the push that caused it.
+///
+/// `platforms.yml` used to run nightly, on a tag, and on a path filter. Two
+/// Windows-only defects shipped in one week — an exit code from `vitrum icons`
+/// that no other platform returned, and a test deadline that only blows there
+/// — and both were found hours later by the nightly run, against a commit
+/// nobody was still holding in their head. So a push to main runs a subset of
+/// the matrix, and the two platforms that are not developed on here are in it.
+///
+/// This pins the cadence and the platforms, which is what silently reverts: a
+/// trigger is one line, and removing it leaves a workflow that still looks
+/// like it covers Windows. It does not check that the subset would catch
+/// either defect, and cannot: that is a property of the suite those legs run.
+#[test]
+fn the_platform_matrix_runs_on_every_push_to_main() {
+    let (_, text) = workflows()
+        .into_iter()
+        .find(|(name, _)| name == "platforms.yml")
+        .expect("platforms.yml is the workflow that covers the shipped platforms");
+
+    let triggers: String = text
+        .lines()
+        .skip_while(|line| !line.starts_with("on:"))
+        .skip(1)
+        .take_while(|line| line.starts_with(' ') || line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        triggers.contains("push:") && triggers.contains("branches: [main]"),
+        "platforms.yml does not run on a push to main, so a break on a platform \
+         nobody here develops on is not reported until the nightly run"
+    );
+
+    for label in ["macos-latest", "windows-latest"] {
+        assert!(
+            instructions(&text).contains(label),
+            "platforms.yml no longer names {label}, so nothing between a push \
+             and a release tag builds that platform at all"
+        );
+    }
+}
+
+/// Exactly one thing cuts a release, and a workflow reaches it by name.
+///
+/// A release is a version bump, a rolled changelog, a commit and an annotated
+/// tag carrying the notes, and `tools/release/cut.sh` is where every refusal
+/// that guards those lives. A workflow that made the tag itself would be a
+/// second implementation with none of them, and the two would drift in the
+/// direction nobody tests: the automated one.
+///
+/// It checks the workflows only. `cut.sh` being the single implementation in
+/// the tree is what `make release` and the dry run exercise; this stops the
+/// pipeline growing a copy of it.
+#[test]
+fn one_script_cuts_a_release() {
+    let mut cutting: Vec<String> = Vec::new();
+    for (name, text) in workflows() {
+        let body = instructions(&text);
+        let pushes_a_tag = body
+            .lines()
+            .any(|line| line.contains("git push") && line.contains("tag"));
+        if !pushes_a_tag {
+            continue;
+        }
+        cutting.push(name.clone());
+        assert!(
+            body.contains("tools/release/cut.sh"),
+            "{name} pushes a release tag without running tools/release/cut.sh, \
+             so the tag it publishes went through none of the refusals a cut owes"
+        );
+        for own_work in ["git tag -a", "versions.sh bump", "changelog.sh roll"] {
+            assert!(
+                !body.contains(own_work),
+                "{name} runs `{own_work}` itself instead of leaving it to \
+                 tools/release/cut.sh, which is a second release mechanism"
+            );
+        }
+    }
+    assert_eq!(
+        cutting,
+        vec!["cut.yml".to_string()],
+        "a release tag is pushed by exactly one workflow"
+    );
+}

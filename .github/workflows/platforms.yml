@@ -8,9 +8,12 @@ name: platforms
 # on ARM Linux, which is a different code generator against the same
 # libraries. It runs:
 #
-#   - on every release tag, because a platform break must never reach a user
-#   - nightly, so the worst case is one day of main being broken on a platform
-#     rather than one release cycle
+#   - on every push to main, as the quick subset described below, so a
+#     platform break is attached to the commit that caused it
+#   - on every release tag, in full, because a platform break must never reach
+#     a user
+#   - nightly, in full, so the worst case is one day of main being broken on a
+#     platform rather than one release cycle
 #   - on any change that touches platform-conditional code, the vendored
 #     webview, a build script, or an installer, which is where the breaks
 #     historically are
@@ -19,8 +22,45 @@ name: platforms
 # The nightly run is what makes the path filter safe. A filter can only list
 # the places a platform break is likely, and a break that arrives somewhere
 # else is caught within a day rather than at the next release.
+#
+# ## Why a subset on main, and what the subset does not catch
+#
+# Two Windows-only defects shipped in one week and were found hours later by
+# the nightly run: an exit code from `vitrum icons` that differed from every
+# other platform, and a test whose deadline only blows there. Both are the
+# kind of thing a push should answer, and neither is worth a full release
+# matrix per commit: this repository intends more than ten releases a day, a
+# cold release build here is budgeted at an hour, and macOS bills at ten times
+# the rate of Linux with five concurrent macOS jobs available. A full matrix
+# on every push would spend most of that allowance queueing behind itself.
+#
+# So a push to main runs the same three legs with the release profile, clippy
+# and the installer parse removed, and pays three runners bounded at thirty
+# minutes instead of three bounded at sixty, on a dev-profile build rather
+# than an optimised one.
+#
+# What the subset does not catch, and the nightly and tag runs do:
+#
+#   - anything that only appears with optimisations: a codegen difference, a
+#     miscompile, and any test whose timing changes between profiles. A
+#     deadline that holds in dev can still blow in release, and one that blows
+#     in dev can hold in release, so a deadline failure here is a signal about
+#     that profile and not about the shipped binary.
+#   - anything gated on `debug_assertions`, which is on here and off in a
+#     release, including arithmetic overflow checks.
+#   - clippy on macOS, Windows and ARM. It is advisory everywhere and never
+#     blocks, so it is the first thing a subset drops.
+#   - `install.ps1` parsing, which nothing else in this pipeline can do. A
+#     change to that file matches the pull-request path filter above and gets
+#     the full run.
+#   - the release archive itself. Nothing here packages, and the CPU floor is
+#     gated in `release.yml` on the binaries a user receives.
+#
+# A pull request still gets the full run when it touches a path above, and the
+# answer for anything else arrives when it merges rather than while it is open.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   schedule:
     # Early morning UTC, when nothing else is queued.
@@ -48,13 +88,20 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Which cadence this run is, decided once. A push to main is the quick
+  # subset; a tag push, the schedule, a dispatch and a pull request are the
+  # full run. Every step below reads this rather than restating the condition.
+  QUICK: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # A cold Windows build is the long pole here.
-    timeout-minutes: 60
+    # A cold Windows build is the long pole in the full run. The quick subset
+    # compiles no optimised code and gets half the budget, so a leg that hangs
+    # frees its runner before the next push needs it. The condition is spelled
+    # out because `timeout-minutes` cannot read the `env` context.
+    timeout-minutes: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 30 || 60 }}
     strategy:
       # Which platform broke is the useful part of the answer, so one failing
       # must not cancel the other.
@@ -68,9 +115,12 @@ jobs:
         with:
           components: clippy
 
+      # One cache per platform per profile. A dev build and a release build of
+      # the same tree share almost no artifacts, so a single key would have the
+      # two cadences overwriting each other's cache on every run.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.os }}
+          shared-key: ${{ matrix.os }}-${{ env.QUICK == 'true' && 'quick' || 'full' }}
 
       # ARM Linux is Linux: it links the same system webview, and the image
       # does not ship it.
@@ -137,18 +187,37 @@ jobs:
           fi
           echo "default xcode: $(xcodebuild -version 2>/dev/null | head -1)"
 
-      - run: cargo build --release --workspace --locked
+      # The full run, on a tag, on the schedule, on a dispatch and on a pull
+      # request that touches a platform path. This is the profile a user
+      # receives, so it is the one a release is allowed to depend on.
+      - name: build and test, release profile
+        if: env.QUICK != 'true'
+        run: |
+          cargo build --release --workspace --locked
+          cargo test --release --workspace --locked
 
-      - run: cargo test --release --workspace --locked
+      # The quick subset, on every push to main. One command: a dev-profile
+      # test build compiles and runs everything a release-profile one does,
+      # in less time and without optimising code no user will run today. It
+      # answers the question this cadence exists for, which is whether the
+      # tree still behaves on a platform nobody here develops on.
+      - name: test, dev profile
+        if: env.QUICK == 'true'
+        run: cargo test --workspace --locked
 
-      # Advisory, as RELEASING.md says. It reports and never blocks.
-      - run: cargo clippy --release --workspace --locked
+      # Advisory, as RELEASING.md says. It reports and never blocks, which is
+      # why the subset drops it rather than running it three more times a day.
+      - name: clippy
+        if: env.QUICK != 'true'
+        run: cargo clippy --release --workspace --locked
         continue-on-error: true
 
       # The Windows installer cannot be parsed anywhere else in the pipeline,
-      # and it is the first thing a new user on Windows runs.
+      # and it is the first thing a new user on Windows runs. A change to it
+      # matches the path filter above, so the subset does not need to repeat
+      # this on pushes that cannot have touched it.
       - name: install.ps1 parses
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.QUICK != 'true'
         shell: pwsh
         run: |
           $errors = $null

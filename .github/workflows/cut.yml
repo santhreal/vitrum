@@ -1,0 +1,123 @@
+name: cut
+
+# Cut a release from a dispatch, using the one script that cuts a release.
+#
+# `tools/release/cut.sh` is still the only thing that bumps a version, rolls
+# the changelog, makes the commit and annotates the tag. This workflow does not
+# reimplement any of that: it gives that script a clean checkout of main, an
+# identity, and the push it prints at the end. Run it locally with
+# `make release VERSION=x.y.z` and the result is the same commit and the same
+# tag, made by the same code.
+#
+# What it removes is the requirement that a release start on somebody's
+# machine. Cutting by hand needs a working local toolchain, a clean tree and a
+# shell that is awake, and this repository intends more than ten releases a
+# day. What it must not remove is any refusal: `cut.sh` runs here unmodified,
+# so a version that is not `x.y.z`, a version that does not increase, a tag
+# that exists here or on the remote, and an empty `## Unreleased` section all
+# still stop the cut before it writes anything.
+#
+# Two things a person did are done by steps instead. They had run the gate and
+# looked at the checks, which is `tools/release/ci-green.sh`; and they had
+# rehearsed with `make release-dry-run`, which is the step below it.
+#
+# The push is made with the workflow token, and GitHub deliberately starts no
+# workflow for such a push. So the tag alone would publish nothing, and the
+# last step asks `release.yml` to run against it through the dispatch input
+# that already exists for re-running a failed publish. That is the same entry
+# point, not a second one.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: the version to cut, as x.y.z
+        required: true
+
+permissions:
+  contents: write
+  # Reading the verdicts on the commit being cut, and dispatching the publish.
+  actions: write
+
+# One cut at a time, and never cancelled. A run cancelled between the push and
+# the dispatch leaves a tag on main that nothing is building.
+concurrency:
+  group: cut
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Through the environment, never interpolated into a `run:` body. A dispatch
+  # input is a string somebody typed, and `${{ }}` pastes it into the script
+  # before any shell quoting applies, so a version with a quote in it would run
+  # as a command. `cut.sh` refuses anything that is not x.y.z, but it refuses
+  # it after that paste, which is too late to be the check.
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  cut:
+    name: cut a release
+    runs-on: ubuntu-latest
+    # Nothing here compiles the workspace. The time is a clone, a handful of
+    # `cargo update` calls inside the rehearsal, and the API.
+    timeout-minutes: 25
+    steps:
+      # `main` explicitly, and the whole history with its tags: a cut is made
+      # from main whichever ref the dispatch names, and `cut.sh` refuses a tag
+      # that already exists here before it asks the remote.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      # `tools/release/versions.sh bump` runs `cargo update` to keep
+      # `Cargo.lock` in step with the manifests. Nothing else here needs a
+      # toolchain and nothing builds.
+      - uses: ./.github/actions/rust-toolchain
+
+      # A hosted runner has no `user.email`, and `cut.sh` commits and annotates
+      # a tag. This is the identity every commit in this repository carries.
+      - name: identity
+        run: |
+          git config user.name 'santhreal'
+          git config user.email '64453045+santhreal@users.noreply.github.com'
+
+      - name: main is green at the commit being cut
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/release/ci-green.sh HEAD
+
+      # Refused here as well as in `cut.sh`, because the steps below hand it to
+      # a shell and cut.sh is not the first thing that reads it.
+      - name: the version is a version
+        run: |
+          case "$VERSION" in
+            *[!0-9.]* | *..* | .* | *. | '') echo "::error::'$VERSION' is not x.y.z"; exit 1 ;;
+          esac
+          printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::'$VERSION' is not x.y.z"; exit 1; }
+
+      # The whole cut, in a throwaway clone, asserted and unwound, against the
+      # version about to be cut rather than against the current one. It costs a
+      # minute and it is the difference between a refusal and a half-made
+      # release on a branch nobody is watching.
+      - name: the cut rehearses cleanly
+        run: ./tools/release/dry-run.sh "$VERSION"
+
+      - name: cut
+        run: ./tools/release/cut.sh "$VERSION"
+
+      # The command `cut.sh` prints, run rather than copied.
+      - name: publish the commit and the tag
+        run: git push origin main tag "v$VERSION"
+
+      # A tag pushed by this token starts nothing, so the publish is asked for
+      # by name. `release.yml` takes an existing tag as an input and builds
+      # exactly what a tag push would have built.
+      - name: build and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml --ref main -f tag="v$VERSION"
+          echo "publishing v$VERSION:" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml"

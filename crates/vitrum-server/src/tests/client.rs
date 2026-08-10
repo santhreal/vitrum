@@ -137,6 +137,29 @@ impl Seen {
         self.out.get(&session).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// Every refusal the server sent, in order, rendered one per line.
+    ///
+    /// A wait that ends in a timeout usually ends there because the server
+    /// already said no and the predicate is waiting for a frame that will
+    /// never arrive. A hosted macOS runner ran out of pseudoterminals under a
+    /// parallel suite and answered one creation in twenty with `openpty:
+    /// Device not configured`; the test then sat out its deadline, and the
+    /// reason was in the frame dump nineteen `SessionInfo` structs down, where
+    /// nobody reads it. Empty when the server refused nothing, so a genuine
+    /// protocol stall still reads as one.
+    pub(crate) fn refusals(&self) -> String {
+        let mut out = String::new();
+        for msg in &self.ctl {
+            if let ServerMsg::Error {
+                session, message, ..
+            } = msg
+            {
+                out.push_str(&format!("\n  refused {session:?}: {message}"));
+            }
+        }
+        out
+    }
+
     pub(crate) fn first_seq(&self, session: SessionId) -> Option<u64> {
         self.first_seq.get(&session).copied()
     }
@@ -311,8 +334,10 @@ impl Client {
                 .await
                 .unwrap_or_else(|_| {
                     panic!(
-                        "timed out waiting for {what}; control: {:?}; data frames: {}",
-                        self.seen.ctl, self.seen.data_frames
+                        "timed out waiting for {what}{}; control: {:?}; data frames: {}",
+                        self.seen.refusals(),
+                        self.seen.ctl,
+                        self.seen.data_frames
                     )
                 });
             match frame {
@@ -636,4 +661,31 @@ impl Drop for FakeAgent {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A timeout must name the server's refusal, not bury it.
+///
+/// The harness itself is the thing under test here: a wait that ends in a
+/// timeout after the server has already refused something is a different
+/// failure from a stall, and the two used to print the same way.
+#[test]
+fn a_timeout_names_what_the_server_refused() {
+    let mut seen = Seen::default();
+    assert_eq!(seen.refusals(), "", "a clean run refuses nothing");
+
+    seen.ctl.push(ServerMsg::error(
+        None,
+        "opening a pty for sh: failed to openpty",
+    ));
+    seen.ctl.push(ServerMsg::error(Some(SessionId(4)), "no such session"));
+
+    let text = seen.refusals();
+    assert!(
+        text.contains("opening a pty for sh: failed to openpty"),
+        "the first refusal must be readable: {text}"
+    );
+    assert!(
+        text.contains("SessionId(4)") && text.contains("no such session"),
+        "a refusal must name the session it was about: {text}"
+    );
 }

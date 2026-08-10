@@ -29,11 +29,11 @@ directory, and the state.
 `Ctrl+Shift+Down` selects the next session in one of the blocked states.
 
 <p align="center">
-  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over the sidebar: a directory field, a command field, saved presets for Claude Code, Codex, Gemini CLI, opencode and veyyon, and the agents recently run in each project" width="900" />
+  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over the sidebar, where a Claude Code session is blocked on approval, a Codex session is working and another has failed: a directory field, a command field, saved presets for Claude Code, Codex, Gemini CLI, opencode and veyyon, and the agents recently run in each project" width="900" />
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over the sidebar: theme, density, text scale, reduce motion and window opacity, beside a Codex transcript" width="900" />
+  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings, Appearance tab, over the sidebar, where a Codex session is working, a Claude Code session is blocked on approval and one has failed: theme, density, text scale, reduce motion and window opacity" width="900" />
 </p>
 
 Sessions run in a daemon. Closing the window, or updating vitrum, does not stop

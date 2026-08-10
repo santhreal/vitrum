@@ -13,11 +13,11 @@ working directory and its state, grouped by project.
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher: a directory to start in, a name to run, saved entries for Claude Code, Codex, Gemini CLI, opencode and veyyon, and a numbered list of running agents to switch to, each with its project and branch" width="720" />
+  <img src="assets/screenshots/launcher.png" alt="The vitrum launcher over a sidebar where a Claude Code session waits for approval, two sessions are working, one waits for input and one has failed: a directory to start in, a name to run, saved entries for Claude Code, Codex, Gemini CLI, opencode and veyyon, and a numbered list of running agents to switch to" width="900" />
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings on the Appearance tab: theme, density, text scale and reduce motion, with Sidebar, Workspaces, Presets, Terminal, Notifications, Keyboard, Advanced and About beside them" width="845" />
+  <img src="assets/screenshots/settings-appearance.png" alt="vitrum settings on the Appearance tab over a sidebar where a Codex session is working, a Claude Code session waits for approval and one has failed: theme, density, text scale, reduce motion and window opacity" width="900" />
 </p>
 
 ## Install

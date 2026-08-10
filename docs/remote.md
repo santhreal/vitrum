@@ -24,8 +24,7 @@ The daemon serves 64 connections at once. A client past that waits for a slot
 rather than being refused, and gets one when another connection closes.
 
 `PROTOCOL_VERSION` is 3. A client and a daemon that disagree refuse each other
-and name both versions, which is what a mixed-version pair across two machines
-looks like.
+and name both versions.
 
 ## On the remote machine
 
@@ -40,8 +39,7 @@ loginctl enable-linger "$USER"
 ```
 
 Without `loginctl enable-linger`, systemd tears down your user's services when
-your last session ends, so closing the SSH connection kills every agent. With
-it, the daemon belongs to the machine.
+your last session ends, so closing the SSH connection kills every agent.
 
 ## On your machine
 

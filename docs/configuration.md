@@ -15,12 +15,11 @@ directory.
 | File | Contents |
 |---|---|
 | `ui.json` | settings, workspaces, sidebar layout |
-| `launch.json` | saved commands |
+| `launch.json` | presets: saved commands, directories and bindings |
 | `windows.json` | window size and position |
 
-All three are plain JSON. Presets live apart from settings so a window resize
-does not rewrite them, and window geometry lives in state rather than config
-because it does not migrate to another machine.
+All three are plain JSON. Each is written on its own, so a window resize does
+not rewrite the presets. Window geometry does not migrate to another machine.
 
 ## The token file
 

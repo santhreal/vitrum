@@ -24,11 +24,10 @@ Three binaries ship: `vitrum`, `vitrum-server`, and `vitrum-replay`.
 
 `vendor/` is why twenty windows share one web process. It exposes WebKit's
 `webkit_web_view_new_with_related_view`, which upstream wry has and
-dioxus-desktop did not surface.
-It also paints the window as soon as it is built rather than when the event
-loop starts, and hands WebKit its background colour through the call that
-takes 0.0 to 1.0 channels rather than the one that silently clamps 0-255 to
-white. Those two are what took black and a white flash out of a launch.
+dioxus-desktop did not. It also paints the window as soon as it is built
+rather than when the event loop starts, and hands WebKit its background colour
+through the call that takes 0.0 to 1.0 channels rather than the one that
+clamps 0-255 to white.
 
 `vendor-ghostty-vt-sys/` is why a release runs on a pre-Haswell CPU. The
 upstream build script passes `-Dtarget` to zig only when cross-compiling, so
@@ -50,8 +49,8 @@ columns a character takes because the tests take their samples from the engine.
 The wgpu renderer in the same crate does not yet paint a session: the window
 draws terminals with xterm.js. `app/src/pane` is the replacement, a native GTK
 drawing area with its XID and a wgpu surface on it, behind the `native-pane`
-feature until it can host a session. The move buys one parser and OSC 7 and
-OSC 133 semantics a webview cannot have, not frame rate.
+feature until it can host a session. The native pane gives one parser, and
+OSC 7 and OSC 133 semantics a webview cannot have. Frame rate is unchanged.
 
 Development, testing and the fork policy are in
 [CONTRIBUTING.md](../CONTRIBUTING.md).

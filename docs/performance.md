@@ -52,11 +52,6 @@ Hardware rendering lowers the idle figure. Agents printing raise it.
 
 ## Cold start
 
-Measured on the same host, single window, by filming the root window every
-35 ms and reducing each frame to its mean value and its count of distinct
-colours. Instrumentation does not see this. A flash falls between two events
-that are both on time, so first-frame work is judged by looking at pixels.
-
 | on screen | at |
 |---|---|
 | nothing, black | 0 ms |
@@ -66,7 +61,10 @@ that are both on time, so first-frame work is judged by looking at pixels.
 | content | 919 ms |
 | settled | 1130 ms |
 
-Before the window painted itself, the same film showed black until 690 ms,
-one full-screen white frame at 706 ms, and content at 950 ms. The window is
-now drawn as soon as it is built rather than when the event loop starts,
-which is after the webview is constructed.
+Measured on the same host, single window, by filming the root window every
+35 ms and reducing each frame to its mean value and its count of distinct
+colours. A flash falls between two instrumented events, so first-frame work is
+judged from pixels.
+
+The window is drawn as soon as it is built rather than when the event loop
+starts, which is after the webview is constructed.

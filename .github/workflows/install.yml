@@ -175,3 +175,63 @@ jobs:
             Write-Output 'uninstall left the install directory on the user PATH'
             exit 1
           }
+
+  # Installing is half the promise. The other half is that a machine which
+  # installed a release months ago reaches the current one without being
+  # reinstalled, and nothing in the pipeline ever ran that path: `vitrum
+  # update` was proved by unit tests against a fake release, which cannot
+  # catch a real asset naming change, a checksum file that stopped listing a
+  # target, or a staged binary the next start refuses to swap in.
+  #
+  # The starting version is resolved rather than pinned. A hardcoded 0.2.1
+  # stops being the previous release the day after the next cut, and then this
+  # job proves an upgrade nobody performs. Index 1 of the published stable
+  # releases is whatever "the version before this one" currently means.
+  update:
+    name: update from the previous release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the two ends of the upgrade
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tags=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '[.[] | select(.prerelease == false and .draft == false) | .tag_name]')
+          latest=$(printf '%s' "$tags" | jq -r '.[0] // empty')
+          previous=$(printf '%s' "$tags" | jq -r '.[1] // empty')
+          if [ -z "$latest" ] || [ -z "$previous" ]; then
+            echo "an upgrade needs two published releases; found: $tags" >&2
+            exit 1
+          fi
+          echo "latest=${latest#v}" >> "$GITHUB_ENV"
+          echo "previous=${previous#v}" >> "$GITHUB_ENV"
+
+      - name: install the previous release
+        run: |
+          sh install.sh --version="$previous"
+          got=$("$HOME/.local/bin/vitrum" --version)
+          case "$got" in
+            *"$previous"*) ;;
+            *) echo "asked for $previous and got: $got" >&2; exit 1 ;;
+          esac
+
+      # `update` stages; the swap happens on the next start, which is the
+      # product's stated behaviour and the reason this needs two invocations.
+      - name: update stages the new build
+        run: |
+          "$HOME/.local/bin/vitrum" update
+
+      - name: the next start runs it
+        run: |
+          got=$("$HOME/.local/bin/vitrum" --version)
+          case "$got" in
+            *"$latest"*) ;;
+            *) echo "staged $latest and the next start reported: $got" >&2; exit 1 ;;
+          esac
+
+      - name: uninstall
+        run: sh install.sh --uninstall

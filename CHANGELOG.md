@@ -38,6 +38,14 @@ Before 1.0, a minor bump may break compatibility.
   preset per known agent, installed ones first, and captions the rest as not
   installed. Deleting a seeded row is a decision, so seeding is keyed on the
   launch store never having existed rather than on it being empty.
+- **Stopping the daemon ends the sessions it holds.** `SIGTERM` or `Ctrl-C`
+  used to leave the decision to the kernel: closing the last terminal
+  descriptor hangs each session up, which ends most children and is not a
+  guarantee, because a process may ignore a hangup for as long as it likes.
+  One that did was left running with no session to reach it through, to be
+  found by process id and killed by hand. Each child is now hung up, given
+  three quarters of a second to exit on its own, and killed outright if it is
+  still there. That budget is spent once for all sessions, not once each.
 
 ### Fixed
 

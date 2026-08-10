@@ -377,23 +377,34 @@ async fn wait_until_dead(manager: &vitrum_core::SessionManager, id: SessionId) {
     }
 }
 
-/// Shutting the daemon down must end a child that ignores the terminal hangup.
+/// Shutting the daemon down must leave none of its children running.
 ///
-/// WHY: closing the last master descriptor hangs the terminal up, and that
-/// alone ends almost every child, which makes the explicit `close_all` on the
-/// way out of `serve_until` look redundant. It is not. A child that traps
-/// `SIGHUP` survives the hangup holding a terminal nothing is attached to any
-/// more, and with the daemon gone the operator has no session left to reach it
-/// through: it has to be found by pid and killed by hand. This test traps
-/// `SIGHUP` in the child precisely so the hangup cannot be what ends it, which
-/// makes the assertion a statement about the kill and nothing else.
+/// WHY: `serve_until` promises that stopping the daemon ends every session it
+/// holds. Without the `close_all` on its way out this fails: the child is
+/// still there after the serve task has returned. That is the regression this
+/// pins, and removing `close_all` turns it red.
 ///
-/// Does not cover: a child that survives `SIGKILL` as well, such as one wedged
-/// in an uninterruptible driver wait, or a grandchild the shell left in its
-/// own process group, which `close_all` does not signal.
+/// The child traps `SIGHUP` and restarts its sleep, because the obvious
+/// version of this test is not a test. `trap '' HUP; sleep 300` looks like a
+/// child that ignores the hangup and is not one: the hangup reaches the whole
+/// foreground process group, `sleep` does not ignore it, and the shell then
+/// runs off the end of the script and exits. Restarting the sleep leaves a
+/// process that is still there afterwards.
+///
+/// Does not cover the escalation from `SIGHUP` to `SIGKILL` inside
+/// `close_all`. On an idle machine the hangup alone ends this child promptly,
+/// so the test passes with the escalation removed; what justifies the
+/// escalation is that the same child survived more than ten seconds on a
+/// loaded CI runner, and that a process is free to ignore `SIGHUP` for as long
+/// as it likes. Proving that needs a child that survives the hangup
+/// deterministically, which this is not.
+///
+/// Also does not cover a child that survives `SIGKILL`, such as one wedged in
+/// an uninterruptible driver wait, or a grandchild left in its own process
+/// group, which `close_all` does not signal.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn shutting_down_ends_a_child_that_ignores_the_hangup() {
+async fn shutting_down_leaves_no_child_running() {
     use std::sync::Arc;
     use vitrum_core::{SessionManager, SessionSpec};
 
@@ -411,14 +422,16 @@ async fn shutting_down_ends_a_child_that_ignores_the_hangup() {
         },
     ));
 
-    // A trailing command after the sleep so the shell cannot exec-optimise
-    // itself away and drop the trap with itself.
+    // The restarted sleep is explained in the doc comment above.
     let id = manager
         .spawn(SessionSpec {
             project_id: vitrum_proto::ProjectId(1),
             cwd: std::env::temp_dir(),
             command: "sh".into(),
-            args: vec!["-c".into(), "trap '' HUP; sleep 300; :".into()],
+            args: vec![
+                "-c".into(),
+                "trap '' HUP; while :; do sleep 300; done".into(),
+            ],
             env: Vec::new(),
             cols: 80,
             rows: 24,
@@ -438,7 +451,8 @@ async fn shutting_down_ends_a_child_that_ignores_the_hangup() {
     while alive(pid) {
         assert!(
             std::time::Instant::now() < deadline,
-            "pid {pid} ignored SIGHUP and outlived the daemon that spawned it"
+            "pid {pid} ignored SIGHUP and outlived the daemon that spawned it. stat={:?}",
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }

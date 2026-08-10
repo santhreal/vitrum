@@ -26,10 +26,12 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 bytes = "1"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# libproc's proc_pidinfo, the only public way to ask what a process's threads
-# are doing. Linux needs no shim: tcgetpgrp comes from portable-pty and the
-# answer comes out of /proc.
+[target.'cfg(unix)'.dependencies]
+# Two things need it. macOS reads thread state through proc_pidinfo, the only
+# public way to ask what a process's threads are doing; Linux needs no shim
+# there, because tcgetpgrp comes from portable-pty and the answer comes out of
+# /proc. Every unix needs `kill`, because portable-pty's cloned killer sends
+# SIGHUP and offers no way to send anything else.
 libc = "0.2"
 
 [features]

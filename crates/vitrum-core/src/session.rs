@@ -1074,6 +1074,11 @@ impl SessionManager {
     /// master reports EOF, so this never blocks on the child. The coalescer is
     /// told outright that the session is gone, rather than left waiting for an
     /// EOF whose timing belongs to the platform. See `Session::closed`.
+    ///
+    /// The hangup is followed by a kill on its own thread, because a child that
+    /// handles `SIGHUP` would otherwise keep running with no session left to
+    /// reach it through. Closing must not wait for that, so the escalation does
+    /// not run here.
     pub fn close(&self, id: SessionId) -> anyhow::Result<()> {
         let s = self
             .sessions
@@ -1087,6 +1092,13 @@ impl SessionManager {
             tracing::debug!(session = s.id.0, error = %e, "kill on close");
         }
         s.closed.notify_one();
+        #[cfg(unix)]
+        if let Some(pid) = s.child_pid {
+            std::thread::spawn(move || {
+                std::thread::sleep(CHILD_EXIT_GRACE);
+                kill_survivors(&[pid]);
+            });
+        }
         Ok(())
     }
 
@@ -1101,8 +1113,11 @@ impl SessionManager {
     /// are ended deliberately here instead of being left to the kernel's
     /// courtesy.
     ///
-    /// Takes the whole registry in one lock and then kills outside it, so a
-    /// slow kill cannot hold up the second session's.
+    /// Takes the whole registry in one lock and then signals outside it, so a
+    /// slow child cannot hold up the next one's. The escalation is waited for
+    /// here rather than detached, because the caller is a process that is about
+    /// to exit and a kill scheduled on a thread that never runs again is no
+    /// kill at all. It costs one grace period for all sessions, not one each.
     pub fn close_all(&self) -> usize {
         let sessions: Vec<Arc<Session>> = std::mem::take(&mut *write_lock(&self.sessions))
             .into_values()
@@ -1112,6 +1127,15 @@ impl SessionManager {
                 tracing::debug!(session = s.id.0, error = %e, "kill on shutdown");
             }
             s.closed.notify_one();
+        }
+        #[cfg(unix)]
+        {
+            // `child_pid` the method refuses a session that is no longer live,
+            // which is every session by the time this runs, so the field is
+            // read directly. This is the one caller that wants the pid of a
+            // session it has just ended.
+            let pids: Vec<u32> = sessions.iter().filter_map(|s| s.child_pid).collect();
+            wait_then_kill_survivors(&pids, CHILD_EXIT_GRACE);
         }
         sessions.len()
     }
@@ -1124,6 +1148,67 @@ impl SessionManager {
         self.get(id)
             .ok_or_else(|| anyhow!(SessionError::NoSuchSession { id }))
     }
+}
+
+/// How long a child gets to act on the hangup before it is killed outright.
+///
+/// Long enough for an agent to flush a partial write and exit, short enough
+/// that daemon shutdown is not something the operator waits on. It is spent
+/// once for every session being closed, not once per session.
+#[cfg(unix)]
+const CHILD_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Wait for `pids` to go away, then `SIGKILL` whatever is left.
+///
+/// portable-pty's cloned killer sends `SIGHUP` and exposes no way to send
+/// anything else, and `SIGHUP` is a signal a process is allowed to handle or
+/// ignore. Every agent started under `nohup`, and anything that installs its
+/// own shutdown handler, therefore survives the only signal the session ever
+/// sent it, holding a terminal that nothing is attached to any more. Closing a
+/// session and stopping the daemon both promise the child is gone, so the
+/// promise is kept with a signal that cannot be refused.
+///
+/// Returns as soon as they have all exited, so the grace is an upper bound
+/// rather than a delay that is always paid.
+///
+/// `kill(pid, 0)` is true of a zombie as well as a running process, so a child
+/// that has already died but not yet been reaped is signalled a second time.
+/// That is a no-op, and it is the safe direction: a zombie holds its pid, so
+/// nothing else can have taken it. The window this cannot close is a child
+/// reaped inside the grace whose pid is immediately reused, which needs a
+/// pidfd to rule out and which no signal-by-pid design avoids.
+#[cfg(unix)]
+fn wait_then_kill_survivors(pids: &[u32], grace: std::time::Duration) {
+    if pids.is_empty() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + grace;
+    while std::time::Instant::now() < deadline {
+        if !pids.iter().copied().any(present) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    kill_survivors(pids);
+}
+
+/// `SIGKILL` every pid still present.
+#[cfg(unix)]
+fn kill_survivors(pids: &[u32]) {
+    for pid in pids.iter().copied().filter(|p| present(*p)) {
+        tracing::debug!(pid, "child ignored the hangup; killing it");
+        // SAFETY: `kill` is async-signal-safe and takes no pointer. A pid that
+        // has gone away answers ESRCH, which is the outcome being asked for.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+}
+
+/// Whether `pid` is still in the process table, running or a zombie.
+#[cfg(unix)]
+fn present(pid: u32) -> bool {
+    // SAFETY: signal 0 performs the permission and existence checks and
+    // delivers nothing.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 /// Blocking PTY read loop, feeding raw bytes to the coalescer.

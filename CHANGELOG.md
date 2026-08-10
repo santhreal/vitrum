@@ -5,6 +5,8 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+## v0.2.0 - 2026-08-10
+
 ### Security
 
 - **The daemon authenticates every connection.** `vitrum-server` listens on

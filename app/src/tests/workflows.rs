@@ -677,3 +677,74 @@ fn one_script_cuts_a_release() {
         "a release tag is pushed by exactly one workflow"
     );
 }
+
+/// Every published target is installed by a job that runs on it.
+///
+/// WHY: `targets.sh check` makes the release matrix, both installers and the
+/// docs table agree on which triples exist. Agreement is not coverage. A
+/// target can be built, uploaded, listed in `SHA256SUMS`, named in the table
+/// and downloaded by nobody, and the first machine to run the installer for
+/// it is somebody else's. That was true of `aarch64-unknown-linux-gnu` for
+/// every release so far: `install.yml` ran four package managers, all of them
+/// x86_64.
+///
+/// The mapping is exhaustive on purpose. A sixth triple has no runner label
+/// here, so it panics naming itself rather than passing, which is the only
+/// arrangement in which adding a platform cannot quietly skip this.
+#[test]
+fn every_published_target_is_installed_on_a_runner_that_runs_it() {
+    let (_, install) = workflows()
+        .into_iter()
+        .find(|(name, _)| name == "install.yml")
+        .expect("install.yml is the workflow that runs the installers");
+    let install = instructions(&install);
+
+    for target in published_targets() {
+        let label = match target.as_str() {
+            "x86_64-unknown-linux-gnu" => "ubuntu-latest",
+            "aarch64-unknown-linux-gnu" => "ubuntu-24.04-arm",
+            "aarch64-apple-darwin" => "macos-latest",
+            "x86_64-apple-darwin" => "macos-15-intel",
+            "x86_64-pc-windows-msvc" => "windows-latest",
+            "aarch64-pc-windows-msvc" => "windows-11-arm",
+            other => panic!(
+                "{other} is published and no runner label is recorded for it here, \
+                 so nothing says which machine proves its archive installs"
+            ),
+        };
+        assert!(
+            install.contains(label),
+            "{target} is published and install.yml never runs on {label}, so its \
+             release archive is uploaded and never installed by anything"
+        );
+    }
+}
+
+/// The triples a release publishes, read from the one file that owns them.
+fn published_targets() -> Vec<String> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the app crate has a parent directory")
+        .join("tools/release/targets.sh");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} cannot be read: {e}", path.display()));
+    let (_, after) = text
+        .split_once("TARGETS='")
+        .expect("targets.sh holds the published set in a TARGETS assignment");
+    let (list, _) = after
+        .split_once('\'')
+        .expect("the TARGETS assignment is closed");
+    let targets: Vec<String> = list
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        targets.len() >= 5,
+        "targets.sh named {} targets, which is fewer than the set that has \
+         shipped; the assignment was probably reformatted out from under this",
+        targets.len()
+    );
+    targets
+}

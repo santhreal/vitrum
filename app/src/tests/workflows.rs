@@ -230,17 +230,29 @@ fn the_zig_version_is_pinned_consistently_and_documented() {
 
 /// Runner labels this repository has agreed on.
 ///
-/// The list is not the point; the ceremony of adding to it is. A typo, a
-/// retired image, an image that does not exist yet and a self-hosted name all
-/// look identical to GitHub — accepted, queued, abandoned — and identical
-/// here: red.
-const ALLOWED_RUNNERS: [&str; 5] = [
-    "ubuntu-latest",
-    "ubuntu-24.04-arm",
-    "macos-latest",
-    "macos-15-intel",
-    "windows-latest",
-];
+/// One file, read here and by the CI step that checks the same thing. The two
+/// used to be hand-written copies of each other and had already drifted: this
+/// one did not carry the self-hosted label four registered runners answer to.
+fn allowed_runners() -> Vec<String> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the app crate has a parent directory")
+        .join("tools/release/runners.txt");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} cannot be read: {e}", path.display()));
+    let labels: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !labels.is_empty(),
+        "{} names no label at all, so every workflow would fail this",
+        path.display()
+    );
+    labels
+}
 
 /// A workflow GitHub cannot parse is a workflow that never runs.
 ///
@@ -349,17 +361,19 @@ fn runner_labels(text: &str) -> Vec<String> {
 /// maintainer cancelling runs by hand.
 #[test]
 fn every_runner_label_is_one_a_runner_answers_to() {
+    let allowed = allowed_runners();
     let mut seen = 0usize;
     for (name, text) in workflows() {
         for label in runner_labels(&text) {
             seen += 1;
             assert!(
-                ALLOWED_RUNNERS.contains(&label.as_str()),
+                allowed.contains(&label),
                 "{name} asks for the runner label {label:?}, which this \
                  repository has not agreed on. A label no machine answers to \
                  does not fail: the job queues until GitHub discards it a day \
                  later, and enough of those starve every servable job here. \
-                 Add it to ALLOWED_RUNNERS if a runner really answers to it."
+                 Add it to tools/release/runners.txt if a runner really \
+                 answers to it."
             );
         }
     }

@@ -299,6 +299,8 @@ jobs:
       # The allowlist is the point rather than the labels in it: a new label
       # of any kind — a typo, a self-hosted name, a retired image, an image
       # that does not exist yet — is red until someone adds it deliberately.
+      # It lives in tools/release/runners.txt, which the workflow test reads
+      # too. Two hand-written copies had already drifted apart.
       #
       # `vars.CI_RUNNER` is a repository setting rather than a file, so the
       # scan below cannot see it. It is passed in and held to the same list,
@@ -311,7 +313,7 @@ jobs:
           CI_RUNNER: ${{ vars.CI_RUNNER }}
         run: |
           set -eu
-          allowed=" ubuntu-latest macos-latest macos-15-intel windows-latest vitrum "
+          allowed=" $(sed -e 's/#.*//' tools/release/runners.txt | tr -s '[:space:]' ' ') "
 
           # Three ways a label reaches a runner: a bare `runs-on` scalar, an
           # operand of `&&`/`||` in a `runs-on` expression (which is how the

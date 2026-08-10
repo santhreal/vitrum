@@ -1,0 +1,20 @@
+# Runner labels this repository has agreed on. One per line.
+#
+# The list is not the point; the ceremony of adding to it is. A typo, a retired
+# image, an image that does not exist yet and a self-hosted name all look
+# identical to GitHub -- accepted, queued, abandoned. `runs-on: vitrum` named a
+# runner nobody had registered, six jobs per push asked for it, and 233 queued
+# jobs starved every servable job in the repository. `macos-13`, an image GitHub
+# retired, is why the v0.1.0 release matrix never completed.
+#
+# This file is read by the CI step and by the workflow test that check the same
+# thing. Two hand-written copies of a list is how one of them goes stale, and
+# one of them did: the test's copy did not carry `vitrum` while CI's did.
+#
+# Adding a label here is a claim that a runner answers to it today.
+ubuntu-latest
+ubuntu-24.04-arm
+macos-latest
+macos-15-intel
+windows-latest
+vitrum

@@ -11,16 +11,24 @@ name: install
 # Each distribution is a separate job because each one is a separate package
 # manager, a separate package name, and a separate way of failing. A matrix
 # that stops at the first red hides the other three answers.
+#
+# macOS and Windows run the same way and were the gap: `install.sh` on macOS
+# takes a different branch from the Linux one it shares a file with, and
+# `install.ps1` was only ever parsed, never run. A parse says the file is
+# PowerShell; it does not say the download, the checksum, the PATH entry, the
+# shortcut and the uninstall work.
 on:
   push:
     branches: [main]
     paths:
       - install.sh
+      - install.ps1
       - docs/install.md
       - .github/workflows/install.yml
   pull_request:
     paths:
       - install.sh
+      - install.ps1
       - docs/install.md
       - .github/workflows/install.yml
   schedule:
@@ -80,3 +88,84 @@ jobs:
             echo "uninstall left the binary behind" >&2
             exit 1
           fi
+
+  # macOS runs the same installer as Linux and reaches different code: a
+  # different `uname` mapping, a different login file, and no package manager
+  # step at all, because WKWebView is part of the system.
+  macos:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install
+        run: sh install.sh
+
+      - name: the binaries run
+        run: |
+          "$HOME/.local/bin/vitrum" --version
+          "$HOME/.local/bin/vitrum-server" --version
+
+      - name: a login shell finds them
+        run: sh -lc 'command -v vitrum && command -v vitrum-server'
+
+      - name: uninstall
+        run: |
+          sh install.sh --uninstall
+          if [ -e "$HOME/.local/bin/vitrum" ]; then
+            echo "uninstall left the binary behind" >&2
+            exit 1
+          fi
+
+  # The Windows installer had no run anywhere in the pipeline. The runner image
+  # already carries the WebView2 runtime, so this proves the download, the
+  # checksum, the layout, the PATH entry and the manifest-driven uninstall, and
+  # not the runtime install path.
+  windows:
+    name: windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install
+        shell: pwsh
+        run: .\install.ps1
+
+      - name: the binaries run
+        shell: pwsh
+        run: |
+          & "$env:LOCALAPPDATA\vitrum\bin\vitrum.exe" --version
+          & "$env:LOCALAPPDATA\vitrum\bin\vitrum-server.exe" --version
+
+      # The installer edits the user PATH, which this process was started
+      # before. Reading it back from the registry is what a new terminal does.
+      - name: the user PATH carries the install directory
+        shell: pwsh
+        run: |
+          $dir = "$env:LOCALAPPDATA\vitrum\bin"
+          $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($user -split ';') -notcontains $dir) {
+            Write-Output "user PATH does not carry $dir"
+            Write-Output $user
+            exit 1
+          }
+
+      - name: uninstall
+        shell: pwsh
+        run: |
+          .\install.ps1 -Uninstall
+          if (Test-Path "$env:LOCALAPPDATA\vitrum\bin\vitrum.exe") {
+            Write-Output 'uninstall left the binary behind'
+            exit 1
+          }
+          $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($user -split ';') -contains "$env:LOCALAPPDATA\vitrum\bin") {
+            Write-Output 'uninstall left the install directory on the user PATH'
+            exit 1
+          }

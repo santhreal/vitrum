@@ -137,18 +137,32 @@ async fn renaming_an_unknown_session_errors() {
 /// until a user reported garbled output after tidying up their tab names. This
 /// renames mid-stream, with a client attached, and then requires the exact
 /// bytes to be unbroken and the child to still answer.
+///
+/// The child waits for input before writing anything. Attach subscribes to
+/// live output starting at the next published chunk and never replays, so a
+/// child that writes its first line while the attach is still in flight puts
+/// that line in scrollback only. Nothing then delivers it, and the wait below
+/// runs to its deadline. That is the contract behaving as specified, not a
+/// timing margin, so the fix is to have no byte exist before the attach rather
+/// than to wait longer for one.
 #[cfg(not(windows))]
 #[tokio::test]
 async fn a_rename_disturbs_neither_the_stream_nor_the_child() {
     let h = Harness::start(64 * 1024).await;
     let mut c = h.greeted().await;
     let id = c
-        .create(create(1, "echo before; read -r x; echo after=$x"))
+        .create(create(1, "read -r go; echo before; read -r x; echo after=$x"))
         .await;
     c.attach(id, 80, 24).await;
+    c.send(ClientMsg::Input {
+        session: id,
+        data: b"go\n".to_vec(),
+    })
+    .await;
     c.until("the first line", |s| s.bytes(id).ends_with(b"before\r\n"))
         .await;
     let seq_before = c.seen.first_seq(id);
+    assert_eq!(seq_before, Some(0), "the attach preceded the first byte");
 
     c.send(ClientMsg::Rename {
         session: id,
@@ -172,7 +186,7 @@ async fn a_rename_disturbs_neither_the_stream_nor_the_child() {
 
     assert_eq!(
         c.seen.bytes(id),
-        b"before\r\nalive\r\nafter=alive\r\n",
+        b"go\r\nbefore\r\nalive\r\nafter=alive\r\n",
         "the stream must be exactly what the child wrote plus the echo"
     );
     assert_eq!(
@@ -186,6 +200,6 @@ async fn a_rename_disturbs_neither_the_stream_nor_the_child() {
         .manager
         .scrollback(id, u64::MAX, 4096)
         .expect("scrollback");
-    assert_eq!(retained, b"before\r\nalive\r\nafter=alive\r\n");
+    assert_eq!(retained, b"go\r\nbefore\r\nalive\r\nafter=alive\r\n");
     h.manager.close(id).expect("close");
 }

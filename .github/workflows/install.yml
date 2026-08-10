@@ -49,18 +49,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Four package managers on x86_64, and one of them again on arm64. The
+  # architecture is a separate leg because it is a separate published archive
+  # with a separate checksum, and `aarch64-unknown-linux-gnu` was the one
+  # target in the release matrix that no installer run ever downloaded: it was
+  # built, uploaded, and taken on trust. One image is enough there, because
+  # what differs by architecture is the asset, not the package manager.
   container:
-    name: ${{ matrix.image }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.image }} on ${{ matrix.host }}
+    runs-on: ${{ matrix.host }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - ubuntu:24.04
-          - debian:12
-          - fedora:latest
-          - archlinux:latest
+        include:
+          - { host: ubuntu-latest, image: "ubuntu:24.04" }
+          - { host: ubuntu-latest, image: "debian:12" }
+          - { host: ubuntu-latest, image: "fedora:latest" }
+          - { host: ubuntu-latest, image: "archlinux:latest" }
+          - { host: ubuntu-24.04-arm, image: "ubuntu:24.04" }
     container:
       image: ${{ matrix.image }}
     steps:

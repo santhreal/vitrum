@@ -14,8 +14,8 @@
 //     the eval channel. That channel is JSON, JSON strings must be valid
 //     UTF-8, and PTY output is arbitrary bytes.
 //   * What is left is what only the DOM can do or only the DOM can see: the
-//     terminal emulator itself, focus, the clipboard, the fit addon's
-//     geometry, chords, and the keystrokes the grid captures. This file holds
+//     terminal emulator itself, focus, the clipboard, the pane's grid
+//     measurement, chords, and the keystrokes the grid captures. This file holds
 //     no session id, no byte offset, no session list and no scrollback.
 //
 // Nothing here animates, polls, or sets an interval. Every wakeup is caused by
@@ -225,8 +225,43 @@ function mount(el) {
     pref.renderer || (window.__vitrum_renderer !== "dom" ? "webgl" : "dom"),
   );
 
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
+  // Columns and rows the pane's box can show, in whole cells.
+  //
+  // Ours rather than xterm's fit addon, which got this wrong in a way no
+  // single window size makes obvious. The addon reads
+  // `getComputedStyle(container).height`, and `box-sizing: border-box`, which
+  // `.rg-app *` sets on every element in this window, makes that the BORDER
+  // box with the padding inside it. It then subtracts the padding of the inner
+  // `.xterm` element, which has none, rather than the container's.
+  // `.rg-terminal` carries 24px above, 8px below and 16px each side, so the
+  // child was told it had two rows and four columns that are behind the
+  // window frame: the last option of an approval prompt is sliced in half by
+  // the bottom edge, and a centred TUI is centred on a grid wider than the
+  // one on screen.
+  //
+  // `clientWidth` and `clientHeight` are the padding box and exclude a border
+  // by construction, so only the padding has to come off. Both are integers
+  // because the engine rounds them, which can leave the grid up to half a
+  // pixel over the true box; half a pixel is not a row anybody can see.
+  //
+  // The arithmetic is `ui::terminal::pane_grid`, which is where it is tested.
+  function paneGrid() {
+    const core = term._core;
+    const dims = core && core._renderService && core._renderService.dimensions;
+    const cell = dims && dims.css && dims.css.cell;
+    if (!cell || !cell.width || !cell.height) return null;
+    const s = getComputedStyle(el);
+    const padX = parseFloat(s.paddingLeft) + parseFloat(s.paddingRight);
+    const padY = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom);
+    // The viewport's scrollbar is drawn inside the grid's width, so a column
+    // under it is a column the operator cannot read.
+    const bar =
+      term.options.scrollback === 0 || !core.viewport ? 0 : core.viewport.scrollBarWidth || 0;
+    return {
+      cols: Math.max(2, Math.floor((el.clientWidth - padX - bar) / cell.width)),
+      rows: Math.max(1, Math.floor((el.clientHeight - padY) / cell.height)),
+    };
+  }
 
   // Reaching the top of the buffer asks the daemon for what came before it.
   //
@@ -265,6 +300,16 @@ function mount(el) {
   // second forced layout on the one path where the operator is sitting waiting
   // for a terminal to appear. Measured offline: two fits to reach a sized grid
   // before, one after.
+  //
+  // `fitW`/`fitH` are the box the LAST SUCCESSFUL measurement saw, and that is
+  // load-bearing rather than bookkeeping. The synchronous call below runs at
+  // mount, before the engine has necessarily measured the font, and a grid
+  // cannot be proposed without a cell size. Recording the box anyway made the
+  // observer's first delivery — the one that arrives after layout, when the
+  // cell size exists — look like a size nothing had changed, so it returned
+  // early and the pane sat at xterm's default 80x24 for the life of the
+  // window: a short, narrow grid in a large pane, with a dead band under it
+  // that the child never draws in.
   let fitW = 0;
   let fitH = 0;
 
@@ -272,10 +317,16 @@ function mount(el) {
     const w = el.clientWidth;
     const h = el.clientHeight;
     if (w === 0 || h === 0) return;
-    fitW = w;
-    fitH = h;
     try {
-      fit.fit();
+      const want = paneGrid();
+      if (!want) return;
+      fitW = w;
+      fitH = h;
+      if (want.cols === term.cols && want.rows === term.rows) return;
+      // What the fit addon did before resizing, and for the reason it did it:
+      // the renderer holds glyphs for a grid that is about to stop existing.
+      term._core._renderService.clear();
+      term.resize(want.cols, want.rows);
     } catch (e) {
       report(`${why}: ${e}`);
     }
@@ -753,9 +804,11 @@ async function panePump() {
 /// JavaScript costs 5.0 MB of WebProcess memory per window, measured over
 /// twenty windows, and a window that never focuses a session never needs it.
 ///
-/// Order matters: the addons extend `Terminal`, so xterm goes first. Each
-/// element's text is cleared once evaluated, which releases the source string
-/// as well as deferring the compile.
+/// Only xterm itself is compiled here. The WebGL renderer is compiled on
+/// demand by `loadWebgl`, and the pane's geometry is `paneGrid`, so there is
+/// no addon left that a session needs at mount. The element's text is cleared
+/// once evaluated, which releases the source string as well as deferring the
+/// compile.
 ///
 /// Indirect eval, so the bundles land in global scope exactly as a real
 /// `<script>` would have put them. They are our own vendored files, inlined by
@@ -763,13 +816,12 @@ async function panePump() {
 /// the operator or a session supplied.
 function loadVendor() {
   if (typeof Terminal === "function") return true;
-  for (const id of ["rg-vendor-xterm", "rg-vendor-fit"]) {
-    const el = document.getElementById(id);
-    if (!el || !el.textContent) continue;
+  const el = document.getElementById("rg-vendor-xterm");
+  if (el && el.textContent) {
     try {
       (0, eval)(el.textContent);
     } catch (e) {
-      report(`${id} failed to load: ${e}`);
+      report(`rg-vendor-xterm failed to load: ${e}`);
       return false;
     }
     el.textContent = "";
@@ -847,8 +899,8 @@ function handle(cmd) {
 // WebProcess memory per window, measured as a controlled pair over twenty
 // windows: 45.0 MB each with the Terminal constructed against 40.8 MB without,
 // 81.8 MB across the set. Most windows in a twenty-window session are showing
-// a sidebar and an empty pane, and were each paying for an xterm instance,
-// a fit addon and a renderer that nothing had written to.
+// a sidebar and an empty pane, and were each paying for an xterm instance and
+// a renderer that nothing had written to.
 //
 // So we wait for the container and then stop. `ensureTerm` builds the terminal
 // the first time a pane op actually needs one.

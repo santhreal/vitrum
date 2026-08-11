@@ -25,12 +25,11 @@ use std::path::PathBuf;
 /// welcome; shrinking and updating the row is the whole ritual.
 ///
 /// Paths are relative to the repository root and use `/` on every platform.
-const BILL: [(&str, usize); 5] = [
+const BILL: [(&str, usize); 4] = [
     ("app/src/vendor/xterm.js", 289_441),
     ("app/src/vendor/addon-webgl.js", 100_856),
-    ("app/src/bootstrap.js", 35_572),
+    ("app/src/bootstrap.js", 38_665),
     ("vendor/src/js/native_eval.js", 1_675),
-    ("app/src/vendor/addon-fit.js", 1_497),
 ];
 
 /// The repository root, from the crate this test is compiled into.
@@ -47,16 +46,19 @@ fn repo_root() -> PathBuf {
 /// glslang's and libxev's JavaScript into the tree, and the bill then reported
 /// seven scripts nobody here wrote as unrecorded. What ships is what is
 /// committed, and that is the set this measures.
+///
+/// A tracked path with no file behind it is a deletion that has not been
+/// committed yet, and a script that is not on disk is not shipped. Retiring a
+/// vendored bundle otherwise turns the whole file red between the `rm` and the
+/// commit, which is the one moment its author is reading it.
 fn shipped_scripts() -> Vec<(String, usize)> {
     let root = repo_root();
     let mut found: Vec<(String, usize)> = crate::tests::tree::tracked()
         .iter()
         .filter(|rel| rel.ends_with(".js"))
-        .map(|rel| {
-            let len = std::fs::metadata(root.join(rel))
-                .unwrap_or_else(|e| panic!("git tracks {rel} and it cannot be read: {e}"))
-                .len();
-            (rel.clone(), usize::try_from(len).expect("no script is 4 GB"))
+        .filter_map(|rel| {
+            let len = std::fs::metadata(root.join(rel)).ok()?.len();
+            Some((rel.clone(), usize::try_from(len).expect("no script is 4 GB")))
         })
         .collect();
     found.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));

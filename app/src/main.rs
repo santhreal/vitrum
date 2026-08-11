@@ -118,12 +118,11 @@ const RECONNECT_ATTEMPTS: u32 = 25;
 /// The JS half. Sent through one long-lived `eval` that never returns.
 const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
 
-/// Vendored xterm.js and its addons, inlined into the document head so they are
-/// parsed before the app's first render. No CDN, no network at startup.
+/// Vendored xterm.js and its WebGL addon, inlined into the document head as
+/// unparsed text. No CDN, no network at startup.
 const XTERM_JS: &str = include_str!("vendor/xterm.js");
 const XTERM_CSS: &str = include_str!("vendor/xterm.css");
 const ADDON_WEBGL_JS: &str = include_str!("vendor/addon-webgl.js");
-const ADDON_FIT_JS: &str = include_str!("vendor/addon-fit.js");
 
 /// Sidebar styling and the shared `--rg-*` design tokens.
 const SIDEBAR_CSS: &str = include_str!("../assets/sidebar.css");

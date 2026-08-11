@@ -381,8 +381,8 @@
  * by construction the first time somebody nudges it, and it is also the one
  * declaration in this file whose value the PTY can feel, so it is the last
  * place a number should be free to be anything. The pair is load-bearing:
- * THE AXIS TOTALS MAY NOT CHANGE. xterm's fit addon sizes the grid from the
- * measured element's CONTENT box, so the rows it proposes are
+ * THE AXIS TOTALS MAY NOT CHANGE. The pane's grid is sized from the box
+ * minus this padding, so the rows are
  * floor((paneHeight - paddingTop - paddingBottom) / cellHeight) and the cols
  * are the same arithmetic across. Those depend on the SUM of each axis and
  * on nothing else, so moving 8px from the bottom of the pane to the top is

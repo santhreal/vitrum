@@ -15,7 +15,7 @@
 //!
 //! What is left in this file is the vocabulary of the eval channel, which now
 //! carries only what the DOM alone can do or alone can see: focus, the
-//! clipboard, the fit addon's geometry, a chord, and the keystrokes the
+//! clipboard, the pane's grid measurement, a chord, and the keystrokes the
 //! terminal grid captures. [`BridgeEvent::Server`] and [`BridgeEvent::Conn`]
 //! are in the same enum without crossing that channel: they are built in
 //! `socket.rs` so one reducer handles everything that can move the client's
@@ -256,7 +256,7 @@ pub enum BridgeEvent {
         #[serde(default)]
         detail: Option<String>,
     },
-    /// Terminal geometry after the fit addon measured the container.
+    /// Terminal geometry after the bridge measured the pane's box.
     Resize { cols: u16, rows: u16 },
     /// Bytes the terminal grid captured: a keystroke, a paste, or a raw 8-bit
     /// response such as a mouse report or a DEC reply.
@@ -335,7 +335,7 @@ mod tests {
     }
 
     /// Pins the resize shape, for the same reason and by the same route: the
-    /// fit addon measures the box and reports cols and rows, and this side
+    /// bridge measures the box and reports cols and rows, and this side
     /// decides which session they belong to.
     #[test]
     fn resize_frame_matches_the_shape_the_daemon_reads() {

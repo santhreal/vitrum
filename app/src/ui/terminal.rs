@@ -282,6 +282,89 @@ mod tests {
     use vitrum_model::SessionView;
     use vitrum_proto::{Attention, ProjectId, SessionInfo};
 
+    // -----------------------------------------------------------------------
+    // The pane's grid arithmetic
+    //
+    // Test-only, and that is the honest shape of it. The measurement happens
+    // in the webview, because the pane's pixel box is the DOM's and nothing on
+    // this side can see it; `bootstrap.js::paneGrid` runs this arithmetic on
+    // the live box and reports the result as `BridgeEvent::Resize`. What lives
+    // here is the definition, written where a test can run it over sizes no
+    // window will ever be dragged to, against a bridge that cannot be run at
+    // all without a display.
+    //
+    // The seam is real and is not papered over: this cannot prove the bridge
+    // divides the way it says it does, only that the terms are there.
+    // `the_bridge_measures_the_pane_the_way_this_module_does` is that half,
+    // and it is as much as source text can carry. The seam closes when the
+    // native pane in `app/src/pane` hosts a session and the box is Rust's.
+    // -----------------------------------------------------------------------
+
+    /// Fewest columns a pane is ever handed.
+    ///
+    /// xterm's own floor. A one-column grid is not a terminal, and a child
+    /// told it has one wraps every line into a stripe.
+    const MIN_COLS: u16 = 2;
+
+    /// Fewest rows a pane is ever handed. One, because a child with zero rows
+    /// has nowhere to draw and the emulator rejects the resize.
+    const MIN_ROWS: u16 = 1;
+
+    /// Whole cells that fit along one axis of a pane.
+    ///
+    /// `box_px` is the axis of the box the pane occupies. `chrome_px` is the
+    /// AXIS SUM of everything inside that box a cell cannot occupy: the
+    /// container's padding, plus a scrollbar gutter on the horizontal axis. A
+    /// sum and not two sides, because that is the whole of what the arithmetic
+    /// can see, and taking two would invite a caller to believe the
+    /// distribution matters.
+    ///
+    /// Floor, never round and never ceil. A row the window edge cuts in half
+    /// is not a row anybody can read, and counting it puts the last line of a
+    /// full-screen TUI under the frame.
+    fn cells_across(box_px: f64, chrome_px: f64, cell_px: f64) -> u32 {
+        if !(cell_px > 0.0) || !box_px.is_finite() || !chrome_px.is_finite() {
+            return 0;
+        }
+        let whole = ((box_px - chrome_px) / cell_px).floor();
+        if whole.is_finite() && whole > 0.0 {
+            whole as u32
+        } else {
+            0
+        }
+    }
+
+    /// The grid a pane's pixel box can actually show.
+    ///
+    /// The one place this arithmetic is written down. `bootstrap.js` measures
+    /// the live box and computes the same two numbers the same way, and
+    /// `the_bridge_measures_the_pane_the_way_this_module_does` holds the two
+    /// together, because what comes out of here leaves the process as
+    /// `ClientMsg::Resize` and an agent redraws to it.
+    ///
+    /// The defect this replaced was one subtraction. The pane delegated to
+    /// xterm's fit addon, which reads `getComputedStyle(container).height`;
+    /// that resolves to the BORDER box under `box-sizing: border-box`, which
+    /// `.rg-app *` sets on every element in the window, and the addon then
+    /// subtracts the padding of the inner `.xterm` element, which has none,
+    /// rather than the container's. `.rg-terminal` carries 24px above and 8px
+    /// below, so the child was told it had two rows the window could not show
+    /// and four columns off the right edge.
+    fn pane_grid(
+        box_w: f64,
+        box_h: f64,
+        chrome_x: f64,
+        chrome_y: f64,
+        cell_w: f64,
+        cell_h: f64,
+    ) -> (u16, u16) {
+        let axis = |n: u32, min: u16| n.clamp(u32::from(min), u32::from(u16::MAX)) as u16;
+        (
+            axis(cells_across(box_w, chrome_x, cell_w), MIN_COLS),
+            axis(cells_across(box_h, chrome_y, cell_h), MIN_ROWS),
+        )
+    }
+
     fn session(id: u64, status: SessionStatus) -> SessionView {
         SessionView::new(SessionInfo {
             id: SessionId(id),
@@ -376,15 +459,15 @@ mod tests {
     /// WHY: a pane's padding is a visual decision that silently resizes the
     /// PTY.
     ///
-    /// The class: `.rg-terminal`'s padding is not decoration. xterm's fit
-    /// addon measures the element's CONTENT box, so the grid it proposes is
+    /// The class: `.rg-terminal`'s padding is not decoration. It comes out of
+    /// the box before [`pane_grid`] divides, so the grid is
     /// `floor((paneHeight - padTop - padBottom) / cellHeight)` by
-    /// `floor((paneWidth - padLeft - padRight) / cellWidth)`, and that grid
-    /// goes out as a `Resize` on the wire. An agent redraws to it. Somebody
-    /// nudging the transcript down from the titlebar therefore takes a row
-    /// away from the agent, on some window heights and not others, and it is
-    /// discovered as a wrapped line in a diff three days later — never as a
-    /// padding change, because nothing connects the two.
+    /// `floor((paneWidth - padLeft - padRight - scrollbar) / cellWidth)`, and
+    /// that grid goes out as a `Resize` on the wire. An agent redraws to it.
+    /// Somebody nudging the transcript down from the titlebar therefore takes
+    /// a row away from the agent, on some window heights and not others, and
+    /// it is discovered as a wrapped line in a diff three days later, never as
+    /// a padding change, because nothing connects the two.
     ///
     /// The invariant that makes such an edit safe is narrower than "the
     /// padding is these numbers": the fit arithmetic reads only the SUM per
@@ -411,8 +494,9 @@ mod tests {
     /// and `padding: var(--rg-space-4)` (both sums change at once).
     ///
     /// What it does NOT catch: a border or a scrollbar gutter on the same
-    /// element, which also come out of the content box, and anything the fit
-    /// addon does that is not this arithmetic.
+    /// element, which also come out of the box, and whether the bridge
+    /// measures the box correctly in the first place, which is
+    /// [`the_bridge_measures_the_pane_the_way_this_module_does`].
     #[test]
     fn pane_padding_never_changes_the_grid_the_pty_gets() {
         let css = include_str!("../../assets/parts/10-spacing.css");
@@ -453,8 +537,9 @@ mod tests {
         for pane_w in [480.0, 640.0, 903.0, 1280.0, 1920.0, 2560.0] {
             for pane_h in (200..=1400).step_by(7).map(f64::from) {
                 for (cell_w, cell_h) in [(8.0, 17.0), (9.6, 19.2), (7.0, 15.0), (10.0, 21.5)] {
-                    let shipped = fit(pane_w, pane_h, cell_w, cell_h, left + right, top + bottom);
-                    let before = fit(pane_w, pane_h, cell_w, cell_h, base_x, base_y);
+                    let shipped =
+                        pane_grid(pane_w, pane_h, left + right, top + bottom, cell_w, cell_h);
+                    let before = pane_grid(pane_w, pane_h, base_x, base_y, cell_w, cell_h);
                     assert_eq!(
                         shipped, before,
                         "a {pane_w}x{pane_h} pane of {cell_w}x{cell_h} cells \
@@ -467,15 +552,152 @@ mod tests {
         }
     }
 
-    /// The grid xterm's fit addon proposes, in cells.
+    /// WHY: the number of rows the child is told it has must be the number of
+    /// rows the operator can see.
     ///
-    /// `pad_x` and `pad_y` are AXIS SUMS and not four sides, because that is
-    /// the whole of what the arithmetic can see; taking four would invite a
-    /// caller to believe the distribution matters.
-    fn fit(pane_w: f64, pane_h: f64, cell_w: f64, cell_h: f64, pad_x: f64, pad_y: f64) -> (u32, u32) {
-        let cols = ((pane_w - pad_x) / cell_w).floor().max(2.0) as u32;
-        let rows = ((pane_h - pad_y) / cell_h).floor().max(1.0) as u32;
-        (cols, rows)
+    /// The class this closes is off-by-a-partial-cell in either direction. A
+    /// grid one row too tall hides the bottom line of a full-screen TUI under
+    /// the window edge, which is where an approval prompt puts its last
+    /// option; a grid one row too short leaves a dead band the child will
+    /// never draw in. Both are invisible in a screenshot taken at a size that
+    /// happens to divide evenly, so the table is deliberately built out of
+    /// sizes that do not.
+    ///
+    /// The shipped defect is the `chrome_px` column being zero: xterm's fit
+    /// addon read `getComputedStyle(container).height`, which is the BORDER
+    /// box under the `box-sizing: border-box` this window sets on every
+    /// element, and then subtracted the padding of the inner `.xterm`, which
+    /// has none. With `.rg-terminal`'s 32px per axis that is the last column
+    /// of every row below: four columns and two rows the operator does not
+    /// have.
+    ///
+    /// What it does NOT catch: whether the live box is measured correctly,
+    /// which is [`the_bridge_measures_the_pane_the_way_this_module_does`].
+    #[test]
+    fn a_pane_is_only_told_about_cells_it_can_show_whole() {
+        // box w, box h, chrome x, chrome y, cell w, cell h, cols, rows, and
+        // the grid the pre-fix arithmetic proposed for the same pane.
+        let table = [
+            (1280.0, 800.0, 32.0, 32.0, 8.0, 17.0, 156, 45, (160, 47)),
+            (1281.0, 807.0, 32.0, 32.0, 9.6, 19.2, 130, 40, (133, 42)),
+            (1920.0, 1440.0, 32.0, 32.0, 8.0, 19.2, 236, 73, (240, 75)),
+            (640.0, 400.0, 32.0, 32.0, 7.0, 21.5, 86, 17, (91, 18)),
+            // The boundary pair. 797 is exactly 32 of chrome plus 45 whole
+            // rows; 796 is one pixel short of the 45th and must report 44.
+            (903.0, 797.0, 32.0, 32.0, 10.0, 17.0, 87, 45, (90, 46)),
+            (903.0, 796.0, 32.0, 32.0, 10.0, 17.0, 87, 44, (90, 46)),
+            // Below one cell on both axes. The child still needs a grid it
+            // can address, so the floor is xterm's and not the arithmetic's.
+            (10.0, 10.0, 32.0, 32.0, 8.0, 17.0, 2, 1, (2, 1)),
+        ];
+        for (w, h, cx, cy, cell_w, cell_h, cols, rows, before) in table {
+            assert_eq!(
+                pane_grid(w, h, cx, cy, cell_w, cell_h),
+                (cols, rows),
+                "a {w}x{h} pane with {cx}x{cy} of chrome and {cell_w}x{cell_h} \
+                 cells shows {cols}x{rows} whole cells; the arithmetic that \
+                 ignored the chrome proposed {before:?}"
+            );
+        }
+
+        // The property the table is a sample of, asserted before the floor
+        // that xterm imposes: over every pane height an operator can drag to,
+        // the rows handed out plus the chrome fit inside the box, and one
+        // more row does not.
+        for cell_h in [15.0, 17.0, 19.2, 21.5] {
+            for chrome_y in [0.0, 8.0, 32.0, 40.0] {
+                for h in (200..=1400).map(f64::from) {
+                    let rows = cells_across(h, chrome_y, cell_h);
+                    let painted = f64::from(rows) * cell_h + chrome_y;
+                    assert!(
+                        painted <= h,
+                        "a {h}px pane with {chrome_y}px of chrome was told it \
+                         has {rows} rows of {cell_h}px, which paints \
+                         {painted}px: the last row is under the window edge"
+                    );
+                    assert!(
+                        painted + cell_h > h,
+                        "a {h}px pane with {chrome_y}px of chrome was told it \
+                         has {rows} rows of {cell_h}px, leaving room for \
+                         another whole one the child will never draw in"
+                    );
+                }
+            }
+        }
+    }
+
+    /// WHY: the arithmetic in [`pane_grid`] is not what runs.
+    ///
+    /// Rust computes no geometry at runtime. The measurement happens in the
+    /// webview, where the pane's box lives, so a correct function here and a
+    /// bridge that still delegates to xterm's fit addon is the defect with a
+    /// test in front of it. This pins the three things the bridge must do:
+    /// measure the container's own padding, subtract it, and floor. The addon
+    /// is named as banned because it is the specific wrong answer, and it is
+    /// one `loadAddon` away from coming back.
+    ///
+    /// Source text is the only surface this side has. It cannot see whether
+    /// the numbers are combined correctly, only that the terms are present,
+    /// so the arithmetic itself stays in [`pane_grid`] where a test can run
+    /// it.
+    #[test]
+    fn the_bridge_measures_the_pane_the_way_this_module_does() {
+        let js = crate::BOOTSTRAP_JS;
+        assert!(
+            !js.contains("FitAddon"),
+            "the bridge is back on xterm's fit addon, which measures the \
+             container's BORDER box and subtracts the inner element's \
+             padding: the pane's own padding is then counted as usable, and \
+             the child is handed rows the window edge cuts off"
+        );
+        assert!(
+            js.contains("function paneGrid("),
+            "the bridge no longer has a named grid measurement, so nothing \
+             here can say what it hands xterm"
+        );
+        for term in [
+            "paddingTop",
+            "paddingBottom",
+            "paddingLeft",
+            "paddingRight",
+            "Math.floor",
+        ] {
+            assert!(
+                js.contains(term),
+                "the bridge's grid measurement dropped `{term}`, so the \
+                 pane's chrome is either not subtracted or not floored"
+            );
+        }
+    }
+
+    /// WHY: a measurement that could not be taken must not count as one.
+    ///
+    /// The pane refits when the observer sees its box change, and it skips
+    /// the work when the box is the one the last fit saw. That cache is
+    /// written inside `refit`, and writing it before the grid has actually
+    /// been measured is a specific, silent failure: the synchronous fit at
+    /// mount runs before the engine has necessarily measured the font, so it
+    /// proposes nothing, and the observer's first delivery then matches the
+    /// recorded box and returns early. The pane stays at xterm's default
+    /// 80x24 for the life of the window, which is a small grid in the corner
+    /// of a large pane with a dead band under it.
+    ///
+    /// The ordering IS the invariant, so the ordering is what this reads.
+    #[test]
+    fn a_measurement_that_could_not_be_taken_does_not_count_as_one() {
+        let body = crate::BOOTSTRAP_JS
+            .split_once("function refit(")
+            .expect("the bridge has no refit")
+            .1;
+        let body = body.split_once("\n  }").expect("refit never closes").0;
+        let measured = body.find("paneGrid()").expect("refit measures nothing");
+        let recorded = body.find("fitW =").expect("refit records no box");
+        assert!(
+            recorded > measured,
+            "refit records the box it saw before it has a grid to show for \
+             it, so a fit that could not run still suppresses the next one \
+             and the pane never leaves its default size:\n{body}"
+        );
     }
 
     /// One rule's `padding` shorthand, as the source spells each side.

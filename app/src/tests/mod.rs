@@ -2308,10 +2308,6 @@ fn vendored_terminal_libraries_are_complete() {
         ADDON_WEBGL_JS.contains("WebglAddon"),
         "webgl addon bundle does not export WebglAddon"
     );
-    assert!(
-        ADDON_FIT_JS.contains("FitAddon"),
-        "fit addon bundle does not export FitAddon"
-    );
     assert!(XTERM_CSS.contains(".xterm"), "xterm.css is not xterm's CSS");
 }
 
@@ -2323,7 +2319,6 @@ fn vendored_bundles_cannot_break_out_of_their_script_tags() {
     for (name, src) in [
         ("xterm.js", XTERM_JS),
         ("addon-webgl.js", ADDON_WEBGL_JS),
-        ("addon-fit.js", ADDON_FIT_JS),
     ] {
         assert!(
             !src.to_ascii_lowercase().contains("</script"),

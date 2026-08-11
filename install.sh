@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 #
-# vitrum installer (Linux + macOS).
+# vitrum installer (Linux).
 #
 # Downloads one published release archive, verifies it against the release
 # `SHA256SUMS`, and installs `vitrum` and `vitrum-server` into a directory on
@@ -161,17 +161,18 @@ directory on your `PATH` for bash, zsh and fish, and defines `vu` as
 `vitrum update`. Each step is idempotent and each is skipped by
 --no-integrate.
 
-On Linux, a shared library the build needs and this machine has not got is
-installed with the distribution's own package manager, as root through `sudo`
-when this is not already root. Each command is printed before it runs.
+A shared library the build needs and this machine has not got is installed
+with the distribution's own package manager, as root through `sudo` when this
+is not already root. Each command is printed before it runs.
 
 The installer downloads `vitrum-<version>-<target>.tar.gz` and the release
 `SHA256SUMS`, refuses to install if the digests disagree, and then places
 `vitrum` and `vitrum-server` in the install directory. Both are needed: the
 client will not run without the daemon beside it or on your `PATH`.
 
-Published targets are x86_64 and arm64 Linux (glibc), Apple silicon macOS,
-Intel macOS, and x86_64 Windows. On any other platform, build from source:
+Published targets are x86_64 and arm64 Linux (glibc). The terminal pane
+presents to an X11 window, so a release carries Linux only. On any other
+platform, build from source:
 
   git clone https://github.com/santhreal/vitrum && cd vitrum && cargo build --release
 EOF
@@ -301,7 +302,7 @@ running_pid() {
             rp_exe=$(readlink "/proc/$rp_pid/exe" 2>/dev/null || true)
             rp_exe="${rp_exe% (deleted)}"
         elif command -v ps >/dev/null 2>&1; then
-            # macOS `ps -o comm=` prints the executable path, Linux the name.
+            # `ps -o comm=` prints the process name.
             rp_exe=$(ps -p "$rp_pid" -o comm= 2>/dev/null || true)
         fi
         if [ "$rp_exe" = "$rp_path" ]; then
@@ -369,7 +370,7 @@ bash_login_rc() {
 # `~/.profile` is read by login shells and by most desktop sessions, so it is
 # what makes the launcher entry find the binary. The interactive rc of each
 # shell is what makes an open terminal find it. bash alone was not enough:
-# zsh is the default on macOS, and fish is neither POSIX nor willing to read
+# plenty of people run zsh, and fish is neither POSIX nor willing to read
 # `export PATH=`.
 #
 # `~/.profile` alone was not enough either. bash reads one login file and stops,
@@ -548,17 +549,6 @@ remove_file() {
     fi
 }
 
-remove_tree() {
-    if [ -d "$1" ]; then
-        if rm -rf "$1" 2>/dev/null; then
-            say "  $1"
-            REMOVED=1
-        else
-            warn "could not remove $1"
-        fi
-    fi
-}
-
 # An rc file the installer created holds nothing but the block it was created
 # for, so once the block is gone the file is gone too. A file that turned out
 # to have something else in it is kept: someone put it there after the install.
@@ -583,7 +573,6 @@ if [ "$UNINSTALL" = 1 ]; then
             path="${line#* }"
             case "$kind" in
                 file) remove_file "$path" ;;
-                tree) remove_tree "$path" ;;
                 rc) rc_block_remove rc "$path" ;;
                 rc-created)
                     rc_block_remove rc "$path"
@@ -598,9 +587,8 @@ if [ "$UNINSTALL" = 1 ]; then
         remove_file "$INSTALL_DIR/vitrum"
         remove_file "$INSTALL_DIR/vitrum-server"
         remove_file "$DATA_DIR/applications/vitrum.desktop"
-        remove_tree "$HOME/Applications/vitrum.app"
         for icon in "$DATA_DIR"/icons/hicolor/*/apps/vitrum.png \
-            "$DATA_DIR/icons/vitrum.ico" "$DATA_DIR/icons/vitrum.icns"; do
+            "$DATA_DIR/icons/vitrum.ico"; do
             remove_file "$icon"
         done
         each_rc rc_block_remove
@@ -633,7 +621,7 @@ FETCH=""
 
 need tar "Install tar, or unpack the release archive by hand."
 
-# macOS ships `shasum`, Linux ships `sha256sum`. The verification step is not
+# `sha256sum` is coreutils and `shasum` is perl. The verification step is not
 # optional, so a host with neither is a host this script refuses to install on.
 if command -v sha256sum >/dev/null 2>&1; then
     sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
@@ -783,20 +771,18 @@ case "$os" in
         fi
         ;;
     Darwin)
-        case "$arch" in
-            arm64 | aarch64) TARGET="aarch64-apple-darwin" ;;
-            x86_64) TARGET="x86_64-apple-darwin" ;;
-            *)
-                die "there is no published build for macOS on $arch" \
-                    "Releases carry Apple silicon and Intel macOS only." \
-                    "Build from source instead: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
-                ;;
-        esac
+        die "there is no published build for macOS" \
+            "The terminal pane presents to an X11 window, so a release carries" \
+            "Linux only. A macOS build compiles and passes the test suite, and" \
+            "its pane paints nothing, which is why no archive is published." \
+            "Build from source if you want the shell without a pane:" \
+            "  https://github.com/$REPO/blob/main/CONTRIBUTING.md"
         ;;
     *)
-        die "this installer supports Linux and macOS; this host reports $os" \
-            "On Windows, use install.ps1 from the same repository." \
-            "Anywhere else, build from source: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
+        die "this installer supports Linux; this host reports $os" \
+            "The terminal pane presents to an X11 window, so a release carries" \
+            "Linux only." \
+            "Build from source instead: https://github.com/$REPO/blob/main/CONTRIBUTING.md"
         ;;
 esac
 
@@ -1138,7 +1124,7 @@ resolve_downloader() {
         FETCH="wget"
         return 0
     fi
-    if [ "$os" = "Linux" ] && [ "$INSTALL_DEPS" = 1 ]; then
+    if [ "$INSTALL_DEPS" = 1 ]; then
         rd_pkg=$(curl_package)
         if [ -n "$rd_pkg" ]; then
             say "Nothing on this machine can download the release."
@@ -1197,7 +1183,7 @@ assert_writable "$INSTALL_DIR"
 refuse_if_client_running
 resolve_downloader
 
-if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ] && ! have_gtk; then
+if [ "$RUNTIME_CHECK" = 1 ] && ! have_gtk; then
     if [ "$INSTALL_DEPS" = 0 ]; then
         die "vitrum needs a GTK runtime and this machine has none" \
             "libgtk-3.so.0 is vitrum's only system dependency, and without" \
@@ -1669,45 +1655,6 @@ else
     say "Installed vitrum and vitrum-server into $INSTALL_DIR."
 fi
 
-# ============================================================
-# macOS: the download mark, and whether it starts
-# ============================================================
-#
-# macOS refuses to run a file carrying `com.apple.quarantine`, and that mark
-# is put on by whatever downloaded the file. curl does not set it and tar does
-# not invent one, so an archive this script fetched arrives unmarked; an
-# archive a browser downloaded, or one handed to --base-url from somewhere
-# else, arrives marked and passes the mark to everything unpacked out of it.
-#
-# So the mark is read rather than assumed, and cleared when it is there. Then
-# the installed binary is asked for its version, because that is the only way
-# to find out whether this machine runs it: a refusal arrives as the kernel
-# killing the process, not as a message.
-if [ "$os" = "Darwin" ]; then
-    if command -v xattr >/dev/null 2>&1; then
-        for bin in vitrum vitrum-server; do
-            if xattr -p com.apple.quarantine "$INSTALL_DIR/$bin" >/dev/null 2>&1; then
-                xattr -d com.apple.quarantine "$INSTALL_DIR/$bin" 2>/dev/null || true
-                say "Cleared the download mark on $INSTALL_DIR/$bin."
-            fi
-        done
-    fi
-    started_rc=0
-    "$INSTALL_DIR/vitrum" --version >/dev/null 2>&1 || started_rc=$?
-    if [ "$started_rc" != 0 ]; then
-        manifest_commit
-        die "the installed vitrum does not run on this machine (exit $started_rc)" \
-            "It was killed rather than answering --version, which is what macOS" \
-            "does to a binary it refuses to run." \
-            "Clear the download mark by hand and try it again:" \
-            "  xattr -dr com.apple.quarantine $INSTALL_DIR/vitrum $INSTALL_DIR/vitrum-server" \
-            "  $INSTALL_DIR/vitrum --version" \
-            "If it is still killed, this build is not signed for this machine." \
-            "Report it at https://github.com/$REPO/issues" \
-            "Remove what was written with 'sh install.sh --uninstall'."
-    fi
-fi
-
 if server_pid=$(running_pid "$INSTALL_DIR/vitrum-server"); then
     warn "vitrum-server (pid $server_pid) is still running the previous build."
     say "  Its sessions are unaffected. It takes the new build when it is next"
@@ -1760,43 +1707,40 @@ if [ "$INTEGRATE" = 1 ]; then
     # ones recorded, so the uninstaller removes the set this build wrote rather
     # than a list of names copied into this script.
     icons_written=0
-    if [ "$os" = "Linux" ]; then
-        if "$INSTALL_DIR/vitrum" icons "$DATA_DIR" > "$TMPDIR_SELF/icons.list" \
-            2> "$TMPDIR_SELF/icons.err"; then
-            icons_written=1
-            while IFS= read -r written; do
-                if [ -n "$written" ]; then manifest_add file "$written"; fi
-            done < "$TMPDIR_SELF/icons.list"
-            say "  $DATA_DIR/icons/hicolor/*/apps/vitrum.png"
-            if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-                # Recorded only when this install is what created it: an
-                # existing cache describes other applications' icons too, and
-                # taking it away on uninstall would be taking their picture.
-                icon_cache="$DATA_DIR/icons/hicolor/icon-theme.cache"
-                had_cache=0
-                if [ -e "$icon_cache" ]; then had_cache=1; fi
-                gtk-update-icon-cache -q -t -f "$DATA_DIR/icons/hicolor" 2>/dev/null || true
-                if [ "$had_cache" = 0 ] && [ -e "$icon_cache" ]; then
-                    manifest_add file "$icon_cache"
-                fi
+    if "$INSTALL_DIR/vitrum" icons "$DATA_DIR" > "$TMPDIR_SELF/icons.list" \
+        2> "$TMPDIR_SELF/icons.err"; then
+        icons_written=1
+        while IFS= read -r written; do
+            if [ -n "$written" ]; then manifest_add file "$written"; fi
+        done < "$TMPDIR_SELF/icons.list"
+        say "  $DATA_DIR/icons/hicolor/*/apps/vitrum.png"
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            # Recorded only when this install is what created it: an
+            # existing cache describes other applications' icons too, and
+            # taking it away on uninstall would be taking their picture.
+            icon_cache="$DATA_DIR/icons/hicolor/icon-theme.cache"
+            had_cache=0
+            if [ -e "$icon_cache" ]; then had_cache=1; fi
+            gtk-update-icon-cache -q -t -f "$DATA_DIR/icons/hicolor" 2>/dev/null || true
+            if [ "$had_cache" = 0 ] && [ -e "$icon_cache" ]; then
+                manifest_add file "$icon_cache"
             fi
-        else
-            # Drawing the icons is the first time the installed binary is run,
-            # so whatever stopped it is what will stop `vitrum` too. Repeating
-            # what it said is the difference between a picture that is missing
-            # and a machine that cannot run the build at all.
-            warn "could not write the icon set, so the launcher entry has no picture"
-            while IFS= read -r iline; do
-                [ -n "$iline" ] || continue
-                say "  $iline"
-            done < "$TMPDIR_SELF/icons.err"
         fi
+    else
+        # Drawing the icons is the first time the installed binary is run,
+        # so whatever stopped it is what will stop `vitrum` too. Repeating
+        # what it said is the difference between a picture that is missing
+        # and a machine that cannot run the build at all.
+        warn "could not write the icon set, so the launcher entry has no picture"
+        while IFS= read -r iline; do
+            [ -n "$iline" ] || continue
+            say "  $iline"
+        done < "$TMPDIR_SELF/icons.err"
     fi
 
-    if [ "$os" = "Linux" ]; then
-        apps="$DATA_DIR/applications"
-        if mkdir -p "$apps" 2>/dev/null; then
-            cat > "$apps/vitrum.desktop" <<EOF
+    apps="$DATA_DIR/applications"
+    if mkdir -p "$apps" 2>/dev/null; then
+        cat > "$apps/vitrum.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=vitrum
@@ -1806,73 +1750,31 @@ Terminal=false
 Categories=Development;TerminalEmulator;
 StartupWMClass=vitrum
 EOF
-            # Named, not a path: the launcher resolves `vitrum` against the
-            # hicolor tree written above and picks the size it needs. Only
-            # written when that tree exists, because an `Icon=` naming nothing
-            # is how an entry ends up with a broken-image placeholder instead
-            # of the desktop's own generic one.
-            if [ "$icons_written" = 1 ]; then
-                printf 'Icon=vitrum\n' >> "$apps/vitrum.desktop"
-            fi
-            if command -v update-desktop-database >/dev/null 2>&1; then
-                # Recorded only when this install is what created it, on the
-                # same terms as the icon cache: an existing one indexes other
-                # applications' entries, and taking it away on uninstall would
-                # take theirs with it.
-                mime_cache="$apps/mimeinfo.cache"
-                had_mime=0
-                if [ -e "$mime_cache" ]; then had_mime=1; fi
-                update-desktop-database "$apps" 2>/dev/null || true
-                if [ "$had_mime" = 0 ] && [ -e "$mime_cache" ]; then
-                    manifest_add file "$mime_cache"
-                fi
-            fi
-            manifest_add file "$apps/vitrum.desktop"
-            say "  $apps/vitrum.desktop"
-        else
-            warn "could not write $apps, so there is no launcher entry"
+        # Named, not a path: the launcher resolves `vitrum` against the
+        # hicolor tree written above and picks the size it needs. Only
+        # written when that tree exists, because an `Icon=` naming nothing
+        # is how an entry ends up with a broken-image placeholder instead
+        # of the desktop's own generic one.
+        if [ "$icons_written" = 1 ]; then
+            printf 'Icon=vitrum\n' >> "$apps/vitrum.desktop"
         fi
-    fi
-
-    if [ "$os" = "Darwin" ]; then
-        app="$HOME/Applications/vitrum.app"
-        if mkdir -p "$app/Contents/MacOS" 2>/dev/null; then
-            # Staged and copied rather than written into the bundle directly:
-            # `CFBundleIconFile` names a file in `Resources`, and the emitter
-            # also writes a freedesktop theme tree that has no business in an
-            # app bundle.
-            bundle_icon=""
-            if mkdir -p "$app/Contents/Resources" 2>/dev/null &&
-                "$INSTALL_DIR/vitrum" icons "$TMPDIR_SELF/iconset" >/dev/null 2>&1 &&
-                cp "$TMPDIR_SELF/iconset/icons/vitrum.icns" \
-                    "$app/Contents/Resources/vitrum.icns" 2>/dev/null; then
-                bundle_icon='  <key>CFBundleIconFile</key><string>vitrum.icns</string>'
-            else
-                warn "could not write the app icon, so the bundle shows a blank one"
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            # Recorded only when this install is what created it, on the
+            # same terms as the icon cache: an existing one indexes other
+            # applications' entries, and taking it away on uninstall would
+            # take theirs with it.
+            mime_cache="$apps/mimeinfo.cache"
+            had_mime=0
+            if [ -e "$mime_cache" ]; then had_mime=1; fi
+            update-desktop-database "$apps" 2>/dev/null || true
+            if [ "$had_mime" = 0 ] && [ -e "$mime_cache" ]; then
+                manifest_add file "$mime_cache"
             fi
-            cat > "$app/Contents/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>vitrum</string>
-  <key>CFBundleIdentifier</key><string>dev.santhreal.vitrum</string>
-  <key>CFBundleExecutable</key><string>vitrum</string>
-$bundle_icon
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict></plist>
-EOF
-            # The daemon is linked in beside the client on purpose: an app
-            # launched from Finder inherits no shell PATH, so `vitrum` finds
-            # `vitrum-server` next to itself or not at all.
-            ln -sf "$INSTALL_DIR/vitrum" "$app/Contents/MacOS/vitrum"
-            ln -sf "$INSTALL_DIR/vitrum-server" "$app/Contents/MacOS/vitrum-server"
-            manifest_add tree "$app"
-            say "  $app"
-        else
-            warn "could not write $app, so there is no launcher entry"
         fi
+        manifest_add file "$apps/vitrum.desktop"
+        say "  $apps/vitrum.desktop"
+    else
+        warn "could not write $apps, so there is no launcher entry"
     fi
 else
     LOGIN_PATH_OK=1

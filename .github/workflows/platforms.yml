@@ -49,9 +49,9 @@ name: platforms
 #     release, including arithmetic overflow checks.
 #   - clippy on macOS, Windows and ARM. It is advisory everywhere and never
 #     blocks, so it is the first thing a subset drops.
-#   - `install.ps1` parsing, which nothing else in this pipeline can do. A
-#     change to that file matches the pull-request path filter above and gets
-#     the full run.
+#   - nothing else. `install.ps1` was parsed on this leg until the Windows
+#     installer was deleted, because a release carries Linux only while the
+#     terminal pane needs X11.
 #   - the release archive itself. Nothing here packages, and the CPU floor is
 #     gated in `release.yml` on the binaries a user receives.
 #
@@ -82,7 +82,6 @@ on:
       - "app/src/pane/**"
       - "packaging/**"
       - "install.sh"
-      - "install.ps1"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/platforms.yml"
@@ -231,22 +230,3 @@ jobs:
         run: cargo clippy --release --workspace --locked
         continue-on-error: true
 
-      # The Windows installer cannot be parsed anywhere else in the pipeline,
-      # and it is the first thing a new user on Windows runs. A change to it
-      # matches the path filter above, so the subset does not need to repeat
-      # this on pushes that cannot have touched it.
-      - name: install.ps1 parses
-        if: runner.os == 'Windows' && env.QUICK != 'true'
-        shell: pwsh
-        run: |
-          $errors = $null
-          $tokens = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            foreach ($e in $errors) {
-              Write-Output "line $($e.Extent.StartLineNumber): $($e.Message)"
-            }
-            exit 1
-          }
-          Write-Output "install.ps1 parses, $($tokens.Count) tokens"

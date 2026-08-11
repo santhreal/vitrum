@@ -9,10 +9,10 @@
 #   tools/release/versions.sh nightly [sha]  the version a nightly publishes as
 #
 # A version literal lives in more places than the manifest, and the ones that
-# must move are not the ones that look like they should. `install.sh` and
-# `install.ps1` name `0.1.0` in their usage text, but they resolve the version
-# from the releases API and never from that literal, so moving it would only
-# rewrite an example. `docs/performance.md` names the build a measurement was
+# must move are not the ones that look like they should. `install.sh` names
+# `0.1.0` in its usage text, but it resolves the version from the releases API
+# and never from that literal, so moving it would only rewrite an example.
+# `docs/performance.md` names the build a measurement was
 # taken on, which is a fact about the past. Both are excluded on purpose, and
 # the exclusion is written down here rather than rediscovered every release.
 set -eu

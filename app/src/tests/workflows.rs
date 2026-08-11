@@ -742,9 +742,10 @@ fn published_targets() -> Vec<String> {
         .map(str::to_string)
         .collect();
     assert!(
-        targets.len() >= 5,
-        "targets.sh named {} targets, which is fewer than the set that has \
-         shipped; the assignment was probably reformatted out from under this",
+        targets.len() >= 2,
+        "targets.sh named {} targets, which is fewer than the two Linux \
+         triples a release carries; the assignment was probably reformatted \
+         out from under this",
         targets.len()
     );
     targets

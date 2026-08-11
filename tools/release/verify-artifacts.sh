@@ -163,7 +163,10 @@ step "the digest check refuses an archive SHA256SUMS does not cover"
 # release's behalf, which is right, and which is not the missing-entry path
 # this step exists for.
 mv "$serve/SHA256SUMS" "$serve/SHA256SUMS.full"
-other="vitrum-${version}-aarch64-apple-darwin.tar.gz"
+case $archive in
+    *aarch64*) other=$(printf '%s' "$archive" | sed 's/aarch64/x86_64/') ;;
+    *) other=$(printf '%s' "$archive" | sed 's/x86_64/aarch64/') ;;
+esac
 sed "s|  $archive\$|  $other|" "$serve/SHA256SUMS.full" > "$serve/SHA256SUMS"
 grep -qF "  $other" "$serve/SHA256SUMS" ||
     die 'the partial-publish fixture covers nothing at all'

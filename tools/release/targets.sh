@@ -4,28 +4,30 @@
 #   tools/release/targets.sh list    print the published triples
 #   tools/release/targets.sh check   fail if any file names a different set
 #
-# Four files have an opinion about which platforms a release carries, and this
-# compares all four: the build matrix in `.github/workflows/release.yml`, the
-# `uname` mapping in `install.sh`, the architecture gate in `install.ps1`, and
-# the table in `docs/install.md`. A triple that exists in the matrix and not in
-# an installer is an asset nobody downloads; a triple in an installer and not
-# in the matrix is a 404 at the end of a `curl | sh`. Neither shows up until
-# someone runs the installer on that platform, which is after the release is
-# published. A table that names a build nobody publishes is the same failure
-# with a longer delay.
+# Three files have an opinion about which platforms a release carries, and this
+# compares all three: the build matrix in `.github/workflows/release.yml`, the
+# `uname` mapping in `install.sh`, and the table in `docs/install.md`. A triple
+# that exists in the matrix and not in the installer is an asset nobody
+# downloads; a triple in the installer and not in the matrix is a 404 at the
+# end of a `curl | sh`. Neither shows up until someone runs the installer on
+# that platform, which is after the release is published. A table that names a
+# build nobody publishes is the same failure with a longer delay.
 #
-# `update.rs` inside the app is not a fifth site. It builds the asset name from
-# `VITRUM_TARGET`, which the build script takes from the compiler, so it names
-# whatever platform it was compiled for and cannot disagree with this list.
+# The set is Linux. The client presents its terminal pane to an X11 window, so
+# a macOS or Windows archive would install a shell whose pane paints nothing.
+# Both platforms still build and pass the suite in `platforms.yml`, and the
+# day a pane exists there, the triple is added here first.
+#
+# `update.rs` inside the app is not a fourth site. It builds the asset name
+# from `VITRUM_TARGET`, which the build script takes from the compiler, so it
+# names whatever platform it was compiled for and cannot disagree with this
+# list.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
 
-TARGETS='aarch64-apple-darwin
-aarch64-unknown-linux-gnu
-x86_64-apple-darwin
-x86_64-pc-windows-msvc
+TARGETS='aarch64-unknown-linux-gnu
 x86_64-unknown-linux-gnu'
 
 die() { printf 'targets: %s\n' "$*" >&2; exit 1; }
@@ -45,12 +47,6 @@ found_in() {
 }
 
 want=$(printf '%s\n' "$TARGETS" | sorted)
-# The two installers split the set between them by platform: `install.sh` runs
-# on Linux and macOS, `install.ps1` on Windows. Each is checked against its own
-# half, and the halves are cut out of the one list above rather than typed
-# twice, so a fifth target joins whichever installer it belongs to or fails.
-want_windows=$(printf '%s\n' "$want" | grep windows | sorted)
-want_posix=$(printf '%s\n' "$want" | grep -v windows | sorted)
 
 compare() {
     file=$1
@@ -73,8 +69,7 @@ case "${1:-check}" in
     list) printf '%s\n' "$TARGETS" ;;
     check)
         compare .github/workflows/release.yml "$want" 'every published target'
-        compare install.sh "$want_posix" 'every Linux and macOS target'
-        compare install.ps1 "$want_windows" 'every Windows target'
+        compare install.sh "$want" 'every published target'
         compare docs/install.md "$want" 'every published target'
         printf 'targets: %s\n' "$(printf '%s' "$want" | tr '\n' ' ')"
         ;;

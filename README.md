@@ -23,10 +23,8 @@ curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | 
 ```
 
 Nothing has to be installed first. The installer resolves the newest stable
-release, verifies it against the checksums published beside it, adds the
-GTK or WebView2 runtime this machine is missing, and writes a launcher
-entry. On Windows the same install runs from PowerShell:
-`irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 | iex`.
+release, verifies it against the checksums published beside it, adds the GTK
+runtime this machine is missing, and writes a launcher entry.
 
 `vitrum update` installs the next release in place. Options, source builds and
 uninstall: [docs/install.md](docs/install.md).
@@ -57,9 +55,11 @@ uninstall: [docs/install.md](docs/install.md).
 
 ## Status
 
-vitrum is at version 0.3.1. Linux, macOS and Windows build and pass the test
-suite. Interactive use is exercised on Linux. Collision detection is
-Linux only, and the terminal pane needs X11.
+vitrum is at version 0.3.1, and releases carry Linux on x86_64 and arm64. The
+terminal pane presents to an X11 window, so a Wayland session needs
+`GDK_BACKEND=x11`. macOS and Windows build and pass the test suite; neither
+publishes an archive, because the pane paints nothing there. Collision
+detection is Linux only.
 
 Sessions run in a daemon and outlive the window. They do not survive the
 daemon.

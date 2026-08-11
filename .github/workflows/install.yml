@@ -12,23 +12,20 @@ name: install
 # manager, a separate package name, and a separate way of failing. A matrix
 # that stops at the first red hides the other three answers.
 #
-# macOS and Windows run the same way and were the gap: `install.sh` on macOS
-# takes a different branch from the Linux one it shares a file with, and
-# `install.ps1` was only ever parsed, never run. A parse says the file is
-# PowerShell; it does not say the download, the checksum, the PATH entry, the
-# shortcut and the uninstall work.
+# There is no macOS or Windows leg, because there is no macOS or Windows
+# archive: a release carries Linux only while the terminal pane needs X11.
+# `install.sh` refuses both with a sentence, and the guard suite reads that
+# sentence.
 on:
   push:
     branches: [main]
     paths:
       - install.sh
-      - install.ps1
       - docs/install.md
       - .github/workflows/install.yml
   pull_request:
     paths:
       - install.sh
-      - install.ps1
       - docs/install.md
       - .github/workflows/install.yml
   schedule:
@@ -101,117 +98,6 @@ jobs:
             echo "uninstall left the binary behind" >&2
             exit 1
           fi
-
-  # macOS runs the same installer as Linux and reaches different code: a
-  # different `uname` mapping, a different login file, and no package manager
-  # step at all, because the runtime check is Linux only.
-  macos:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, macos-15-intel]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: install
-        run: sh install.sh
-
-      - name: the binaries run
-        run: |
-          "$HOME/.local/bin/vitrum" --version
-          "$HOME/.local/bin/vitrum-server" --version
-
-      - name: a login shell finds them
-        run: sh -lc 'command -v vitrum && command -v vitrum-server'
-
-      - name: uninstall
-        run: |
-          sh install.sh --uninstall
-          if [ -e "$HOME/.local/bin/vitrum" ]; then
-            echo "uninstall left the binary behind" >&2
-            exit 1
-          fi
-
-  # The Windows installer had no run anywhere in the pipeline. The runner image
-  # already carries the WebView2 runtime, so this proves the download, the
-  # checksum, the layout, the PATH entry and the manifest-driven uninstall, and
-  # not the runtime install path.
-  windows:
-    name: windows-latest
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: install
-        shell: pwsh
-        run: .\install.ps1
-
-      - name: the binaries run
-        shell: pwsh
-        run: |
-          & "$env:LOCALAPPDATA\vitrum\bin\vitrum.exe" --version
-          & "$env:LOCALAPPDATA\vitrum\bin\vitrum-server.exe" --version
-
-      # The installer edits the user PATH, which this process was started
-      # before. Reading it back from the registry is what a new terminal does.
-      - name: the user PATH carries the install directory
-        shell: pwsh
-        run: |
-          $dir = "$env:LOCALAPPDATA\vitrum\bin"
-          $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-          if (($user -split ';') -notcontains $dir) {
-            Write-Output "user PATH does not carry $dir"
-            Write-Output $user
-            exit 1
-          }
-
-      # The nightly channel on Windows, which nothing had ever downloaded: the
-      # channel was reachable only through `vitrum update`, and `install.ps1`
-      # built its URL from a `v<x.y.z>` tag that a nightly does not have.
-      - name: the nightly channel installs over the stable
-        shell: pwsh
-        run: |
-          .\install.ps1 -Channel nightly
-          $got = & "$env:LOCALAPPDATA\vitrum\bin\vitrum.exe" --version
-          Write-Output $got
-          if ($got -notmatch '-nightly\.') {
-            Write-Output "-Channel nightly installed: $got"
-            exit 1
-          }
-
-      # A nightly and a version name two different builds, and asking for both
-      # is a refusal rather than a silent choice between them.
-      - name: naming a version and the nightly channel is refused
-        shell: pwsh
-        run: |
-          $out = & pwsh -NoProfile -File .\install.ps1 -Channel nightly -Version 0.1.0 2>&1 | Out-String
-          Write-Output $out
-          if ($LASTEXITCODE -eq 0) {
-            Write-Output 'a version and -Channel nightly installed something'
-            exit 1
-          }
-          if ($out -notmatch 'name two different builds') {
-            Write-Output 'refused for the wrong reason'
-            exit 1
-          }
-
-      - name: uninstall
-        shell: pwsh
-        run: |
-          .\install.ps1 -Uninstall
-          if (Test-Path "$env:LOCALAPPDATA\vitrum\bin\vitrum.exe") {
-            Write-Output 'uninstall left the binary behind'
-            exit 1
-          }
-          $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-          if (($user -split ';') -contains "$env:LOCALAPPDATA\vitrum\bin") {
-            Write-Output 'uninstall left the install directory on the user PATH'
-            exit 1
-          }
 
   # Installing is half the promise. The other half is that a machine which
   # installed a release months ago reaches the current one without being

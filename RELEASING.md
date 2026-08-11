@@ -1,8 +1,8 @@
 # Cutting a release
 
 A release is a git tag, a GitHub release pointing at it, and one `tar.gz` per
-platform with a `SHA256SUMS` beside them. `install.sh`, `install.ps1` and
-`vitrum update` all refuse an archive the sums do not cover, so a release
+platform with a `SHA256SUMS` beside them. `install.sh` and `vitrum update`
+both refuse an archive the sums do not cover, so a release
 without them installs for nobody.
 
 There is one thing that cuts a release, `tools/release/cut.sh`, and two ways to

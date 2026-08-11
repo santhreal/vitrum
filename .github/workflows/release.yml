@@ -8,7 +8,7 @@ name: release
 #    the "latest release" lookup both installers use walks past it.
 #
 # Both build the same set of archives with the same script and publish the same
-# `SHA256SUMS` shape, because `install.sh`, `install.ps1` and `vitrum update`
+# `SHA256SUMS` shape, because `install.sh` and `vitrum update`
 # know one asset layout: `vitrum-<version>-<target>.tar.gz` from the release,
 # refused unless that release's `SHA256SUMS` covers it by that exact name.
 # Three things follow, and every one of them is a step below rather than a
@@ -68,12 +68,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # The published platforms. `tools/release/targets.sh check` fails when this
-  # set, the matrix below, `install.sh` and `install.ps1` stop agreeing.
+  # set, the matrix below, `install.sh` and `docs/install.md` stop agreeing.
+  # Linux only: the terminal pane presents to an X11 window, so a macOS or
+  # Windows archive would install a shell whose pane paints nothing.
   TARGETS: >-
-    aarch64-apple-darwin
     aarch64-unknown-linux-gnu
-    x86_64-apple-darwin
-    x86_64-pc-windows-msvc
     x86_64-unknown-linux-gnu
 
 jobs:
@@ -198,21 +197,10 @@ jobs:
           # cross-compile, which is what the note below rules out.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          # `macos-15-intel`, not `macos-13`. The x86_64 mac image was
-          # `macos-13` until GitHub retired it, and a retired image does not
-          # fail: nothing answers the label, so the job sits in `queued`. It
-          # did that for this leg of the v0.1.0 tag while its three siblings
-          # were picked up within three minutes, and because `publish` needs
-          # the whole matrix, the tag never produced a release at all. This is
-          # the label GitHub kept x86_64 macOS on after the retirement, and it
-          # is itself temporary: Intel macs go away when the `macos-15` image
-          # reaches end of life, and this target goes with them.
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+          # macOS and Windows are not published. Both build and pass the suite
+          # in `platforms.yml`, and the pane they would carry presents to an
+          # X11 window, so an archive there installs a shell that paints no
+          # terminal. A leg returns here when a pane does.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -249,51 +237,6 @@ jobs:
           echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
           echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
 
-      # Zig cannot link against the Xcode 26.4 SDK: ziglang/zig#31658, fixed
-      # upstream for 0.16. Against that SDK every libSystem symbol comes back
-      # undefined (`_abort`, `_bzero`, `__availability_version_check`) while
-      # Ghostty's shared library is linked, and the vt engine never builds.
-      # `platforms.yml` has carried this step since the nightly matrix hit it;
-      # this job did not, so the two mac legs of the v0.1.1 tag failed in the
-      # build script while the nightly on the same image was green.
-      #
-      # The newest Xcode below 26.4 is selected rather than a pinned one, so a
-      # runner image that drops the exact version we named still builds. When
-      # Zig 0.16 lands, delete this whole step here and in `platforms.yml`:
-      # nothing else depends on it.
-      - name: xcode zig can link against
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          echo "installed: $(ls -d /Applications/Xcode_*.app 2>/dev/null | tr '\n' ' ')"
-          pick=""
-          pick_v=""
-          for app in /Applications/Xcode_*.app; do
-            # An image whose Xcode is unversioned (`/Applications/Xcode.app`)
-            # matches nothing, and the glob then arrives here as its own
-            # literal text. Setting DEVELOPER_DIR to that path points the
-            # toolchain at a directory that does not exist, which is worse
-            # than leaving the default alone.
-            [ -d "$app" ] || continue
-            v="${app#/Applications/Xcode_}"
-            v="${v%.app}"
-            # 26.4 and newer carry the SDK that breaks the link.
-            if [ "$(printf '%s\n26.4\n' "$v" | sort -V | head -1)" = "26.4" ]; then
-              continue
-            fi
-            if [ -z "$pick_v" ] || [ "$(printf '%s\n%s\n' "$pick_v" "$v" | sort -V | tail -1)" = "$v" ]; then
-              pick="$app"
-              pick_v="$v"
-            fi
-          done
-          if [ -n "$pick" ]; then
-            echo "DEVELOPER_DIR=$pick/Contents/Developer" >> "$GITHUB_ENV"
-            echo "using Xcode $pick_v"
-          else
-            echo "::warning::no Xcode below 26.4 on this image; the zig link may fail"
-          fi
-          echo "default xcode: $(xcodebuild -version 2>/dev/null | head -1)"
-
       # The nightly version is decided once, in `contract`, so every archive
       # carries the same one rather than one timestamp per runner.
       # Writing it into the workspace here is what puts it into the archive
@@ -314,7 +257,6 @@ jobs:
       # this; the version is pinned because a build tool that floats is a
       # release that differs from the last one for a reason nobody recorded.
       - name: cargo-zigbuild
-        if: runner.os == 'Linux'
         run: cargo install cargo-zigbuild --locked --version 0.23.0
 
       # The script names the archive from the host triple, which is the same
@@ -323,8 +265,6 @@ jobs:
       # PTY, so the runner's host triple has to be the target being published.
       # If GitHub ever changes what an image is, this says so instead of
       # publishing an archive under a name nothing asks for.
-      #
-      # Windows defaults to pwsh, so the shell is named rather than assumed.
       - name: build the archive
         shell: bash
         run: |
@@ -558,7 +498,7 @@ jobs:
                 "$(git rev-parse --short HEAD)" "$(git log -1 --format=%s)"
               printf -- '- built %s\n' "$(date -u +'%Y-%m-%d %H:%M UTC')"
               printf -- '- version `%s`, ahead of the last release\n\n' "$VERSION"
-              printf 'Not a release. `install.sh`, `install.ps1` and `vitrum update`\n'
+              printf 'Not a release. `install.sh` and `vitrum update`\n'
               printf 'ask for the latest release and skip this one, because it is\n'
               printf 'marked prerelease. Install it by naming the tag.\n'
             } > NOTES.md

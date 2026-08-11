@@ -20,7 +20,6 @@ fn the_installers_fetch_targets_the_release_workflow_builds() {
     let manifest = include_str!("../../Cargo.toml");
     let release = include_str!("../../../.github/workflows/release.yml");
     let sh = include_str!("../../../install.sh");
-    let ps1 = include_str!("../../../install.ps1");
     assert!(
         manifest.contains("name = \"vitrum\""),
         "the client package is no longer named `vitrum`, so its binary is not `vitrum`"
@@ -31,7 +30,7 @@ fn the_installers_fetch_targets_the_release_workflow_builds() {
         !built.is_empty(),
         "the release workflow builds no recognisable target triple"
     );
-    for (script, text) in [("install.sh", sh), ("install.ps1", ps1)] {
+    for (script, text) in [("install.sh", sh)] {
         let wanted = target_triples(text);
         assert!(
             !wanted.is_empty(),
@@ -260,7 +259,7 @@ fn the_documented_install_verifies_what_it_downloads() {
         .expect("the crate lives under the workspace root");
 
     let mut piped = 0;
-    for script in ["install.sh", "install.ps1"] {
+    for script in ["install.sh"] {
         if !readme.contains(script) {
             continue;
         }
@@ -298,9 +297,9 @@ fn the_documented_install_verifies_what_it_downloads() {
     }
 
     assert!(
-        piped >= 2,
-        "only {piped} install scripts were found in the README; the install \
-         section no longer names the scripts this test can check"
+        piped >= 1,
+        "the README names no install script, so the install section no longer \
+         names the script this test can check"
     );
 }
 
@@ -317,37 +316,19 @@ fn the_documented_install_verifies_what_it_downloads() {
 #[test]
 fn the_installer_finishes_the_install() {
     let sh = include_str!("../../../install.sh");
-    let ps1 = include_str!("../../../install.ps1");
 
-    for (script, text, needles) in [
-        (
-            "install.sh",
-            sh,
-            &[
-                "vitrum.desktop",           // Linux launcher entry
-                "vitrum.app",               // macOS bundle
-                "alias vu=",                // the update shortcut
-                "export PATH=",             // PATH, persisted
-                "--no-integrate",           // and an opt out for images
-                "vitrum\" icons ",          // the icon set, drawn by the binary
-                "Icon=vitrum",              // named in the launcher entry
-                "CFBundleIconFile",         // and in the macOS bundle
-            ][..],
-        ),
-        (
-            "install.ps1",
-            ps1,
-            &[
-                "vitrum.lnk",
-                "CreateShortcut",
-                "function vu",
-                "SetEnvironmentVariable('Path'",
-                "NoIntegrate",
-                "vitrum.exe') icons",       // the icon set, drawn by the binary
-                "IconLocation",             // and put on the Start menu shortcut
-            ][..],
-        ),
-    ] {
+    for (script, text, needles) in [(
+        "install.sh",
+        sh,
+        &[
+            "vitrum.desktop",           // launcher entry
+            "alias vu=",                // the update shortcut
+            "export PATH=",             // PATH, persisted
+            "--no-integrate",           // and an opt out for images
+            "vitrum\" icons ",          // the icon set, drawn by the binary
+            "Icon=vitrum",              // named in the launcher entry
+        ][..],
+    )] {
         for needle in needles {
             assert!(
                 text.contains(needle),
@@ -529,91 +510,67 @@ fn every_document_the_readme_links_to_exists() {
 #[test]
 fn the_installer_answers_for_what_a_real_machine_does() {
     let sh = include_str!("../../../install.sh");
-    let ps1 = include_str!("../../../install.ps1");
     let doc = include_str!("../../../docs/install.md");
 
-    // case, what install.sh must say, what install.ps1 must say
-    let cases: &[(&str, &str, Option<&str>)] = &[
-        (
-            "no downloader at all",
-            "neither curl nor wget is available",
-            None, // PowerShell has Invoke-WebRequest built in
-        ),
+    // case, what install.sh must say
+    let cases: &[(&str, &str)] = &[
+        ("no downloader at all", "neither curl nor wget is available"),
         (
             "a proxy variable that is not a URL",
             "is not a URL a proxy can be reached at",
-            Some("is not a URL a proxy can be reached at"),
         ),
         (
             "a proxy that blocks the download",
             "A proxy is in force",
-            Some("A proxy is in force"),
         ),
         (
             "a transfer that stopped early",
             "it is truncated",
-            Some("it is truncated"),
         ),
         (
             "a portal page instead of the archive",
             "it is a web page, not an archive",
-            Some("it is a web page, not an archive"),
         ),
         (
             "a checksum file that is not one",
             "is not a checksum file",
-            Some("is not a checksum file"),
         ),
         (
             "a checksum file with no line for this archive",
             "has no entry for",
-            Some("has no entry for"),
         ),
         (
             "a digest that disagrees",
             "checksum mismatch",
-            Some("checksum mismatch"),
         ),
         (
             "an install directory that refuses a write",
             "cannot be written to",
-            Some("cannot be written to"),
         ),
         (
             "a running vitrum in the install directory",
             "is running from",
-            Some("is running from"),
         ),
         (
             "a re-install over an existing one",
             "replacing    ",
-            Some("replacing    "),
         ),
         (
             "an uninstall of exactly what was written",
             "install-manifest",
-            Some("install-manifest"),
         ),
         (
             "an architecture with no published build",
             "there is no published build for Linux on",
-            Some("there is no published build for Windows on"),
         ),
     ];
 
-    for (case, in_sh, in_ps1) in cases {
+    for (case, in_sh) in cases {
         assert!(
             sh.contains(in_sh),
             "install.sh never says `{in_sh}`, so {case} is not a case it \
              answers for"
         );
-        if let Some(needle) = in_ps1 {
-            assert!(
-                ps1.contains(needle),
-                "install.ps1 never says `{needle}`, so {case} is not a case \
-                 it answers for"
-            );
-        }
     }
 
     // A libc mismatch installs cleanly and then fails to start, so it is
@@ -644,12 +601,6 @@ fn the_installer_answers_for_what_a_real_machine_does() {
             "docs/install.md does not name `{package}`"
         );
     }
-    assert!(
-        ps1.contains("Microsoft.EdgeWebView2Runtime"),
-        "install.ps1 does not name the WebView2 runtime package, so a Windows \
-         machine without it is left with a binary that opens no window"
-    );
-
     // Every shell that gets a PATH edit, in the syntax that shell parses.
     // bash alone left zsh users (every macOS default shell) and fish users
     // with binaries they could not run by name.
@@ -696,26 +647,9 @@ fn the_installer_answers_for_what_a_real_machine_does() {
              pays for the archive before being told they cannot use it"
         );
     }
-    let ps1_download = ps1
-        .find("Downloading $Archive")
-        .expect("install.ps1 downloads the archive");
-    for (what, needle) in [
-        ("the WebView2 runtime check", "needs the WebView2 runtime"),
-        ("the write permission check", "cannot be written to"),
-        ("the running-client check", "is running from"),
-    ] {
-        let at = ps1
-            .find(needle)
-            .unwrap_or_else(|| panic!("install.ps1 has no {what}"));
-        assert!(
-            at < ps1_download,
-            "{what} runs after the download in install.ps1, so the operator \
-             pays for the archive before being told they cannot use it"
-        );
-    }
 
     // The page an operator reads before running any of it.
-    for needle in ["--uninstall", "-Uninstall", "--base-url", "--no-runtime-check"] {
+    for needle in ["--uninstall", "--base-url", "--no-runtime-check"] {
         assert!(
             doc.contains(needle),
             "docs/install.md does not document `{needle}`"
@@ -759,34 +693,6 @@ fn every_installer_failure_names_what_to_do_next() {
         checked >= 15,
         "only {checked} failure paths were found in install.sh; the script no \
          longer routes its failures through `die`, so nothing here is checked"
-    );
-
-    let ps1 = include_str!("../../../install.ps1");
-    let mut ps1_checked = 0;
-    for (n, line) in ps1.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("function Fail") || trimmed.starts_with("function FailNet") {
-            continue;
-        }
-        let Some(rest) = call_argument_text(trimmed, &["Fail ", "FailNet "]) else {
-            continue;
-        };
-        // `Fail $Message ($Actions + $extra)` inside FailNet forwards its
-        // caller's words; the caller is what this rule is about.
-        if rest.trim_start().starts_with('$') {
-            continue;
-        }
-        ps1_checked += 1;
-        assert!(
-            rest.contains("@("),
-            "install.ps1 line {} fails with a message and no action:\n  {trimmed}",
-            n + 1
-        );
-    }
-    assert!(
-        ps1_checked >= 10,
-        "only {ps1_checked} failure paths were found in install.ps1; the \
-         script no longer routes its failures through `Fail`"
     );
 }
 
@@ -920,7 +826,7 @@ fn the_uninstaller_knows_every_kind_the_installer_records() {
         sh_kinds.insert(kind.to_string());
     }
     assert!(
-        sh_kinds.len() >= 4,
+        sh_kinds.len() >= 3,
         "only {} manifest kinds were found in install.sh, so the manifest is \
          no longer written through `manifest_add` and nothing here is checked",
         sh_kinds.len()
@@ -940,41 +846,6 @@ fn the_uninstaller_knows_every_kind_the_installer_records() {
              left behind empty"
         );
     }
-
-    let ps1 = include_str!("../../../install.ps1");
-    let mut ps1_kinds = std::collections::BTreeSet::new();
-    for line in ps1.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        let Some(rest) = trimmed.strip_prefix("Record '") else {
-            continue;
-        };
-        let Some(kind) = rest.split('\'').next() else {
-            continue;
-        };
-        ps1_kinds.insert(kind.to_string());
-    }
-    assert!(
-        ps1_kinds.len() >= 3,
-        "only {} manifest kinds were found in install.ps1, so the manifest is \
-         no longer written through `Record`",
-        ps1_kinds.len()
-    );
-    for kind in &ps1_kinds {
-        assert!(
-            ps1.contains(&format!("'{kind}' {{")),
-            "install.ps1 records `{kind}` in the manifest and -Uninstall has \
-             no arm for it, so what it wrote stays on the machine"
-        );
-    }
-    assert!(
-        ps1_kinds.contains("profile-created"),
-        "install.ps1 no longer records a profile it created, so a machine that \
-         had no PowerShell profile keeps an empty one after -Uninstall"
-    );
-
     // An empty directory the installer made on its way to a file it removed is
     // still something it left behind.
     for dir in [

@@ -2,16 +2,8 @@
 
 ## One command
 
-Linux and macOS:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh
-```
-
-Windows, in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1 | iex
 ```
 
 Nothing has to be installed first. The installer adds what the build needs on
@@ -32,13 +24,15 @@ itself when the machine has neither curl nor wget.
 |---|---|
 | Linux, 64-bit x86 | `x86_64-unknown-linux-gnu` |
 | Linux, 64-bit ARM | `aarch64-unknown-linux-gnu` |
-| macOS, Apple silicon | `aarch64-apple-darwin` |
-| macOS, Intel | `x86_64-apple-darwin` |
-| Windows, 64-bit x86 | `x86_64-pc-windows-msvc` |
+
+A release carries Linux. The terminal pane presents to an X11 window, so a
+macOS or Windows archive would install a shell whose pane paints nothing;
+both platforms build and pass the test suite on every push, and a target is
+added here the day a pane exists there.
 
 Anything else is told there is no build for it and pointed at a source build.
 `tools/release/targets.sh check` fails if this table, the release matrix and
-the two installers stop agreeing.
+the installer stop agreeing.
 
 ## System dependencies
 
@@ -55,8 +49,6 @@ this machine is missing rather than naming it and stopping.
 | Void | `gtk+3` | `xbps-install -Sy` |
 | Gentoo | `x11-libs/gtk+:3` | `emerge` |
 | NixOS | `nixpkgs.gtk3` | `nix-env -iA` |
-| Windows | WebView2 Evergreen runtime | the Microsoft bootstrapper, `/silent /install` |
-| macOS | nothing | |
 
 Each command is printed before it runs. `sudo` is prefixed only when the
 installer is not already root, and sudo reads its password from the terminal,
@@ -108,31 +100,17 @@ The terminal pane is a GPU surface created on the pane widget's own X window,
 so on Linux vitrum runs under X11. Under a Wayland compositor, run it through
 Xwayland. There is no Wayland path yet.
 
-The surface is created through wgpu, which uses Vulkan on Linux, Metal on
-macOS and Direct3D 12 on Windows. A machine with no GPU driver falls back to
-that platform's software adapter. The installer does not install a driver: a
+The surface is created through wgpu, which uses Vulkan on Linux. A machine
+with no GPU driver falls back to the software adapter. The installer does not install a driver: a
 machine that cannot create a surface reports which backend it tried rather
 than opening a window with no pane in it.
-
-## macOS
-
-The archive is fetched with curl and unpacked with tar, and neither marks
-what it writes with `com.apple.quarantine`. An archive that arrives some
-other way carries the mark and passes it to everything unpacked out of it, so
-the installer reads the mark rather than assuming it, clears it when it is
-there, and says so.
-
-It then runs the installed binary once. macOS refuses a binary it will not
-run by killing it rather than by printing anything, so asking for
-`--version` is the only way to find out. When that fails the installer names
-the exact commands that clear the mark by hand and try again.
 
 ## What the installer does
 
 1. Checks this machine before downloading anything: the architecture and libc
    have a published build, the install directory can really be written to, no
    `vitrum` is running from it, there is something to download with, and the
-   GTK or WebView2 runtime is present or can be installed.
+   GTK runtime is present or can be installed.
 2. Resolves the latest published release.
 3. Downloads the platform archive and the release `SHA256SUMS`.
 4. Checks the archive arrived whole, then compares digests. On a mismatch it
@@ -145,9 +123,8 @@ the exact commands that clear the mark by hand and try again.
 6. Places `vitrum` and `vitrum-server` in the install directory.
 7. Adds that directory to `PATH`: in `~/.profile`, in `~/.bash_profile` when
    bash has one, and in the rc of every shell you have among bash, zsh and
-   fish. On Windows, in the user `Path` environment variable.
-8. Adds a launcher entry: a `.desktop` file on Linux, an app bundle in
-   `~/Applications` on macOS, a Start menu shortcut on Windows.
+   fish.
+8. Adds a launcher entry: a `.desktop` file.
 9. Defines `vu` as `vitrum update`.
 10. Records every file it wrote, so `--uninstall` can remove exactly those.
 
@@ -186,24 +163,17 @@ digest says.
 
 | Path | What |
 |---|---|
-| `~/.local/bin/vitrum`, `~/.local/bin/vitrum-server` | the binaries, Linux and macOS |
-| `%LOCALAPPDATA%\vitrum\bin\vitrum.exe`, `vitrum-server.exe` | the binaries, Windows |
-| `~/.local/share/icons/hicolor/*/apps/vitrum.png` | the icon set, Linux |
-| `~/.local/share/applications/vitrum.desktop` | the launcher entry, Linux |
-| `~/Applications/vitrum.app` | the app bundle, macOS |
-| `%LOCALAPPDATA%\vitrum\icons\` | the icon set, Windows |
-| Start menu `vitrum.lnk` | the launcher entry, Windows |
+| `~/.local/bin/vitrum`, `~/.local/bin/vitrum-server` | the binaries |
+| `~/.local/share/icons/hicolor/*/apps/vitrum.png` | the icon set |
+| `~/.local/share/applications/vitrum.desktop` | the launcher entry |
 | `~/.profile`, `~/.bashrc`, `~/.zshrc`, `config.fish` | one marked block each, `PATH` and `vu` |
-| `$PROFILE` | one marked block, `vu`, Windows |
-| user `Path` | the install directory, Windows |
 | `~/.local/share/vitrum/install-manifest` | every path above, as it is written |
-| `%LOCALAPPDATA%\vitrum\install-manifest` | the same, Windows |
 
 The install directory is `--install-dir=PATH` or `VITRUM_INSTALL_DIR`.
 
 The system packages the installer installs are not recorded and are not
-removed by `--uninstall`. A GTK runtime and the WebView2 runtime are
-shared with everything else on the machine.
+removed by `--uninstall`. A GTK runtime is shared with everything else on the
+machine.
 
 ## Options
 
@@ -221,9 +191,6 @@ sh install.sh --help
 | `--no-deps` | `VITRUM_NO_DEPS` | install no system packages; print the command and stop |
 | `--no-runtime-check` | `VITRUM_NO_RUNTIME_CHECK` | install without checking the runtime this machine has |
 | `--uninstall` | | remove everything the installer wrote |
-
-PowerShell takes the same as `-Version`, `-Channel`, `-InstallDir`, `-BaseUrl`,
-`-NoIntegrate`, `-NoDeps`, `-NoRuntimeCheck` and `-Uninstall`.
 
 `--no-integrate` is for images, provisioning scripts and headless hosts, where
 a `PATH` edit in a home directory and a launcher entry on a machine with no
@@ -258,12 +225,11 @@ having installed nothing.
 | the install directory refuses a write | `<dir> cannot be written to` |
 | `vitrum` is running from there | `vitrum is running from <dir>/vitrum (pid N)` |
 | the GTK runtime cannot be installed | `vitrum needs a GTK runtime and this installer cannot install one`, with the reason |
-| the WebView2 runtime cannot be installed | `the WebView2 runtime could not be installed: ...` |
 | an architecture with no build | `there is no published build for Linux on riscv64` |
 | a libc with no build | `there is no published build for Linux with musl libc` |
 | a shared library has no package here | `the published build needs shared libraries this distribution does not package` |
 | the C library is older than the build needs | `the published build needs a newer C library than this machine has`, with both versions |
-| macOS will not run the installed binary | `the installed vitrum does not run on this machine (exit N)`, with the commands that clear the download mark |
+| a platform with no build | `there is no published build for macOS` |
 
 A running `vitrum-server` never blocks an install. Its file is replaced by
 rename, the running daemon keeps the image it started with, and the installer
@@ -336,10 +302,6 @@ direction, run the installer with it:
 curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh -s -- 1.2.3
 ```
 
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1))) -Version 1.2.3
-```
-
 Both binaries are replaced together, so the client and daemon never end up on
 different protocol versions on disk. A daemon that is already running is not
 replaced. Restart it, and the sessions it holds, to complete a rollback.
@@ -349,13 +311,6 @@ replaced. Restart it, and the sessions it holds, to complete a rollback.
 ```sh
 curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh -s -- --uninstall
 ```
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/santhreal/vitrum/main/install.ps1))) -Uninstall
-```
-
-With a copy of the script on disk, `sh install.sh --uninstall` and
-`.\install.ps1 -Uninstall` do the same thing.
 
 This removes what the install wrote and nothing else. Every file was recorded
 as it was created, including the icon files, whose names come from the binary
@@ -378,7 +333,7 @@ directory: `sh install.sh --uninstall --install-dir=PATH`. Uninstalling
 something that is not there is an error rather than a silent success.
 
 What remains is config and state, listed in
-[configuration.md](configuration.md), and the GTK or WebView2 runtime,
-which is shared with the rest of the machine.
+[configuration.md](configuration.md), and the GTK runtime, which is shared
+with the rest of the machine.
 
 Building from source is in [CONTRIBUTING.md](../CONTRIBUTING.md).

@@ -7,6 +7,12 @@ Before 1.0, a minor bump may break compatibility.
 
 ### Changed
 
+- **A release carries Linux.** The terminal pane presents to an X11 window, so
+  a macOS or Windows archive would install a shell whose pane paints nothing.
+  The release matrix, the published-builds table and the installer name the two
+  Linux triples only, and `install.ps1` is deleted rather than left refusing.
+  `platforms.yml` still builds macOS and Windows and runs the suite on both on
+  every push, and a target is published again the day a pane exists there.
 - **The terminal pane is native, and the product ships no JavaScript.** Every
   pane was drawn by a vendored emulator written in JavaScript, running inside
   the WebKit view. A pane is now a GTK drawing area with its own X window, a

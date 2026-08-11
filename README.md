@@ -55,7 +55,7 @@ uninstall: [docs/install.md](docs/install.md).
 
 ## Status
 
-vitrum is at version 0.3.1, and releases carry Linux on x86_64 and arm64. The
+vitrum is at version 0.3.1. Releases carry Linux on x86_64 and arm64. The
 terminal pane presents to an X11 window, so a Wayland session needs
 `GDK_BACKEND=x11`. macOS and Windows build and pass the test suite; neither
 publishes an archive, because the pane paints nothing there. Collision

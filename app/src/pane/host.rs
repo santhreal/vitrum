@@ -739,14 +739,14 @@ impl PaneHost {
 
     /// A key the input method did not take.
     fn key(&self, ev: &gdk::EventKey) -> glib::Propagation {
-        let Some((key, mods)) = super::surface::decode_event(ev) else {
+        let Some((key, mods)) = super::keyevent::decode_event(ev) else {
             return glib::Propagation::Proceed;
         };
         // The shell gets first refusal. A chord it claims must not also reach
         // the child, or one press opens a session and types an escape
         // sequence into the session that was already there.
         let window = self.inner.borrow().window;
-        if crate::keys::claim_in_pane(window, key, super::surface::digit_of(ev), mods) {
+        if crate::keys::claim_in_pane(window, key, super::keyevent::digit_of(ev), mods) {
             return glib::Propagation::Stop;
         }
 
@@ -869,7 +869,7 @@ impl PaneHost {
     /// because translating a toolkit event is that module's whole job and
     /// the host has no business knowing what a keyval is.
     fn send(&self, ev: &gdk::EventKey) -> glib::Propagation {
-        let Some(mut bytes) = super::surface::encode_event(ev) else {
+        let Some(mut bytes) = super::keyevent::encode_event(ev) else {
             return glib::Propagation::Proceed;
         };
         let mut reports = Vec::new();

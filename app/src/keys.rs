@@ -312,9 +312,9 @@ fn key_name(key: pane::key::Key, digit: Option<char>) -> Option<String> {
 /// `None` for a keystroke that names no chord, which is a bare modifier press
 /// or a keyval with neither a character nor a name.
 pub(crate) fn chord_from_gdk(event: &gtk::gdk::EventKey) -> Option<Chord> {
-    let (key, mods) = pane::surface::decode_event(event)?;
+    let (key, mods) = pane::keyevent::decode_event(event)?;
     Some(Chord {
-        key: key_name(key, pane::surface::digit_of(event))?,
+        key: key_name(key, pane::keyevent::digit_of(event))?,
         ctrl: mods.ctrl,
         alt: mods.alt,
         shift: mods.shift,

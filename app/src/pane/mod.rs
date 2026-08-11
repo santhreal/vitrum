@@ -39,13 +39,17 @@
 //! - [`key`] encodes a keystroke.
 //! - [`session`] holds the emulator, the grid and the overlay.
 //!
-//! What is left is [`host`], which is the widget, and [`surface`], which is the
-//! swapchain. Both are Linux-only and both are small, because everything that
-//! could be moved out of them was.
+//! What is left is [`host`], which is the widget, and [`surface`], which is
+//! the swapchain. Both are Linux-only and both are small, because everything
+//! that could be moved out of them was: [`keyevent`] is the last of it, and it
+//! compiles everywhere because a chord is matched whether or not a pane can
+//! paint. On a platform with no X window, `host_absent` answers in host's
+//! shape and refuses.
 
 pub(crate) mod find;
 pub(crate) mod geometry;
 pub(crate) mod key;
+pub(crate) mod keyevent;
 pub(crate) mod keymode;
 pub(crate) mod mouse;
 pub(crate) mod pacing;
@@ -60,8 +64,13 @@ mod host;
 #[cfg(target_os = "linux")]
 pub(crate) mod surface;
 
+#[cfg(not(target_os = "linux"))]
+mod host_absent;
+
 #[cfg(target_os = "linux")]
 pub(crate) use host::{PaneHost, install_in};
+#[cfg(not(target_os = "linux"))]
+pub(crate) use host_absent::{PaneHost, install_in};
 
 use crate::state::live::PaneSettings;
 use theme::{CursorShape, Palette, PaneTheme, Present};

@@ -27,3 +27,8 @@ BACKLOG.md
 .DS_Store
 *.swp
 *~
+
+# Bytecode the harness's python leaves beside itself. A stray directory here
+# is not a defect, but `cut.sh` refuses a dirty tree and a compile check
+# should not be able to stop a release.
+__pycache__/

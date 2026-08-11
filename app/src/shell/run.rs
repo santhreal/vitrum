@@ -216,28 +216,40 @@ impl Ctx {
 /// because a window shown first presents an empty frame and then fills it,
 /// which is one visible reflow on every launch.
 pub(crate) fn launch(opts: Options, link: Option<DeepLink>) -> ! {
-    if let Err(e) = gtk::init() {
-        // Nothing this program does is possible without a display, and a
-        // message naming the variable is what an operator can act on.
-        eprintln!("vitrum: cannot reach a display server: {e}");
-        std::process::exit(1);
+    {
+        let _span = boot::span("gtk.init");
+        if let Err(e) = gtk::init() {
+            // Nothing this program does is possible without a display, and a
+            // message naming the variable is what an operator can act on.
+            eprintln!("vitrum: cannot reach a display server: {e}");
+            std::process::exit(1);
+        }
     }
 
     // The runtime the socket does its I/O on, entered for the life of the
     // process. The guard is what makes `Handle::current` resolve on the GTK
     // thread, which `socket::Net` captures and every `tokio::time::sleep` in a
     // pump needs.
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            eprintln!("vitrum: no async runtime: {e}");
-            std::process::exit(1);
+    let runtime = {
+        let _span = boot::span("tokio.runtime");
+        match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!("vitrum: no async runtime: {e}");
+                std::process::exit(1);
+            }
         }
     };
     let _entered = runtime.enter();
 
-    let (all, primary) = monitors();
-    seed_book(load_geometry(&monitor_rects(primary.as_ref(), &all)));
+    let (all, primary) = {
+        let _span = boot::span("monitors.probe");
+        monitors()
+    };
+    {
+        let _span = boot::span("geometry.load");
+        seed_book(load_geometry(&monitor_rects(primary.as_ref(), &all)));
+    }
     for monitor in &all {
         let d = crate::geometry::density_of(monitor);
         tracing::info!(
@@ -254,11 +266,15 @@ pub(crate) fn launch(opts: Options, link: Option<DeepLink>) -> ! {
 
     #[cfg(target_os = "linux")]
     if let Some(display) = gtk::gdk::Display::default() {
+        let _span = boot::span("style.install");
         super::style::install(&display);
     }
     boot::mark("styles.built");
 
-    open_on(opts, link, primary.as_ref());
+    {
+        let _span = boot::span("open_on");
+        open_on(opts, link, primary.as_ref());
+    }
 
     gtk::main();
     // `gtk::main` returns when the last window asked the loop to quit. Nothing
@@ -289,9 +305,15 @@ fn open_on(opts: Options, link: Option<DeepLink>, primary: Option<&gtk::gdk::Mon
     let geometry = remembered(ordinal).unwrap_or_else(|| fresh_geometry(primary, scale, ordinal));
     remember(ordinal, geometry);
 
-    let window = super::window::create(&geometry, scale);
+    let window = {
+        let _span = boot::span("window.build");
+        super::window::create(&geometry, scale)
+    };
     boot::mark("window.created");
-    splash::install(&window);
+    {
+        let _span = boot::span("splash.install");
+        splash::install(&window);
+    }
 
     // The queue the pane's keystrokes and every panel's request arrive on. It
     // exists before the pane does, because the pane's key handler is built
@@ -305,24 +327,33 @@ fn open_on(opts: Options, link: Option<DeepLink>, primary: Option<&gtk::gdk::Mon
     // overwrite one entry.
     ui.window.index = ordinal;
     let server = ui.daemon.settings.resolved_daemon_url(opts.server).to_string();
-    let shell = Shell::new(
-        &window,
-        ui,
-        tx.clone(),
-        Ident {
-            ordinal,
-            server,
-            home: crate::clock::home(),
-        },
-    );
+    let shell = {
+        let _span = boot::span("shell.new");
+        Shell::new(
+            &window,
+            ui,
+            tx.clone(),
+            Ident {
+                ordinal,
+                server,
+                home: crate::clock::home(),
+            },
+        )
+    };
 
     // Fold the chord table when the profile changes, not per key press, and
     // follow the shell theme from the first settings document rather than from
     // the first edit of the session.
-    keys::watch_chords();
-    crate::ui::settings::watch_shell();
+    {
+        let _span = boot::span("settings.watchers");
+        keys::watch_chords();
+        crate::ui::settings::watch_shell();
+    }
 
-    let (net, socket_rx) = socket::Net::new();
+    let (net, socket_rx) = {
+        let _span = boot::span("socket.new");
+        socket::Net::new()
+    };
     let bridge = Bridge {
         net: Rc::new(RefCell::new(net)),
         ui: tx,
@@ -335,7 +366,11 @@ fn open_on(opts: Options, link: Option<DeepLink>, primary: Option<&gtk::gdk::Mon
         let raise = bridge.clone();
         move |bytes: &[u8]| raise.raise(ClientEvent::Input { data: bytes.to_vec() })
     });
-    match pane::install_in(&shell.pane_host(), ordinal, sink) {
+    let installed = {
+        let _span = boot::span("pane.install");
+        pane::install_in(&shell.pane_host(), ordinal, sink)
+    };
+    match installed {
         Ok(host) => {
             bridge.attach_pane(host.sink());
             // The pane's only way back that is not bytes. A resize is a
@@ -374,21 +409,40 @@ fn open_on(opts: Options, link: Option<DeepLink>, primary: Option<&gtk::gdk::Mon
         }),
     });
 
-    shell.mount(Slot::Titlebar, crate::ui::titlebar::native::panel(&shell));
-    shell.mount(Slot::Sidebar, crate::ui::sidebar::widgets::panel(&shell));
-    shell.mount(Slot::PaneBar, crate::ui::panebar::panel(&shell));
-    crate::ui::toast::Toast::install(&shell);
-    shell.observe(Layers::new(&shell));
+    {
+        let _span = boot::span("mount.titlebar");
+        shell.mount(Slot::Titlebar, crate::ui::titlebar::native::panel(&shell));
+    }
+    {
+        let _span = boot::span("mount.sidebar");
+        shell.mount(Slot::Sidebar, crate::ui::sidebar::widgets::panel(&shell));
+    }
+    {
+        let _span = boot::span("mount.panebar");
+        shell.mount(Slot::PaneBar, crate::ui::panebar::panel(&shell));
+    }
+    {
+        let _span = boot::span("mount.toast");
+        crate::ui::toast::Toast::install(&shell);
+        shell.observe(Layers::new(&shell));
+    }
 
-    wire_sidebar_width(&shell, ordinal, scale);
-    wire_window(&cx, &window, ordinal, scale);
-    wire_keyboard(&cx, &window);
+    {
+        let _span = boot::span("wire.window");
+        wire_sidebar_width(&shell, ordinal, scale);
+        wire_window(&cx, &window, ordinal, scale);
+        wire_keyboard(&cx, &window);
+    }
 
     if ordinal == 0 {
+        let _span = boot::span("wire.tray");
         wire_tray(&cx, &window);
     }
 
-    window.show_all();
+    {
+        let _span = boot::span("window.show_all");
+        window.show_all();
+    }
     boot::mark("shell.mounted");
 
     pump_socket(&cx, socket_rx);

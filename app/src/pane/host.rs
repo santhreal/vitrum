@@ -417,6 +417,7 @@ impl PaneHost {
         // The borrow is dropped across `attach`, which runs a GPU handshake
         // and pumps the main loop.
         let attached = {
+            let _span = crate::boot::span("pane.attach");
             let mut inner = self.inner.borrow_mut();
             let Inner { session, .. } = &mut *inner;
             PaneSurface::attach(area, font, present, session.grid_mut())

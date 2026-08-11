@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use glib::translate::ToGlibPtr;
 use gtk::prelude::*;
 use vitrum_grid::font::FontConfig;
-use vitrum_grid::{CellGrid, GridRenderer, RendererConfig};
+use vitrum_grid::{CellGrid, FontStack, GridRenderer, RendererConfig};
 
 use super::geometry::PaneRect;
 use super::key::{Key, Mods, Named, encode};
@@ -230,7 +230,10 @@ impl PaneSurface {
         // Without this the widget shares the toplevel's X window and there is
         // no XID to present to. This is the whole trick behind a native pane
         // inside a GTK window.
-        gdk_window.ensure_native();
+        {
+            let _span = crate::boot::span("pane.ensure_native");
+            gdk_window.ensure_native();
+        }
 
         let scale = area.scale_factor().max(1) as u32;
         let alloc = area.allocation();
@@ -252,12 +255,15 @@ impl PaneSurface {
             ));
         }
 
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(XDisplay {
-                ptr: xdisplay,
-                screen: 0,
-            })),
-        );
+        let instance = {
+            let _span = crate::boot::span("wgpu.instance");
+            wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(XDisplay {
+                    ptr: xdisplay,
+                    screen: 0,
+                })),
+            )
+        };
 
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
             raw_display_handle: Some(wgpu::rwh::RawDisplayHandle::Xlib(
@@ -269,25 +275,36 @@ impl PaneSurface {
         };
         // SAFETY: `xid` names a window GTK keeps alive for as long as the
         // widget lives, and the display pointer is GTK's own connection.
-        let surface = unsafe { instance.create_surface_unsafe(target) }
-            .with_context(|| format!("create wgpu surface on XID {xid:#x}"))?;
+        let surface = {
+            let _span = crate::boot::span("wgpu.surface");
+            // SAFETY: `xid` names a window GTK keeps alive for as long as the
+            // widget lives, and the display pointer is GTK's own connection.
+            unsafe { instance.create_surface_unsafe(target) }
+        }
+        .with_context(|| format!("create wgpu surface on XID {xid:#x}"))?;
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: Some(&surface),
-        }))
+        let adapter = {
+            let _span = crate::boot::span("wgpu.adapter");
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: Some(&surface),
+            }))
+        }
         .map_err(|e| anyhow!("no GPU adapter can present to the pane's window: {e}"))?;
 
         let limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("vitrum.pane.device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: limits,
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        }))
+        let (device, queue) = {
+            let _span = crate::boot::span("wgpu.device");
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("vitrum.pane.device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            }))
+        }
         .map_err(|e| anyhow!("request GPU device for the pane: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
@@ -319,10 +336,24 @@ impl PaneSurface {
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
-        surface.configure(&device, &config);
+        {
+            let _span = crate::boot::span("wgpu.configure");
+            surface.configure(&device, &config);
+        }
 
-        let renderer = GridRenderer::new(&device, &RendererConfig { format, font, ..RendererConfig::default() })
-            .map_err(|e| anyhow!("build the pane's glyph renderer: {e}"))?;
+        let fonts = {
+            let _span = crate::boot::span("font.stack");
+            FontStack::system(&font)
+        }
+        .map_err(|e| anyhow!("discover the pane's monospace face: {e}"))?;
+        let renderer = {
+            let _span = crate::boot::span("grid.pipeline");
+            GridRenderer::with_fonts(
+                &device,
+                &RendererConfig { format, font, ..RendererConfig::default() },
+                fonts,
+            )
+        };
 
         let mut this = Self {
             device,
@@ -340,8 +371,10 @@ impl PaneSurface {
                 .map_err(|e| anyhow!("size the pane's cell grid to {cols}x{rows}: {e}"))?;
         }
         grid.mark_all_damaged();
-        this.present(grid)
-            .context("paint the pane's first frame")?;
+        {
+            let _span = crate::boot::span("pane.present");
+            this.present(grid).context("paint the pane's first frame")?;
+        }
         Ok(this)
     }
 

@@ -101,12 +101,15 @@ fn main() {
     // hides the subscriber.
     boot::arm();
     boot::mark("process.start");
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("VITRUM_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,vitrum=info")),
-        )
-        .init();
+    {
+        let _span = boot::span("logging.subscriber");
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_env("VITRUM_LOG")
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,vitrum=info")),
+            )
+            .init();
+    }
     boot::mark("logging.ready");
 
     // An update staged by an earlier run is applied here: before the window,
@@ -117,7 +120,10 @@ fn main() {
     //
     // The daemon is not restarted. It keeps running the old code until the
     // operator restarts it, which ends every session it holds.
-    update::apply_on_start();
+    {
+        let _span = boot::span("update.apply");
+        update::apply_on_start();
+    }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -158,16 +164,19 @@ fn main() {
     // The guard is bound for the length of `main`. `launch` never returns, so
     // this is a statement of lifetime rather than a drop that will run.
     let activation = Activation::from_args(&args);
-    let _instance = if opts.standalone {
-        tracing::info!("running standalone; a second launch will not reach this process");
-        Instance::Alone
-    } else {
-        match claim_instance(&activation) {
-            Instance::Second => {
-                tracing::info!("handed off to the running instance: {activation:?}");
-                return;
+    let _instance = {
+        let _span = boot::span("instance.claim");
+        if opts.standalone {
+            tracing::info!("running standalone; a second launch will not reach this process");
+            Instance::Alone
+        } else {
+            match claim_instance(&activation) {
+                Instance::Second => {
+                    tracing::info!("handed off to the running instance: {activation:?}");
+                    return;
+                }
+                held => held,
             }
-            held => held,
         }
     };
     boot::mark("instance.claimed");
@@ -181,7 +190,10 @@ fn main() {
     // used" costs. The `PATH` walk behind the roster happens only when the
     // file is absent, so it is paid once in the life of a profile and never
     // on the path this program is measured on.
-    launch::seed_launch_store_once();
+    {
+        let _span = boot::span("launch.seed");
+        launch::seed_launch_store_once();
+    }
 
     // The startup profile and the window mark, read and rasterised on a
     // thread of its own while this one brings the toolkit up.
@@ -196,7 +208,11 @@ fn main() {
     if let Err(e) = std::thread::Builder::new()
         .name("vitrum-prewarm".to_string())
         .spawn(move || {
-            let _ = state::startup_prefs();
+            {
+                let _span = boot::span("prewarm.profile");
+                let _ = state::startup_prefs();
+            }
+            let _span = boot::span("prewarm.icon");
             warm_window_icon();
         })
     {

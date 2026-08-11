@@ -271,7 +271,10 @@ def main(argv):
     if opts.role not in ROLES:
         print(f"agent.py: unknown role {opts.role!r}", file=sys.stderr)
         return 2
-    os.environ.setdefault("TERM", "xterm-256color")
+    # The same terminal name the product gives a real session, so a role
+    # played outside a vitrum pane writes the escapes it would write inside
+    # one. Inside a pane this is already set and the default never applies.
+    os.environ.setdefault("TERM", "vte-256color")
     return play(opts.role, opts.pause)
 
 

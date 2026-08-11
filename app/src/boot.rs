@@ -149,6 +149,50 @@ pub(crate) fn mark(phase: &str) {
     eprintln!("vitrum-boot {name} {us}");
 }
 
+/// One stretch of a start, named for the work inside it.
+///
+/// A phase says WHEN something happened and is ordered against its
+/// prerequisite. A span says WHAT A STRETCH COST, and the two answer different
+/// questions: a timeline of eleven phases can show 264 ms between two of them
+/// without naming a single thing that spent it, and a mark added to close that
+/// gap only moves the gap. So the gap is measured directly, by whoever does
+/// the work, and the attribution is the name they gave it.
+///
+/// Spans are not ordered and not idempotent. Nesting is allowed and expected:
+/// an outer span is the sum plus whatever its children did not claim, which
+/// is how an unattributed remainder becomes visible instead of invisible.
+///
+/// Off when the trace is off, down to not reading the clock. A start that
+/// nobody is measuring pays two atomic loads for the whole facility.
+pub(crate) struct Span {
+    name: &'static str,
+    at: Option<Instant>,
+}
+
+/// Begin measuring `name`.
+///
+/// The stretch ends when the returned value is dropped, so a span covers
+/// exactly the scope it was opened in and cannot be left open by an early
+/// return.
+pub(crate) fn span(name: &'static str) -> Span {
+    Span {
+        name,
+        at: ON.load(Ordering::Relaxed).then(Instant::now),
+    }
+}
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        if let Some(at) = self.at {
+            eprintln!(
+                "vitrum-boot-span {} {}",
+                self.name,
+                at.elapsed().as_micros()
+            );
+        }
+    }
+}
+
 /// Every ordering rule `seen` breaks, as sentences.
 ///
 /// Pure, and the same function the live recorder uses, so a test drives the

@@ -110,11 +110,9 @@ up() {
   export PATH=$STAGE/bin:$PATH
   export VITRUM_PORT=$PORT
   # The capture host has no GPU: llvmpipe under Xvfb, and DRI3 unavailable.
-  # WebKit's accelerated compositing and its dmabuf renderer both stall the
-  # window there — the first frame paints and nothing ticks again, which is a
-  # screenshot of a frozen splash. The pane's own surface is Vulkan through
-  # lavapipe, which does work headless and is what `--software` means here.
-  export WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1
+  # The chrome is GTK and renders through Cairo on the CPU, which needs
+  # nothing from a driver. The pane's own surface is Vulkan through lavapipe,
+  # which does work headless and is what `--software` means here.
   export LIBGL_ALWAYS_SOFTWARE=1 GDK_BACKEND=x11
 
   Xvfb ":$DNUM" -screen 0 "${W}x${H}x24" -dpi 96 > "$STAGE/log/xvfb.log" 2>&1 &

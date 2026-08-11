@@ -23,7 +23,7 @@
 # What the run needs on the host:
 #
 #   /src writable, or already holding the project directories below
-#   Xvfb, xdotool, import (ImageMagick), python3
+#   Xvfb, xdotool, import (ImageMagick), python3 with numpy and Pillow
 #   a release build of `vitrum` and `vitrum-server` in $VITRUM_BIN
 #
 # The project directories are real repositories with real branches, created
@@ -174,7 +174,12 @@ XML
 
   python3 "$HERE/stage.py" > "$STAGE/sessions.tsv" || die "the daemon refused the session set"
 
-  DISPLAY=":$DNUM" "$VITRUM_BIN/vitrum" --standalone --no-autostart \
+  # `VITRUM_LOG=debug` for one line only: the pane prints the grid it handed
+  # the child on every resize, and that number is the pane's own claim about
+  # how many rows it is showing. `shots` reads it back and holds the picture
+  # to it, which is the only way a dead band under the last row is
+  # distinguishable from a screen that simply has empty rows at the bottom.
+  DISPLAY=":$DNUM" VITRUM_LOG=${VITRUM_LOG:-debug} "$VITRUM_BIN/vitrum" --standalone --no-autostart \
     --server "ws://127.0.0.1:$PORT" --ui-scale "$SCALE" \
     ${OPEN:+"vitrum://session/$OPEN"} \
     > "$STAGE/log/app.log" 2>&1 &
@@ -352,7 +357,19 @@ shots() {
   # 1. The hero. `up` was given the session to open, so the pane already holds
   #    the transcript of the agent that is waiting for an approval and the
   #    sidebar already holds the other seven.
-  shot hero-sidebar-five-states
+  hero=$(shot hero-sidebar-five-states) || exit 1
+  echo "$hero"
+  # Read the pane back out of the picture that was just taken, and hold it to
+  # the grid the pane says it handed the child. The window is sized by the
+  # caller, so a run at an awkward geometry is the case that catches a pane
+  # leaving a row unpainted, and the capture is the only place that band is
+  # visible at all. The claim comes out of the app's own log rather than out
+  # of the picture: reading it off the status bar would need OCR, and a
+  # measurement that agrees with itself proves nothing.
+  claimed=$(sed -n 's/.*pane resized to \([0-9]*x[0-9]*\).*/\1/p' "$STAGE/log/app.log" | tail -1)
+  [ -n "$claimed" ] || die "the app never logged a pane resize; is VITRUM_LOG=debug set?"
+  python3 "$HERE/measure.py" "$hero" "$claimed" \
+    || die "the pane's geometry is wrong in $hero"
 
   # 2. The launcher, over that same sidebar.
   chord ctrl+shift+n

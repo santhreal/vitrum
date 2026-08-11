@@ -129,6 +129,10 @@ pub(crate) fn panel(shell: &Shell) -> Rc<dyn Panel> {
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     actions.style_context().add_class("rg-titlebar__actions");
+    // The actions are their stated height, centred in the bar. Left to fill,
+    // a pill drawn at the bar's full height loses its rounded ends to the
+    // bar's edges.
+    actions.set_valign(gtk::Align::Center);
     bar.pack_start(&actions, false, false, 0);
 
     // A quiet chip, not a modal. About owns Install; this only says a newer
@@ -152,6 +156,8 @@ pub(crate) fn panel(shell: &Shell) -> Rc<dyn Panel> {
     link.style_context().add_class("rg-conn");
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.style_context().add_class("rg-conn__dot");
+    // A dot is round only at its own size; filling the pill makes it a bar.
+    dot.set_valign(gtk::Align::Center);
     link.pack_start(&dot, false, false, 0);
     let word = gtk::Label::new(None);
     word.style_context().add_class("rg-conn__word");

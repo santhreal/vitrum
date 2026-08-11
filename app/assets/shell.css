@@ -64,11 +64,14 @@
 
 /* A button's box is the sheet's, not the theme's.
  *
- * The stock theme adds vertical padding and a 1px border to every button, on
- * top of whatever `min-height` a rule here states. A control declared 32px
- * tall is drawn 46px tall, which is why the sidebar's footer overflowed the
- * bottom of the window and lost the bottom edge of its own controls, and why
- * a glyph button that was never meant to have an outline wears one.
+ * The stock theme adds vertical padding, a 1px border and an inset shadow to
+ * every button, on top of whatever `min-height` a rule here states. A control
+ * declared 32px tall is drawn 46px tall, which is why the sidebar's footer
+ * overflowed the bottom of the window and lost the bottom edge of its own
+ * controls, and why a glyph button that was never meant to have an outline
+ * wears one. Zeroing the border is not enough on its own: the near-white arc
+ * left over the footer's controls after that was the shadow, which is drawn
+ * whatever the border does.
  *
  * Horizontal padding is left alone: the buttons that carry text and do not
  * state their own inset get their breathing room from it, and a zero there
@@ -80,6 +83,7 @@
   padding-top: 0;
   padding-bottom: 0;
   border-width: 0;
+  box-shadow: none;
 }
 
 /* ── Titlebar ────────────────────────────────────────────────────────────── */
@@ -434,7 +438,11 @@
   min-height: $row-collapsed-h$;
 }
 
+/* Follows the agent's drawn mark on line one. The gap sits here rather than on
+ * the mark, because the mark is a drawing area and a margin on it is spent
+ * inside its own allocation. Without it a row reads `<mark>hint parser`. */
 .rg-session__title {
+  margin-left: $space-1$;
   font-size: $text-13$;
   font-weight: $weight-medium$;
   color: $fg-strong$;
@@ -1499,12 +1507,17 @@
 }
 
 /* A drawn glyph, sized in Rust from the type scale. It reads only its
- * foreground, so a length here would fight the size the widget already has. */
+ * foreground, so a length here would fight the size the widget already has,
+ * and the gap after it belongs to the label that follows. */
 .rg-launch__agent {
   color: $fg$;
 }
 
+/* Follows the row's own label, which expands to fill the row, so the two meet
+ * with nothing between them. Without the gap a worktree row reads
+ * `claudehint-parser`. */
 .rg-launch__branch {
+  margin-left: $space-2$;
   font-family: $font-mono$;
   font-size: $text-11$;
   color: $fg-subtle$;
@@ -1519,12 +1532,18 @@
   color: $fg-faint$;
 }
 
+/* Follows the mark. A margin on a drawing area is spent inside its own
+ * allocation, so the gap is stated here or the row reads `<mark>claude`. */
 .rg-launch__text {
+  margin-left: $space-1$;
   font-size: $text-13$;
   color: $fg$;
 }
 
+/* Leads the row, immediately before the agent's drawn mark. Without the gap a
+ * row reads `1<mark>claude` with the ordinal touching the glyph. */
 .rg-launch__key {
+  margin-right: $space-2$;
   font-family: $font-mono$;
   font-size: $text-11$;
   color: $fg-faint$;
@@ -1605,12 +1624,14 @@
 }
 
 /* Drawn glyphs. Sized in Rust from the type scale, so the sheet gives them
- * a foreground and nothing that could disagree with that size. */
+ * a foreground and nothing that could disagree with that size. The gap after
+ * one belongs to the label beside it. */
 .rg-presets__icon {
   color: $fg-muted$;
 }
 
 .rg-presets__text {
+  margin-left: $space-1$;
   font-size: $text-12$;
   color: $fg$;
 }
@@ -1644,6 +1665,7 @@
 }
 
 .rg-recents__text {
+  margin-left: $space-1$;
   font-size: $text-12$;
   color: $fg$;
 }
@@ -1923,8 +1945,10 @@
 
 /* ── The daemon banner ───────────────────────────────────────────────────── */
 
+/* Carries a chip only while it has a word to say. A connected daemon says
+ * nothing, and a chip drawn around a lone dot is a green blob in the corner
+ * of the titlebar. */
 .rg-conn {
-  min-height: $row-h$;
   padding-left: $space-2$;
   padding-right: $space-2$;
   border-radius: $radius-sm$;
@@ -1932,11 +1956,29 @@
   color: $hue-ready$;
 }
 
+/* The dot carries the state on its own, because in the connected state it is
+ * the only thing painted. */
 .rg-conn__dot {
   min-width: $dot-size$;
   min-height: $dot-size$;
   border-radius: $radius-full$;
   background-color: $hue-ready$;
+}
+
+.rg-conn--ok .rg-conn__dot {
+  background-color: $hue-done$;
+}
+
+.rg-conn--connecting .rg-conn__dot {
+  background-color: $hue-approval$;
+}
+
+.rg-conn--failed .rg-conn__dot {
+  background-color: $hue-failed$;
+}
+
+.rg-conn--fixture .rg-conn__dot {
+  background-color: $hue-input$;
 }
 
 /* Present and empty until the socket answers. */
@@ -1952,8 +1994,10 @@
 }
 
 .rg-conn.rg-conn--ok {
-  background-color: $hue-done-soft$;
+  background-color: transparent;
   color: $hue-done$;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .rg-conn.rg-conn--connecting {

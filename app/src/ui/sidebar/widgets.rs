@@ -356,6 +356,11 @@ fn build(
         Kind::Press(initial) => {
             let button = gtk::Button::new();
             button.set_relief(gtk::ReliefStyle::None);
+            // A control is the height its rule states, not the height of the
+            // row it happens to sit in. Filling made the footer's buttons 48px
+            // tall against a stated 32, so their bottom edge went off the
+            // window and their top edge drew a line across the sidebar.
+            button.set_valign(gtk::Align::Center);
             let inner = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             button.add(&inner);
             let held = Rc::new(Cell::new(*initial));

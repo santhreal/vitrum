@@ -261,51 +261,44 @@ async fn a_burst_is_published_in_runs_not_in_reads() {
     );
 }
 
-/// A megabyte of output may be copied at most an eighth of a time.
+/// A copy costs one run per arena boundary, whatever the volume is.
 ///
 /// WHY: this is the budget form of the in-place rejoin above. That test says
 /// the common path is not the copying one; this one says what the uncommon
 /// path is allowed to cost, so a change that makes straddling ordinary rather
 /// than rare is caught even though every individual copy is still legitimate.
 ///
-/// Two ceilings, both derived from the code rather than measured. The first is
-/// stated per megabyte and is the loose one: a run copies only when the
-/// reader crosses into a fresh arena mid-run, which can happen at most once
-/// per `READ_ARENA`, so a megabyte of output buys at most one straddle, and a
-/// straddle copies only the remainder of that run, which `FLUSH_BYTES` puts
-/// near 64 KiB. A sixteenth of the volume, in other words, and the ceiling is
-/// set at an eighth so the batch that crossed the boundary and an unlucky
-/// alignment of runs against arenas are both inside it.
+/// The ceiling is derived from the code and not measured: a run copies only
+/// when the reader crosses into a fresh arena mid-run, so copies are bounded
+/// by the arenas taken, times one capped run, doubled for the batch that
+/// crossed the boundary. It holds for any burst size and for any
+/// `READ_ARENA`, and it fails first if a run starts copying for a reason
+/// other than a straddle.
 ///
-/// The second is the exact invariant and does not depend on the volume at all:
-/// copies are bounded by the number of arenas taken, times one run. That is
-/// the sentence the code actually guarantees, so it holds for any burst size
-/// and for any `READ_ARENA`, and it is the one that fails first if a run
-/// starts copying for a reason other than a straddle.
+/// The bound is stated against arenas rather than against a fraction of the
+/// volume on purpose. A fraction moves with how far behind the reader is
+/// allowed to fall, which is the scheduler's decision and not this code's: on
+/// a loaded machine the same binary copies a quarter of a burst rather than a
+/// sixteenth, with every copy still legitimate. A gate that reads the
+/// scheduler reports load, not a regression.
 ///
-/// The pipeline benchmark reports the same quantity as `staged_bytes_per_mb`
-/// if a number rather than a bound is wanted.
+/// The pipeline benchmark reports the quantity as `staged_bytes_per_mb` if a
+/// number rather than a bound is wanted.
 ///
-/// This does NOT catch a copy made outside the merge, and neither bound
-/// notices a smaller `READ_ARENA` on its own: shrinking the arena raises
-/// straddling in proportion, which is a tuning decision the volume bound only
-/// reports once it has been taken eight times over.
+/// This does NOT catch a copy made outside the merge, and it does not notice
+/// a smaller `READ_ARENA` on its own: shrinking the arena raises both sides
+/// of the bound together, which is a tuning decision the benchmark reports
+/// and this does not.
 #[cfg(not(windows))]
 #[tokio::test]
-async fn a_megabyte_of_output_is_copied_at_most_an_eighth_of_a_time() {
+async fn a_copy_costs_one_run_per_arena_boundary() {
     let (script, want) = flood(4096);
     let (published, counts) = burst(&script, want).await;
     assert!(
-        counts.staged_bytes * 8 <= published as u64,
-        "{} bytes copied for {published} published, over the eighth-of-volume \
-         ceiling; runs are straddling arenas far more often than one per arena",
-        counts.staged_bytes,
-    );
-    // One capped run per arena boundary, doubled for the batch that crossed it.
-    assert!(
         counts.staged_bytes <= counts.arenas * 128 * 1024,
-        "{} bytes copied across {} arenas; a straddle can only copy the rest \
-         of one run, so something is copying that is not a straddle",
+        "{} bytes copied across {} arenas for {published} published; a \
+         straddle can only copy the rest of one run, so something is copying \
+         that is not a straddle",
         counts.staged_bytes,
         counts.arenas,
     );

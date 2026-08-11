@@ -24,6 +24,15 @@
 //! on the schedule in [`reconnect_delay_ms`]. A connected window has neither
 //! outstanding, which is what keeps the claim above true where it matters.
 
+// Dead code on a platform with no pane.
+//
+// The pane's geometry, scrollback, selection, pacing and encoding compile and
+// are tested everywhere; the widget and the swapchain are Linux-only. Without
+// them nothing reaches most of what they drive, and `-D warnings` turns that
+// into a hundred errors that say nothing about the code. Linux, which is what
+// a release carries, keeps the lint at full strength.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 mod actions;
 mod agent;
 mod badge;

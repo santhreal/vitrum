@@ -58,7 +58,7 @@ uninstall: [docs/install.md](docs/install.md).
 
 ## Status
 
-vitrum is at version 0.3.0. Linux, macOS and Windows build and pass the
+vitrum is at version 0.3.1. Linux, macOS and Windows build and pass the
 test suite. Interactive use is exercised on Linux. Collision detection is
 Linux only.
 

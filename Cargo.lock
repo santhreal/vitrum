@@ -5179,7 +5179,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vitrum"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "dioxus",
@@ -5213,7 +5213,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-bench"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -5232,7 +5232,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5303,7 +5303,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-fmt"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -5311,7 +5311,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-grid"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "fontdb",
@@ -5324,7 +5324,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-model"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5333,7 +5333,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-os"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "block2",
@@ -5375,7 +5375,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-proto"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "getrandom 0.3.4",
  "rustix",
@@ -5385,7 +5385,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-replay"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memchr",
  "serde",
@@ -5399,7 +5399,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-search"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memchr",
  "regex",
@@ -5407,7 +5407,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5427,7 +5427,7 @@ dependencies = [
 
 [[package]]
 name = "vitrum-vt"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libghostty-vt",
  "libghostty-vt-sys",

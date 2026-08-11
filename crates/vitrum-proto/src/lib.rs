@@ -689,7 +689,7 @@ mod tests {
     /// the only part of a release that cannot be corrected afterwards.
     ///
     /// Proven locally as well: `cargo package -p vitrum` fails today with "no
-    /// matching package named `vitrum-dioxus-desktop` found", because the fork
+    /// matching package named `vitrum-portable-pty` found", because the fork
     /// is not on the registry yet. That is the same failure, one crate early.
     ///
     /// The graph is read from `path` dependencies rather than from names, so a

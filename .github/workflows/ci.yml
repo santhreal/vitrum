@@ -206,7 +206,7 @@ jobs:
           shared-key: linux
 
       # The gate lives in the client binary, and the client links the system
-      # webview, so this job needs the same two prerequisites the build does.
+      # GTK, so this job needs the same two prerequisites the build does.
       - name: system dependencies
         run: ./.github/system-deps.sh
 
@@ -425,7 +425,7 @@ jobs:
           echo "ZIG_GLOBAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
           echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
       # `vitrum-core` is where the platform-conditional code lives. The client
-      # crates link a system webview that has no cross-compilable form, so
+      # crates link a system toolkit that has no cross-compilable form, so
       # checking them here would fail for a reason that says nothing about the
       # change.
       #

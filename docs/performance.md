@@ -2,8 +2,9 @@
 
 vitrum paints its terminal panes with a native renderer: libghostty's VT parser
 feeds a cell grid, and the grid is drawn by a wgpu pipeline on a drawing area
-that owns its window. Release 0.3.1 painted the same panes with a JavaScript
-terminal emulator inside a webview. This page is the measured difference.
+that owns its window, inside a GTK 3 shell. Release 0.3.1 painted the same
+panes with a JavaScript terminal emulator inside a webview, and drew the shell
+around them with a second webview. This page is the measured difference.
 
 Every figure below came from a run that was executed, not estimated. Each row
 names its method. Where a signal could not be measured on the old build, the
@@ -35,10 +36,10 @@ Two machines, named here by what they are rather than by whose they are.
 **Measurement host.** 32 logical cores, NVIDIA RTX 4090, Linux 6.8. Both
 builds were measured here, so every ratio in the table below is same-host.
 The old build ran under a nested X server with software rasterisation, because
-that display has no direct rendering and the webview cannot reach the adapter
-through it. The new build was measured headless on the adapter itself. That
-asymmetry is real and it favours the new build: part of the old build's cost
-is software rasterisation it could not avoid on that display.
+that display has no direct rendering and the webview could not reach the
+adapter through it. The new build was measured headless on the adapter itself.
+That asymmetry is real and it favours the new build: part of the old build's
+cost is software rasterisation it could not avoid on that display.
 
 **Development host.** 32 logical cores, NVIDIA RTX 5090, Linux 6.17. New build
 only, listed for scale.
@@ -175,23 +176,48 @@ stack and a glyph atlas, so panes share one renderer per window and pay
 
 ## Startup
 
-Not improved, and not this renderer's to improve.
+Both builds were traced the same way: five runs on the measurement host, a
+throwaway Xvfb at 1600x1000x24, a private `HOME` per run so every run reads
+the same empty profile, and `vitrum --fixture`. Each mark is milliseconds
+from the wall clock stamped immediately before `exec`.
 
-Cold start is not one number. Time to a mounted shell is bimodal from the same
-binary on the same display with the same profile: three of five runs land near
-223 ms and two near 712 ms. The window itself is created at 71.5 ms. Everything
-after that is the shell's own view coming up, which is still a webview and was
-not touched, and which mode a run takes is the webview's to decide. A median
-over five runs of a bimodal distribution is whichever mode won three times, so
-both modes are reported and no single figure is claimed. No startup improvement
-is claimed either.
+| Mark | 0.3.1, webview shell | GTK 3 shell |
+| --- | --- | --- |
+| `window.created` | 71.5 | 51.0 |
+| `frame.realized` | not marked | 73.7 |
+| `shell.mounted` | 223.4, and 711.9 to 713.4 | 337.3 |
+| `pane.first-paint` | never arrived | 353.2 |
 
-The pane's own first frame is 192.5 ms at the median on the measurement host,
-measured as process creation to an awaited fence with a grid full of content.
-The process's own clock from entering main to that fence is 205 ms on the
-development host, so process creation and dynamic linking account for the
-rest. This is the cost of standing a pane up, not the cost of starting the
-application.
+The old figures are two modes, not one number. Time to a mounted shell was
+bimodal from the same binary on the same display with the same profile: three
+of five runs landed at 216.5, 223.4 and 228.1 ms, and two at 711.9 and
+713.4 ms. A median over five runs of that distribution is whichever mode won
+three times, so both are printed above.
+
+The GTK figures are one mode. The five runs land at 333.8, 335.1, 337.3, 339.8
+and 348.0 ms, and the 348.0 is the first run of the batch, before the loader
+has the shared libraries in page cache. The spread is 14 ms, so the median is
+a figure rather than a coin toss.
+
+That is 20 ms off the window and 375 ms off the worst case, against 114 ms
+added to the best case. The window is created earlier because nothing has to
+start a web engine before it, and the shell mounts later because the whole
+widget tree is built and styled before the frame is shown rather than after.
+A run that used to be over seven tenths of a second no longer exists.
+
+`pane.first-paint` is new here, and not because the mark was added: the old
+build never reached it under Xvfb at all, because its terminal was a
+JavaScript emulator inside a compositor that stalls on a display with no
+direct rendering. The pane now paints its first frame 16 ms after the shell
+mounts on a host with no GPU available to the process.
+
+A different number from the same subject: the pane's own first frame is
+192.5 ms at the median on the measurement host, measured as process creation
+to an awaited fence with a grid full of content, off screen and with no
+shell around it. The process's own clock from entering main to that fence is
+205 ms on the development host, so process creation and dynamic linking
+account for the rest. This is the cost of standing a pane up, not the cost of
+starting the application.
 
 ## Regression bounds
 
@@ -224,7 +250,7 @@ too, so adding one turns the suite red until a bound is recorded for it.
 - End-to-end input to scanout on the new build. The figures stop at the queue
   fence. The display path is bounded separately as the platform floor.
 - The shell around the pane. The sidebar, the status bar and the settings
-  sheets are still a webview and are not covered by any figure here.
+  sheets are GTK widgets and are not covered by any figure here.
 - Old-build resize and sidebar paint. There is no comparable measurement, so
   there is no ratio.
 - Multi-monitor, fractional scaling and refresh rates above 60 Hz.

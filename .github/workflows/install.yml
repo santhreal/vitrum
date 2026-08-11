@@ -104,7 +104,7 @@ jobs:
 
   # macOS runs the same installer as Linux and reaches different code: a
   # different `uname` mapping, a different login file, and no package manager
-  # step at all, because WKWebView is part of the system.
+  # step at all, because the runtime check is Linux only.
   macos:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -326,7 +326,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The webview, so a binary that installs can also start. The installer
+      # The toolkit, so a binary that installs can also start. The installer
       # would install it through the distribution's package manager, which is
       # what the container legs above prove; this job is about channels.
       - name: system dependencies

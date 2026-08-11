@@ -82,9 +82,9 @@ CXXABI_FLOOR=1.3.11
 #   a system old enough to need the floor is a system that still ships them,
 #   and one new enough not to keeps a stub for exactly this.
 #
-#   The webview and its toolkit, which `install.sh` refuses to install without
-#   and `docs/install.md` names per distribution. These are the product's one
-#   real system dependency.
+#   GTK 3 and the stack it pulls in, which `install.sh` refuses to install
+#   without and `docs/install.md` names per distribution. This is the
+#   product's one real system dependency.
 #     libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0 libcairo.so.2
 #     libcairo-gobject.so.2 libpango-1.0.so.0 libpangocairo-1.0.so.0
 #     libharfbuzz.so.0 libatk-1.0.so.0 libgio-2.0.so.0 libgobject-2.0.so.0

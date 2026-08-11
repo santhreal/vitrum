@@ -320,7 +320,7 @@ jobs:
 
       # The script names the archive from the host triple, which is the same
       # rule the installers use to look for it. Cross-compiling is not
-      # attempted: both binaries link against the platform's own webview and
+      # attempted: both binaries link against the platform's own toolkit and
       # PTY, so the runner's host triple has to be the target being published.
       # If GitHub ever changes what an image is, this says so instead of
       # publishing an archive under a name nothing asks for.
@@ -706,7 +706,7 @@ jobs:
       # until this step nothing between a build and a user's machine had run
       # `install.sh` against a real published release on either channel.
       #
-      # `--no-deps` with the webview installed by the same script the build
+      # `--no-deps` with the toolkit installed by the same script the build
       # jobs use: the package-manager path is what `install.yml` proves, on
       # four distributions rather than on this one.
       - name: the release installs from nothing

@@ -1,17 +1,17 @@
 //! The frame around the pane.
 //!
-//! The pane itself is not here and is not markup. It is a GTK drawing area
-//! with a wgpu swapchain on it, packed above the webview by [`crate::pane`],
-//! positioned by a rectangle this module computes. Nothing in this file parses
-//! an escape sequence, holds a cell, or draws a glyph of a session's output.
+//! The pane itself is not here. It is a GTK drawing area with a wgpu
+//! swapchain on it, packed into the frame's content box by [`crate::pane`].
+//! Nothing in this file parses an escape sequence, holds a cell, or draws a
+//! glyph of a session's output.
 //!
 //! # What the frame owns
 //!
-//! - **The rectangle.** [`pane_frame`] turns the window's client size, the
-//!   display scale, the text scale and the sidebar's width into the pane's
-//!   padding box in device pixels. It is arithmetic over layout tokens, so it
-//!   is exact before anything is painted and testable without a display. No
-//!   element is ever measured to obtain it.
+//! - **Not the rectangle.** The pane's box is GTK's, allocated by the content
+//!   box it is packed into. This module once computed it from layout tokens,
+//!   because the pane was a separate surface positioned over a document that
+//!   could not be asked where anything was. Nothing computes it now, which is
+//!   why a dialog opening no longer resizes a pty.
 //! - **The bar under it.** [`pane_bar`] resolves what the strip below the pane
 //!   says: where the agent is working, on which branch, in which worktree, how
 //!   large its grid is, and what state it is in.
@@ -32,9 +32,6 @@
 //! over the top edge of the pane box and are removed from flow, so a transient
 //! sentence cannot move a terminal grid.
 
-#[cfg(test)]
-use crate::pane::geometry;
-
 use vitrum_fmt::path;
 use vitrum_model::{AgentKind, SessionView};
 use vitrum_proto::SessionStatus;
@@ -42,190 +39,6 @@ use vitrum_proto::SessionStatus;
 use crate::agent::{AgentMark, AgentMarks};
 use crate::inbox::Pill;
 use crate::state::{ConnState, UiState};
-
-// ───────────────────────────────────────────────────────────────────────────
-// Geometry
-//
-// Every number below has a twin in the stylesheet, and
-// `tests::the_frame_reads_the_same_tokens_the_stylesheet_does` holds the pairs
-// together. They are duplicated because the rectangle has to exist BEFORE
-// layout: the widget is packed and placed by GTK, which has never seen the
-// document, and asking the document would mean measuring it, which is the
-// thing this product no longer does.
-// ───────────────────────────────────────────────────────────────────────────
-
-/// Titlebar height, in rem. `--rg-titlebar-h` in `app.css`.
-#[cfg(test)]
-pub const TITLEBAR_REM: f64 = 2.25;
-
-/// Height of the bar under the pane, in rem. `--rg-panebar-h` in `app.css`.
-///
-/// One line of `--rg-text-xs` on a 28px band. It is a constant and not a
-/// measurement precisely so that it cannot change: see the module note on why
-/// a bar whose height follows its content resizes every agent on screen.
-#[cfg(test)]
-pub const PANEBAR_REM: f64 = 1.75;
-
-/// Space between the pane's grid and the chrome around it, in rem, on all
-/// four sides. `--rg-pane-pad` in `app.css`.
-///
-/// Four equal sides, which the pane did not have. It carried 4px above, 8px
-/// left and nothing right or below, so a full-screen TUI's last row sat
-/// against the window edge while its first sat 4px in, and the grid's optical
-/// centre was 4px up and 4px left of the box's. That asymmetry is the
-/// "nothing is centered" report at its largest surface.
-#[cfg(test)]
-pub const PANE_PAD_REM: f64 = 0.5;
-
-/// Everything outside the pane that decides where the pane is.
-///
-/// Device pixels for the window, CSS pixels for everything the stylesheet
-/// also knows about, and one scale to convert between them. Taken as a value
-/// rather than read out of [`UiState`] because the window's client size and
-/// the display scale are the platform's and are not in the model.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(test)]
-pub struct PaneLayout {
-    /// Window client area width, in device pixels.
-    pub window_w: u32,
-    /// Window client area height, in device pixels.
-    pub window_h: u32,
-    /// Device pixels per CSS pixel.
-    pub scale: f64,
-    /// Root font size in CSS pixels, after the operator's text scale.
-    pub rem_px: f64,
-    /// Sidebar width in CSS pixels, as the panel is actually drawn.
-    pub sidebar_css: f64,
-}
-
-/// The pane's padding box, in device pixels, relative to the client area.
-///
-/// The PADDING box and not the border box. Handing the pane its border box is
-/// how an approval prompt's last option ends up behind the window edge: the
-/// pane divides the box it is given by the cell height, so every pixel of
-/// chrome left in that box buys a row the operator cannot see.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
-pub struct PaneFrame {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[cfg(test)]
-impl PaneFrame {
-    /// Bottom edge, so a caller can assert the frame ends inside the window.
-    #[must_use]
-    #[cfg(test)]
-    pub fn bottom(&self) -> i64 {
-        i64::from(self.y) + i64::from(self.height)
-    }
-
-    /// Right edge.
-    #[must_use]
-    #[cfg(test)]
-    pub fn right(&self) -> i64 {
-        i64::from(self.x) + i64::from(self.width)
-    }
-}
-
-// Why the pane's own rectangle type is not this one.
-//
-// `PaneFrame` is a layout RESULT, computed from stylesheet tokens this module
-// owns and nothing else. `crate::pane::PaneRect` is the platform's argument.
-// Keeping them apart is what lets this module compile, and be tested, with no
-// knowledge of GTK, wgpu, or which windowing system the build targets, and it
-// is why every test below runs on a machine with no display.
-//
-// The shell converts, because the shell is the only place that holds both a
-// window handle and a pane. This module hands the rectangle out through
-// `on_frame` and never places anything itself.
-
-/// One CSS length in device pixels, rounded to a whole pixel.
-///
-/// Rounded once, here, rather than accumulated as a float and rounded at the
-/// end. A pane whose left edge is 8.4 and whose width is 1911.6 is placed at 8
-/// with width 1912 and hangs one pixel over the right edge; rounding each
-/// EDGE and subtracting keeps the box inside the window at every scale.
-#[cfg(test)]
-fn dev(css: f64, scale: f64) -> f64 {
-    (css * scale).round()
-}
-
-/// One device pixel, expressed as a cell.
-///
-/// The frame is measured in device pixels, so dividing a box by a one-pixel
-/// cell yields the pixels of that box. It exists so the frame can use the
-/// grid arithmetic in [`crate::pane::geometry`] without pretending to know a
-/// font's cell size, which this module has never been told and must not be.
-#[cfg(test)]
-const ONE_DEVICE_PIXEL: f64 = 1.0;
-
-/// Where the pane goes.
-///
-/// Pure arithmetic over [`PaneLayout`]. The result is clamped into the window
-/// on both axes and can be zero-sized, which is the honest answer for a window
-/// dragged smaller than its own chrome; a zero-sized pane is placed and draws
-/// nothing, and the caller does not have to special-case it.
-#[must_use]
-#[cfg(test)]
-pub fn pane_frame(l: &PaneLayout) -> PaneFrame {
-    let scale = if l.scale.is_finite() && l.scale > 0.0 {
-        l.scale
-    } else {
-        1.0
-    };
-    let rem = if l.rem_px.is_finite() && l.rem_px > 0.0 {
-        l.rem_px
-    } else {
-        16.0
-    };
-    let sidebar = if l.sidebar_css.is_finite() && l.sidebar_css > 0.0 {
-        l.sidebar_css
-    } else {
-        0.0
-    };
-
-    let pad = dev(PANE_PAD_REM * rem, scale);
-    let top = dev(TITLEBAR_REM * rem, scale) + pad;
-    let bottom = dev(PANEBAR_REM * rem, scale) + pad;
-
-    // The ORIGIN is clamped as well as the size. A window narrower than the
-    // sidebar is not hypothetical: a window manager hands a client whatever
-    // size it likes during a workspace switch, and this product's own
-    // minimum does not bind what it is given. Clamping only the size leaves
-    // a zero-width pane placed past the right edge, which is a surface the
-    // compositor has to composite and the operator cannot see.
-    let window_w = f64::from(l.window_w);
-    let window_h = f64::from(l.window_h);
-    // Clamped to where the trailing chrome starts, not to the window edge:
-    // the pane's own right-hand padding and the bar under it are part of the
-    // frame's contract, and an origin past them puts a zero-sized pane where
-    // the bar is drawn.
-    let left = (dev(sidebar, scale) + pad).min((window_w - pad).max(0.0));
-    let top = top.min((window_h - bottom).max(0.0));
-
-    // The chrome as an axis SUM, and the subtraction taken through the pane's
-    // own door rather than written a second time here.
-    //
-    // `cells_across` takes a box, takes the chrome out of it, floors, and
-    // answers zero for a box smaller than its own chrome. A device pixel as
-    // the cell makes that exactly the pixel arithmetic this frame needs, and
-    // it makes the shell's answer and the pane's answer the same expression.
-    // Two copies of one subtraction disagree at a rounding boundary and
-    // nowhere else, which reaches the operator as an approval prompt whose
-    // last option is behind the window edge on one window size in a hundred.
-    let w = geometry::cells_across(window_w, left + pad, ONE_DEVICE_PIXEL);
-    let h = geometry::cells_across(window_h, top + bottom, ONE_DEVICE_PIXEL);
-
-    PaneFrame {
-        x: left as i32,
-        y: top as i32,
-        width: w,
-        height: h,
-    }
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // What the pane is showing

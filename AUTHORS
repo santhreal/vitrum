@@ -9,13 +9,14 @@ Contributors are listed in the git history. See:
 vitrum carries two vendored forks that are other projects' work, kept under
 their own upstream copyright and their own MIT license:
 
-  vendor/      a fork of Dioxus desktop
-               Copyright (c) 2021 Jonathan Kelley
-               MIT license, in vendor/LICENSE
-
   vendor-pty/  a fork of portable-pty
                Copyright (c) 2018 Wez Furlong
                MIT license, in vendor-pty/LICENSE.md
+
+  vendor-ghostty-vt-sys/
+               a fork of libghostty-vt-sys
+               MIT license, as declared by upstream's package metadata and
+               carried unchanged in vendor-ghostty-vt-sys/Cargo.toml
 
 Those trees are not relicensed by anything in this repository.
 

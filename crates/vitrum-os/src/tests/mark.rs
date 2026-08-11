@@ -244,7 +244,7 @@ fn the_requested_alpha_scales_the_whole_mark() {
 /// specification rather than against the encoder. That is the point: an
 /// encoder checked with its own inverse agrees with itself and with nothing
 /// else, and the failure that matters is a stream this crate writes and
-/// WebKit, Explorer or the Finder refuses.
+/// GTK, Explorer or the Finder refuses.
 fn inflate(z: &[u8]) -> Vec<u8> {
     assert_eq!(z[0] & 0x0F, 8, "not a deflate stream");
     assert_eq!(

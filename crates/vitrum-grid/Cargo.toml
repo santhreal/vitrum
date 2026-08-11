@@ -24,12 +24,13 @@ probe = []
 #
 # Direct3D 12 needs one thing from the lockfile to build. wgpu-hal hands D3D12
 # handles to gpu-allocator and both name those types through the `windows`
-# crate: wgpu-hal requires `^0.62`, while `tao` (the window library under the
-# vendored dioxus-desktop) requires `^0.61`, so both versions are in the graph.
-# gpu-allocator accepts `>=0.53, <=0.62` and cargo would rather reuse a node
-# than add one, so it wires gpu-allocator to 0.61 and `D3D12_RESOURCE_DESC` and
-# `ID3D12Heap` stop being the same types across the call. Cargo.lock therefore
-# points gpu-allocator's `windows` edge at 0.62.2, which its range allows.
+# crate, so the two agree only while the graph holds one `windows` node. It
+# once held two: the window library under the vendored webview shell required
+# `^0.61` against wgpu-hal's `^0.62`, gpu-allocator accepts either and cargo
+# would rather reuse a node than add one, so `D3D12_RESOURCE_DESC` and
+# `ID3D12Heap` stopped being the same types across the call. That second
+# consumer is gone with the shell, and `platform_build.rs` asserts the count
+# rather than a version, because the defect is a split and not a number.
 #
 # Nothing has to be remembered about that: the `windows compiles` job in CI
 # builds this crate for Windows on every push, and a lockfile that regresses

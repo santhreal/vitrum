@@ -2,8 +2,8 @@ name: publish
 
 # Publishes every crate to crates.io when a `v*` tag is pushed.
 #
-# The two forks, `vitrum-dioxus-desktop` and `vitrum-portable-pty`, come first
-# and `vitrum` (the client) is last, and all of that is on purpose. A fork exists
+# The fork, `vitrum-portable-pty`, comes first and `vitrum` (the client) is
+# last, and both of those are on purpose. A fork exists
 # because `[patch.crates-io]` is ignored by anyone installing from the registry,
 # so publishing a crate without publishing the fork it depends on would fail to
 # resolve, and publishing a fork without its consumer would leave the whole
@@ -223,11 +223,11 @@ jobs:
             esac
             body=$(curl -fsSL "https://index.crates.io/$path" 2>/dev/null || true)
             want=$version
-            # The two vendored forks carry the upstream version they forked,
-            # not the workspace one, so they are checked for existence at the
-            # version their own manifest declares.
+            # The vendored fork carries the upstream version it forked, not
+            # the workspace one, so it is checked for existence at the
+            # version its own manifest declares.
             case "$c" in
-              vitrum-dioxus-desktop | vitrum-portable-pty)
+              vitrum-portable-pty)
                 want=$(cargo metadata --no-deps --format-version 1 |
                   python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='$c'))")
                 ;;

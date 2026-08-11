@@ -97,14 +97,6 @@ pub(crate) mod sheet;
 /// unscaled shell renders physically half-size.
 pub const UI_SCALE_STEPS: &[u16] = &[80, 90, 100, 110, 125, 150, 175, 200];
 
-/// The browser default root font size, in CSS pixels.
-///
-/// Named rather than inlined because it is the one number the scale percentage
-/// multiplies, and a bare `16.0` in the middle of a format string says nothing
-/// about why it is 16.
-#[cfg(test)]
-pub const ROOT_FONT_PX: f64 = 16.0;
-
 /// Opacity steps offered, in percent.
 ///
 /// [`crate::state::OPACITY_MAX_PCT`] must be first: it is the default, and a
@@ -136,7 +128,7 @@ pub fn blur_label(px: u8) -> String {
 /// Two separate truths, and the control is dishonest if it states only one.
 ///
 /// A window is created see-through or it is not: both the platform flag and
-/// the webview's base colour are settled before the first paint. So the first
+/// the toplevel's RGBA visual are settled before the first paint. So the first
 /// move away from a fully opaque profile needs a new window, and every move
 /// after that is live.
 ///

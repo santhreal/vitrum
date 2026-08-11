@@ -25,8 +25,9 @@ and the two must never appear side by side as if they were.** The
 desktop-baseline figures quoted in this file were taken on a Ryzen 9 9950X
 with an NVIDIA card on a real WM-managed display:
 
-- **398.0 MB** PSS for twenty windows each showing a session, with all twenty
-  sharing **one** `WebKitWebProcess`.
+- **398.0 MB** PSS for twenty windows each showing a session. That figure is
+  the webview build's, and its single largest contributor was the one web
+  process all twenty windows shared.
 - **0.0292 %** of one core, over 240 seconds, with twenty windows open.
 
 The rig these figures were re-run against is an i9-13900K with a different core
@@ -45,13 +46,13 @@ So:
   build already known good. Until that exists, quote remote results as "on the
   rig, N windows, this build against that build", never as "the memory
   target".
-- If you do establish a baseline there, write the host, the CPU, the WebKitGTK
+- If you do establish a baseline there, write the host, the CPU, the GTK
   version and the session workload next to it. A number whose conditions are
   not recorded beside it is not a measurement.
 
 And some things a headless box cannot tell you honestly at all, at any
 baseline. There is no GPU path, no compositor and no vsync, so anything about
-the WebGL renderer, compositing cost, frame timing or paint latency has to be
+the pane's renderer, compositing cost, frame timing or paint latency has to be
 measured on hardware with a real display. Geometry from a headless capture is
 wrong for a separate reason recorded below. And while every family in
 the UI stack resolves to DejaVu on that box, no measurement involving text
@@ -109,18 +110,16 @@ has to be installed, and it is not the answer you would guess. Read them as
 worked examples of what the probe reports, not as a list of machines to use.
 
 The first is an Ubuntu 24.04.3 box with an i9-13900K, 64 GB of RAM and an idle
-load average of about zero. It already has GTK 3, libsoup 3, `libxdo`, Mesa,
-`Xvfb`, `xdotool`, ImageMagick, `python3`, `rsync`, `flock` and `setsid`. It is
-missing exactly two packages, and the probe exits 4 until they are installed:
+load average of about zero. It already has GTK 3, Mesa, `Xvfb`, `xdotool`,
+ImageMagick, `python3`, `rsync`, `flock` and `setsid`, which is everything a
+run needs. The client links GTK 3 and nothing else that a server install can
+be missing, so the probe passes there as it stands.
 
-```
-sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0
-```
-
-Those are the engine the client renders through. Ubuntu 24.04 offers
-`2.52.3-0ubuntu0.24.04.1`, which is the same version the development desktop
-has, so the two boxes agree on the one dependency whose version changes both
-the rendering and the memory figure.
+The probe asks the loader rather than the package database: it runs `ldd` over
+the staged binary and names the package for every soname that comes back "not
+found". A library present under a name nobody predicted still counts as
+present, and a dependency added to the client turns up here without anyone
+editing a list.
 
 You do not have to remember to probe first. `memory`, `idle-cpu` and
 `screenshot` each run the same check before they start anything, and refuse
@@ -143,18 +142,15 @@ anything. You do not need them for memory or idle CPU.
 The second is Ubuntu 24.04.2 on an i7-11700K, 16 threads, 32 GB, headless. It
 has an RTX 3080 Ti whose driver and library versions do not match, so
 `nvidia-smi` fails; that is reported and does not matter to anything this
-harness measures. It **already has** `libwebkit2gtk-4.1-0` and
-`libjavascriptcoregtk-4.1-0` at `2.52.3-0ubuntu0.24.04.1`, the same version as
-the desktop. What it lacks is the tooling:
+harness measures. It has GTK 3. What it lacks is the tooling:
 
 ```
-sudo apt-get update && sudo apt-get install -y libxdo3 xdotool imagemagick
+sudo apt-get update && sudo apt-get install -y xdotool imagemagick
 sudo apt-get install -y fonts-cantarell
 ```
 
-So the two need opposite things: the first has the tools and needs the engine,
-the second has the engine and needs the tools. Either way it is one `apt-get`
-line, and `probe` prints the right one for whichever host answered.
+`probe` prints the line for whichever host answered, so neither list has to
+be remembered.
 
 Treat a second host as a **third** baseline, not as a spare copy of the first.
 Half the threads, half the memory and a different CPU generation mean a number
@@ -202,8 +198,8 @@ What that does, in order, and why each step is there:
 9. Sums `Pss` from `/proc/<pid>/smaps_rollup` across the client's whole tree,
    and reports the daemon's tree separately.
 
-PSS and not RSS, because twenty windows share one `WebKitWebProcess` and RSS
-would count that engine twenty times over.
+PSS and not RSS, because twenty windows map one copy of GTK, Cairo and Pango
+and RSS would count those text segments twenty times over.
 
 The workload is a knob, and it moves the number by more than the margin you
 are likely to care about. The desktop baseline measures 1068.1 MB with the
@@ -286,9 +282,9 @@ Measured on `axiomserver`, 32 threads, load 0.76, twenty sessions, PSS:
 | vitrum daemon | 1 | 45.1 MB |
 | mock agents (excluded) | 20 | 190.2 MB |
 
-Most of the client figure is one WebKit web process at 679 MB. It is one
-process for twenty windows rather than twenty, which is the whole reason for the
-vendored dioxus-desktop fork, and it is also the number to attack next.
+Most of the client figure was one web process at 679 MB, shared by all twenty
+windows. That process is gone with the webview, and the figure above has not
+been re-taken on the GTK build.
 
 ## Screenshots
 
@@ -493,8 +489,9 @@ between a run here and a desktop-baseline figure.
 - **Compositor and frame timing mean nothing here.** There is no window manager
   and no compositor. The "one `SessionUpdated` in 16 to 20 ms" line is a
   desktop measurement and cannot be reproduced or refuted on `Xvfb`.
-- **Geometry from a headless capture is not trustworthy.** The reason: `Xvfb` does not resize the webview surface when `xdotool` resizes the X
-  window, and tao goes on reporting roughly 1018 CSS px whatever size you ask
+- **Geometry from a headless capture is not trustworthy.** The reason: `Xvfb`
+  did not resize the old client's surface when `xdotool` resized the X
+  window, and it went on reporting roughly 1018 CSS px whatever size you ask
   for. The same build and the same session read a 225 CSS px sidebar headless
   and 449 on a real display. Use these captures for colour and for band
   boundaries. Do not measure pitch, row height or the sidebar floor from them.
@@ -540,16 +537,15 @@ between a run here and a desktop-baseline figure.
   box and no measurement involving text width is comparable to the desktop.
 - **Memory is the number that travels best, and it still is not free.** PSS is
   a property of the process tree, not of the panel, so it is the most portable
-  figure here. It still moves with the glibc and WebKitGTK versions, with the
+  figure here. It still moves with the glibc and GTK versions, with the
   session workload, and with the window size at launch. Compare like with like.
 
 One thing that does transfer, and is worth writing down because it looked like
 it would not: both machines have
 `kernel.apparmor_restrict_unprivileged_userns=1`, and on both of them
-`bubblewrap` cannot create a user namespace from a shell. WebKitGTK falls back
-to running its web process unsandboxed in both places, so the sandbox posture of
-a measurement run matches the desktop rather than diverging from it. The harness
-sets no `WEBKIT_DISABLE_SANDBOX` variable, on purpose.
+`bubblewrap` cannot create a user namespace from a shell. Nothing the client
+runs needs one any more, so that setting no longer changes what a measurement
+run is measuring.
 
 ## Traps, so the next person does not rediscover them
 
@@ -719,7 +715,7 @@ second:
   sessions than windows, so several windows showed the same session and the
   number was not the workload it claimed. The rig now also asks the daemon how
   many sessions it holds and requires the two to agree. Proved against a live
-  daemon on the remote, which needs no WebKitGTK: a fresh daemon reports 0,
+  daemon on the remote, which opens no window: a fresh daemon reports 0,
   after five creates it reports 5 and a five-window run passes, after two more
   it reports 7 and a five-window run dies. It still does not prove each window
   is showing a DIFFERENT session, which needs the client's own state; that
@@ -748,10 +744,10 @@ second:
   by double-forking or by an intermediary exiting has its `ppid` set to 1 and
   leaves the tree SILENTLY. Demonstrated rather than assumed: a `setsid`
   grandchild whose parent exits stays alive and stops being counted, and
-  nothing in the output said so. Applied to a `WebKitWebProcess` that would
-  drop roughly 270 MB from the headline figure and report a smaller,
+  nothing in the output said so. Applied to the client itself that would drop
+  the headline figure's single largest contributor and report a smaller,
   better-looking, wrong number. `measure.py pss` now names any process wearing
-  a `WebKit` or `vitrum` prefix that sits outside the tree it just measured.
+  a `vitrum` prefix that sits outside the tree it just measured.
   Proved by reparenting a deliberately vitrum-named stray, which it caught. It
   is a warning and not an error, because on a shared box a stray can
   legitimately belong to somebody else, and only a human can say which.
@@ -797,7 +793,7 @@ second:
   package database look right". It also checks the nine tools the rig drives
   with. Verified for all three commands, each refusing in under a second.
 - The crash path, for a dependency that could slip past preflight. Observed
-  before preflight existed, with `libwebkit2gtk-4.1.so.0` genuinely absent: the
+  before preflight existed, with `libgtk-3.so.0` genuinely absent: the
   run reports `vitrum exited before mapping its first window` in under
   three seconds and exits non-zero, instead of waiting out the ninety-second
   window timeout.

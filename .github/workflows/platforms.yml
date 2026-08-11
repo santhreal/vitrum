@@ -14,8 +14,8 @@ name: platforms
 #     a user
 #   - nightly, in full, so the worst case is one day of main being broken on a
 #     platform rather than one release cycle
-#   - on any change that touches platform-conditional code, the vendored
-#     webview, a build script, or an installer, which is where the breaks
+#   - on any change that touches platform-conditional code, a vendored fork,
+#     a build script, or an installer, which is where the breaks
 #     historically are
 #   - on demand
 #
@@ -77,7 +77,7 @@ on:
       # adapter is the only device a GPU-less Windows runner has, and the
       # surface is created from a toolkit handle that exists on one platform.
       # None of that was in this filter while the pane was drawn by a script
-      # inside the webview, and it is what breaks on a platform now.
+      # inside a webview, and it is what breaks on a platform now.
       - "crates/vitrum-grid/**"
       - "app/src/pane/**"
       - "packaging/**"
@@ -123,7 +123,7 @@ jobs:
         # Windows on ARM is here before it is published. Nothing in the tree
         # has ever been compiled for `aarch64-pc-windows-msvc`: the terminal
         # engine is built from Zig source, the pty layer is vendored C, and
-        # the webview is a different runtime build, so whether that target
+        # the toolkit is a different runtime build, so whether that target
         # builds at all is a question with no answer yet. It gets one on every
         # push, and a release leg follows only once these are green.
         os: [macos-latest, windows-latest, windows-11-arm, ubuntu-24.04-arm]
@@ -141,7 +141,7 @@ jobs:
         with:
           shared-key: ${{ matrix.os }}-${{ env.QUICK == 'true' && 'quick' || 'full' }}
 
-      # ARM Linux is Linux: it links the same system webview, and the image
+      # ARM Linux is Linux: it links the same system toolkit, and the image
       # does not ship it.
       - name: system dependencies
         if: runner.os == 'Linux'

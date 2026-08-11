@@ -62,9 +62,9 @@ fn embed_windows_icon() {
 /// Nothing to embed when the host is not Windows.
 ///
 /// Cross-compiling to Windows from another host is not a path this product
-/// takes — the binaries link against the system webview, so every target is
-/// built on its own machine — and a resource compiler that is not there is not
-/// worth a second code path.
+/// takes. The binaries link the platform's own toolkit and pty, so every
+/// target is built on its own machine, and a resource compiler that is not
+/// there is not worth a second code path.
 #[cfg(not(windows))]
 fn embed_windows_icon() {
     println!(

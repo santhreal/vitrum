@@ -8,7 +8,7 @@
 # asset no client will ever find.
 #
 # Run once per platform you publish for, on that platform. Cross-compiling is
-# not attempted: the binaries link against the system webview.
+# not attempted: the binaries link against the platform's own toolkit.
 #
 # LINUX IS BUILT AGAINST AN OLD GLIBC, ON PURPOSE
 #

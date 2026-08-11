@@ -9,10 +9,10 @@
 //! Serde's default for `Vec<u8>` in JSON is an array of decimal integers, which
 //! measures 3.6 bytes of JSON per payload byte on real terminal output. That is
 //! a 260% tax, so the encoding chosen to avoid a 33% tax cost eight times more
-//! than the thing it avoided. Worse than the size is the shape: `JSON.parse` of
-//! a 2 MiB history builds a transient array of two million JavaScript numbers
-//! before anything can copy it into the grid, and twenty windows share one
-//! `WebKitWebProcess`.
+//! than the thing it avoided. The shape was worse than the size while a
+//! script decoded this wire: parsing a 2 MiB history built a transient array
+//! of two million numbers before anything could copy it into a grid. Rust
+//! decodes it now, and the size is the whole of the remaining argument.
 //!
 //! No dependency, because this crate is published and forty lines of table
 //! lookup is not worth a supply-chain edge on a wire contract.

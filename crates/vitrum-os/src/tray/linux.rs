@@ -2,9 +2,9 @@
 //!
 //! No GTK and no libappindicator: ksni speaks `org.kde.StatusNotifierItem` and
 //! `com.canonical.dbusmenu` directly over the same zbus this crate already
-//! uses. That matters because linking GTK 3 into a wgpu/webview application to
-//! draw one 22-pixel icon is a build-time dependency on a toolkit the product
-//! does not otherwise use.
+//! uses. The client links GTK 3 for its window, but this crate is also used
+//! by processes that open none, and a tray that needed a toolkit main loop
+//! would only work inside the one process that already runs one.
 //!
 //! `org.kde.StatusNotifierWatcher` must be on the bus. KDE and the GNOME
 //! AppIndicator extension provide it; a bare GNOME Shell or a plain window

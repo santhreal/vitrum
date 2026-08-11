@@ -37,10 +37,11 @@ def children_of():
 def descendants(root):
     """`root` and everything under it.
 
-    A tree and not a name match, because the processes that cost the most in a
-    webview client are not named after it: the engine and the network process
-    carry the toolkit's own names and a match on the product's name misses
-    exactly the ones worth counting.
+    A tree and not a name match, because the processes that cost the most are
+    not named after the product that started them: a pty child carries the
+    agent's own command name, and a foreign client's helpers carry its
+    toolkit's, so a match on the product's name misses exactly the ones worth
+    counting.
     """
     tree = children_of()
     out, stack = [], [root]

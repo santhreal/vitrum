@@ -6,10 +6,10 @@ same two numbers `docs/performance.md` publishes:
 
   pss   The sum of `Pss` across `/proc/<pid>/smaps_rollup` for a root process
         and every descendant. Pss divides a shared page by the number of
-        processes mapping it, so twenty windows sharing one WebKitWebProcess
-        are counted once between them rather than twenty times. That is the
-        only reason a 398 MB figure for twenty windows means anything: RSS
-        would count the shared engine twenty times over.
+        processes mapping it, so the GTK, Cairo and Pango text segments that
+        twenty windows map are counted once between them rather than twenty
+        times, and a comparison against a product that spawns a helper per
+        window is not decided by how the two divide their processes.
 
   cpu   The sum of utime + stime deltas across the same tree over a
         wall-clock window, as a percentage of ONE core. A twenty-window client
@@ -41,7 +41,7 @@ def read_stat(pid):
     `comm` can contain spaces and parentheses, so the fields after it are found
     from the LAST ')' rather than by splitting the whole line. Splitting on
     whitespace from the left misparses every process whose name contains a
-    space, and `WebKitWebProcess` is one bad rename away from being one.
+    space, and a session's own command name is free to be one.
     """
     try:
         with open(f"/proc/{pid}/stat", "rb") as fh:
@@ -165,9 +165,9 @@ def machine():
 
 
 # Process names that belong to a vitrum client tree. `comm` in /proc/<pid>/stat
-# is truncated to 15 characters, so "WebKitWebProcess" arrives as
-# "WebKitWebProces" and these have to be prefixes, not equalities.
-KIN_PREFIXES = ("WebKit", "vitrum")
+# is truncated to 15 characters, so a long name arrives cut short and these
+# have to be prefixes, not equalities.
+KIN_PREFIXES = ("vitrum",)
 
 
 def strays(pids, table):
@@ -180,10 +180,10 @@ def strays(pids, table):
     whose parent has exited stays alive and stops being counted, and nothing in
     the output says so.
 
-    If that ever happened to a `WebKitWebProcess` the total would lose its
-    single largest contributor, around 270 MB across twenty windows, and report
-    a smaller, better-looking, wrong figure. So anything wearing a family name
-    and sitting outside the tree is named loudly rather than omitted quietly.
+    If that happened to the client itself the total would lose its single
+    largest contributor and report a smaller, better-looking, wrong figure. So
+    anything wearing a family name and sitting outside the tree is named
+    loudly rather than omitted quietly.
     It is a warning and not an error: on a shared box a stray may legitimately
     belong to somebody else, and only a human can say which.
     """

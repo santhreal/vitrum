@@ -276,7 +276,7 @@ mock_stats() {
 
 # Every process in the session led by $1. Everything this rig starts is a
 # session leader, so this covers a subtree even where a descendant has been
-# reparented out of it, which is exactly what an Electron or WebKit helper does.
+# reparented out of it, which is exactly what a double-forked helper does.
 session_pids() {
   ps -o pid= -s "$1" 2>/dev/null | tr -d ' ' || true
 }
@@ -368,7 +368,7 @@ app_windows() {
 # Wait for `$1` to have at least `$2` real windows.
 #
 # Returns 1 on timeout and 2 when the process is already gone. The distinction
-# is worth the extra line: a binary that cannot find libwebkit2gtk exits in
+# is worth the extra line: a binary that cannot find libgtk-3 exits in
 # milliseconds, and without the liveness check the harness sits out the full
 # timeout and then reports "the window never mapped", which sends you looking
 # at the window manager instead of at the linker.
@@ -475,20 +475,18 @@ report_tree() {
   ps -o pid=,ppid=,rss=,comm= --ppid "$1" 2>/dev/null | sed 's/^/  /' || true
 }
 
-# The package a shared object comes from on Ubuntu 24.04, for the sixteen
+# The package a shared object comes from on Ubuntu 24.04, for the thirteen
 # `readelf -d vitrum` names. Only the ones that can plausibly be absent on
 # a server install are listed; glibc's own are never missing.
 package_for_so() {
   case "$1" in
-    libwebkit2gtk-4.1.so.0) echo libwebkit2gtk-4.1-0 ;;
-    libjavascriptcoregtk-4.1.so.0) echo libjavascriptcoregtk-4.1-0 ;;
+    libatk-1.0.so.0) echo libatk1.0-0t64 ;;
+    libcairo-gobject.so.2) echo libcairo-gobject2 ;;
+    libpango-1.0.so.0) echo libpango-1.0-0 ;;
     libgtk-3.so.0 | libgdk-3.so.0) echo libgtk-3-0t64 ;;
-    libsoup-3.0.so.0) echo libsoup-3.0-0 ;;
     libcairo.so.2) echo libcairo2 ;;
     libgdk_pixbuf-2.0.so.0) echo libgdk-pixbuf-2.0-0 ;;
     libgio-2.0.so.0 | libgobject-2.0.so.0 | libglib-2.0.so.0) echo libglib2.0-0t64 ;;
-    libssl.so.3 | libcrypto.so.3) echo libssl3t64 ;;
-    libxdo.so.3) echo libxdo3 ;;
     libgcc_s.so.1) echo libgcc-s1 ;;
     *) echo "" ;;
   esac
@@ -504,7 +502,7 @@ package_for_so() {
 # makes the loader resolve and print rather than run, so nothing here starts
 # the application.
 #
-# Without this, a run with WebKitGTK missing gets as far as an X server, a
+# Without this, a run with GTK missing gets as far as an X server, a
 # daemon, twenty spawned shells and a settle timer before anything says why.
 preflight() {
   local so pkg missing="" unknown="" tool tools_missing="" tool_packages=""
@@ -564,7 +562,7 @@ preflight() {
 # probe
 # ---------------------------------------------------------------------------
 
-REQUIRED_PACKAGES="libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0 libgtk-3-0t64 libsoup-3.0-0 libcairo2 libgdk-pixbuf-2.0-0 libglib2.0-0t64 libssl3t64 libxdo3 libgl1-mesa-dri"
+REQUIRED_PACKAGES="libgtk-3-0t64 libatk1.0-0t64 libcairo2 libcairo-gobject2 libpango-1.0-0 libgdk-pixbuf-2.0-0 libglib2.0-0t64 libgl1-mesa-dri"
 REQUIRED_TOOL_PACKAGES="xvfb x11-utils xdotool imagemagick procps python3 rsync util-linux"
 FIDELITY_PACKAGES="fonts-ubuntu fonts-cantarell fonts-noto-core fonts-jetbrains-mono fonts-liberation fonts-dejavu-core"
 # Every tool the rig drives, paired with the package that provides it, as ONE
@@ -730,15 +728,6 @@ cmd_probe() {
       echo "  Match the development desktop with: sudo sysctl -w kernel.yama.ptrace_scope=1"
       ;;
   esac
-
-  echo
-  echo "sandbox"
-  if bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid /bin/true 2>/dev/null; then
-    echo "  bubblewrap can create a user namespace here"
-  else
-    echo "  bubblewrap cannot create a user namespace (apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unknown))"
-    echo "  WebKitGTK falls back to running its web process unsandboxed, exactly as it does on the development desktop, which has the same setting"
-  fi
 
   echo
   echo "daemon port"
@@ -947,8 +936,9 @@ destroy it and the crash would be this harness's doing" ;;
   echo "closed one: $((windows - 1)) window(s), pid $APP_PID alive"
 
   # Open another. This is the step that fails if closing a window tore down
-  # something the next one needs: the shared WebContext, the custom scheme, or
-  # the related view every webview after the first is built against.
+  # something the next one needs: the GTK application, the single-instance
+  # claim, or the wgpu instance every pane surface after the first is created
+  # against.
   mapfile -t ids < <(create_sessions 1)
   [ "${#ids[@]}" -eq 1 ] || die "the daemon created no session for the reopen"
   "$BIN/vitrum" --no-autostart "vitrum://session/${ids[0]}" >>"$LOG/handoff.log" 2>&1 || true
@@ -1030,7 +1020,7 @@ footprint_field() {
 }
 
 # Stop the vitrum side and forget its pids, so the T3 half of the run measures
-# a box with only its own product on it. Leaving twenty WebKit processes and a
+# a box with only its own product on it. Leaving twenty windows and a
 # daemon resident would charge T3 with their scheduling and their page cache
 # pressure, and the whole run exists to compare two numbers fairly.
 #
@@ -1287,7 +1277,7 @@ chmod 700 "$XDG_RUNTIME_DIR"
 
 if [ "$COMMAND" != "probe" ]; then
   [ -x "$BIN/vitrum-server" ] || die "no vitrum-server at $BIN; run.sh stages it"
-  # `stress` never opens a window, so it must not be gated on WebKit or on the X
+  # `stress` never opens a window, so it must not be gated on GTK or on the X
   # tools: requiring them would refuse to run protocol workloads on a host that
   # is perfectly able to run them.
   if [ "$COMMAND" != "stress" ]; then

@@ -14,6 +14,13 @@ Before 1.0, a minor bump may break compatibility.
   violation on Windows. Release builds, which already asked for an optimized
   engine, were never affected. The debug suite for the replay crate also drops
   from 220 s to 1.2 s.
+- **Two files read at startup are read with a bound.** The daemon token and
+  the saved window geometry were each read whole. A file that grew — a log
+  written to the wrong path, a disk that filled mid-write — was pulled into
+  memory before anything looked at it. Both now stop at their bound and say
+  so: an over-large token names its limit rather than reporting a malformed
+  one, and an over-large geometry file reads as corrupt and the window opens
+  at its default size.
 
 ## v0.3.0 - 2026-08-10
 

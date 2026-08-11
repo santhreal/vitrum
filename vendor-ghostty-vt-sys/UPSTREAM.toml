@@ -40,3 +40,19 @@ disassembles the published binaries and fails above AVX2, so the pin cannot be
 silently lost.
 """
 upstreamable = true
+
+[[divergence]]
+file = "src/bindings.rs"
+reason = """
+The generated bindings are regenerated with `generate_comments(false)`, so the
+C header's prose is not carried into a file published from this repository.
+The header documents the API in the terms of the terminals that defined the
+sequences, and names another terminal on nearly every item. Nothing else
+differs: the items, their types and their values are what bindgen produced from
+the same header at the same version.
+
+The switch is in `tools/gen_bindings.rs`, which is the fork's own generator and
+is not part of the published crate, so it is not compared. What is compared is
+its output, which is this file.
+"""
+upstreamable = false

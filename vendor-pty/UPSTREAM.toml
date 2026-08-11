@@ -43,3 +43,17 @@ which is what a fresh session should do anyway, and there is no handshake to
 lose.
 """
 upstreamable = true
+
+[[divergence]]
+file = "src/lib.rs"
+reason = """
+One line deleted: `#[cfg(unix)] use libc;`. The crate names `libc` in paths
+rather than through that import, so on the edition this workspace builds it is
+an unused import, which is a rustc warning, and every build here runs with
+`-D warnings`. Upstream builds on an edition where the import is harmless.
+
+Nothing else in this file differs. A style change made to satisfy a linter was
+reverted rather than recorded: a fork that carries lint churn has to re-argue
+it at every absorption, and clippy is advisory in this project anyway.
+"""
+upstreamable = false

@@ -269,7 +269,10 @@ impl_downcast!(PtySystem);
 
 impl Child for std::process::Child {
     fn try_wait(&mut self) -> IoResult<Option<ExitStatus>> {
-        std::process::Child::try_wait(self).map(|s| s.map(|s| s.into()))
+        std::process::Child::try_wait(self).map(|s| match s {
+            Some(s) => Some(s.into()),
+            None => None,
+        })
     }
 
     fn wait(&mut self) -> IoResult<ExitStatus> {

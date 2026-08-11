@@ -90,8 +90,8 @@ const SHELLS: [&str; 15] = [
 /// Windows operator would see the unknown mark on every agent tab.
 const EXECUTABLE_SUFFIXES: [&str; 5] = [".exe", ".cmd", ".bat", ".com", ".ps1"];
 
-/// The banner Codex writes into the terminal title while it is holding for the
-/// operator, as in `[ ! ] Action Required - codex`.
+/// The invariant part of the banner Codex writes into the terminal title while
+/// it is holding for the operator, as in `[ ! ] Action Required | agent`.
 ///
 /// Codex sets this when it puts up a gate such as "Would you like to run the
 /// following command?", and clears it the moment the turn resumes. It is the
@@ -99,7 +99,40 @@ const EXECUTABLE_SUFFIXES: [&str; 5] = [".exe", ".cmd", ".bat", ".com", ".ps1"];
 /// exists: without it a Codex session sitting on an approval prompt renders as
 /// `Ready`, which is the one answer the sidebar must never give while the
 /// operator is being waited on.
-const CODEX_ACTION_REQUIRED: &str = "[ ! ] Action Required";
+///
+/// The bracket in front of these words is excluded because Codex ANIMATES it.
+/// See [`codex_action_required`].
+const CODEX_ACTION_REQUIRED: &str = " ] Action Required";
+
+/// Whether `title` opens with Codex's approval banner, in any blink phase.
+///
+/// Codex blinks the marker inside the bracket for as long as the gate is up,
+/// alternating `[ ! ] Action Required` and `[ . ] Action Required` about twice
+/// a second. Both phases are the same statement: the turn is stopped and the
+/// next move is the operator's. A rule that matched only the `!` phase made
+/// the claim appear and vanish at the blink rate, so the sidebar withdrew
+/// `Approval` from a row whose prompt was still on screen and put it back a
+/// fraction of a second later, twice a second, for as long as the operator
+/// took to answer.
+///
+/// So the marker character is not read, only its shape: an opening bracket, a
+/// space, one character of marker, then the fixed words. That survives Codex
+/// adding a third animation frame, which a literal list of phases would not,
+/// and it is still Codex's own vocabulary rather than a global string match.
+fn codex_action_required(title: &str) -> bool {
+    let Some(rest) = title.trim_start().strip_prefix("[ ") else {
+        return false;
+    };
+    // `chars` rather than a byte index: the marker is one character of
+    // whatever Codex chose, and a multi-byte one must not panic here.
+    let mut marker = rest.chars();
+    // A `]` would mean there is no marker at all, only an empty bracket
+    // followed by something else.
+    if !matches!(marker.next(), Some(c) if c != ']') {
+        return false;
+    }
+    marker.as_str().starts_with(CODEX_ACTION_REQUIRED)
+}
 
 impl AgentKind {
     /// Resolve the agent behind a command line's program.
@@ -191,12 +224,10 @@ impl AgentKind {
     pub fn title_claim(self, title: &str) -> Option<TitleClaim> {
         match self {
             // The banner is a prefix, not the whole title: Codex appends the
-            // session's own name after it. `trim_start` because the title
-            // arrives as the terminal wrote it.
-            AgentKind::Codex => title
-                .trim_start()
-                .starts_with(CODEX_ACTION_REQUIRED)
-                .then_some(TitleClaim::Approval),
+            // session's own name after it, as `[ ! ] Action Required | agent`.
+            AgentKind::Codex => {
+                codex_action_required(title).then_some(TitleClaim::Approval)
+            }
             // No rule, deliberately. Claude declares through the hint channel
             // instead; Gemini, opencode and veyyon publish nothing recognisable
             // in their titles; a shell's title is its command line and an
@@ -368,13 +399,27 @@ mod tests {
     /// Codex's live case, verbatim: a session parked on "Would you like to run
     /// the following command?" sets this title, and before the rule existed the
     /// row read `Ready` while the pane held an approval gate.
+    ///
+    /// Both blink phases are here because Codex animates the marker while the
+    /// gate is up. Recognising only `[ ! ]` resolved every other title write to
+    /// no claim at all, which is the flap `codex_action_required` closes.
     #[test]
     fn codex_action_required_is_an_approval_claim() {
         for title in [
             "[ ! ] Action Required",
+            "[ . ] Action Required",
             "[ ! ] Action Required - codex",
+            "[ . ] Action Required - codex",
+            "[ ! ] Action Required | agent",
+            "[ . ] Action Required | agent",
             "[ ! ] Action Required — vitrum",
             "  [ ! ] Action Required",
+            "  [ . ] Action Required",
+            // A frame Codex does not currently draw. The rule reads the
+            // position of the marker and not its identity, so a third
+            // animation frame does not silently drop the claim.
+            "[ * ] Action Required",
+            "[ ⠴ ] Action Required",
         ] {
             assert_eq!(
                 AgentKind::Codex.title_claim(title),
@@ -395,6 +440,16 @@ mod tests {
             "Action Required",
             "[!] Action Required",
             "codex [ ! ] Action Required",
+            // Codex's working and quiet titles, which is how the claim ends.
+            "⠴ agent",
+            "agent",
+            // An empty bracket is not a marker, and neither is a bracket
+            // followed by something other than the fixed words.
+            "[ ] Action Required",
+            "[ ! ] Actions Required",
+            "[ ! ]Action Required",
+            "[ ",
+            "[ !",
             "",
         ] {
             assert_eq!(
@@ -404,6 +459,12 @@ mod tests {
             );
         }
     }
+
+    /// Both phases of the banner Codex animates while a gate is up, as whole
+    /// titles. `CODEX_ACTION_REQUIRED` is only the invariant tail, so a test
+    /// that wants a title the agent actually writes builds it here.
+    const CODEX_APPROVAL_TITLES: [&str; 2] =
+        ["[ ! ] Action Required", "[ . ] Action Required"];
 
     /// THE CLASS. Every kind must have a decided title rule, and the decision
     /// is asserted here per kind rather than inferred from behaviour. A new
@@ -424,7 +485,11 @@ mod tests {
 
         // Every title any rule in this build recognises. Handed to every kind,
         // so a rule silently gaining a second owner fails here too.
-        let known_titles = [CODEX_ACTION_REQUIRED, "[ ! ] Action Required - codex"];
+        let known_titles = [
+            CODEX_APPROVAL_TITLES[0],
+            CODEX_APPROVAL_TITLES[1],
+            "[ ! ] Action Required - codex",
+        ];
 
         for kind in ALL_AGENT_KINDS {
             let claims: Vec<Option<TitleClaim>> = known_titles
@@ -452,15 +517,16 @@ mod tests {
             if kind == AgentKind::Codex {
                 continue;
             }
-            assert_eq!(
-                kind.title_claim(CODEX_ACTION_REQUIRED),
-                None,
-                "{kind:?} read Codex's banner as its own"
-            );
+            for title in CODEX_APPROVAL_TITLES {
+                assert_eq!(
+                    kind.title_claim(title),
+                    None,
+                    "{kind:?} read Codex's banner {title:?} as its own"
+                );
+            }
         }
-        assert_eq!(
-            AgentKind::of("some-unknown-tool").title_claim(CODEX_ACTION_REQUIRED),
-            None
-        );
+        for title in CODEX_APPROVAL_TITLES {
+            assert_eq!(AgentKind::of("some-unknown-tool").title_claim(title), None);
+        }
     }
 }

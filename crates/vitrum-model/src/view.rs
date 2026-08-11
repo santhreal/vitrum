@@ -674,6 +674,65 @@ mod tests {
         assert_eq!(row.status(), SidebarStatus::Approval);
     }
 
+    /// THE FLAP. Codex ANIMATES the marker in its approval banner, and the
+    /// sidebar used to animate with it.
+    ///
+    /// Recorded from a live daemon holding a Codex session parked on an
+    /// approval gate: the session wrote 222 title changes while that one gate
+    /// was up, alternating `[ ! ] Action Required` and `[ . ] Action Required`
+    /// in equal numbers, some pairs under half a second apart. The probe
+    /// answered `waiting: Some(true)` throughout and no hint was ever sent, so
+    /// with a rule that matched only the `!` phase every second title resolved
+    /// to no claim, fell through to the observed signals and read `Ready`.
+    /// The row alternated Approval and Ready twice a second for as long as the
+    /// gate went unanswered, and Ready is the one answer that must never
+    /// appear while the operator is being waited on.
+    ///
+    /// The claim is withdrawn only when the agent moves on, which the tail of
+    /// the recording shows it doing: a spinner frame, then the bare name.
+    ///
+    /// The suffix is synthetic. Codex appends the session's own name after the
+    /// banner and the recorded one names a machine.
+    #[test]
+    fn the_blinking_codex_banner_holds_approval_for_the_whole_gate() {
+        let mut row = ViewBuilder::new(1)
+            .command("codex")
+            .term_title("[ ! ] Action Required | agent")
+            .waiting(Some(true))
+            // The recorded row had been silent for minutes: blocking on a human
+            // is silent by definition, and silence must not retire the claim.
+            .idle_ms(193_973)
+            .build();
+
+        for phase in 0..222 {
+            let title = if phase % 2 == 0 {
+                "[ ! ] Action Required | agent"
+            } else {
+                "[ . ] Action Required | agent"
+            };
+            row.info.term_title = Some(title.to_string());
+            assert_eq!(
+                row.resolve_status(),
+                StatusResolution::new(SidebarStatus::Approval, StatusSource::Title),
+                "title write {phase} ({title:?}) withdrew the approval the \
+                 operator was being asked to answer"
+            );
+        }
+
+        // The gate was answered. Codex retitles, and only then does the claim
+        // end.
+        row.info.term_title = Some("⠴ agent".to_string());
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting)
+        );
+        row.info.term_title = Some("agent".to_string());
+        assert_eq!(
+            row.resolve_status(),
+            StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting)
+        );
+    }
+
     /// PRECEDENCE at the row level: a deliberate `working` hint beats the
     /// banner. Codex's title lags its own state, so a row whose agent is
     /// telling us it is busy must not be dragged back to "Needs approval" by a

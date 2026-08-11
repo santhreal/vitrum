@@ -461,6 +461,20 @@ impl PaneSurface {
         self.cells_for(size.0, size.1)
     }
 
+    /// Say that what the server is showing is no longer the frame this
+    /// renderer drew.
+    ///
+    /// The only caller is the widget's expose handler. Presenting is skipped
+    /// while nothing changed, and "nothing changed" is a statement about the
+    /// grid, not about the window: an X server with no backing store drops the
+    /// pixels of a window that was covered, and the renderer goes on believing
+    /// its last frame is still up. This is how it is told otherwise, and the
+    /// next tick redraws the frame it already has rather than waiting for the
+    /// agent to write something.
+    pub(crate) fn forget_what_is_on_screen(&mut self) {
+        self.renderer.invalidate();
+    }
+
     /// Draw the grid, if anything changed, and present.
     ///
     /// Returns whether a frame was actually put on screen. A clean grid over a

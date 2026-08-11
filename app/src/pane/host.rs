@@ -471,15 +471,24 @@ impl PaneHost {
         }
     }
 
-    /// Paint when there is no swapchain.
+    /// Paint when there is no swapchain, and note the exposure when there is.
     ///
     /// With a surface this returns `Stop` and draws nothing: the X window
     /// under the widget belongs to the GPU and a themed background drawn over
     /// it on every expose flickers.
+    ///
+    /// It does not return without doing anything, though. An expose says the
+    /// server no longer holds this window's pixels, and a swapchain image the
+    /// server dropped is not the frame the renderer thinks is on screen. The
+    /// present is skipped while the grid is clean, so a pane that was covered
+    /// and uncovered stays black until the agent next writes a byte — which,
+    /// for an agent waiting on an approval, is never. Marking the renderer
+    /// stale here makes the next tick draw the frame it already has.
     fn draw_fallback(&self, area: &gtk::DrawingArea, cr: &gtk::cairo::Context) -> glib::Propagation {
         let (fault, bg) = {
-            let inner = self.inner.borrow();
-            if inner.surface.is_some() {
+            let mut inner = self.inner.borrow_mut();
+            if let Some(surface) = inner.surface.as_mut() {
+                surface.forget_what_is_on_screen();
                 return glib::Propagation::Stop;
             }
             (

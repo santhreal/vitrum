@@ -1379,6 +1379,20 @@ pub struct WindowState {
     pub search: SearchState,
     /// Most recent message for the strip above the terminal.
     pub flash: Option<Flash>,
+    /// Sessions a terminate prompt is currently asking about.
+    ///
+    /// The prompt is the notice rather than a modal, because a modal for this
+    /// would be a fourth surface competing for Escape with the three that
+    /// already exist. What makes it a prompt and not a sentence is this list:
+    /// the notice grows a control that carries out exactly these sessions, and
+    /// dismissing the notice empties it.
+    ///
+    /// Window state and never persisted. [`WindowSnapshot`] is what a profile
+    /// stores, and this is deliberately not in it: a window that came back
+    /// from disk with a session already armed would be offering to kill a
+    /// process on the strength of a confirmation the operator does not
+    /// remember granting.
+    pub armed_terminate: Vec<SessionId>,
     /// The one transient layer that is open, if any.
     ///
     /// Exactly one, never a stack. A context menu on top of a modal on top of
@@ -1437,6 +1451,7 @@ impl Default for WindowState {
             filter: String::new(),
             search: SearchState::default(),
             flash: None,
+            armed_terminate: Vec::new(),
             layer: Layer::None,
             history: HistoryWindow::default(),
             history_intent: HistoryIntent::default(),
@@ -2011,13 +2026,33 @@ impl WindowState {
         ids
     }
 
+    /// How much of one band this window draws, as `(shown, deeper)`.
+    ///
+    /// A Done shelf is capped at [`inbox::SETTLED_TAIL_LIMIT`] until the
+    /// operator asks for the rest, because a month of finished work in one
+    /// project is not a list and the question the shelf is opened for is what
+    /// did I just finish. Every other band draws whole.
+    ///
+    /// This lives here rather than in the panel that draws the "show more"
+    /// button because a cut the panel applies alone is a row the attention
+    /// count and the keyboard walk can still reach while nothing on screen
+    /// shows it.
+    pub fn band_cut(&self, key: GroupKey, section: Section, rows: usize) -> (usize, usize) {
+        if section != Section::Settled || self.settled_expanded(key) {
+            return (rows, 0);
+        }
+        let shown = rows.min(inbox::SETTLED_TAIL_LIMIT);
+        (shown, rows - shown)
+    }
+
     /// Every row this window is actually showing, in draw order.
     ///
     /// THE one definition of visibility, and both public answers are taken
-    /// from it so they cannot drift apart. Three things remove a row: a
-    /// collapsed bucket, a closed band, and the preview cut, which
+    /// from it so they cannot drift apart. Four things remove a row: a
+    /// collapsed bucket, a closed band, the preview cut, which
     /// [`inbox::build_group`] has already applied by leaving those rows out of
-    /// the bands and in `hidden`.
+    /// the bands and in `hidden`, and the Done shelf's tail cut in
+    /// [`WindowState::band_cut`].
     ///
     /// It yields ROWS and not ids on purpose. `attention_count_of` used to
     /// flatten this tree into an owned `Vec<SessionId>` and then ask
@@ -2034,7 +2069,11 @@ impl WindowState {
             [Section::Active, Section::Snoozed, Section::Settled]
                 .into_iter()
                 .filter(move |section| !bucket_collapsed && self.section_open(group.key, *section))
-                .flat_map(move |section| group.section(section).iter().copied())
+                .flat_map(move |section| {
+                    let rows = group.section(section);
+                    let (shown, _) = self.band_cut(group.key, section, rows.len());
+                    rows[..shown].iter().copied()
+                })
         })
     }
 
@@ -2119,9 +2158,9 @@ impl WindowState {
     /// Open whatever is hiding `id`, so a row reached by keyboard is actually
     /// on screen rather than focused inside something collapsed.
     ///
-    /// Three things can hide a row and all three have to give way, or the jump
+    /// Four things can hide a row and all four have to give way, or the jump
     /// key silently moves focus somewhere invisible: the bucket, the band it
-    /// sits in, and the preview cut.
+    /// sits in, the preview cut, and the Done shelf's tail cut.
     pub fn reveal(&mut self, daemon: &DaemonState, id: SessionId, clock: Clock) {
         let Some(row) = daemon.row(id) else { return };
         let section = row.section(clock, daemon.policy());
@@ -2131,6 +2170,7 @@ impl WindowState {
         self.collapsed.remove(&key);
         self.sections_expanded.insert((key, section));
         self.previews_expanded.insert(key);
+        self.settled_expanded.insert(key);
     }
 
     /// Which bucket a row draws in, under the current grouping.

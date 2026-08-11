@@ -1086,3 +1086,73 @@ fn no_widget_wears_a_class_the_sheet_does_not_paint() {
         "only {checked} classes were read, so the scan broke rather than the widgets"
     );
 }
+
+/// Every themed widget kind this tree builds has the stock background image
+/// cleared.
+///
+/// The stock GTK theme paints a control with a gradient `background-image`
+/// rather than a colour. A sheet rule that sets only `background-color` leaves
+/// that gradient painting over it, so a control declared transparent comes out
+/// as a stock light button: near-white on near-white. A scrim hides it, which
+/// is why it survives in a dialog and shows in a bare sidebar.
+///
+/// The kinds are read out of the widget source at run time, so building a
+/// `gtk::ComboBoxText` for the first time turns this red until the reset
+/// covers it. Only kinds the stock theme actually skins are checked: a
+/// `gtk::Box` and a `gtk::Label` have no themed background to inherit.
+#[test]
+fn the_sheet_clears_the_stock_background_of_every_widget_kind_this_builds() {
+    // Constructor to the CSS element name GTK gives the widget.
+    const SKINNED: &[(&str, &str)] = &[
+        ("gtk::Button", "button"),
+        ("gtk::ToggleButton", "button"),
+        ("gtk::Entry", "entry"),
+        ("gtk::ComboBoxText", "combobox button"),
+        ("gtk::Switch", "switch"),
+        ("gtk::FlowBox", "flowboxchild"),
+        ("gtk::Popover", "popover"),
+        ("gtk::Notebook", "notebook"),
+        ("gtk::Frame", "frame"),
+        ("gtk::HeaderBar", "headerbar"),
+        ("gtk::ListBox", "row"),
+    ];
+    let source: String = every_source()
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut built = Vec::new();
+    for (ctor, element) in SKINNED {
+        if source.contains(&format!("{ctor}::")) {
+            built.push(*element);
+        }
+    }
+    assert!(
+        built.len() >= 4,
+        "only {} skinned widget kinds were found, so the scan broke rather \
+         than the widget tree",
+        built.len()
+    );
+    let css = stylesheet(&every_look()[0]);
+    // The selectors of every block that clears the stock image, whichever
+    // block that is, so moving the reset rule does not quietly disarm this.
+    let mut cleared = String::new();
+    for block in css.split('}') {
+        let Some((selectors, body)) = block.split_once('{') else {
+            continue;
+        };
+        if body.contains("background-image: none") {
+            cleared.push_str(selectors);
+            cleared.push(',');
+        }
+    }
+    let missing: Vec<&str> = built
+        .into_iter()
+        .filter(|element| !cleared.contains(&format!(".rg-root {element}")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these widget kinds are built and keep the stock theme's gradient, so \
+         a transparent rule paints as a stock light control: {missing:?}"
+    );
+}

@@ -36,6 +36,32 @@
   color: $fg$;
 }
 
+/* The stock GTK theme paints a control with a gradient `background-image`, not
+ * with a colour. A rule that sets only `background-color` therefore leaves the
+ * theme's gradient painting over it, and a control this sheet declared
+ * transparent comes out as a stock light button: near-white on near-white for
+ * every session row, preset chip, recents row and close glyph. A scrim hides
+ * it, so a dialog looks correct and a bare sidebar does not.
+ *
+ * Clearing the image once, at the root, is what makes every `background-color`
+ * below mean what it says. Each rule that wants a fill still states it.
+ */
+.rg-root button,
+.rg-root entry,
+.rg-root combobox button,
+.rg-root list,
+.rg-root row,
+.rg-root flowboxchild,
+.rg-root notebook,
+.rg-root frame,
+.rg-root toolbar,
+.rg-root switch,
+.rg-root switch slider,
+.rg-root popover,
+.rg-root headerbar {
+  background-image: none;
+}
+
 /* ── Titlebar ────────────────────────────────────────────────────────────── */
 
 /* A reserved strip. The height is stated once and no state changes it, so the

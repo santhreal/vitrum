@@ -3,7 +3,6 @@
 
 #[cfg(unix)]
 use std::sync::Arc;
-#[cfg(unix)]
 use std::time::Duration;
 
 use crate::SessionManager;
@@ -58,8 +57,38 @@ async fn input_reaches_the_child_and_its_reply_returns() {
     // spawn types into a console whose child may not be reading yet, and the
     // bytes are then echoed but never consumed.
     c.until(|b| b.windows(4).any(|w| w == b"ask:")).await;
-    mgr.write(id, b"hello\r\n").expect("write");
-    c.until(|b| b.windows(9).any(|w| w == b"got=hello")).await;
+
+    // The line is typed again if nothing comes back. A pseudoconsole shows the
+    // prompt when the child WROTE it, which is not when the child began
+    // reading, and on an arm64 runner the gap between those is wide enough to
+    // swallow a line: the failing run collected the prompt and then nothing at
+    // all for ninety seconds, with not even the console's echo of the typed
+    // text, so the bytes went into a console that was not yet listening.
+    //
+    // Retyping is safe against the claim below because the child reads one
+    // line and then exits: a second line is never consumed, so `got=hello`
+    // cannot appear twice however many times it is sent. What this no longer
+    // proves on Windows is that one write produces exactly one delivery; the
+    // unix case above still does, byte for byte.
+    let mut typed = 0u32;
+    loop {
+        mgr.write(id, b"hello\r\n").expect("write");
+        typed += 1;
+        let answered = tokio::time::timeout(
+            Duration::from_secs(5),
+            c.until(|b| b.windows(9).any(|w| w == b"got=hello")),
+        )
+        .await
+        .is_ok();
+        if answered {
+            break;
+        }
+        assert!(
+            typed < 6,
+            "the child never answered after {typed} typed lines: {:?}",
+            String::from_utf8_lossy(&c.bytes)
+        );
+    }
     let hits = c.bytes.windows(9).filter(|w| *w == b"got=hello").count();
     assert_eq!(hits, 1, "the child must answer exactly once");
 }

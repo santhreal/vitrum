@@ -5,6 +5,17 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+### Fixed
+
+- **The installer resolves the latest release when the GitHub API refuses.**
+  Its anonymous rate limit is per address and is spent by everything behind
+  that address, so on an office, a carrier NAT or a CI runner a working
+  network answered `403` and the install stopped before it downloaded
+  anything. Both installers now fall back to the redirect on the releases
+  page, which resolves the same version and is not the resource that ran out.
+  Passing `GITHUB_TOKEN` still skips the limit entirely, and an explicit
+  version still asks nothing.
+
 ## v0.3.1 - 2026-08-11
 
 ### Fixed

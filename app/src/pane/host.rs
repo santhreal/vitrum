@@ -362,7 +362,18 @@ impl PaneHost {
 
         {
             let this = self.clone();
-            area.connect_size_allocate(move |_, alloc| this.allocated(alloc));
+            area.connect_size_allocate(move |area, alloc| {
+                // The allocation's origin is relative to whatever parent owns
+                // the widget's window, which is not the toplevel: the pane
+                // logged 8,8 for a widget sitting 367 pixels from the left of
+                // the frame. A capture is in the toplevel's coordinates, so
+                // the offset a picture can be held to is this one.
+                let origin = area
+                    .toplevel()
+                    .and_then(|top| area.translate_coordinates(&top, 0, 0))
+                    .unwrap_or((alloc.x(), alloc.y()));
+                this.allocated(alloc, origin);
+            });
         }
 
         // The frame clock. One tick per compositor frame, for as long as the
@@ -628,7 +639,7 @@ impl PaneHost {
     /// window size and the sidebar width, and pushed here whenever anything
     /// on screen re-rendered, is what made the terminal move under the
     /// operator while something else painted.
-    fn allocated(&self, alloc: &gtk::Allocation) {
+    fn allocated(&self, alloc: &gtk::Allocation, origin: (i32, i32)) {
         ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let resized = {
             let mut inner = self.inner.borrow_mut();
@@ -669,10 +680,21 @@ impl PaneHost {
             // the end: a repaint of any other surface must leave these
             // standing still and only a change of the pane's own allocation
             // may move them.
+            //
+            // The rectangle goes out beside the grid because the two together
+            // are the whole geometric claim: this many cells, in this box, at
+            // this place in the window. A capture can then be held to it
+            // without guessing where the pane is from the colours in it,
+            // which is exactly the guess that fails when the operator's
+            // palette gives the chrome the pane's own background.
             tracing::debug!(
                 allocations = allocations(),
                 resizes = resizes(),
-                "pane resized to {cols}x{rows}"
+                "pane resized to {cols}x{rows} in {}x{}+{}+{}",
+                inner.rect.width,
+                inner.rect.height,
+                origin.0.max(0) * scale as i32,
+                origin.1.max(0) * scale as i32
             );
             (cols, rows)
         };

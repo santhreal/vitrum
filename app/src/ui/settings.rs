@@ -18,7 +18,7 @@
 //!   `data-theme` on the app root, which `sidebar.css` already keys its light
 //!   palette off. Density is [`root_style`], a short list of `--rg-*` token
 //!   overrides on that same element. Text scale is the root font size, set
-//!   through [`ui_scale_script`]: every geometry and type token in both
+//!   through [`ui_scale_px`]: every geometry and type token in both
 //!   stylesheets is declared in `rem`, so one property scales the whole shell
 //!   without this module knowing any token's value.
 //! - **Sidebar** is `show_branch` / `show_place` / `show_time` /
@@ -28,26 +28,21 @@
 //!   disposition, section, rollup and traversal decision in the product.
 //! - **Workspaces** drives [`crate::state::WorkspaceSet`] directly: create,
 //!   rename, delete, reorder, grouping mode, band visibility, folders.
-//! - **Terminal** is [`term_options_script`], which drives the live xterm
-//!   instance through `window.__vitrum_applyTerm` in `bootstrap.js`. Font,
-//!   size, scrollback and the WebGL renderer are all reconfigurable without a
-//!   restart, so none of them is a "takes effect next launch" setting.
+//! - **Terminal** is [`crate::state::TerminalPrefs`], read by the pane when it
+//!   paints. Font, size, scrollback and palette are all reconfigurable without
+//!   a restart, so none of them is a "takes effect next launch" setting.
 //! - **Notifications** is [`should_notify`] plus [`notable_transitions`], which
 //!   is edge-triggered. Level-triggered notification is the classic defect
 //!   here: at twenty agents a predicate re-evaluated on every snapshot
 //!   re-notifies about the same blocked session several times a second.
-//! - **Keyboard** is [`effective_chords`], folded into the same JSON shape
-//!   [`crate::keymap::keymap_json`] produces and pushed through
-//!   `window.__vitrum_applyKeymap`. [`crate::ui::shortcuts`] renders from the
-//!   same fold, so a rebound chord can never be advertised as its default.
+//! - **Keyboard** is [`effective_chords`], the one table key dispatch matches
+//!   against. [`crate::ui::shortcuts`] renders from the same fold, so a
+//!   rebound chord can never be advertised as its default.
 //! - **Advanced** is the daemon URL, which reconnects the socket on the spot,
 //!   and a live [`vitrum_os::probe`] report.
 //!
 //! # What deliberately has no control
 //!
-//! - **Terminal colour theme.** xterm's palette is read once at mount from the
-//!   `--rg-terminal-*` tokens. Re-theming a live terminal is possible, but
-//!   there is only one palette to offer, so there is nothing to pick between.
 //! - **Per-window preferences.** Everything in `Settings` is app-global on
 //!   purpose. Two windows disagreeing about a keybinding is incoherent. The
 //!   two things that genuinely vary by context, grouping and band visibility,
@@ -62,7 +57,9 @@
 //!   the Compact density, which shrinks both variants together and is real.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
+use std::sync::{Arc, LazyLock};
+
+use parking_lot::RwLock;
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -72,11 +69,12 @@ use vitrum_os::capability::{Support, Unavailable};
 use vitrum_os::notify::{Notification, NotificationKind, Notifier};
 use vitrum_proto::{SessionId, SessionStatus};
 
-use crate::instance::Mailbox;
 use crate::keymap::{CHORDS, Help, KeyAction, Scope, Shift};
 use crate::state::{
-    BackdropFit, Density, KeyboardPrefs, Settings, SettingsTab, TermRenderer, TerminalPrefs,
-    ThemePref, UiState,
+    BLINK_MAX_MS, BLINK_MIN_MS, BackdropFit, CELL_WIDTH_MAX_PCT, CELL_WIDTH_MIN_PCT, CURSOR_SHAPES,
+    Density, KeyboardPrefs, LINE_HEIGHT_MAX_PCT, LINE_HEIGHT_MIN_PCT, NOTICE_SECONDS_MAX,
+    PRESENT_MODES, SCROLLBACK_MAX_LINES, SPLASH_AFTER_MAX_MS, Settings, SettingsTab,
+    TERM_FONT_MAX_PX, TERM_FONT_MIN_PX, TerminalPrefs, ThemePref, UiState, WHEEL_LINES_MAX,
 };
 
 /// The About tab. Edits no preference; it reports what is installed.
@@ -382,47 +380,119 @@ pub fn theme_attr(settings: &Settings) -> &'static str {
 /// about what a terminal shell is allowed to do while nothing is happening.
 #[must_use]
 pub fn system_theme() -> Option<vitrum_os::theme::Theme> {
-    *SYSTEM_THEME
-        .read()
-        .expect("system theme lock is never poisoned")
+    *SYSTEM_THEME.read()
 }
 
 /// Ask the desktop again and update the cache.
 #[must_use]
 pub fn refresh_system_theme() -> Option<vitrum_os::theme::Theme> {
     let read = read_system_theme();
-    *SYSTEM_THEME
-        .write()
-        .expect("system theme lock is never poisoned") = read;
+    *SYSTEM_THEME.write() = read;
     read
 }
 
 static SYSTEM_THEME: LazyLock<RwLock<Option<vitrum_os::theme::Theme>>> =
     LazyLock::new(|| RwLock::new(read_system_theme()));
 
+/// How many portal round trips this process has spent on the desktop's
+/// appearance.
+///
+/// The cost this cache exists to avoid, counted rather than assumed, so a
+/// change that quietly turns one read into one per render is a failing test
+/// and not a report about a warm laptop.
+static SYSTEM_THEME_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Portal round trips spent on the desktop's appearance so far.
+///
+/// Shipped rather than test-only, because the Live apply block is where an
+/// operator on a slow desktop portal finds out whether the cost is one round
+/// trip or one per render.
+#[must_use]
+pub fn system_theme_reads() -> usize {
+    SYSTEM_THEME_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn read_system_theme() -> Option<vitrum_os::theme::Theme> {
+    SYSTEM_THEME_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     vitrum_os::theme::theme_watcher()
         .ok()
         .and_then(|w| w.current().ok())
 }
 
-/// Script that applies the text scale to the document root.
+/// Re-read the desktop's appearance the moment the operator asks to follow it.
+///
+/// [`system_theme`] is cached because reading it is a D-Bus round trip and
+/// [`theme_attr`] runs on every render, so the cache is filled once at the
+/// first render of the first window and never again. An operator who switches
+/// to "Follow the system" an hour later is then painted with the answer the
+/// desktop gave at launch. The cache is process-wide and lives outside the
+/// component tree, so nothing the sheet renders can reach it. The shell half
+/// of [`crate::state::live`] is what carries the change to it.
+///
+/// Only the move INTO [`ThemePref::System`] refreshes. Following the system
+/// already, or leaving it, must not put a portal round trip on the path every
+/// settings commit takes.
+static SHELL_WATCH: LazyLock<crate::state::live::Subscription> = LazyLock::new(|| {
+    let was = RwLock::new(crate::state::live::shell_settings().theme);
+    crate::state::live::subscribe_shell(move |now| {
+        let before = std::mem::replace(&mut *was.write(), now.theme);
+        if now.theme == ThemePref::System && before != ThemePref::System {
+            let _ = refresh_system_theme();
+        }
+    })
+});
+
+/// Install the shell subscription, once per process.
+///
+/// A plain function rather than a hook body, because the subscription belongs
+/// to the process and not to a window: two windows installing one each would
+/// make one theme change two portal round trips.
+pub fn watch_shell() {
+    LazyLock::force(&SHELL_WATCH);
+}
+
+/// The application root's font size, as a CSS length.
 ///
 /// The root font size is the only lever that scales the shell uniformly: every
 /// spacing, geometry and type token in `sidebar.css` and `app.css` is declared
 /// in `rem`, so this one property moves all of them and this module never has
 /// to know what any of them are worth. Hairlines keep their literal `1px`,
-/// which is correct — a scaled border is a blurry border.
+/// which is correct: a scaled border is a blurry border.
 ///
-/// Composes multiplicatively with the HiDPI webview zoom applied underneath by
-/// the window layer. This is a user preference on top of that, never a
-/// substitute for it, so no device scale appears anywhere in this function.
+/// Composes multiplicatively with the HiDPI scale applied underneath by the
+/// window layer. This is a user preference on top of that, never a substitute
+/// for it, so no device scale appears anywhere in this function.
 #[must_use]
-pub fn ui_scale_script(percent: u16) -> String {
-    let px = ROOT_FONT_PX * f64::from(clamp_scale(percent)) / 100.0;
+pub fn ui_scale_px(percent: u16) -> String {
+    format!("{}px", trim_num(rem_px(percent)))
+}
+
+/// One rem, in CSS pixels, at the operator's text scale.
+///
+/// The shell gets this through [`root_font_rule`] and the pane's layout gets
+/// the number itself, so both come from here rather than from two copies of
+/// the same arithmetic. Two copies is how the pane's left edge ends up one
+/// scale step away from the sidebar it is supposed to sit against.
+#[must_use]
+pub fn rem_px(percent: u16) -> f64 {
+    ROOT_FONT_PX * f64::from(clamp_scale(percent)) / 100.0
+}
+
+/// The stylesheet rule that puts the operator's text scale on the document
+/// root.
+///
+/// A rule and not an inline style, because `rem` resolves against the root
+/// element and the shell's own root element is a descendant of it. Every
+/// geometry and type token in `app.css` is declared in `rem`, and
+/// [`crate::ui::terminal::pane_frame`] sizes the pane from the same number,
+/// so the root font size is the one place the stylesheet and the pane's
+/// arithmetic agree. Rendered as an element inside the tree, so a change
+/// repaints rather than waiting for a new window.
+#[must_use]
+pub fn root_font_rule(settings: &Settings) -> String {
     format!(
-        "document.documentElement.style.fontSize=\"{}px\";",
-        trim_num(px)
+        "html{{font-size:{};}}",
+        ui_scale_px(settings.text_scale_pct)
     )
 }
 
@@ -442,44 +512,6 @@ pub fn clamp_scale(percent: u16) -> u16 {
 // ═══════════════════════════════════════════════════════════════════════════
 // Terminal
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// What each renderer costs, in the operator's own terms.
-///
-/// Shown next to the control rather than buried in a doc comment. WebGL is
-/// measurably worse here on both axes that matter, and a toggle that silently
-/// makes the application heavier is only marginally better than one that does
-/// nothing.
-#[must_use]
-pub const fn renderer_note(renderer: TermRenderer) -> &'static str {
-    match renderer {
-        TermRenderer::Dom => {
-            "Cheapest at rest, and the default. Measured here: 0% idle CPU and 73 MB/s of \
-             throughput, which is more than twenty agents produce between them."
-        }
-        TermRenderer::Webgl => {
-            "Costs a steady 0.244% idle CPU and about 80 MB more memory under WebKitGTK, because \
-             the compositor keeps the GL layer awake even when nothing on screen changes. \
-             Throughput is 71 MB/s, slightly BELOW the DOM renderer."
-        }
-    }
-}
-
-#[must_use]
-pub const fn renderer_label(renderer: TermRenderer) -> &'static str {
-    match renderer {
-        TermRenderer::Dom => "DOM",
-        TermRenderer::Webgl => "WebGL",
-    }
-}
-
-/// The string `bootstrap.js` matches on.
-#[must_use]
-pub const fn renderer_wire(renderer: TermRenderer) -> &'static str {
-    match renderer {
-        TermRenderer::Dom => "dom",
-        TermRenderer::Webgl => "webgl",
-    }
-}
 
 /// What the Colours row says under the control.
 ///
@@ -507,6 +539,51 @@ pub fn palette_note(palette: crate::termpalette::TermPalette) -> String {
         );
     }
     base
+}
+
+/// What the follow-the-host-terminal row says under the switch.
+///
+/// Three states, and each needs a different sentence. Off says what turning it
+/// on would do. On with a usable import names the file the colours came out
+/// of, because a machine with several terminals installed has several answers
+/// and only one of them is on screen. On without a usable import says the
+/// switch is doing nothing right now, which is the state a profile copied
+/// between machines lands in.
+#[must_use]
+pub fn host_palette_note(prefs: &TerminalPrefs) -> String {
+    if !prefs.follow_host_terminal {
+        return "Reads the sixteen ANSI colours out of the configuration file of the terminal \
+                installed on this machine and paints the grid with them. Overrides the palette \
+                above while it is on."
+            .to_string();
+    }
+    if prefs.host_palette.is_complete() {
+        return format!(
+            "Painting with the colours read from {}, a {}. The palette above is ignored while \
+             this is on.",
+            prefs.host_palette.origin,
+            prefs.host_palette.source.label()
+        );
+    }
+    "On, but no complete palette has been imported, so the palette above is still what the \
+     grid paints. Turn this off and on again to scan."
+        .to_string()
+}
+
+/// Scan this machine for a terminal palette.
+///
+/// The environment and the filesystem, read here rather than in
+/// [`crate::state::hostterm`], which takes both as arguments so its own tests
+/// can run against fixtures without touching either.
+fn import_host_palette()
+-> Result<crate::state::hostterm::HostPalette, crate::state::hostterm::ImportError> {
+    let env = std::env::vars().collect();
+    // Annotated rather than passed by name. `read_to_string` is generic over
+    // `AsRef<Path>`, so handing it over directly makes the compiler pick one
+    // concrete lifetime, and `import` needs a reader good for any.
+    crate::state::hostterm::import(&env, |path: &std::path::Path| {
+        std::fs::read_to_string(path)
+    })
 }
 
 /// Client-side scrollback choices, in lines, with what each one costs.
@@ -552,57 +629,52 @@ pub const FONT_STACKS: &[(&str, &str)] = &[
     ("Consolas", "Consolas, ui-monospace, monospace"),
 ];
 
-/// Smallest terminal font size the modal will set.
-///
-/// Owned here rather than by the settings struct because the number is a fact
-/// about xterm, not about the preference: below this the cell box rounds to
-/// zero width, `paneGrid` has nothing to divide by and proposes no grid, and
-/// the pane goes blank with nothing logged anywhere.
-pub const TERM_FONT_MIN_PX: u16 = 8;
-/// Largest terminal font size the modal will set.
-pub const TERM_FONT_MAX_PX: u16 = 32;
-
 /// Terminal font sizes the modal offers.
+///
+/// A menu of round numbers, not the whole range: the range is
+/// [`TERM_FONT_MIN_PX`]..=[`TERM_FONT_MAX_PX`], owned by the settings struct
+/// because [`TerminalPrefs::clamp`] enforces it against a hand-edited file
+/// that never went through this menu.
 pub const TERM_FONT_STEPS: &[u16] = &[9, 10, 11, 12, 13, 14, 16, 18, 20, 24];
 
-/// Script that reconfigures the live terminal.
+/// The size the pane paints at, clamped into the range the modal offers.
 ///
-/// Writes the options to `window.__vitrum_termOptions` **and** calls the
-/// applier if it exists. Both halves are load-bearing and the order they run in
-/// is not knowable: this can be evaluated before `bootstrap.js` has mounted the
-/// terminal, in which case `mount()` reads the stashed options when it
-/// constructs the `Terminal`, or after, in which case the applier reconfigures
-/// it in place. Without the stash, a restart mounts at the default font and
-/// visibly reflows to the saved one a moment later.
+/// A hand-edited `ui.json` can carry any `u16`, and the modal is not the only
+/// way a value reaches the pane. Every reader goes through here so a text
+/// editor cannot produce a zero-width cell box, which blanks the pane with
+/// nothing logged anywhere.
 #[must_use]
-pub fn term_options_script(prefs: &TerminalPrefs, opacity_pct: u8) -> String {
-    let size = prefs.font_size_px.clamp(TERM_FONT_MIN_PX, TERM_FONT_MAX_PX);
-    let family = if prefs.font_family.trim().is_empty() {
-        "null".to_string()
-    } else {
-        json_string(&prefs.font_family)
-    };
-    // xterm refuses to composite a non-opaque cell background unless it is
-    // told to up front, and the flag costs real work: it forces the renderer
-    // to blend every cell instead of filling the run. So it is set only when
-    // the operator asked for a see-through grid, and an opaque profile keeps
-    // exactly the renderer it had.
-    //
-    // The cell background is cleared in `bootstrap.js` and not here, because
-    // the `Inherit` palette sends no theme at all: the colours are read from
-    // CSS on the other side, and that is the only place both cases meet. The
-    // tint the operator actually sees comes from `.rg-terminal` in
-    // `parts/23-backdrop.css`, so exactly one layer applies the alpha.
-    let translucent = opacity_pct < crate::state::OPACITY_MAX_PCT;
-    format!(
-        "window.__vitrum_termOptions={{renderer:{renderer},scrollback:{scrollback},\
-         fontSize:{size},fontFamily:{family},theme:{theme},allowTransparency:{translucent}}};\
-         if(window.__vitrum_applyTerm)window.__vitrum_applyTerm(window.__vitrum_termOptions);",
-        renderer = json_string(renderer_wire(prefs.renderer)),
-        scrollback = prefs.scrollback_lines,
-        theme = crate::termpalette::js_theme(prefs.palette),
-    )
+pub fn term_font_px(prefs: &TerminalPrefs) -> u16 {
+    prefs.font_size_px.clamp(TERM_FONT_MIN_PX, TERM_FONT_MAX_PX)
 }
+
+/// Line box heights the modal offers, in percent of the font's own height.
+///
+/// 100% is the face's metrics untouched. Below that lines collide on a face
+/// with tall accents; above it a transcript reads like prose. Both are real
+/// preferences and neither is safe to make the default.
+pub const LINE_HEIGHT_STEPS: &[u16] = &[90, 100, 110, 120, 130, 140, 160];
+
+/// Cell box widths the modal offers, in percent of the font's own advance.
+///
+/// The grid is monospaced, so this is not tracking: it is how much of the
+/// advance the cell claims. Under 100% a wide face packs more columns into
+/// the same window at the cost of glyphs touching.
+pub const CELL_WIDTH_STEPS: &[u16] = &[90, 95, 100, 105, 110, 120];
+
+/// Cursor blink periods the modal offers, in milliseconds.
+///
+/// A full period: the cursor is visible for half of it. 530 ms is the shipped
+/// default and is the interval a hardware terminal blinked at, which is why
+/// every emulator since has used it.
+pub const BLINK_STEPS: &[u16] = &[300, 400, 530, 700, 1_000, 1_400, 2_000];
+
+/// Lines one wheel notch scrolls.
+///
+/// The range is 1..=[`WHEEL_LINES_MAX`], so there is no "one screen" step:
+/// a notch that scrolls a whole screen loses the line you were reading, and
+/// paging has its own keys.
+pub const WHEEL_STEPS: &[u8] = &[1, 2, 3, 4, 5, 8, 12];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Notifications
@@ -930,7 +1002,7 @@ impl Binding {
     ///
     /// Two rules, both about not stealing keys that belong to somebody else:
     ///
-    /// 1. A binding must carry Ctrl or Alt. The bridge matches chords globally,
+    /// 1. A binding must carry Ctrl or Alt. Chords are matched globally,
     ///    so a bare letter would be swallowed before the agent ever saw it,
     ///    which reads as a broken keyboard rather than as a setting.
     /// 2. Escape, Tab and Enter are never rebindable. Escape dismisses every
@@ -963,10 +1035,10 @@ const RESERVED_KEYS: &[&str] = &["escape", "tab", "enter"];
 /// Keys offered in the rebinding menu.
 ///
 /// A fixed menu rather than a live keystroke capture, and the reason is
-/// mechanical rather than aesthetic: `bootstrap.js` matches chords globally, so
+/// mechanical rather than aesthetic: chords are matched globally, so
 /// the very keypress being captured would also fire whatever action currently
 /// owns it. Capturing `Ctrl+W` would close a tab while recording it. Suppressing
-/// that would mean a capture-mode flag inside the bridge, which is a second
+/// that would mean a capture-mode flag inside key dispatch, which is a second
 /// source of truth about whether chords are live. A menu has no such race and
 /// is deterministic to test.
 pub const BINDABLE_KEYS: &[&str] = &[
@@ -1125,7 +1197,7 @@ pub fn rebindable() -> Vec<(KeyAction, &'static str)> {
 
 /// Every chord as it will actually behave.
 ///
-/// Preserves `CHORDS` order, which is the order the bridge matches in, so a
+/// Preserves `CHORDS` order, which is the order chords are matched in, so a
 /// rebinding cannot change which of two candidate chords wins. Aliases — a
 /// second chord for the same action, carrying no help row — are rebound
 /// alongside their primary. Leaving an alias on its default would mean an
@@ -1162,13 +1234,13 @@ pub fn effective_chords(prefs: &KeyboardPrefs) -> Vec<EffectiveChord> {
 
 /// Every chord that is live, built-ins and saved presets together.
 ///
-/// The bridge matches ONE table, so a preset's chord has to be in it or the
+/// Key dispatch matches ONE table, so a preset's chord has to be in it or the
 /// chord is not a shortcut at all: it was previously matched only by the
 /// new-session dialog's own handler, which meant opening that dialog before
 /// the "shortcut" could fire.
 ///
-/// Presets come LAST, after every built-in. `bootstrap.js` takes the first
-/// entry that matches, so a preset can never shadow a shipped chord even if
+/// Presets come LAST, after every built-in. The first entry that matches
+/// wins, so a preset can never shadow a shipped chord even if
 /// the operator saves a conflicting one; the settings surface refuses the
 /// conflict up front, and this ordering is what makes that refusal
 /// unnecessary to trust.
@@ -1229,6 +1301,30 @@ pub fn chord_conflict(
         .map(|chord| chord.action)
 }
 
+/// The action `candidate` would collide with in the table key dispatch is
+/// matching RIGHT NOW, or `None` when it is free.
+///
+/// One answer for both directions of the same collision, and they used to be
+/// two different answers. The Keyboard tab asked [`chord_conflict`] against
+/// the built-ins with the operator's rebindings applied and no saved command
+/// in the list, so a chord a command already owned was reported free and then
+/// fired the command. The presets editor asked [`crate::keymap::claims`],
+/// which reads the shipped table with no rebindings at all, so a chord whose
+/// action the operator had MOVED AWAY was refused to a command that could
+/// have had it.
+///
+/// The two inputs come off the bus rather than out of a settings signal
+/// because the bus is what key dispatch folds its table from. Answering from
+/// anything else is answering about a table nobody matches, which is the
+/// defect in both directions above. It also means a deleted command frees its
+/// chord as soon as the deletion is published, not at the next launch.
+#[must_use]
+pub fn live_conflict(candidate: &Binding, for_action: KeyAction) -> Option<KeyAction> {
+    let prefs = crate::state::live::keyboard_prefs();
+    let saved = crate::state::live::presets();
+    chord_conflict(&live_chords(&prefs, &saved), candidate, for_action)
+}
+
 /// Could these two shift requirements both match one event?
 const fn shift_overlaps(existing: Shift, wants_shift: bool) -> bool {
     match existing {
@@ -1246,82 +1342,6 @@ pub fn action_label(action: KeyAction) -> String {
         .find(|chord| chord.action == action && chord.help.is_some())
         .and_then(|chord| chord.help)
         .map_or_else(|| action.wire(), |help| help.what.to_string())
-}
-
-/// The wire form of a shift requirement, as `bootstrap.js` reads it.
-///
-/// Duplicated from `keymap.rs`, whose own mapping is private and which this
-/// module may not edit. The duplication is not left to trust:
-/// `no_overrides_reproduces_the_builtin_table_exactly` asserts that the table
-/// this module emits with no overrides is byte-identical to
-/// [`crate::keymap::keymap_json`], so a divergence in either mapping fails the
-/// build rather than silently changing which keys fire.
-const fn shift_wire(shift: Shift) -> &'static str {
-    match shift {
-        Shift::Off => "off",
-        Shift::On => "on",
-        Shift::Any => "any",
-    }
-}
-
-/// The wire form of a chord's scope. Duplicated for the reason above, and
-/// guarded by the same test.
-const fn scope_wire(scope: Scope) -> &'static str {
-    match scope {
-        Scope::Global => "global",
-        Scope::NotTerminal => "notTerminal",
-        Scope::NotTextInput => "notTextInput",
-        Scope::LayerOnly => "layerOnly",
-        Scope::SessionList => "sessionList",
-    }
-}
-
-/// The chord table in the JSON shape `bootstrap.js` matches against.
-///
-/// Identical in shape to [`crate::keymap::keymap_json`], because it is the same
-/// table with overrides folded in and the bridge must not be able to tell the
-/// difference.
-#[must_use]
-pub fn keymap_json(chords: &[EffectiveChord]) -> String {
-    let entries: Vec<serde_json::Value> = chords
-        .iter()
-        .map(|chord| {
-            serde_json::json!({
-                "key": chord.key,
-                "ctrl": chord.ctrl,
-                "alt": chord.alt,
-                "shift": shift_wire(chord.shift),
-                "scope": scope_wire(chord.scope),
-                "action": chord.action.wire(),
-            })
-        })
-        .collect();
-    serde_json::to_string(&entries).expect("chord table is plain data")
-}
-
-/// Script that replaces the bridge's live chord table.
-///
-/// Stashes the table on `window.__vitrum_keymap` as well as calling the applier,
-/// for the same ordering reason [`term_options_script`] does: this can run
-/// before `bootstrap.js` has read that global, in which case the stash is what
-/// it reads.
-#[must_use]
-pub fn keymap_script(prefs: &KeyboardPrefs) -> String {
-    // Custom bindings first: bootstrap.js takes the first match, which is the
-    // same precedence `dispatch_key` enforces on the Rust side. Without this
-    // a chord no built-in owns never reaches Rust at all, because the webview
-    // has no reason to intercept it.
-    let table = crate::keymap::with_custom_first(
-        &keymap_json(&live_chords(
-            prefs,
-            &crate::launch::load_launch_store().presets,
-        )),
-        &prefs.custom,
-    );
-    format!(
-        "window.__vitrum_keymap={table};\
-         if(window.__vitrum_applyKeymap)window.__vitrum_applyKeymap(window.__vitrum_keymap);"
-    )
 }
 
 /// Overlay rows for the chords that are actually live.
@@ -1369,140 +1389,39 @@ pub fn effective_help_rows(prefs: &KeyboardPrefs) -> Vec<crate::keymap::HelpRow>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Applying and persisting
+// Persisting
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Everything that has to be pushed into the webview, as one script.
+/// Apply, then persist.
 ///
-/// One string and therefore one `eval`, because three separate evals are three
-/// IPC round trips and three points at which a failure leaves the settings half
-/// applied.
-#[must_use]
-pub fn live_script(settings: &Settings) -> String {
-    let mut script = ui_scale_script(settings.text_scale_pct);
-    script.push_str(&term_options_script(
-        &settings.terminal,
-        settings.appearance.terminal_opacity_pct,
-    ));
-    script.push_str(&keymap_script(&settings.keyboard));
-    script
-}
-
-/// Every live window's inbox for [`live_script`] output.
+/// Called after every mutation the sheet makes, and it does two things in a
+/// fixed order. First it hands the document to [`crate::state::live`], which
+/// is what makes a change visible in a pane and in the window frame without a
+/// relaunch: the sheet owns no pane and cannot reach one directly. Then it
+/// queues the write.
 ///
-/// Held by `Weak`, so a closing window needs no deregistration call and the
-/// bus needs no window identity: the inbox dies with the component tree that
-/// owned it, and the next broadcast drops the dangling entry. An explicit
-/// unsubscribe would have to be driven from the window layer's close path, and
-/// one missed call there is a queue that grows for the life of the process
-/// holding scripts nobody will ever drain.
-static LISTENERS: Mutex<Vec<Weak<Mailbox<String>>>> = Mutex::new(Vec::new());
-
-/// Take the listener list, ignoring poisoning.
-///
-/// A panicking window must not cost every other window its settings for the
-/// rest of the process. The list is a vector of weak pointers and there is no
-/// state a panic could leave half-applied.
-fn listeners() -> std::sync::MutexGuard<'static, Vec<Weak<Mailbox<String>>>> {
-    LISTENERS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Register an inbox for one window and hand it back.
-fn subscribe() -> Arc<Mailbox<String>> {
-    let inbox = Arc::new(Mailbox::new());
-    listeners().push(Arc::downgrade(&inbox));
-    inbox
-}
-
-/// Post `script` to every window that still has an inbox, forgetting the rest.
-fn broadcast(script: &str) {
-    let live = {
-        let mut listeners = listeners();
-        let mut live = Vec::with_capacity(listeners.len());
-        listeners.retain(|inbox| match inbox.upgrade() {
-            Some(inbox) => {
-                live.push(inbox);
-                true
-            }
-            None => false,
-        });
-        live
-    };
-    // Posted outside the lock: `Mailbox::post` wakes its wakers, and a waker
-    // that resumed its task inline would re-enter this function on a lock this
-    // thread already holds.
-    for inbox in live {
-        inbox.post(script.to_owned());
-    }
-}
-
-/// Subscribe this window to live settings pushes, for as long as it exists.
-///
-/// One call per window, at the top of its root component. The inbox lives in a
-/// hook rather than inside the future, so the subscription's lifetime is the
-/// component tree's rather than the task's.
-pub fn use_live_settings() {
-    let inbox = use_hook(subscribe);
-    use_future(move || {
-        let inbox = inbox.clone();
-        async move {
-            loop {
-                let script = inbox.next().await;
-                let _ = document::eval(&script);
-            }
-        }
-    });
-}
-
-/// Push every live-reconfigurable setting into the window that is mounting.
-///
-/// The self-directed half of [`apply_live`]. A window that has just been
-/// constructed has to catch up to settings changed before it existed, and
-/// broadcasting to do it would re-evaluate the same script in every sibling
-/// for no reason.
-pub fn apply_here(settings: &Settings) {
-    let _ = document::eval(&live_script(settings));
-}
-
-/// Push every live-reconfigurable setting into EVERY live window.
-///
-/// Theme, density and reduced motion are absent on purpose: those are
-/// attributes on the app root, so Dioxus reapplies them as part of the same
-/// re-render the settings change already causes, with no bridge involved.
-///
-/// # Why this is a broadcast
-///
-/// `document::eval` runs in the calling scope's document, and dioxus-desktop
-/// gives every window its own, while `Settings` lives on `DaemonState`, which
-/// every window in the process shares. Evaluating directly here updated every
-/// window's markup — they all render from the shared model — but pushed the
-/// xterm options and the chord table into one webview only. Windows 2..N kept
-/// their old terminal font, scrollback, renderer and keybindings until they
-/// were next constructed, which made those four controls silently
-/// window-local while every other control in the sheet was global.
-///
-/// So this posts to a per-window inbox instead, and each window runs the
-/// script in its own document. The window that made the change is not a
-/// special case: it receives its own broadcast through the same subscription,
-/// one executor tick later.
-pub fn apply_live(settings: &Settings) {
-    broadcast(&live_script(settings));
-}
-
-/// Persist to disk, then push into the webview.
-///
-/// Called after every mutation the modal makes. Settings changes happen at
-/// human speed, a handful per session, so writing the file on each one is
-/// cheaper than the bookkeeping a debounce would need, and it means the file on
-/// disk is never behind what is on screen.
+/// The write is queued rather than done here. A slider is dragged, not set,
+/// and a text field is typed into, so one visible change is tens of
+/// mutations; each one used to encode and write the whole profile on the
+/// thread that paints. [`crate::state::save_prefs_soon`] collapses a burst
+/// into one write on a background thread, and [`flush`] writes what is left
+/// when the sheet closes, so the file is never behind the screen.
 pub fn commit(state: &UiState) {
-    if let Err(why) = crate::state::save_prefs(&state.daemon, &state.window) {
+    crate::state::live::publish(&state.daemon.settings);
+    crate::state::save_prefs_soon(&state.daemon, &state.window);
+}
+
+/// Write anything the debounce is still holding.
+///
+/// Called when the sheet closes and at shutdown. A failure is reported once,
+/// here, rather than on each of the mutations that led to it.
+pub fn flush() {
+    if let Err(why) = crate::state::flush_prefs() {
         tracing::warn!("settings not saved: {why}");
     }
-    apply_live(&state.daemon.settings);
 }
 
-/// Mutate settings, then persist and apply, in one place.
+/// Mutate settings, then persist, in one place.
 ///
 /// Every control in this file goes through here. Routing them through one
 /// function is what makes "takes effect immediately and survives a restart"
@@ -1512,7 +1431,7 @@ fn edit(mut state: Signal<UiState>, change: impl FnOnce(&mut Settings)) {
     commit(&state.peek());
 }
 
-/// Mutate anything else on the state, then persist and apply.
+/// Mutate anything else on the state, then persist.
 fn edit_state(mut state: Signal<UiState>, change: impl FnOnce(&mut UiState)) {
     change(&mut state.write());
     commit(&state.peek());
@@ -1576,17 +1495,6 @@ pub fn pretty_key(key: &str) -> String {
             }
         }
     }
-}
-
-/// A JSON string literal, safe to paste into a script.
-///
-/// Goes through `serde_json` rather than hand-rolled quoting because a font
-/// stack contains double quotes (`"JetBrains Mono", monospace`), and getting
-/// that wrong turns a settings change into a syntax error in the webview, which
-/// surfaces as "the terminal stopped responding" rather than as anything
-/// resembling its cause.
-fn json_string(s: &str) -> String {
-    serde_json::Value::String(s.to_string()).to_string()
 }
 
 /// A float with no trailing zeros, for a CSS length.
@@ -1689,10 +1597,47 @@ pub fn SettingsSheet(props: SettingsSheetProps) -> Element {
 // Reusable rows
 // ---------------------------------------------------------------------------
 
+/// When a change to `path` takes effect, in the catalogue's words.
+///
+/// Read from [`crate::state::catalog`] rather than written into each caption,
+/// so a control cannot tell an operator it is live while the generated table
+/// calls it a restart. Every row prints one of these: a setting that applies
+/// immediately says so, which is what makes the sentence on a restart-only
+/// row read as information rather than as an exception the reader has to
+/// notice.
+///
+/// A row that edits no setting passes no path and prints nothing.
+/// `every_control_in_the_sheet_is_catalogued` refuses a path that has no row.
+#[must_use]
+fn when_note(path: &str) -> &'static str {
+    if path.is_empty() {
+        return "";
+    }
+    crate::state::catalog::setting(path).map_or("", |s| s.live.note())
+}
+
+/// The catalogue path for one notification switch.
+///
+/// The three switches are rendered from [`NOTIFY_KINDS`] rather than written
+/// out, so their paths are matched from the same enum instead of typed into
+/// three call sites.
+#[must_use]
+const fn notify_path(kind: NotificationKind) -> &'static str {
+    match kind {
+        NotificationKind::Finished => "notifications.finished",
+        NotificationKind::NeedsApproval => "notifications.needsApproval",
+        NotificationKind::Failed => "notifications.failed",
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct SwitchProps {
     label: String,
     desc: String,
+    /// Dotted path into the persisted document, for the timing sentence.
+    /// Empty on a row that edits no setting.
+    #[props(default)]
+    path: String,
     on: bool,
     onchange: EventHandler<bool>,
 }
@@ -1701,6 +1646,7 @@ struct SwitchProps {
 #[component]
 fn SwitchRow(props: SwitchProps) -> Element {
     let on = props.on;
+    let when = when_note(&props.path);
     rsx! {
         div { class: "rg-field rg-field--switch",
             span { class: "rg-field__label", "{props.label}" }
@@ -1718,6 +1664,9 @@ fn SwitchRow(props: SwitchProps) -> Element {
             if !props.desc.is_empty() {
                 span { class: "rg-field__desc", "{props.desc}" }
             }
+            if !when.is_empty() {
+                span { class: "rg-field__hint", "{when}" }
+            }
         }
     }
 }
@@ -1726,6 +1675,10 @@ fn SwitchRow(props: SwitchProps) -> Element {
 struct SelectProps {
     label: String,
     desc: String,
+    /// Dotted path into the persisted document, for the timing sentence.
+    /// Empty on a row that edits no setting.
+    #[props(default)]
+    path: String,
     /// Currently selected value.
     value: String,
     /// `(value, label)` pairs in menu order.
@@ -1764,6 +1717,7 @@ fn stray_option(value: &str, options: &[(String, String)]) -> Option<String> {
 fn SelectRow(props: SelectProps) -> Element {
     let onpick = props.onpick;
     let stray = stray_option(&props.value, &props.options);
+    let when = when_note(&props.path);
     rsx! {
         div { class: "rg-field",
             span { class: "rg-field__label", "{props.label}" }
@@ -1793,6 +1747,9 @@ fn SelectRow(props: SelectProps) -> Element {
             if !props.desc.is_empty() {
                 span { class: "rg-field__desc", "{props.desc}" }
             }
+            if !when.is_empty() {
+                span { class: "rg-field__hint", "{when}" }
+            }
         }
     }
 }
@@ -1805,6 +1762,26 @@ struct PanelProps {
 // ---------------------------------------------------------------------------
 // Appearance
 // ---------------------------------------------------------------------------
+
+/// Notice and flash lifetimes offered, in seconds.
+///
+/// Zero is offered first because "stays until I dismiss it" is a position an
+/// operator holds, not a degenerate value. Every other step is a whole number
+/// of seconds, because the strip counts down in seconds.
+const NOTICE_STEPS: &[(u8, &str)] = &[
+    (0, "Until dismissed"),
+    (3, "3 seconds"),
+    (6, "6 seconds — the default"),
+    (10, "10 seconds"),
+    (20, "20 seconds"),
+    (45, "45 seconds"),
+];
+
+/// Delays offered before the boot mark is drawn, in milliseconds.
+///
+/// The shipped 120 ms is the shortest delay a start can lose to and still
+/// have the mark read as deliberate rather than as a flicker.
+const SPLASH_STEPS: &[u16] = &[0, 60, 120, 250, 500, 1_000, 2_000];
 
 #[component]
 fn AppearancePanel(props: PanelProps) -> Element {
@@ -1833,6 +1810,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
     rsx! {
         SelectRow {
             label: "Theme",
+            path: "theme",
             desc: system_note,
             value: match settings.theme {
                 ThemePref::System => "system",
@@ -1875,6 +1853,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
         SelectRow {
             label: "Density",
+            path: "density",
             desc: "Row heights and the spacing inside them. Text size is the next control; \
                    the two are separate so a dense list can still have readable type."
                 .to_string(),
@@ -1895,6 +1874,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
         SelectRow {
             label: "Text scale",
+            path: "textScalePct",
             desc: "Scales the whole shell, not just type: every size in both stylesheets is \
                    declared in rem. Composes on top of the display's own scaling."
                 .to_string(),
@@ -1912,6 +1892,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
         SwitchRow {
             label: "Reduce motion".to_string(),
+            path: "reduceMotion",
             desc: "Zeroes both transition durations. The stylesheets already honour the OS \
                    preference; this forces it on regardless."
                 .to_string(),
@@ -1921,6 +1902,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
         SelectRow {
             label: "Window opacity",
+            path: "appearance.opacityPct",
             desc: opacity_note(&settings.appearance).to_string(),
             value: settings.appearance.opacity_pct.to_string(),
             options: OPACITY_STEPS.iter().map(|p| (p.to_string(), format!("{p}%"))).collect(),
@@ -1933,6 +1915,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
         SelectRow {
             label: "Terminal opacity",
+            path: "appearance.terminalOpacityPct",
             desc: "The grid alone, so the shell can stay solid while the wallpaper reads \
                    behind the text. Below 100% the terminal composites every cell instead \
                    of filling runs of them, which costs a little more per repaint."
@@ -1994,6 +1977,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
         if !settings.appearance.backdrop.is_empty() {
             SelectRow {
                 label: "Backdrop fit",
+                path: "appearance.backdropFit",
                 desc: "How the image is sized to the window.".to_string(),
                 value: match settings.appearance.backdrop_fit {
                     BackdropFit::Cover => "cover",
@@ -2021,6 +2005,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
             SelectRow {
                 label: "Backdrop blur",
+                path: "appearance.backdropBlurPx",
                 desc: "Blurred once, when the image loads, not per frame. A wide radius on a \
                        large photograph is the one setting here that costs memory."
                     .to_string(),
@@ -2038,6 +2023,7 @@ fn AppearancePanel(props: PanelProps) -> Element {
 
             SelectRow {
                 label: "Backdrop dim",
+                path: "appearance.backdropDimPct",
                 desc: "A scrim between the image and the interface. This is the control that \
                        keeps text readable over a bright photograph."
                     .to_string(),
@@ -2048,6 +2034,99 @@ fn AppearancePanel(props: PanelProps) -> Element {
                         edit(state, |s| {
                             s.appearance.backdrop_dim_pct = pct;
                             s.appearance.clamp();
+                        });
+                    }
+                },
+            }
+        }
+
+        SelectRow {
+            label: "Flash messages",
+            path: "notices.flashSeconds",
+            desc: "How long a one-line result stays up: a rename that failed, a file that \
+                   could not be written. Dismissing one by hand always works."
+                .to_string(),
+            value: settings.notices.flash_seconds.to_string(),
+            options: NOTICE_STEPS
+                .iter()
+                .map(|(secs, label)| (secs.to_string(), (*label).to_string()))
+                .collect(),
+            onpick: move |v: String| {
+                if let Ok(secs) = v.parse::<u8>() {
+                    edit(state, |s| {
+                        s.notices.flash_seconds = secs.min(NOTICE_SECONDS_MAX);
+                    });
+                }
+            },
+        }
+
+        SelectRow {
+            label: "Notice strips",
+            path: "notices.noticeSeconds",
+            desc: "How long a notice above the pane stays up. Zero keeps it until it is \
+                   dismissed, and a dismissed notice does not come back for the same session."
+                .to_string(),
+            value: settings.notices.notice_seconds.to_string(),
+            options: NOTICE_STEPS
+                .iter()
+                .map(|(secs, label)| (secs.to_string(), (*label).to_string()))
+                .collect(),
+            onpick: move |v: String| {
+                if let Ok(secs) = v.parse::<u8>() {
+                    edit(state, |s| {
+                        s.notices.notice_seconds = secs.min(NOTICE_SECONDS_MAX);
+                    });
+                }
+            },
+        }
+
+        SwitchRow {
+            label: "Say when history was refused".to_string(),
+            path: "notices.showHistoryNotice",
+            desc: "The daemon answers an attach with what it kept. Off means a pane that got \
+                   less history than it asked for says nothing and simply starts where it \
+                   starts."
+                .to_string(),
+            on: settings.notices.show_history_notice,
+            onchange: move |on| edit(state, |s| s.notices.show_history_notice = on),
+        }
+
+        SwitchRow {
+            label: "Show a harness's startup output".to_string(),
+            path: "notices.showStartupErrors",
+            desc: "What a harness prints before it draws its own interface. Off hides it, \
+                   including the part that says why it failed to start."
+                .to_string(),
+            on: settings.notices.show_startup_errors,
+            onchange: move |on| edit(state, |s| s.notices.show_startup_errors = on),
+        }
+
+        SwitchRow {
+            label: "Draw the boot mark".to_string(),
+            path: "startup.showSplash",
+            desc: "The mark on the window before the first frame. A start fast enough never \
+                   reaches the delay below and draws nothing either way."
+                .to_string(),
+            on: settings.startup.show_splash,
+            onchange: move |on| edit(state, |s| s.startup.show_splash = on),
+        }
+
+        if settings.startup.show_splash {
+            SelectRow {
+                label: "Boot mark after",
+                path: "startup.splashAfterMs",
+                desc: "Milliseconds of process life before the mark is drawn. Raising it hides \
+                       the mark on more machines."
+                    .to_string(),
+                value: settings.startup.splash_after_ms.to_string(),
+                options: SPLASH_STEPS
+                    .iter()
+                    .map(|ms| (ms.to_string(), format!("{ms} ms")))
+                    .collect(),
+                onpick: move |v: String| {
+                    if let Ok(ms) = v.parse::<u16>() {
+                        edit(state, |s| {
+                            s.startup.splash_after_ms = ms.min(SPLASH_AFTER_MAX_MS);
                         });
                     }
                 },
@@ -2091,12 +2170,14 @@ fn SidebarPanel(props: PanelProps) -> Element {
     rsx! {
         SwitchRow {
             label: "Show the git branch".to_string(),
+            path: "showBranch",
             desc: "The branch chip on rows whose directory is a checkout.".to_string(),
             on: settings.show_branch,
             onchange: move |on| edit(state, |s| s.show_branch = on),
         }
         SwitchRow {
             label: "Show the working directory".to_string(),
+            path: "showPlace",
             desc: "The part of a session's directory the project header does not already \
                    say. A row at the project root shows nothing while its branch is \
                    speaking, and shows its directory when there is no branch either. A \
@@ -2107,13 +2188,34 @@ fn SidebarPanel(props: PanelProps) -> Element {
             onchange: move |on| edit(state, |s| s.show_place = on),
         }
         SwitchRow {
+            label: "Show the worktree".to_string(),
+            path: "showWorktree",
+            desc: "The worktree chip on rows running in a linked worktree of the project. A \
+                   session in the main working tree shows nothing, because that is the case \
+                   the project header already covers."
+                .to_string(),
+            on: settings.show_worktree,
+            onchange: move |on| edit(state, |s| s.show_worktree = on),
+        }
+        SwitchRow {
+            label: "Show the status bar".to_string(),
+            path: "showStatusBar",
+            desc: "The strip under the pane: the focused session's directory, its branch and \
+                   worktree, and what it is waiting on. Off gives the row back to the pane."
+                .to_string(),
+            on: settings.show_status_bar,
+            onchange: move |on| edit(state, |s| s.show_status_bar = on),
+        }
+        SwitchRow {
             label: "Show the last-activity time".to_string(),
+            path: "showTime",
             desc: "The relative age at the right of each row.".to_string(),
             on: settings.show_time,
             onchange: move |on| edit(state, |s| s.show_time = on),
         }
         SwitchRow {
             label: "Show the status word".to_string(),
+            path: "showStatusWord",
             desc: "Off leaves the pill's colour, which is what the collapsed sidebar already \
                    renders, so a narrow list stays readable. The state stays on the row for \
                    a screen reader either way."
@@ -2123,6 +2225,7 @@ fn SidebarPanel(props: PanelProps) -> Element {
         }
         SwitchRow {
             label: "Dense rows".to_string(),
+            path: "alwaysSlim",
             desc: "Collapses every row to the slim variant, including the inbox, which normally \
                    gets the taller card. Different from Compact density: that shrinks both \
                    variants, this removes one of them."
@@ -2132,12 +2235,14 @@ fn SidebarPanel(props: PanelProps) -> Element {
         }
         SwitchRow {
             label: "Confirm before terminating".to_string(),
+            path: "confirmTerminate",
             desc: "Terminating kills the agent's child process. There is no undo.".to_string(),
             on: settings.confirm_terminate,
             onchange: move |on| edit(state, |s| s.confirm_terminate = on),
         }
         SelectRow {
             label: "Settle idle sessions automatically",
+            path: "policy",
             desc: "A settled session drops out of the inbox into the Settled band. This is the \
                    only disposition rule with a number in it, and it governs sections, rollups \
                    and the attention jump keys as well as the list."
@@ -2169,13 +2274,18 @@ fn SidebarPanel(props: PanelProps) -> Element {
 
 #[component]
 fn TerminalPanel(props: PanelProps) -> Element {
-    let state = props.state;
+    let mut state = props.state;
     let prefs = use_memo(move || state.read().daemon.settings.terminal.clone());
     let prefs = prefs.read();
+    // The path the operator typed, not the one in force. Local because it is
+    // a draft until Import is pressed, and a draft that wrote through to the
+    // profile on every keystroke would try to read a file per character.
+    let mut named = use_signal(String::new);
 
     rsx! {
         SelectRow {
             label: "Colours",
+            path: "terminal.palette",
             desc: palette_note(prefs.palette).to_string(),
             value: prefs.palette.slug().to_string(),
             options: crate::termpalette::ALL
@@ -2189,22 +2299,8 @@ fn TerminalPanel(props: PanelProps) -> Element {
         }
 
         SelectRow {
-            label: "Renderer",
-            desc: renderer_note(prefs.renderer).to_string(),
-            value: renderer_wire(prefs.renderer).to_string(),
-            options: vec![
-                ("dom".to_string(), format!("{} (default)", renderer_label(TermRenderer::Dom))),
-                ("webgl".to_string(), renderer_label(TermRenderer::Webgl).to_string()),
-            ],
-            onpick: move |v: String| {
-                edit(state, |s| {
-                    s.terminal.renderer = if v == "webgl" { TermRenderer::Webgl } else { TermRenderer::Dom };
-                });
-            },
-        }
-
-        SelectRow {
             label: "Font",
+            path: "terminal.fontFamily",
             desc: "Every choice ends in the generic monospace, so a font this machine does not \
                    have falls back to another monospace rather than to a proportional face."
                 .to_string(),
@@ -2218,10 +2314,11 @@ fn TerminalPanel(props: PanelProps) -> Element {
 
         SelectRow {
             label: "Font size",
+            path: "terminal.fontSizePx",
             desc: "Independent of the shell's text scale: a large terminal beside a dense \
                    sidebar is the normal case."
                 .to_string(),
-            value: prefs.font_size_px.to_string(),
+            value: term_font_px(&prefs).to_string(),
             options: TERM_FONT_STEPS
                 .iter()
                 .map(|px| (px.to_string(), format!("{px} px")))
@@ -2237,8 +2334,9 @@ fn TerminalPanel(props: PanelProps) -> Element {
 
         SelectRow {
             label: "Scrollback",
+            path: "terminal.scrollbackLines",
             // One number governing two things, because they are the same
-            // number: the xterm buffer, and how many bytes of the daemon's
+            // number: the pane's buffer, and how many bytes of the daemon's
             // history an attach asks for via `wire::backfill_max_bytes`. It
             // used to govern only the buffer. The backfill was a hard-coded
             // 64 KiB, so "100,000 lines" grew the buffer a hundredfold and
@@ -2261,9 +2359,247 @@ fn TerminalPanel(props: PanelProps) -> Element {
                 .collect(),
             onpick: move |v: String| {
                 if let Ok(lines) = v.parse::<u32>() {
-                    edit(state, |s| s.terminal.scrollback_lines = lines);
+                    edit(state, |s| {
+                        s.terminal.scrollback_lines = lines.min(SCROLLBACK_MAX_LINES);
+                    });
                 }
             },
+        }
+
+        SelectRow {
+            label: "Line height",
+            path: "terminal.lineHeightPct",
+            desc: "Percentage of the font's own line height. The cell grid is rebuilt on the \
+                   next frame, so a session keeps its content and reflows to the new row count."
+                .to_string(),
+            value: prefs.line_height_pct.to_string(),
+            options: LINE_HEIGHT_STEPS
+                .iter()
+                .map(|pct| (pct.to_string(), format!("{pct}%")))
+                .collect(),
+            onpick: move |v: String| {
+                if let Ok(pct) = v.parse::<u16>() {
+                    edit(state, |s| {
+                        s.terminal.line_height_pct =
+                            pct.clamp(LINE_HEIGHT_MIN_PCT, LINE_HEIGHT_MAX_PCT);
+                    });
+                }
+            },
+        }
+
+        SelectRow {
+            label: "Cell width",
+            path: "terminal.cellWidthPct",
+            desc: "Percentage of the font's own advance width. Under 100% a wide face fits \
+                   more columns in the same window and glyphs begin to touch."
+                .to_string(),
+            value: prefs.cell_width_pct.to_string(),
+            options: CELL_WIDTH_STEPS
+                .iter()
+                .map(|pct| (pct.to_string(), format!("{pct}%")))
+                .collect(),
+            onpick: move |v: String| {
+                if let Ok(pct) = v.parse::<u16>() {
+                    edit(state, |s| {
+                        s.terminal.cell_width_pct =
+                            pct.clamp(CELL_WIDTH_MIN_PCT, CELL_WIDTH_MAX_PCT);
+                    });
+                }
+            },
+        }
+
+        SelectRow {
+            label: "Cursor",
+            path: "terminal.cursorShape",
+            desc: "The shape drawn where the session's cursor is. A program that sets its own \
+                   shape through an escape sequence overrides this for as long as it runs."
+                .to_string(),
+            value: prefs.cursor_shape.slug().to_string(),
+            options: CURSOR_SHAPES
+                .iter()
+                .map(|s| (s.slug().to_string(), s.label().to_string()))
+                .collect(),
+            onpick: move |v: String| {
+                let picked = CURSOR_SHAPES
+                    .iter()
+                    .copied()
+                    .find(|s| s.slug() == v)
+                    .unwrap_or_default();
+                edit(state, |s| s.terminal.cursor_shape = picked);
+            },
+        }
+
+        SwitchRow {
+            label: "Blink the cursor",
+            path: "terminal.cursorBlink",
+            desc: "Off holds the cursor solid. The blink is driven by the frame clock and \
+                   wakes the pane only while the window has focus."
+                .to_string(),
+            on: prefs.cursor_blink,
+            onchange: move |on: bool| edit(state, |s| s.terminal.cursor_blink = on),
+        }
+
+        if prefs.cursor_blink {
+            SelectRow {
+                label: "Blink period",
+                path: "terminal.blinkIntervalMs",
+                desc: "One full cycle. The cursor is visible for half of it.".to_string(),
+                value: prefs.blink_interval_ms.to_string(),
+                options: BLINK_STEPS
+                    .iter()
+                    .map(|ms| (ms.to_string(), format!("{ms} ms")))
+                    .collect(),
+                onpick: move |v: String| {
+                    if let Ok(ms) = v.parse::<u16>() {
+                        edit(state, |s| {
+                            s.terminal.blink_interval_ms = ms.clamp(BLINK_MIN_MS, BLINK_MAX_MS);
+                        });
+                    }
+                },
+            }
+        }
+
+        SelectRow {
+            label: "Wheel scrolls",
+            path: "terminal.wheelLines",
+            desc: "Lines per notch. A program that reads mouse events gets the wheel instead, \
+                   unmodified by this."
+                .to_string(),
+            value: prefs.wheel_lines.to_string(),
+            options: WHEEL_STEPS
+                .iter()
+                .map(|n| (n.to_string(), format!("{n} lines")))
+                .collect(),
+            onpick: move |v: String| {
+                if let Ok(n) = v.parse::<u8>() {
+                    edit(state, |s| s.terminal.wheel_lines = n.clamp(1, WHEEL_LINES_MAX));
+                }
+            },
+        }
+
+        SwitchRow {
+            label: "Bracketed paste",
+            path: "terminal.bracketedPaste",
+            desc: "Wrap pasted text in the markers a program asked for, so it can tell a paste \
+                   from typing. Off refuses the markers even when the program enabled the mode, \
+                   which is what a program that mishandles them needs."
+                .to_string(),
+            on: prefs.bracketed_paste,
+            onchange: move |on: bool| edit(state, |s| s.terminal.bracketed_paste = on),
+        }
+
+        SelectRow {
+            label: "Frame pacing",
+            path: "terminal.presentMode",
+            desc: "How a finished frame reaches the display. An adapter that does not offer \
+                   the chosen mode falls back to the one it does, without changing this."
+                .to_string(),
+            value: prefs.present_mode.slug().to_string(),
+            options: PRESENT_MODES
+                .iter()
+                .map(|m| (m.slug().to_string(), m.label().to_string()))
+                .collect(),
+            onpick: move |v: String| {
+                let picked = PRESENT_MODES
+                    .iter()
+                    .copied()
+                    .find(|m| m.slug() == v)
+                    .unwrap_or_default();
+                edit(state, |s| s.terminal.present_mode = picked);
+            },
+        }
+
+        SwitchRow {
+            label: "Follow this machine's terminal colours",
+            path: "terminal.followHostTerminal",
+            desc: host_palette_note(&prefs),
+            on: prefs.follow_host_terminal,
+            onchange: move |on: bool| {
+                if !on {
+                    edit(state, |s| s.terminal.follow_host_terminal = false);
+                    return;
+                }
+                match import_host_palette() {
+                    Ok(found) => edit(state, |s| {
+                        s.terminal.host_palette = found;
+                        s.terminal.follow_host_terminal = true;
+                    }),
+                    Err(why) => {
+                        state.write().window.flash =
+                            Some(crate::state::Flash::error(why.to_string()));
+                    }
+                }
+            },
+        }
+
+        div { class: "rg-field",
+            span { class: "rg-field__label", "Import a named file" }
+            span { class: "rg-field__control",
+                input {
+                    class: "rg-field__input rg-field__input--prose",
+                    r#type: "text",
+                    spellcheck: false,
+                    autocomplete: "off",
+                    placeholder: "~/src/dotfiles/colours.conf",
+                    value: "{named}",
+                    aria_label: "Palette file to import",
+                    onchange: move |e| named.set(e.value()),
+                }
+                button {
+                    class: "rg-btn rg-btn--primary",
+                    r#type: "button",
+                    onclick: move |_| {
+                        let path = named.peek().trim().to_string();
+                        if path.is_empty() {
+                            return;
+                        }
+                        match crate::state::hostterm::import_file(
+                            std::path::Path::new(&path),
+                            |p: &std::path::Path| std::fs::read_to_string(p),
+                        ) {
+                            Ok(found) => edit(state, |s| {
+                                s.terminal.host_palette = found;
+                                s.terminal.follow_host_terminal = true;
+                            }),
+                            Err(why) => {
+                                state.write().window.flash =
+                                    Some(crate::state::Flash::error(why.to_string()));
+                            }
+                        }
+                    },
+                    "Import"
+                }
+            }
+            span { class: "rg-field__desc",
+                "The way in for a terminal the scan above does not know. Which of the four \
+                 shapes the file is in is decided by what is in it rather than by its name, so \
+                 a palette exported to any filename is read. A successful import turns the \
+                 switch above on and the row above names the shape it was read as."
+            }
+        }
+
+        if prefs.follow_host_terminal && prefs.host_palette.is_complete() {
+            div { class: "rg-field",
+                span { class: "rg-field__label", "Imported colours" }
+                span { class: "rg-field__control",
+                    button {
+                        class: "rg-btn",
+                        r#type: "button",
+                        onclick: move |_| match import_host_palette() {
+                            Ok(found) => edit(state, |s| s.terminal.host_palette = found),
+                            Err(why) => {
+                                state.write().window.flash =
+                                    Some(crate::state::Flash::error(why.to_string()));
+                            }
+                        },
+                        "Read the colours again"
+                    }
+                }
+                span { class: "rg-field__desc",
+                    "The import is stored, not repeated each launch, so the grid does not change \
+                     colour because a configuration file moved."
+                }
+            }
         }
     }
 }
@@ -2297,6 +2633,7 @@ fn NotificationsPanel(props: PanelProps) -> Element {
                     SwitchRow {
                         key: "{kind}",
                         label: label.to_string(),
+                        path: notify_path(kind),
                         desc: desc.to_string(),
                         on: notify_enabled(&prefs, kind),
                         onchange: move |on| {
@@ -2309,6 +2646,7 @@ fn NotificationsPanel(props: PanelProps) -> Element {
 
         SwitchRow {
             label: "Stay quiet about the session on screen".to_string(),
+            path: "notifications.skipFocusedSession",
             desc: "Watching an agent finish and then being told it finished is noise.".to_string(),
             on: prefs.skip_focused_session,
             onchange: move |on| edit(state, |s| s.notifications.skip_focused_session = on),
@@ -2330,6 +2668,51 @@ fn NotificationsPanel(props: PanelProps) -> Element {
 struct AdvancedProps {
     state: Signal<UiState>,
     on_reconnect: EventHandler<String>,
+}
+
+/// This window's pane pacing, as label and value rows.
+///
+/// Empty when there is nothing to report, which is a window with no pane open
+/// yet. The snapshot is taken once, because it is read under the pane's own
+/// borrow and the frame clock wants that cell back.
+///
+/// The times are main-thread occupancy, from the decision to draw through the
+/// end of submit. The pane presents and returns rather than awaiting the
+/// queue fence, so this is not the time a frame took to appear, and it is
+/// inflated when acquiring the swapchain texture blocks on backpressure. The
+/// rows are named for what they measure so nobody reads them as the frame
+/// times the performance document publishes.
+#[cfg(target_os = "linux")]
+fn frame_rows() -> Vec<(String, String)> {
+    let window = vitrum_dioxus_desktop::use_window();
+    let Some(s) = crate::pane::PaneHost::for_window(window.id()).map(|h| h.frame_summary()) else {
+        return Vec::new();
+    };
+    let ms = |d: std::time::Duration| format!("{} ms", trim_num(d.as_secs_f64() * 1000.0));
+    vec![
+        ("frames drawn".to_string(), s.drawn.to_string()),
+        ("ticks skipped".to_string(), s.skipped.to_string()),
+        ("ticks idle".to_string(), s.idle.to_string()),
+        ("frames timed".to_string(), s.recorded.to_string()),
+        ("main thread, median".to_string(), ms(s.p50)),
+        ("main thread, 95th".to_string(), ms(s.p95)),
+        ("main thread, 99th".to_string(), ms(s.p99)),
+        ("main thread, worst".to_string(), ms(s.worst)),
+        (
+            "owed a frame now".to_string(),
+            if s.behind { "yes" } else { "no" }.to_string(),
+        ),
+    ]
+}
+
+/// No pane means no frame clock.
+///
+/// The pane is a native widget the Linux build installs, so the other targets
+/// have no clock to report and the block says so rather than printing zeros
+/// that read as a stalled renderer.
+#[cfg(not(target_os = "linux"))]
+fn frame_rows() -> Vec<(String, String)> {
+    Vec::new()
 }
 
 #[component]
@@ -2392,6 +2775,73 @@ fn AdvancedPanel(props: AdvancedProps) -> Element {
                     div { class: "rg-keys__row", key: "{feature}",
                         span { class: "rg-keys__chord", "{feature}" }
                         span { class: "rg-keys__what", "{support}" }
+                    }
+                }
+            }
+        }
+
+        // What a control the operator just changed actually reached. A pane
+        // that did not repaint is either a publish that never happened or a
+        // fan-out that was skipped because the derived snapshot did not move,
+        // and those two have different fixes. Nothing else in the product can
+        // tell them apart from the outside.
+        {
+            let live = [
+                ("documents published", crate::state::live::publishes()),
+                ("reached the pane", crate::state::live::pane_fanouts()),
+                ("reached the shell", crate::state::live::shell_fanouts()),
+                ("reached key dispatch", crate::state::live::keyboard_fanouts()),
+                ("desktop appearance reads", system_theme_reads()),
+            ];
+            rsx! {
+                div { class: "rg-field",
+                    span { class: "rg-field__label", "Live apply" }
+                    span { class: "rg-field__desc",
+                        "Counted since this process started. A publish reaches an audience only \
+                         when the values that audience reads actually changed, so typing into a \
+                         field nothing outside this sheet reads costs no deliveries at all."
+                    }
+                    div { class: "rg-keys",
+                        for (what , n) in live {
+                            div { class: "rg-keys__row", key: "{what}",
+                                span { class: "rg-keys__chord", "{what}" }
+                                span { class: "rg-keys__what", "{n}" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // What the pane's frame clock has been doing. A picture that tears or
+        // stutters is either frames that cost too much or frames that were
+        // never drawn, and those have different fixes: p99 answers the first,
+        // the skipped count answers the second. A pane that skips half its
+        // ticks has an excellent p99 and a bad picture, so both are shown.
+        {
+            let rows = frame_rows();
+            rsx! {
+                div { class: "rg-field",
+                    span { class: "rg-field__label", "Frame pacing" }
+                    span { class: "rg-field__desc",
+                        "This window's terminal pane. Percentiles cover the last few thousand \
+                         frames, the worst covers the whole run, and the time measured is how \
+                         long the thread that reads keystrokes was busy drawing rather than how \
+                         long the GPU took."
+                    }
+                    if rows.is_empty() {
+                        span { class: "rg-field__hint",
+                            "This window has no pane, so there is no frame clock to report."
+                        }
+                    } else {
+                        div { class: "rg-keys",
+                            for (what , n) in rows {
+                                div { class: "rg-keys__row", key: "{what}",
+                                    span { class: "rg-keys__chord", "{what}" }
+                                    span { class: "rg-keys__what", "{n}" }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2460,7 +2910,7 @@ mod round_trip;
 /// behaviour and asserts that a sentence shown to an operator is true of the
 /// code beside it. Source scanning rather than a runtime assertion because
 /// neither behaviour has a hook a unit test can reach: one is a wheel event in
-/// a webview, the other is a D-Bus click on a live desktop.
+/// the terminal pane, the other is a D-Bus click on a live desktop.
 #[cfg(test)]
 mod sheet_copy_is_true;
 
@@ -2474,8 +2924,7 @@ mod sheet_copy_is_true;
 /// shortcut must be able to open a session in a named folder with a named
 /// command, and the shipped behaviour did not do that.
 ///
-/// `bootstrap.js` matches exactly ONE table. These tests are about what is in
-/// it.
+/// One chord table is matched. These tests are about what is in it.
 #[cfg(test)]
 mod preset_shortcuts;
 

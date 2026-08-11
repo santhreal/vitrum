@@ -207,6 +207,65 @@ impl Vt {
         Ok(())
     }
 
+    /// Set individual entries of the 256-colour palette.
+    ///
+    /// [`Vt::set_theme`] covers the three colours a cell falls back to. The
+    /// sixteen named entries are the ones a program actually paints with, and
+    /// an operator's theme is mostly those.
+    ///
+    /// `entries` is sparse on purpose: a theme that defines eight colours
+    /// leaves the other eight at the engine's defaults rather than blanking
+    /// them. The engine's own defaults are read first and the entries applied
+    /// over them, and a per-index OSC 4 override a program has already set
+    /// stays in force, because this writes the DEFAULT palette and an override
+    /// outranks it.
+    ///
+    /// # Errors
+    ///
+    /// [`VtError::Engine`] when the engine rejects a colour or the palette.
+    pub fn set_palette(&mut self, entries: &[(u8, Rgba)]) -> Result<(), VtError> {
+        let mut palette = self.term.default_color_palette()?;
+        for &(index, colour) in entries {
+            palette.set(
+                libghostty_vt::style::PaletteIndex(index),
+                RgbColor {
+                    r: colour.r,
+                    g: colour.g,
+                    b: colour.b,
+                },
+            );
+        }
+        self.term.set_default_color_palette(Some(palette))?;
+        Ok(())
+    }
+
+    /// Set the cursor shape and blink a program gets before it asks for one.
+    ///
+    /// `None` for either restores the engine's own default for that half.
+    /// DECSCUSR from the program still overrides both, so this is the setting
+    /// and not the current state; [`Vt::cursor`] reports the current state.
+    ///
+    /// # Errors
+    ///
+    /// [`VtError::Engine`] when the engine rejects the style.
+    pub fn set_cursor_default(
+        &mut self,
+        shape: Option<CursorShape>,
+        blink: Option<bool>,
+    ) -> Result<(), VtError> {
+        use libghostty_vt::terminal::CursorStyle;
+
+        let style = shape.map(|shape| match shape {
+            CursorShape::Block | CursorShape::HollowBlock => CursorStyle::Block,
+            CursorShape::Bar => CursorStyle::Bar,
+            CursorShape::Underline => CursorStyle::Underline,
+        });
+        self.term
+            .set_default_cursor_style(style)?
+            .set_default_cursor_blink(blink)?;
+        Ok(())
+    }
+
     /// Width of the terminal in cells.
     ///
     /// # Errors
@@ -242,6 +301,24 @@ impl Vt {
     /// [`VtError::Engine`] when the engine handle is unreadable.
     pub fn mouse_tracking(&self) -> Result<bool, VtError> {
         Ok(self.term.is_mouse_tracking()?)
+    }
+
+    /// The current setting of one terminal mode.
+    ///
+    /// [`Vt::mouse_tracking`] answers whether any mouse mode is on. It cannot
+    /// say which, and the byte a host sends for a mouse event depends on
+    /// which: 1000 reports presses only, 1003 reports motion, and 1006, 1015
+    /// and the X10 form encode the same event three different ways. A host
+    /// that has to produce those bytes reads the individual modes here.
+    ///
+    /// The same applies to input framing: bracketed paste and DECCKM decide
+    /// what a paste and an arrow key look like on the wire.
+    ///
+    /// # Errors
+    ///
+    /// [`VtError::Engine`] when the engine handle is unreadable.
+    pub fn mode(&self, mode: libghostty_vt::terminal::Mode) -> Result<bool, VtError> {
+        Ok(self.term.mode(mode)?)
     }
 
     /// The event sink, for hosts that want to inspect it directly.

@@ -42,6 +42,10 @@ struct HarnessProps {
 fn Harness(props: HarnessProps) -> Element {
     let state = use_signal(|| props.initial.clone());
     let update_standing = use_signal(|| props.standing.clone());
+    // The App root publishes this and the panel's surfaces report into it.
+    // Without it here the panel would not render at all under test, which is
+    // the same failure it would have in the shipped window.
+    use_context_provider(|| Signal::new(crate::keys::Focus::Shell));
     rsx! {
         Sidebar {
             state,
@@ -551,5 +555,223 @@ fn the_panel_says_when_it_is_too_narrow_to_hold_everything() {
         css.contains(".rg-sidebar--narrow .rg-session__place"),
         "nothing styles the working directory for a narrow panel, so the \
          class is inert"
+    );
+}
+
+/// WHY: the panel drew nothing at all, on a window with a live session in it.
+///
+/// A window remembers which workspace it was looking at, by id, across a
+/// restart. The list was built by looking that id up and returning an empty
+/// list when the lookup missed, so a window whose remembered workspace no
+/// longer exists drew a header, a filter field and nothing else, forever,
+/// with no way back: every control on the panel acts on the list that is not
+/// there. A workspace goes missing whenever the set is reset, renumbered, or
+/// read back from a file written by a build that filed it under another id.
+///
+/// The rest of the state has one answer for this already:
+/// `WorkspaceSet::workspace_of` files a session whose workspace is gone into
+/// the first workspace rather than dropping it. The panel now asks
+/// `WindowState::drawn_workspace` and gets the same answer.
+///
+/// The assertion is on the SESSION, not on the count of elements: a panel can
+/// emit a header and a group and still have no row in it, and that is the
+/// shape that shipped.
+///
+/// What it does NOT catch: a workspace that exists but holds no session,
+/// which is a real empty list and has its own words.
+#[test]
+fn a_window_pointed_at_a_workspace_that_is_gone_still_draws_its_sessions() {
+    let live = {
+        let st = state_with(1);
+        st.window.workspace
+    };
+    // Every id the window can hold: the one that is really there, and three
+    // that are not. A dangling id is the only one that ever went blank, and
+    // it must now render exactly what the live one does.
+    let gone = [
+        crate::state::WorkspaceId(0),
+        crate::state::WorkspaceId(1),
+        crate::state::WorkspaceId(u64::MAX),
+        crate::state::WorkspaceId(live.0.wrapping_add(1)),
+    ];
+    let expected = render(state_with(1));
+    assert!(
+        expected.contains("session 0"),
+        "the harness itself draws no session, so this test proves nothing"
+    );
+    for id in gone {
+        if id == live {
+            continue;
+        }
+        let mut st = state_with(1);
+        st.window.workspace = id;
+        assert!(
+            !st.daemon.workspaces.contains(id),
+            "{id:?} is a real workspace, so this case is not the dangling one"
+        );
+        let html = render(st);
+        assert!(
+            html.contains("session 0"),
+            "a window remembering workspace {id:?}, which no longer exists, \
+             drew no session row. The panel is blank and nothing on it can \
+             get the operator back to a workspace that does exist."
+        );
+        assert!(
+            !html.contains("rg-sidebar__empty"),
+            "a window remembering workspace {id:?} drew the empty-list words \
+             over a workspace that has a session in it"
+        );
+    }
+}
+
+/// WHY: the same window, asked for its census rather than its list.
+///
+/// The count above the list and the list itself were resolved from two
+/// different workspace ids, so the blank panel could still say it had one
+/// session, or a populated panel could say it had none. One id, one answer.
+#[test]
+fn the_count_over_the_list_counts_the_workspace_the_list_came_from() {
+    let mut st = state_with(3);
+    st.window.workspace = crate::state::WorkspaceId(u64::MAX);
+    let html = render(st);
+    for i in 0..3 {
+        assert!(
+            html.contains(&format!("session {i}")),
+            "session {i} is missing from a window whose remembered workspace \
+             is gone, so the list and its census cannot agree"
+        );
+    }
+}
+
+/// WHY: nothing on the panel said which checkout a session's files were in.
+///
+/// Two agents on two linked worktrees of one repository sit under one project
+/// header, at one root, and the only thing that differed between their rows
+/// was a branch name. A branch is the least surprising difference between two
+/// rows, so the row that was about to write to the wrong checkout looked like
+/// the row that was not.
+///
+/// The chip carries git's own name for the worktree. It is never a path, so
+/// the row cannot leak a machine path the way a directory can.
+///
+/// What it does NOT catch: whether the daemon resolved the right name. That
+/// is a filesystem read and lives with the daemon.
+#[test]
+fn a_session_in_a_linked_worktree_says_which_worktree_on_its_row() {
+    let mut st = state_with(1);
+    st.daemon.sessions[0].info.worktree = Some("review".to_string());
+    st.daemon.sessions[0].info.git_branch = Some("main".to_string());
+    let html = render(st);
+    assert!(
+        html.contains("rg-session__worktree"),
+        "the row emits no worktree element at all"
+    );
+    let at = html.find("rg-session__worktree").unwrap();
+    assert!(
+        html[at..].starts_with("rg-session__worktree\">review<"),
+        "the worktree element does not carry the worktree's name: {}",
+        &html[at..(at + 60).min(html.len())]
+    );
+    // Scoped to the chip. The row also draws the session's working directory,
+    // which IS a path and is the point of that element; a check over the
+    // whole row would forbid it and would pass for the wrong reason.
+    let chip = &html[at..];
+    let text = chip
+        .split_once('>')
+        .and_then(|(_, rest)| rest.split_once('<'))
+        .map(|(text, _)| text)
+        .expect("the chip is an element with a text child");
+    assert!(
+        !text.contains('/'),
+        "the chip drew a path where the worktree's name belongs: {text}"
+    );
+}
+
+/// WHY: an element that appears when a fact resolves is an element that moves
+/// the line under the operator's eyes.
+///
+/// A worktree is resolved by the daemon after the session is announced, so a
+/// chip rendered only when the name exists pops into a row that is already on
+/// screen and shoves its branch sideways. The element is emitted on every
+/// card and the stylesheet collapses it while it is empty, which is the same
+/// mechanism the branch has used since it was the flex spacer.
+///
+/// Both halves are asserted, because either alone is satisfiable by a bug:
+/// the element must always be there, and it must be EMPTY when there is no
+/// worktree, or every row draws a bordered blank.
+#[test]
+fn the_row_reserves_the_worktree_element_whether_or_not_there_is_one() {
+    let without = render(state_with(1));
+    assert_eq!(
+        without.matches("rg-session__worktree").count(),
+        1,
+        "a session with no worktree does not reserve the element, so the row \
+         reflows the moment the daemon resolves one"
+    );
+    assert!(
+        without.contains(r#"rg-session__worktree"></span>"#),
+        "a session with no worktree draws a non-empty worktree element"
+    );
+
+    let css = include_str!("../../../assets/sidebar.css");
+    assert!(
+        css.contains(".rg-session__worktree:empty"),
+        "nothing collapses the empty worktree element, so every row without \
+         one draws an empty bordered chip"
+    );
+}
+
+/// WHY: every row element the operator can switch off must switch off without
+/// changing the row's shape.
+///
+/// `show_worktree` is the preference. With it off the element stays in the
+/// tree and goes empty, exactly as it does when there is no worktree, so
+/// toggling the sheet cannot move anything else on the line.
+#[test]
+fn switching_the_worktree_off_empties_the_element_rather_than_dropping_it() {
+    let mut st = state_with(1);
+    st.daemon.sessions[0].info.worktree = Some("review".to_string());
+    st.daemon.settings.show_worktree = false;
+    let html = render(st);
+    assert!(
+        !html.contains(">review<"),
+        "the worktree is drawn with the preference off"
+    );
+    assert_eq!(
+        html.matches("rg-session__worktree").count(),
+        1,
+        "switching the worktree off removed the element, which moves every \
+         other element on the tail line"
+    );
+}
+
+/// WHY: an agent that changes directory left the panel describing where it
+/// used to be.
+///
+/// A harness reports its new directory over OSC 7 and the daemon republishes
+/// the session with a new `cwd`. The row reads that field at paint, so the
+/// only way this can regress is a row that captures the directory once. The
+/// assertion is that two states differing only in `cwd` produce two different
+/// drawn directories.
+///
+/// What it does NOT catch: whether the daemon parsed the escape. That is the
+/// daemon's test.
+#[test]
+fn a_session_that_moves_redraws_where_it_moved_to() {
+    let at = |cwd: &str| {
+        let mut st = state_with(1);
+        st.daemon.projects[0].root = "/src/vitrum".to_string();
+        st.daemon.sessions[0].info.cwd = cwd.to_string();
+        render(st)
+    };
+    let before = at("/src/vitrum");
+    let after = at("/src/vitrum/crates/vitrum-grid");
+    assert!(
+        after.contains("crates/vitrum-grid"),
+        "the row does not name the directory the session moved into"
+    );
+    assert!(
+        !before.contains("crates/vitrum-grid"),
+        "the row names a directory the session is not in"
     );
 }

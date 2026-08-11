@@ -5,11 +5,19 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Load, concurrency, fuzzing and profiling harness for the vitrum daemon."
+description = "Load, concurrency, fuzzing, latency and profiling harness for vitrum."
 publish = false
 
+[features]
+# The daemon workloads. `pipeline` links `vitrum-core` and drives a real
+# SessionManager, which is the only thing here that needs it. The latency
+# workload measures the pane and needs a GPU instead, so it stays buildable on
+# a host that has no reason to compile the daemon.
+default = ["daemon"]
+daemon = ["dep:vitrum-core"]
+
 [dependencies]
-vitrum-core = { workspace = true }
+vitrum-core = { workspace = true, optional = true }
 vitrum-grid = { workspace = true }
 vitrum-model = { workspace = true }
 vitrum-proto = { workspace = true }
@@ -22,6 +30,13 @@ futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+# The latency workload ends every sample on the GPU's fence, which needs the
+# device handle `vitrum-grid` renders through. Same major as `vitrum-grid`
+# depends on, so cargo unifies them and there is one `wgpu::Device` type.
+wgpu = { version = "29", default-features = false, features = ["std"] }
+# A pseudoterminal with no child on it, which is the transport a keystroke
+# really crosses. `openpty` and `poll`, and nothing else.
+libc = "0.2"
 
 [lib]
 name = "vitrum_bench"

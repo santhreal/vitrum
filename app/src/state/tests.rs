@@ -3327,22 +3327,31 @@ fn an_empty_daemon_url_setting_defers_to_the_command_line() {
     assert_eq!(s.resolved_daemon_url("ws://cli"), "ws://other");
 }
 
-/// The terminal defaults must be the ones actually measured and the ones
-/// `bootstrap.js` mounts with. A default that disagrees with the mount
-/// silently changes the terminal the first time the modal is saved.
+/// The terminal defaults must be values the grid can paint on a fresh profile.
+///
+/// Every one of these is read on the first frame, before the settings sheet
+/// has ever been opened. A default outside the range its own `clamp` enforces
+/// means the shipped profile is corrected on the way in, and the operator's
+/// terminal changes the first time they save anything at all.
 #[test]
-fn the_terminal_defaults_are_the_measured_ones() {
+fn the_terminal_defaults_are_the_ones_the_grid_paints() {
     let t = TerminalPrefs::default();
+    let mut clamped = t.clone();
+    clamped.clamp();
     assert_eq!(
-        t.renderer,
-        TermRenderer::Dom,
-        "WebGL costs 0.244% idle CPU here"
+        t, clamped,
+        "a shipped default is outside the range clamp allows, so the profile \
+         changes under the operator on their first save"
     );
-    assert_eq!(
-        t.scrollback_lines, 1_000,
-        "must match bootstrap.js at mount"
+    assert_eq!(t.scrollback_lines, 1_000);
+    assert_eq!(t.font_family, "", "empty means one source for the face");
+    assert_eq!(t.line_height_pct, 100, "100% is the face's own metrics");
+    assert_eq!(t.cell_width_pct, 100, "100% is the face's own advance");
+    assert!(!t.follow_host_terminal, "a fresh profile scans nothing");
+    assert!(
+        !t.host_palette.is_complete(),
+        "a fresh profile ships no imported colours"
     );
-    assert_eq!(t.font_family, "", "empty means --rg-font-mono, one source");
 }
 
 /// The settings layer is one of the exclusive layers, and switching tab
@@ -3580,7 +3589,7 @@ fn each_window_writes_only_its_own_slot() {
         ..Persisted::default()
     };
     // Window 2 saves first, before window 0 or 1 ever has.
-    doc.put_window(&right);
+    doc.put_window(right.index, WindowSnapshot::of(&right));
     assert_eq!(doc.windows.len(), 3);
     assert_eq!(doc.windows[2].sidebar_width, 420.0);
     assert_eq!(doc.windows[2].workspace, review);
@@ -3591,7 +3600,7 @@ fn each_window_writes_only_its_own_slot() {
     );
 
     // Window 0 then saves and must leave window 2 alone.
-    doc.put_window(&left);
+    doc.put_window(left.index, WindowSnapshot::of(&left));
     assert_eq!(doc.windows.len(), 3);
     assert_eq!(doc.windows[0].sidebar_width, 300.0);
     assert_eq!(doc.windows[0].strip.tabs, vec![SessionId(10)]);
@@ -3898,7 +3907,10 @@ fn a_missing_file_is_silent_and_a_broken_one_is_not() {
     );
     assert_eq!(
         UiStateLoad::Unsupported { version: 99 }.to_string(),
-        "workspace file is version 99, this build understands 1"
+        "ui.json is format 99 and this build reads 1. It will be kept as \
+         ui.json.unsupported.bak and a fresh one written. Install the newer \
+         vitrum that wrote it, or delete that copy once you no longer want \
+         what is in it."
     );
 
     std::fs::write(&path, r#"{"settings":{}}"#).unwrap();

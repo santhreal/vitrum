@@ -34,6 +34,7 @@ pub fn info(id: u64) -> SessionInfo {
         cols: 80,
         rows: 24,
         git_branch: None,
+        worktree: None,
         unread: false,
         attention: Attention::default(),
         hint: None,
@@ -90,6 +91,16 @@ impl Row {
     /// common case and a builder that invented a branch would hide it.
     pub fn branch(mut self, branch: Option<&str>) -> Self {
         self.view.info.git_branch = branch.map(str::to_string);
+        self
+    }
+
+    /// The linked git worktree the session's directory is inside. `None` is
+    /// the default and means a main working tree, which is what most
+    /// sessions are.
+    ///
+    /// The value is git's own name for the worktree. It is never a path.
+    pub fn worktree(mut self, worktree: Option<&str>) -> Self {
+        self.view.info.worktree = worktree.map(str::to_string);
         self
     }
 

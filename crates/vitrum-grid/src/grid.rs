@@ -18,7 +18,7 @@
 
 use core::ops::Range;
 
-use crate::cell::{Cell, CellSlot, CharWidth, Style, char_width};
+use crate::cell::{Cell, CellSlot, CharWidth, Cursor, Style, char_width};
 
 /// Largest grid width the type accepts. A terminal wider than this is not a
 /// terminal, and the bound keeps `col + 1` from ever overflowing `u16`.
@@ -241,6 +241,12 @@ pub struct CellGrid {
     /// not exposed: every reader goes through [`CellGrid::row`] or
     /// [`CellGrid::cell`], which resolve the indirection.
     row_slots: Vec<usize>,
+    /// The caret, composited over a cell rather than stored in one.
+    ///
+    /// `None` means no caret is drawn: the program hid it, or the viewport is
+    /// scrolled back and the caret is off screen. Kept beside the cells so a
+    /// move damages two cells instead of rewriting them.
+    cursor: Option<Cursor>,
 }
 
 impl CellGrid {
@@ -269,6 +275,7 @@ impl CellGrid {
             ],
             default_style,
             row_slots: (0..rows as usize).collect(),
+            cursor: None,
         })
     }
 
@@ -306,6 +313,48 @@ impl CellGrid {
     /// own colours, so this records no damage.
     pub const fn set_default_style(&mut self, style: Style) {
         self.default_style = style;
+    }
+
+    /// The caret, if one is drawn.
+    #[must_use]
+    pub const fn cursor(&self) -> Option<Cursor> {
+        self.cursor
+    }
+
+    /// Move, restyle, hide or show the caret.
+    ///
+    /// Returns `true` when the caret actually changed, in which case the cell
+    /// it left and the cell it arrived on are damaged and nothing else is.
+    /// Setting the caret to the value it already has costs nothing and damages
+    /// nothing, which is what keeps a terminal that redraws the same frame
+    /// from presenting.
+    ///
+    /// A caret outside the grid is refused rather than clamped: a clamp would
+    /// draw a caret in the wrong place, and the wrong place looks exactly like
+    /// the right one.
+    ///
+    /// # Errors
+    ///
+    /// [`GridError::OutOfBounds`] when `cursor` names a cell outside the grid.
+    pub fn set_cursor(&mut self, cursor: Option<Cursor>) -> Result<bool, GridError> {
+        if let Some(c) = cursor
+            && (c.col >= self.cols || c.row >= self.rows)
+        {
+            return Err(GridError::OutOfBounds {
+                col: c.col,
+                row: c.row,
+            });
+        }
+        if cursor == self.cursor {
+            return Ok(false);
+        }
+        // Both ends of the move, because the cell it left has to be repainted
+        // without the caret on it.
+        for c in [self.cursor, cursor].into_iter().flatten() {
+            self.damage[c.row as usize].extend(c.col, c.col + 1);
+        }
+        self.cursor = cursor;
+        Ok(true)
     }
 
     /// Flat index of `(col, row)`, or `None` when out of bounds.
@@ -678,6 +727,15 @@ impl CellGrid {
                 end: cols,
             },
         );
+        // A caret the shrink put outside the grid would be drawn at a wrapped
+        // index by any reader that trusted it. The engine reports a fresh
+        // position on the next sync, so dropping it here costs one frame with
+        // no caret rather than one frame with a caret in the wrong cell.
+        if let Some(c) = self.cursor
+            && (c.col >= cols || c.row >= rows)
+        {
+            self.cursor = None;
+        }
         Ok(())
     }
 

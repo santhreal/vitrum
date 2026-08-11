@@ -75,6 +75,7 @@ pub fn sessions(now_ms: u64) -> Vec<SessionView> {
             cols: 120,
             rows: 40,
             git_branch: branch.map(str::to_string),
+            worktree: None,
             unread,
             attention: Attention {
                 bell: false,
@@ -333,9 +334,9 @@ fn hint(
 
 /// Terminal content painted when a fixture session gains focus.
 ///
-/// Written as literal terminal lines so the pane on screen is a real xterm.js
-/// grid running a real VT parser, not a div pretending to be one. The SGR
-/// escapes are there to prove the parser is live.
+/// Written as literal terminal lines so the pane on screen is the real grid
+/// running the real VT parser, not a picture of one. The SGR escapes are
+/// there to prove the parser is live.
 pub fn transcript(info: &SessionInfo) -> Vec<String> {
     let SessionId(id) = info.id;
     let argv = if info.args.is_empty() {
@@ -688,9 +689,10 @@ mod tests {
         assert!(text.contains("120x40"), "missing geometry:\n{text}");
     }
 
-    /// A transcript must never contain a bare newline. xterm.js does not move
-    /// the cursor to column zero on LF unless `convertEol` is on, which it is
-    /// not, so a bare LF would produce a staircase down the screen.
+    /// A transcript must never contain a bare newline. LF moves the cursor
+    /// down one row and leaves the column where it was, so a line ended with
+    /// LF alone staircases down the screen. Getting back to column zero takes
+    /// a CR, which is why every break in this text is `\r\n`.
     #[test]
     fn transcript_lines_contain_no_bare_newlines() {
         for row in sessions(NOW) {

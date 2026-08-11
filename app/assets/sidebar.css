@@ -1982,6 +1982,39 @@
   display: none;
 }
 
+/* The linked git worktree the session's directory is inside, immediately left
+ * of the branch and right of the path.
+ *
+ * Drawn as a chip rather than as more text on the line, because the two
+ * neighbours on either side of it are already a path and a name and a third
+ * run of plain metadata between them reads as part of whichever it touches.
+ * The border is what says this one is a different KIND of fact.
+ *
+ * It shrinks after the path and before the branch, and it never disappears
+ * entirely: a row whose files are not where the group header says they are
+ * is the one row on the list that must not lose the thing that says so, so
+ * the floor is wide enough for an ellipsis and two characters.
+ *
+ * `:empty` collapses it for the same reason the path collapses. */
+.rg-session__worktree {
+  flex: 0 2 auto;
+  min-width: 3ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 var(--rg-space-1);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-sm);
+  color: var(--rg-fg-subtle);
+  font-size: var(--rg-text-10);
+  line-height: var(--rg-line-12);
+  font-weight: var(--rg-weight-normal);
+}
+
+.rg-session__worktree:empty {
+  display: none;
+}
+
 /* The timestamp sits on line three of a card and inside the slot on a slim
  * row. Either way it is the last thing on its line and right-aligns to the
  * row inset, so the whole list has one straight right edge. */
@@ -2327,6 +2360,7 @@
 .rg-sidebar--collapsed .rg-session__title,
 .rg-sidebar--collapsed .rg-session__branch,
 .rg-sidebar--collapsed .rg-session__place,
+.rg-sidebar--collapsed .rg-session__worktree,
 .rg-sidebar--collapsed .rg-session__time,
 .rg-sidebar--collapsed .rg-session__actions,
 .rg-sidebar--collapsed .rg-badge,

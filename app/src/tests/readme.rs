@@ -378,7 +378,7 @@ fn the_installer_finishes_the_install() {
 /// Every image the README shows is in the repository, and none is a picture
 /// of a shell.
 ///
-/// The page ships no pictures at all right now. Every one it used to carry
+/// The page carries pictures again. Every one it used to carry before that
 /// was deleted: a GIF, an MP4 and two screenshots that showed `bash`,
 /// `cargo test` or `git log` filling the pane with a path from the recording
 /// machine in the launcher, then a hero that was a photograph of the test
@@ -429,41 +429,48 @@ fn every_image_the_readme_shows_exists_and_is_not_a_shell() {
     }
 }
 
-/// The generated performance regions are present, closed, and filled.
+/// Every performance claim states how it was measured.
 ///
-/// Every number in `docs/performance.md` is written by
-/// `harness/readme_perf.py` from `harness/reports/readme-perf.json`, and CI
-/// re-renders them to catch a stale table. That check cannot fire if the
-/// markers are gone: a rewrite that deletes a region, or closes it with the
-/// wrong name, leaves nothing to compare and passes. So the markers are
-/// asserted here, where an ordinary `cargo test` sees them.
+/// The page was generated once, out of a snapshot, with marker regions and a
+/// CI step that re-rendered them. It is written by hand now, which removes
+/// the stale-table failure and introduces a worse one: a number that reads
+/// like a measurement and is an estimate. Nothing in a build can tell those
+/// apart, so what is asserted is the shape that makes the difference visible
+/// to a reader, and the one sentence that stops a ratio being quoted without
+/// the floor it was taken against.
 #[test]
-fn the_generated_performance_regions_are_intact() {
+fn every_performance_claim_says_how_it_was_measured() {
     let doc = include_str!("../../../docs/performance.md");
-    let snapshot = include_str!("../../../harness/reports/readme-perf.json");
 
-    assert!(
-        snapshot.contains("\"schema\": \"vitrum-footprint-v1\""),
-        "the snapshot the tables are rendered from is not the schema \
-         readme_perf.py writes"
-    );
-
-    for region in ["footprint", "idle"] {
-        let open = format!("<!-- BENCH:{region}:start -->");
-        let close = format!("<!-- BENCH:{region}:end -->");
-        let at = doc
-            .find(&open)
-            .unwrap_or_else(|| panic!("docs/performance.md has no {open}"));
-        let end = doc.find(&close).unwrap_or_else(|| {
-            panic!("docs/performance.md opens BENCH:{region} and never closes it")
-        });
-        let body = &doc[at + open.len()..end];
+    for required in [
+        // Each row names its method, and the page says so where a reader
+        // meets the first table rather than in a footnote.
+        "names its method",
+        // A latency ratio against a display path is meaningless without the
+        // cost every client on that display pays.
+        "platform floor",
+        // The old build cannot be rebuilt from this tree, so where its figure
+        // came from is part of the claim.
+        "harness/latency/",
+        // The command that reproduces the new figures, which is what makes
+        // them checkable by somebody who does not trust them.
+        "cargo run --release -p vitrum-bench",
+    ] {
         assert!(
-            body.contains('|') && body.contains("Reproduce:"),
-            "BENCH:{region} holds no table and no reproduction command; run \
-             `make perf-tables`"
+            doc.contains(required),
+            "docs/performance.md no longer says {required:?}, so a reader \
+             cannot tell a measured row from an estimated one"
         );
     }
+
+    // A signal the old build could not produce must not carry a ratio. The
+    // page states that rule; a table that stops honouring it is a table
+    // somebody widened by inventing a baseline.
+    assert!(
+        doc.contains("no ratio is given") || doc.contains("no ratio is claimed"),
+        "docs/performance.md dropped the rule that an unobservable baseline \
+         yields no ratio, which is the only thing stopping one being invented"
+    );
 }
 
 /// Every local document the README links to exists.
@@ -1044,4 +1051,187 @@ fn call_argument_text<'a>(line: &'a str, names: &[&str]) -> Option<&'a str> {
         }
     }
     None
+}
+
+/// The front page leads with the mark, and stays a landing page.
+///
+/// A README is what it is, what it looks like, how to install it, and links
+/// out. This one has grown into a manual twice. It carried a five-state table,
+/// a key binding list, a systemd unit, an SSH tunnel, a survival table, three
+/// per-platform install pastes and a compositor rule, every one of which was
+/// added because the README was the file a test happened to read, and every one
+/// of which now lives in the document that owns it.
+///
+/// Nothing about that is caught by checking the sentences, because each
+/// sentence was true. What is caught here is the shape: the mark is the first
+/// thing on the page, no picture precedes it, and the section headings are a
+/// recorded set. A new heading is red until somebody decides the material
+/// belongs on the landing page rather than in `docs/`, which is the decision
+/// that was never made the first two times.
+#[test]
+fn the_front_page_leads_with_the_mark_and_stays_a_landing_page() {
+    let readme = include_str!("../../../README.md");
+
+    let mark = readme
+        .find("assets/logo/")
+        .expect("the README shows the mark");
+    let first_picture = readme
+        .match_indices("assets/")
+        .map(|(at, _)| at)
+        .next()
+        .expect("the README shows at least the mark");
+    assert_eq!(
+        mark, first_picture,
+        "a picture is shown above the mark. The first thing on the page is the \
+         thing the product is called."
+    );
+
+    let first_heading = readme
+        .find("\n## ")
+        .expect("the README has sections");
+    assert!(
+        mark < first_heading,
+        "the mark is inside a section rather than at the top of the page"
+    );
+
+    // What the product is, before any picture of it and before the install.
+    let says_what_it_is = readme[..first_heading]
+        .lines()
+        .any(|line| line.contains("agent") && line.len() > 40);
+    assert!(
+        says_what_it_is,
+        "nothing above the first heading says what vitrum is. A page that opens \
+         on a screenshot asks the reader to work it out from a picture."
+    );
+
+    let headings: Vec<&str> = readme
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .collect();
+    // Recorded rather than derived, because there is nothing to derive it
+    // from: this is the decision itself. Adding a row is the argument.
+    let allowed = ["Install", "Documentation", "Status", "License"];
+    for heading in &headings {
+        assert!(
+            allowed.contains(heading),
+            "the README grew a `{heading}` section. A landing page carries \
+             {allowed:?} and links out for the rest; put this in the document \
+             that owns the behaviour, and add the heading here if the front \
+             page really is where it belongs."
+        );
+    }
+    for required in ["Install", "Documentation"] {
+        assert!(
+            headings.contains(&required),
+            "the README no longer has an {required} section"
+        );
+    }
+}
+
+/// Every page in `docs/` is reachable from the front page.
+///
+/// WHY: [`every_document_the_readme_links_to_exists`] checks that a link
+/// resolves, which is the half that fails loudly. The half that fails silently
+/// is a page nobody links to. `docs/architecture.md` was written, linked, and
+/// then deleted in a rewrite, and the link going with it is what made the loss
+/// invisible: the table still looked complete.
+///
+/// Enumerated from the directory, so a page added tomorrow is held to this
+/// without anyone remembering to add a row.
+#[test]
+fn every_page_in_docs_is_linked_from_the_front_page() {
+    let readme = include_str!("../../../README.md");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under the workspace root");
+
+    let mut pages: Vec<String> = std::fs::read_dir(root.join("docs"))
+        .expect("docs/ is a directory")
+        .map(|entry| entry.expect("a readable directory entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "md"))
+        .map(|path| {
+            path.file_name()
+                .expect("a file with an extension has a name")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    pages.sort();
+    assert!(
+        pages.len() >= 5,
+        "only {} pages were found under docs/, which is fewer than have shipped; \
+         the listing is looking at the wrong directory",
+        pages.len()
+    );
+
+    for page in pages {
+        assert!(
+            readme.contains(&format!("docs/{page}")),
+            "docs/{page} is not linked from the README, so the only way to it is \
+             knowing it is there"
+        );
+    }
+}
+
+/// The architecture document accounts for every crate in the workspace.
+///
+/// WHY: the document opens with a tree of the workspace and one line saying
+/// what each member is for, and that tree is the only place a reader is told a
+/// crate exists. A member added without a line is a crate nobody outside this
+/// repository can find out about, and a member deleted while its line stays is
+/// a reader sent looking for a directory that is not there.
+///
+/// Both directions, enumerated from `Cargo.toml` and from the document, so
+/// neither can drift alone.
+#[test]
+fn the_architecture_document_accounts_for_every_workspace_member() {
+    let doc = include_str!("../../../docs/architecture.md");
+    let manifest = include_str!("../../../Cargo.toml");
+
+    let (_, after) = manifest
+        .split_once("members = [")
+        .expect("the workspace manifest lists its members");
+    let (list, _) = after.split_once(']').expect("the members list is closed");
+    let members: Vec<&str> = list
+        .lines()
+        .map(|line| line.trim().trim_matches(',').trim_matches('"'))
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert!(
+        members.len() >= 10,
+        "only {} workspace members were parsed, which is fewer than have shipped",
+        members.len()
+    );
+
+    for member in &members {
+        // The document writes a crate as its own name and a vendored
+        // directory as its path, which is how each is referred to elsewhere.
+        let written = member.strip_prefix("crates/").unwrap_or(member);
+        assert!(
+            doc.contains(written),
+            "docs/architecture.md never mentions `{written}`, so the one place a \
+             reader is told that crate exists does not say so"
+        );
+    }
+
+    // And nothing in the tree block names a member that is gone.
+    let (_, block) = doc.split_once("```\n").expect("the document opens with a tree");
+    let (block, _) = block.split_once("\n```").expect("the tree block is closed");
+    for line in block.lines() {
+        let Some(name) = line.split_whitespace().next() else {
+            continue;
+        };
+        let name = name.strip_suffix('/').unwrap_or(name);
+        if !name.starts_with("vitrum-") && !name.starts_with("vendor") {
+            continue;
+        }
+        let named = members
+            .iter()
+            .any(|member| member.strip_prefix("crates/").unwrap_or(member) == name);
+        assert!(
+            named,
+            "docs/architecture.md's tree lists `{name}`, which is not a workspace \
+             member, so the reader is sent to a directory that is not there"
+        );
+    }
 }

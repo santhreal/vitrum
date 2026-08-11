@@ -1,184 +1,318 @@
-//! A terminal pane drawn by the GPU instead of by xterm.js.
+//! The terminal pane: a native GPU surface inside the window, and everything
+//! that happens on it.
 //!
-//! Today a session's output reaches the screen as decoded pane operations
-//! handed to xterm.js inside the WebKit view. This module is the other end of
-//! that road: a `GtkDrawingArea` with its own X window, a `wgpu` swapchain on
-//! that window, and `vitrum-grid` painting a [`CellGrid`] into it, hosted in
-//! the same GTK toplevel the shell already has. Keystrokes on the widget are
-//! encoded by [`key`] and handed to whatever the caller passes as the input
-//! sink, which in the app is the same `ClientMsg::Input` frame the webview's
-//! keyboard path already sends.
+//! # Shape
 //!
-//! The mechanism was proved and measured in a throwaway prototype before any
-//! of it was written here, and that prototype has been deleted rather than
-//! left in the workspace to rot beside the real thing. On an RTX 4090 the
-//! native Vulkan path sustained 24.7 MB/s, with frame times of 0.79 ms at p50,
-//! 1.22 ms at p95 and 1.28 ms at p99; xterm.js in the DOM sustained a higher
-//! 44.9 MB/s but with a p99 of 46 ms and a worst frame of 147 ms. Throughput
-//! is not the argument, and this module is not a performance change. The
-//! argument is that going native leaves one parser in the product instead of
-//! two, and puts OSC 7 and OSC 133 semantics — working directory, prompt and
-//! command boundaries, exit status — in Rust where the sidebar can read them,
-//! rather than in a JavaScript addon's private state.
+//! The window is a GTK toplevel. The shell is drawn in it by the UI layer, and
+//! the pane is a `GtkDrawingArea` with an X window of its own, sitting in a
+//! `GtkFixed` inside a `GtkOverlay` above the shell. The shell tells the pane
+//! where to be, in device pixels, and the pane owns every pixel of that
+//! rectangle: a wgpu swapchain on the drawing area's own window, a cell grid
+//! painted by [`vitrum_grid`], and [`vitrum_vt`] as the only thing in the
+//! process that parses an escape sequence.
 //!
-//! # What is not here yet
+//! Nothing is copied between the parser and the screen. The parser writes
+//! cells, the renderer reads cells, and the bytes arriving from the daemon are
+//! handed to the parser as a borrowed slice.
 //!
-//! The pane cannot replace xterm.js until all of the following exist. None of
-//! them is started, and each is named because a half-built pane that silently
-//! lacks one of them is worse than no pane:
+//! # The clock
 //!
-//! - **Input method composition.** [`key`] reads a committed character out of
-//!   a key event. That is wrong for anyone typing through an IME: the widget
-//!   has to own a `GtkIMContext`, show preedit text in the grid, and send only
-//!   what the context commits. Until then Chinese, Japanese and Korean input
-//!   do not work in this pane at all.
-//! - **Selection and clipboard.** There is no pointer handling, so no
-//!   click-drag selection, no word or line selection, no rectangular
-//!   selection, no autoscroll at the edges, and nothing wired to
-//!   `GtkClipboard` for either the CLIPBOARD or the PRIMARY selection. Paste
-//!   also needs bracketed-paste framing, which the pane cannot do without
-//!   knowing the emulator's mode state.
-//! - **Search.** The in-pane find bar, its match highlighting and its
-//!   scroll-to-match all read xterm.js's search addon today. A native pane
-//!   needs the equivalent over the scrollback the emulator holds, and it has
-//!   to agree with the daemon's cross-session search on what a match is.
-//! - **Scrollback paging.** [`PaneSurface`] renders exactly the live grid.
-//!   There is no viewport offset, no wheel or Page Up handling, no scrollbar,
-//!   and no path to the retained history the socket can already backfill.
-//! - **Theme.** The renderer is constructed with `RendererConfig::default()`
-//!   and `Style::DEFAULT`. Nothing reads the palette the rest of the client
-//!   uses, so colours, font family, font size and cell metrics do not follow
-//!   the operator's settings and do not change when those settings change.
-//! - **Wayland.** [`PaneSurface`] is X11 only: it presents to an XID obtained
-//!   from `gdk_x11_window_get_xid`. Under a Wayland GDK backend that call
-//!   returns nothing usable and attaching fails with a diagnostic. A Wayland
-//!   pane needs a subsurface and a `wl_surface` handle instead, which is a
-//!   different attach path with different sizing and scaling rules.
+//! There is one, and it is the compositor's. Bytes arriving mark the pane and
+//! return; frames are drawn from the toolkit's frame clock, which fires when a
+//! frame can actually be shown. See [`pacing`] for why a flush window is worse
+//! in both directions at once.
 //!
-//! Two more gaps are worth naming even though they are smaller: there is no
-//! mouse reporting to the child (SGR 1006 and friends), and nothing here
-//! resizes the pty when the widget resizes — [`PaneSurface::resize`] reports
-//! the new cell count and expects its caller to pass that on.
+//! # What lives where
 //!
-//! [`CellGrid`]: vitrum_grid::CellGrid
+//! Everything that can be decided without a widget is decided without one, and
+//! is tested without a display:
+//!
+//! - [`geometry`] measures the padding box and divides it into whole cells.
+//! - [`scroll`] is the viewport's position in the history.
+//! - [`select`] is what a drag covers and what it copies.
+//! - [`mouse`] encodes a pointer event the way the child asked for it.
+//! - [`paste`] frames a payload.
+//! - [`find`] is incremental search over the grid.
+//! - [`theme`] is the operator's colours, type and metrics.
+//! - [`pacing`] decides which ticks become frames.
+//! - [`keymode`] applies DECCKM to an encoded key.
+//! - [`key`] encodes a keystroke.
+//! - [`session`] holds the emulator, the grid and the overlay.
+//!
+//! What is left is [`host`], which is the widget, and [`surface`], which is the
+//! swapchain. Both are Linux-only and both are small, because everything that
+//! could be moved out of them was.
 
+pub(crate) mod find;
+pub(crate) mod geometry;
 pub(crate) mod key;
-mod surface;
+pub(crate) mod keymode;
+pub(crate) mod mouse;
+pub(crate) mod pacing;
+pub(crate) mod paste;
+pub(crate) mod scroll;
+pub(crate) mod select;
+pub(crate) mod session;
+pub(crate) mod theme;
 
-use std::cell::RefCell;
-use std::rc::Rc;
+#[cfg(target_os = "linux")]
+mod host;
+#[cfg(target_os = "linux")]
+pub(crate) mod surface;
 
-use anyhow::Result;
-use gtk::prelude::*;
+pub(crate) use geometry::PaneRect;
+#[cfg(target_os = "linux")]
+pub(crate) use host::{PaneHost, install, place};
 
-pub(crate) use surface::PaneSurface;
+use crate::state::live::PaneSettings;
+use theme::{CursorShape, Palette, PaneTheme, Present};
+use vitrum_grid::cell::Rgba;
 
-/// Where a pane's keystrokes go.
+/// Where a pane sends what the operator typed.
 ///
-/// A boxed closure rather than a session id, because the pane must not know
-/// what a session is. The app hands it one that sends `ClientMsg::Input` for
-/// the focused session; a test or a lab harness hands it one that writes to a
-/// pty directly, and the widget cannot tell the difference.
-pub(crate) type InputSink = Box<dyn Fn(Vec<u8>)>;
+/// A borrowed slice, because this is called once per keystroke and once per
+/// pointer motion sample while a program is tracking the mouse. The caller
+/// decides whether the bytes need to be owned; most of the time they do not.
+pub(crate) type InputSink = Box<dyn Fn(&[u8])>;
 
-/// A terminal pane widget: a native GPU surface plus a keyboard.
+/// Something the pane observed that only the shell can act on.
 ///
-/// The surface is created on realize rather than in [`TerminalPane::new`],
-/// because there is no X window to present to before then and asking for one
-/// early is how the prototype first failed.
-pub(crate) struct TerminalPane {
-    area: gtk::DrawingArea,
-    surface: Rc<RefCell<Option<PaneSurface>>>,
+/// Three things, and none of them is a keystroke. The pane knows what the
+/// grid is and what the operator did to it; which session is attached, whether
+/// there is more history to ask for, and whether a clipboard write succeeded
+/// are all facts held on the other side of this boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaneReport {
+    /// The grid changed size, so the child's window size has to change with it.
+    Resize {
+        /// Columns.
+        cols: u16,
+        /// Rows.
+        rows: u16,
+    },
+    /// The viewport reached the oldest row the emulator still holds.
+    PageBack,
+    /// A copy was attempted, with the text it carried.
+    Copied {
+        /// Whether the clipboard accepted it.
+        ok: bool,
+        /// What was copied.
+        text: String,
+    },
 }
 
-impl TerminalPane {
-    /// Build the widget and wire its keyboard to `sink`.
+/// Where a pane sends what it observed.
+pub(crate) type ReportSink = Box<dyn Fn(PaneReport)>;
+
+/// Fold the settings bus's snapshot into what the pane paints with.
+///
+/// The bus carries `[u8; 4]` sRGB and percentages, because that is what the
+/// renderer uploads and what the settings sheet edits. This is the one place
+/// those become the pane's own types, so a colour is parsed once per settings
+/// change rather than once per frame.
+pub(crate) fn theme_from(settings: &PaneSettings) -> PaneTheme {
+    let default = PaneTheme::default();
+    let palette = settings.palette.as_ref().map_or(default.palette, |p| {
+        let ansi = core::array::from_fn(|i| rgba(p.ansi[i]));
+        let background = rgba(p.background);
+        Palette {
+            ansi,
+            background,
+            foreground: rgba(p.foreground),
+            cursor: rgba(p.cursor),
+            selection_bg: rgba(p.selection_bg),
+            selection_fg: rgba(p.selection_fg),
+            // No configuration format in use declares a search highlight, so
+            // the pane derives one from the operator's own background rather
+            // than painting a constant that vanishes on half of all themes.
+            match_bg: shift_towards(background, rgba(p.ansi[3]), 0.35),
+            current_match_bg: shift_towards(background, rgba(p.ansi[3]), 0.70),
+        }
+    });
+
+    let families = if settings.font_family.trim().is_empty() {
+        default.families
+    } else {
+        settings
+            .font_family
+            .split(',')
+            .map(|f| f.trim().trim_matches('"').to_owned())
+            .filter(|f| !f.is_empty())
+            .collect()
+    };
+
+    PaneTheme {
+        palette,
+        families,
+        size_pt: f32::from(settings.font_size_px),
+        line_height_pct: settings.line_height_pct,
+        cell_width_pct: settings.cell_width_pct,
+        cursor_shape: match settings.cursor_shape {
+            crate::state::CursorShape::Block => CursorShape::Block,
+            crate::state::CursorShape::Bar => CursorShape::Bar,
+            crate::state::CursorShape::Underline => CursorShape::Underline,
+        },
+        cursor_blink: settings.cursor_blink,
+        blink_interval_ms: settings.blink_interval_ms,
+        scroll_lines_per_notch: u16::from(settings.wheel_lines),
+        word_chars: select::DEFAULT_WORD_CHARS.to_owned(),
+        opacity_pct: settings.opacity_pct,
+        present: match settings.present_mode {
+            crate::state::PresentMode::Vsync => Present::Vsync,
+            crate::state::PresentMode::Adaptive => Present::Newest,
+            crate::state::PresentMode::Immediate => Present::Immediate,
+        },
+    }
+    .clamped()
+}
+
+/// One bus colour as the grid's own.
+const fn rgba(c: [u8; 4]) -> Rgba {
+    Rgba::new(c[0], c[1], c[2], c[3])
+}
+
+/// A colour `t` of the way from `from` to `to`.
+fn shift_towards(from: Rgba, to: Rgba, t: f32) -> Rgba {
+    let mix = |a: u8, b: u8| {
+        let a = f32::from(a);
+        let b = f32::from(b);
+        (a + (b - a) * t).clamp(0.0, 255.0) as u8
+    };
+    Rgba::new(
+        mix(from.r, to.r),
+        mix(from.g, to.g),
+        mix(from.b, to.b),
+        255,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Settings;
+    use crate::state::live::PaneSettings;
+
+    /// WHY: the pane ignored the configured terminal
+    /// colours. The bus carries them and the pane has to actually use them,
+    /// including for the two colours no configuration format declares.
     ///
-    /// Nothing is drawn and no GPU resource is created until the widget is
-    /// realized and [`TerminalPane::surface`] is first taken.
-    pub(crate) fn new(sink: InputSink) -> Self {
-        let area = gtk::DrawingArea::new();
-        area.set_can_focus(true);
-        area.set_app_paintable(true);
-        // GTK's own draw handler must not run: the pixels under this widget
-        // belong to the swapchain, and a themed background painted on expose
-        // would race it.
-        area.connect_draw(|_, _| glib::Propagation::Stop);
-        area.add_events(
-            gdk::EventMask::BUTTON_PRESS_MASK
-                | gdk::EventMask::KEY_PRESS_MASK
-                | gdk::EventMask::STRUCTURE_MASK,
+    /// The invariant: with a palette in force, every colour the pane paints
+    /// comes from that palette, and the two derived colours are legible
+    /// against the operator's own background rather than a constant.
+    #[test]
+    fn a_palette_on_the_bus_is_the_palette_the_pane_paints() {
+        let settings = Settings::default();
+        let bus = PaneSettings::derive(&settings);
+        let Some(p) = bus.palette else {
+            // A fresh profile names no scheme, and the pane's own defaults are
+            // what it paints. That is the documented answer, not a gap.
+            let theme = theme_from(&bus);
+            assert_eq!(theme.palette, PaneTheme::default().palette);
+            return;
+        };
+
+        let theme = theme_from(&bus);
+        assert_eq!(theme.palette.background, rgba(p.background));
+        assert_eq!(theme.palette.foreground, rgba(p.foreground));
+        assert_eq!(theme.palette.cursor, rgba(p.cursor));
+        for i in 0..16 {
+            assert_eq!(theme.palette.ansi[i], rgba(p.ansi[i]), "ansi {i}");
+        }
+        assert_ne!(
+            theme.palette.match_bg, theme.palette.current_match_bg,
+            "stepping through matches would show no movement"
+        );
+    }
+
+    /// WHY: a font field is a comma-separated stack in every configuration
+    /// format an operator will paste from, and a stack handed over as one
+    /// string names a family nobody has installed.
+    #[test]
+    fn a_font_stack_is_split_into_the_families_it_names() {
+        let mut settings = Settings::default();
+        settings.terminal.font_family = "\"Iosevka Term\", JetBrains Mono , monospace".to_owned();
+        let theme = theme_from(&PaneSettings::derive(&settings));
+        assert_eq!(
+            theme.families,
+            vec![
+                "Iosevka Term".to_owned(),
+                "JetBrains Mono".to_owned(),
+                "monospace".to_owned()
+            ]
         );
 
-        // Click to focus. Without this the pane never takes the keyboard from
-        // the webview, because a `GtkDrawingArea` has no focus behaviour of
-        // its own.
-        area.connect_button_press_event(|area, _| {
-            area.grab_focus();
-            glib::Propagation::Stop
-        });
-
-        // The handler is on the widget, not the toplevel. A pane that hooked
-        // the window would eat keystrokes aimed at the sidebar's filter field
-        // whenever focus was anywhere else.
-        area.connect_key_press_event(move |_, ev| match surface::encode_event(ev) {
-            Some(bytes) => {
-                sink(bytes);
-                glib::Propagation::Stop
-            }
-            // Not a keystroke the terminal sends: let the shell's own keymap
-            // have it.
-            None => glib::Propagation::Proceed,
-        });
-
-        let surface: Rc<RefCell<Option<PaneSurface>>> = Rc::new(RefCell::new(None));
-        {
-            // Following the widget's size is the pane's job, not its host's:
-            // the swapchain must be reconfigured before the next frame or the
-            // driver reports the surface as outdated on every acquire.
-            let surface = Rc::clone(&surface);
-            area.connect_size_allocate(move |_, alloc| {
-                let mut slot = surface.borrow_mut();
-                let Some(pane) = slot.as_mut() else {
-                    return;
-                };
-                if let Some((cols, rows)) =
-                    pane.resize(alloc.width().max(1) as u32, alloc.height().max(1) as u32)
-                {
-                    tracing::debug!("pane resized to {cols}x{rows} cells");
-                }
-            });
-        }
-
-        Self { area, surface }
+        // An empty field is the platform default, not an empty stack the font
+        // loader would fail on.
+        settings.terminal.font_family = "   ".to_owned();
+        let theme = theme_from(&PaneSettings::derive(&settings));
+        assert_eq!(theme.families, PaneTheme::default().families);
     }
 
-    /// The widget to pack into a container.
-    pub(crate) fn widget(&self) -> &gtk::DrawingArea {
-        &self.area
-    }
+    /// WHY: every value on the pane's half of the settings bus has to reach
+    /// the pane, and the way one gets forgotten is by being added to the bus
+    /// and never read here. Derived from the bus type's own fields at run
+    /// time is not possible in Rust without reflection, so the guard is
+    /// stated the other way round: change any pane field in settings and the
+    /// theme this produces must differ.
+    #[test]
+    fn every_pane_setting_changes_what_the_pane_paints() {
+        let base = theme_from(&PaneSettings::derive(&Settings::default()));
 
-    /// Create the GPU surface, once the widget is realized.
-    ///
-    /// Idempotent: a second call with a surface already attached is a no-op,
-    /// so a host that calls this from both `realize` and its first frame gets
-    /// one swapchain.
-    pub(crate) fn attach(&self) -> Result<()> {
-        if self.surface.borrow().is_some() {
-            return Ok(());
-        }
-        let pane = PaneSurface::attach(&self.area)?;
-        *self.surface.borrow_mut() = Some(pane);
-        Ok(())
-    }
+        let mut s = Settings::default();
+        s.terminal.font_size_px = 22;
+        assert_ne!(theme_from(&PaneSettings::derive(&s)).size_pt, base.size_pt);
 
-    /// Run `f` against the attached surface, if there is one.
-    ///
-    /// The surface is behind a `RefCell` because GTK callbacks and the host
-    /// both reach it, and this is the only way in: handing out the
-    /// [`PaneSurface`] would let a caller hold it across a callback that also
-    /// wants it.
-    pub(crate) fn with_surface<T>(&self, f: impl FnOnce(&mut PaneSurface) -> T) -> Option<T> {
-        self.surface.borrow_mut().as_mut().map(f)
+        let mut s = Settings::default();
+        s.terminal.line_height_pct = 140;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).line_height_pct,
+            base.line_height_pct
+        );
+
+        let mut s = Settings::default();
+        s.terminal.cell_width_pct = 120;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).cell_width_pct,
+            base.cell_width_pct
+        );
+
+        let mut s = Settings::default();
+        s.terminal.cursor_shape = crate::state::CursorShape::Bar;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).cursor_shape,
+            base.cursor_shape
+        );
+
+        let mut s = Settings::default();
+        s.terminal.cursor_blink = !base.cursor_blink;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).cursor_blink,
+            base.cursor_blink
+        );
+
+        let mut s = Settings::default();
+        s.terminal.blink_interval_ms = base.blink_interval_ms + 100;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).blink_interval_ms,
+            base.blink_interval_ms
+        );
+
+        let mut s = Settings::default();
+        s.terminal.wheel_lines = 7;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).scroll_lines_per_notch,
+            base.scroll_lines_per_notch
+        );
+
+        let mut s = Settings::default();
+        s.appearance.terminal_opacity_pct = 80;
+        assert_ne!(
+            theme_from(&PaneSettings::derive(&s)).opacity_pct,
+            base.opacity_pct
+        );
+
+        let mut s = Settings::default();
+        s.terminal.present_mode = crate::state::PresentMode::Immediate;
+        assert_ne!(theme_from(&PaneSettings::derive(&s)).present, base.present);
     }
 }

@@ -321,6 +321,71 @@ impl Default for Cell {
     }
 }
 
+/// The shapes DECSCUSR can select, and the shapes this renderer draws.
+///
+/// The renderer owns this rather than the VT layer because it is a statement
+/// about what the fragment shader can produce. A VT front end that learns a
+/// shape the shader has no case for would otherwise be able to name it, and a
+/// named shape nothing draws is a cursor that disappears.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum CursorShape {
+    /// A filled rectangle over the cell, with the glyph knocked out of it.
+    #[default]
+    Block = 1,
+    /// A one-pixel outline of the cell, leaving the glyph as it was.
+    HollowBlock = 2,
+    /// A vertical rule down the cell's left edge.
+    Bar = 3,
+    /// A rule along the bottom of the cell.
+    Underline = 4,
+}
+
+impl CursorShape {
+    /// The value the renderer packs into a cell instance's flag word.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        self as u32
+    }
+}
+
+/// Where the cursor is and how to draw it.
+///
+/// The cursor is not a cell. A terminal moves it far more often than it
+/// changes text, and storing it in the grid would mean rewriting the cell
+/// underneath it on every move and restoring the cell it left. It is carried
+/// beside the grid, damages exactly the two cells a move touches, and is
+/// composited by the shader over whatever those cells hold.
+///
+/// Nothing here blinks. A blinking cursor is a repeating timer, and a
+/// repeating timer is a wakeup for as long as the window is open; this
+/// product's idle cost is zero and a caret is not worth giving that up. A
+/// program that asks for a blinking shape gets the steady one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Cursor {
+    /// Column within the grid.
+    pub col: u16,
+    /// Row within the grid.
+    pub row: u16,
+    /// How to draw it.
+    pub shape: CursorShape,
+    /// The colour the shape is drawn in.
+    pub color: Rgba,
+}
+
+impl Cursor {
+    /// A block cursor at the origin in `color`.
+    #[must_use]
+    pub const fn block(col: u16, row: u16, color: Rgba) -> Self {
+        Self {
+            col,
+            row,
+            shape: CursorShape::Block,
+            color,
+        }
+    }
+}
+
 /// How many grid columns a character claims.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CharWidth {

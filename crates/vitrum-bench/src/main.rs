@@ -12,17 +12,23 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use vitrum_bench::report::Report;
-use vitrum_bench::{fuzz, load, pipeline, probe, profile, race, world};
+#[cfg(feature = "daemon")]
+use vitrum_bench::pipeline;
+use vitrum_bench::{fuzz, latency, load, probe, profile, race, world};
 
 /// Allocations on the output path are part of what `pipeline` reports, and an
 /// allocator cannot be swapped in per workload. Counting is two relaxed adds
 /// per allocation, which is noise next to a syscall and is paid by a harness
 /// binary rather than by the daemon.
+///
+/// Only with the daemon workloads compiled in. `latency` times a GPU fence and
+/// would rather not pay two atomics on every allocation a driver makes.
+#[cfg(feature = "daemon")]
 #[global_allocator]
 static ALLOCATOR: pipeline::Counting = pipeline::Counting;
 
 const USAGE: &str = "\
-vitrum-bench: load, concurrency, fuzz, pipeline and profiling harness for the vitrum daemon
+vitrum-bench: load, concurrency, fuzz, pipeline, latency and profiling harness for vitrum
 
 Usage:
   vitrum-bench load    [--server URL] [--sessions N] [--lines N] [--drain SECS]
@@ -30,6 +36,8 @@ Usage:
   vitrum-bench fuzz    [--server URL] [--cases N] [--seed N]
   vitrum-bench pipeline [--megabytes N] [--fanout-megabytes N] [--sessions LIST]
                        [--samples N] [--scrollback-bytes N]
+  vitrum-bench latency [--samples N] [--spawns N] [--panes N] [--sessions N]
+                       [--gate] [--software]
   vitrum-bench probe   [--cases N] [--seed N] [--threads N]
   vitrum-bench world   [--server URL] [--windows N] [--sessions N] [--widest N]
                        [--burst-lines N] [--ssh-host HOST] [--settle SECS]
@@ -47,6 +55,12 @@ Common:
 `pipeline` runs in this process against a real pty and a real SessionManager,
 so it takes no --server. It re-executes this binary as `emit`, which is the
 child under measurement and is not run by hand.
+
+`latency` measures the pane rather than the daemon: the interval between a
+cause and the pixels that answer it, ending on the GPU's fence. It needs a GPU
+and no display, takes no --server, and re-executes this binary as
+`latency-child`. With --gate it exits non-zero when a signal crosses the bound
+recorded for it in `vitrum_bench::latency::bound`.
 
 Every run writes report.json and report.md into <out>/<workload>-<timestamp>/.
 Exit status is 1 when the run found a failure, so it can gate CI.
@@ -78,9 +92,10 @@ fn run() -> anyhow::Result<bool> {
         print!("{USAGE}");
         return Ok(true);
     }
-    // Before anything that could print: this process IS the terminal output
-    // under measurement, and a line of harness prose on that stream would be
-    // measured as if the child had written it.
+    // Before anything that could print: these processes ARE the output under
+    // measurement, and a line of harness prose on the stream would be measured
+    // as if the child had written it.
+    #[cfg(feature = "daemon")]
     if cmd == "emit" {
         let flags = Flags::parse(args)?;
         match (flags.u64_or("--bytes", 0)?, flags.u64_or("--idle", 0)?) {
@@ -88,6 +103,11 @@ fn run() -> anyhow::Result<bool> {
             (0, secs) => pipeline::idle(secs),
             (bytes, _) => pipeline::emit(bytes as usize)?,
         }
+        return Ok(true);
+    }
+    if cmd == "latency-child" {
+        let flags = Flags::parse(args)?;
+        latency::child(flags.usize_or("--panes", 8)?, flags.flag("--software"))?;
         return Ok(true);
     }
     let flags = Flags::parse(args)?;
@@ -146,6 +166,7 @@ fn run() -> anyhow::Result<bool> {
             };
             runtime.block_on(profiled(profile_pid, interval, sampler_limit, fuzz::run(&spec)))?
         }
+        #[cfg(feature = "daemon")]
         "pipeline" => {
             let spec = pipeline::PipelineSpec {
                 megabytes: flags.usize_or("--megabytes", 100)?,
@@ -160,6 +181,22 @@ fn run() -> anyhow::Result<bool> {
                 sampler_limit,
                 pipeline::run(&spec),
             ))?
+        }
+        "latency" => {
+            let spec = latency::LatencySpec {
+                samples: flags.usize_or("--samples", 2000)?,
+                spawns: flags.usize_or("--spawns", 5)?,
+                panes: flags.usize_or("--panes", 8)?,
+                sessions: flags.usize_or("--sessions", 200)?,
+                cpu_windows: flags.usize_or("--cpu-windows", 8)?,
+                gate: flags.flag("--gate"),
+                software: flags.flag("--software"),
+            };
+            let report = latency::run(&spec)?;
+            // The table before the report body: the point of the run is the
+            // seven numbers, and a reader should not have to find them in JSON.
+            println!("{}", latency::table(&report));
+            report
         }
         "probe" => {
             let spec = probe::ProbeSpec {
@@ -258,6 +295,7 @@ async fn profiled(
 /// A list rather than a single number because the interesting result is the
 /// shape of the curve: one session says what the path costs, and thirty two
 /// says whether it costs the same each when they are all running at once.
+#[cfg(feature = "daemon")]
 fn session_counts(flags: &Flags) -> anyhow::Result<Vec<usize>> {
     let Some(raw) = flags.string("--sessions") else {
         return Ok(vec![1, 8, 32]);
@@ -282,7 +320,12 @@ fn session_counts(flags: &Flags) -> anyhow::Result<Vec<usize>> {
     Ok(counts)
 }
 
-/// `--name value` pairs, collected once so lookups do not depend on order.
+/// `--name value` pairs and bare `--switch` flags, collected once so lookups do
+/// not depend on order.
+///
+/// A flag whose next token is another flag, or which ends the arguments, is a
+/// switch and records `"true"`. Nothing here takes a value beginning with two
+/// dashes, so the two forms cannot be confused.
 struct Flags(Vec<(String, String)>);
 
 impl Flags {
@@ -293,8 +336,11 @@ impl Flags {
             if !k.starts_with("--") {
                 bail!("expected a --flag, got `{k}`");
             }
-            let Some(v) = it.next() else {
-                bail!("`{k}` needs a value");
+            let switch = it.peek().is_none_or(|v| v.starts_with("--"));
+            let v = if switch {
+                "true".to_string()
+            } else {
+                it.next().unwrap_or_default()
             };
             out.push((k, v));
         }
@@ -306,6 +352,15 @@ impl Flags {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.clone())
+    }
+
+    /// Whether a switch was given. Absent is false; present with any value
+    /// other than `false` is true, so `--gate` and `--gate true` agree.
+    fn flag(&self, key: &str) -> bool {
+        match self.string(key) {
+            None => false,
+            Some(v) => v != "false",
+        }
     }
 
     fn path(&self, key: &str) -> anyhow::Result<Option<PathBuf>> {

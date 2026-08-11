@@ -482,6 +482,7 @@ mod tests {
             cols: 80,
             rows: 24,
             git_branch: None,
+            worktree: None,
             unread: false,
             attention: Attention::default(),
             hint: None,

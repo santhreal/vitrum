@@ -3,13 +3,14 @@
 //! [`CHORDS`] is the only place a shortcut is defined. Three things read it and
 //! nothing else may hard-code a chord:
 //!
-//! 1. [`keymap_json`] serialises it into the document head, and `bootstrap.js`
-//!    matches keydown events against that table. The JavaScript owns no chord
-//!    of its own, so a binding cannot exist in the webview but not in the help.
+//! 1. [`claims`] answers whether the shell already owns a combination, so a
+//!    feature that wants a chord of its own cannot quietly take one that is
+//!    already bound.
 //! 2. [`help_rows`] renders the shortcut overlay from the same table, so every
 //!    chord that can fire is listed somewhere a user can find it.
-//! 3. [`KeyAction::parse`] turns the wire string the bridge sends back into the
-//!    action Rust performs.
+//! 3. [`KeyAction::parse`] turns a stored action string back into the action
+//!    Rust performs, which is how an override or a custom binding names a
+//!    built-in.
 //!
 //! The reason for the single table is the acceptance criterion "no shortcut may
 //! be undiscoverable". That is not something a comment can guarantee; it is
@@ -85,7 +86,7 @@ pub enum KeyAction {
 }
 
 impl KeyAction {
-    /// The string the bridge sends for this action.
+    /// The stable string this action is stored and matched as.
     pub fn wire(self) -> String {
         match self {
             KeyAction::NextTab => "next".to_string(),
@@ -113,11 +114,12 @@ impl KeyAction {
         }
     }
 
-    /// Parse the wire string the bridge sends.
+    /// Parse a stored action string.
     ///
-    /// Unknown strings return `None` rather than a default action: a chord the
-    /// Rust side does not recognise must fall through to nothing, never to
-    /// "switch tabs", or a future bridge change starts silently stealing keys.
+    /// Unknown strings return `None` rather than a default action: an action
+    /// name this build does not recognise must fall through to nothing, never
+    /// to "switch tabs", or a settings file from a later build starts silently
+    /// stealing keys.
     pub fn parse(s: &str) -> Option<KeyAction> {
         match s {
             "next" => Some(KeyAction::NextTab),
@@ -183,8 +185,9 @@ pub enum Scope {
     Global,
     /// Skipped while the terminal grid has focus, so the agent receives it.
     NotTerminal,
-    /// Skipped while any text entry has focus. xterm.js reads keys through a
-    /// hidden `textarea`, so this also excludes the terminal.
+    /// Skipped while any text entry has focus. The terminal pane receives key
+    /// events directly and passes every printable one to the agent, so it is a
+    /// text entry as well and this excludes it too.
     NotTextInput,
     /// Only fires while a transient layer (overlay, menu, dialog) is open.
     /// Escape belongs to the agent the rest of the time.
@@ -224,6 +227,50 @@ pub const GROUPS: [Group; 4] = [
     Group::Window,
 ];
 
+/// The overlay section for chords the PANE consumes.
+///
+/// Separate from [`GROUPS`] because these are not shell bindings and must
+/// never become any. [`CHORDS`] is what key dispatch matches, and an entry
+/// there is claimed before the focused surface sees the key; a copy chord in
+/// that table would fire a shell action AND be copied, or worse, be claimed
+/// and never reach the pane at all. So the pane's chords are documented here
+/// and bound in the pane, and the two tables are checked against each other
+/// rather than merged.
+pub const PANE_SECTION_TITLE: &str = "Terminal";
+
+/// One chord the pane handles itself.
+///
+/// No `KeyAction`, deliberately. There is nothing for the shell to do with
+/// one of these, and giving it an action is the mistake this type exists to
+/// make impossible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneChord {
+    /// As the overlay prints it, in the same shape [`Chord::rendered`] emits.
+    pub keys: &'static str,
+    pub what: &'static str,
+}
+
+/// Every chord the pane consumes while it has focus.
+///
+/// These reach the pane because [`CHORDS`] does not contain them: dispatch
+/// finds no claim and passes the key on. That is the whole mechanism, and it
+/// is why the guard beside the overlay asserts the absence rather than
+/// trusting it.
+pub const PANE_CHORDS: &[PaneChord] = &[
+    PaneChord {
+        keys: "Ctrl+Shift+C",
+        what: "Copy the selection",
+    },
+    PaneChord {
+        keys: "Ctrl+Shift+V",
+        what: "Paste",
+    },
+    PaneChord {
+        keys: "Ctrl+Shift+G",
+        what: "Find in this session; Enter and Shift+Enter step, Escape closes",
+    },
+];
+
 /// The overlay row a chord contributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Help {
@@ -238,7 +285,7 @@ pub struct Help {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chord {
     pub action: KeyAction,
-    /// The DOM `KeyboardEvent.key` value, lowercased for single characters.
+    /// The key name, lowercased for single characters.
     pub key: &'static str,
     pub ctrl: bool,
     pub alt: bool,
@@ -287,10 +334,9 @@ impl Chord {
 /// The shell's own binding for this combination, if it would fire inside a
 /// dialog text field.
 ///
-/// `bootstrap.js` listens on `window` in the capture phase and calls
-/// `stopPropagation` on a match, so anything in [`CHORDS`] is taken before a
-/// Dioxus keydown handler runs. A feature that wants to bind its own chord
-/// inside a dialog has to ask this first or it ships a key that never fires.
+/// A chord in [`CHORDS`] is matched before the focused surface sees the key, so
+/// a feature that wants to bind its own chord inside a dialog has to ask this
+/// first or it ships a key that never fires.
 ///
 /// Only the scopes that survive a focused text field count as a conflict.
 /// [`Scope::NotTextInput`] and [`Scope::SessionList`] are both false the
@@ -318,19 +364,18 @@ pub fn claims(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Chord> {
 
 /// The chord one keydown means, with the top digit row unshifted.
 ///
-/// `KeyboardEvent.key` for Ctrl+Shift+1 on a US layout is `!`, not `1`, so a
+/// The key name for Ctrl+Shift+1 on a US layout is `!`, not `1`, so a
 /// chord stored as `1` never matches the keystroke it is named after: a
 /// shortcut a settings panel displays, the overlay explains, and the product
-/// never fires. `code` is the physical key and is unaffected by Shift or by the
+/// never fires. The physical key code is unaffected by Shift or by the
 /// layout, so a top-row digit is taken from there. Everything else comes from
-/// `key`, because `code` for a letter is `KeyK` rather than `k` and because a
-/// chord bound to a letter is already layout-dependent in the operator's head.
+/// the key name, because the code for a letter is `KeyK` rather than `k` and
+/// because a chord bound to a letter is already layout-dependent in the
+/// operator's head.
 ///
-/// The rule also lives in `bootstrap.js`, which matches the shared table on
-/// every keydown in the window. This is the Rust half, and every Rust surface
-/// that reads a chord off a keydown has to come through here: for a while the
-/// launcher had the rule and nothing else did, which is why a preset chord
-/// worked inside the dialog and did nothing anywhere else.
+/// Every Rust surface that reads a chord off a key event has to come through
+/// here: for a while the launcher had the rule and nothing else did, which is
+/// why a preset chord worked inside the dialog and did nothing anywhere else.
 #[must_use]
 pub fn chord_from_event(
     key: &str,
@@ -350,7 +395,7 @@ pub fn chord_from_event(
     }
 }
 
-/// Display form of a DOM key name.
+/// Display form of a key name.
 fn key_label(key: &str) -> &str {
     match key {
         "arrowdown" => "Down",
@@ -1094,7 +1139,7 @@ pub enum Step {
     /// Perform one built-in action, named by [`KeyAction::wire`].
     ///
     /// The wire string and not a serialised `KeyAction`, because that string is
-    /// already the vocabulary the bridge and the rebinding overrides use, and a
+    /// already the vocabulary the rebinding overrides use, and a
     /// second spelling of the same twenty-four actions is a second thing to
     /// keep in agreement. It is also why a future action degrades for free: an
     /// unrecognised name is dropped by [`CustomBinding::plan`].
@@ -1454,42 +1499,6 @@ impl CustomBindings {
         })
     }
 
-    /// The bridge table rows these bindings need, in match order.
-    ///
-    /// The webview only reports chords that are in the table, so a custom
-    /// binding on a chord no built-in owns needs a row of its own or the
-    /// keystroke never leaves JavaScript. The action is
-    /// `crate::CUSTOM_ACTION_PREFIX` followed by the canonical chord text, which
-    /// `crate::dispatch_key` resolves back to the binding.
-    ///
-    /// Scope is `global`, deliberately. A binding whose reason to exist is
-    /// sending `\x03` to an agent has to fire while the terminal has focus, and
-    /// every other scope excludes exactly that. The operator picked the chord.
-    ///
-    /// A binding whose chord text is not a chord contributes no row, so a typo
-    /// cannot put a rule the matcher will misread in front of the built-ins.
-    #[must_use]
-    pub fn bridge_rows(&self) -> Vec<serde_json::Value> {
-        self.list
-            .iter()
-            .filter_map(|binding| {
-                let chord = binding.parsed_chord()?;
-                Some(serde_json::json!({
-                    "key": chord.key,
-                    "ctrl": chord.ctrl,
-                    "alt": chord.alt,
-                    "shift": if chord.shift { "on" } else { "off" },
-                    "scope": "global",
-                    "action": format!(
-                        "{}{}",
-                        crate::CUSTOM_ACTION_PREFIX,
-                        crate::launch::format_chord(&chord)
-                    ),
-                }))
-            })
-            .collect()
-    }
-
     /// Every binding this build cannot perform, by position.
     ///
     /// Per binding and not one verdict for the set: a bad escape in row three
@@ -1503,29 +1512,6 @@ impl CustomBindings {
             .filter_map(|(at, binding)| binding.validate().err().map(|why| (at, why)))
             .collect()
     }
-}
-
-/// Put the operator's own bindings in front of a bridge chord table.
-///
-/// `table` is the JSON array a settings surface produced from the built-in
-/// chords. The custom rows go FIRST because `bootstrap.js` takes the first
-/// match, which is what makes a custom binding shadow the built-in that shares
-/// its chord on the JavaScript side too. Rust enforces the same precedence in
-/// `crate::dispatch_key`; the two agree so a chord behaves the same whichever
-/// matcher sees it.
-///
-/// A table that is not an array comes back unchanged rather than being replaced.
-/// Losing every built-in chord because one custom row could not be added would
-/// take the whole keyboard out, which is far worse than the feature not working.
-#[must_use]
-pub fn with_custom_first(table: &str, bindings: &CustomBindings) -> String {
-    let Ok(serde_json::Value::Array(built_in)) = serde_json::from_str(table) else {
-        tracing::warn!("bridge chord table is not an array; custom bindings not added");
-        return table.to_string();
-    };
-    let mut rows = bindings.bridge_rows();
-    rows.extend(built_in);
-    serde_json::to_string(&rows).expect("chord table is plain data")
 }
 
 impl serde::Serialize for CustomBindings {
@@ -1568,16 +1554,16 @@ mod tests;
 
 /// The chord a keydown means, for chords bound to a DIGIT.
 ///
-/// `KeyboardEvent.key` for Ctrl+Shift+1 on a US layout is `!`, not `1`. A
+/// The key name for Ctrl+Shift+1 on a US layout is `!`, not `1`. A
 /// binding stored as `1` therefore never matches the keystroke it is named
 /// after: a shortcut the settings panel displays, the overlay explains, and the
 /// product never fires. Digits are the most natural thing to bind a saved
 /// command to, so this took out precisely the bindings an operator makes first.
 ///
-/// The rule lives in two places because two matchers exist: `bootstrap.js`
-/// matches the shared table on every keydown in the window, and
-/// `ui/dialog.rs::chord_of` matches the launcher's own. For a while only the
-/// launcher had it, which is why a preset chord worked inside the dialog and
-/// did nothing anywhere else. These tests pin the rule so the two cannot drift.
+/// The rule lives in two places because two matchers exist: [`chord_from_event`]
+/// normalises every key event the shell dispatches, and `ui/dialog.rs::chord_of`
+/// matches the launcher's own. For a while only the launcher had it, which is
+/// why a preset chord worked inside the dialog and did nothing anywhere else.
+/// These tests pin the rule so the two cannot drift.
 #[cfg(test)]
 mod digit_chords;

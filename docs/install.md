@@ -102,6 +102,18 @@ Published Linux builds link glibc. A musl host, such as Alpine or Void, is
 told so and pointed at a source build, rather than being handed an archive
 whose loader it does not have.
 
+## The display server
+
+The terminal pane is a GPU surface created on the pane widget's own X window,
+so on Linux vitrum runs under X11. Under a Wayland compositor, run it through
+Xwayland. There is no Wayland path yet.
+
+The surface is created through wgpu, which uses Vulkan on Linux, Metal on
+macOS and Direct3D 12 on Windows. A machine with no GPU driver falls back to
+that platform's software adapter. The installer does not install a driver: a
+machine that cannot create a surface reports which backend it tried rather
+than opening a window with no pane in it.
+
 ## macOS
 
 The archive is fetched with curl and unpacked with tar, and neither marks

@@ -1,28 +1,47 @@
-//! The mark, drawn on the window itself, before there is a document to draw it.
+//! The mark, drawn on the window itself, for a start slow enough to need it.
 //!
-//! # Why this is not the loading screen in the head
+//! # Why the window draws it and not the document
 //!
-//! There is one in the document too, and it is unreachable in the case that
-//! matters. It cannot paint before the webview does, the webview paints late
-//! in a launch, and by then the application's own first frame is a few tens of
-//! milliseconds away. Filmed on a bare X server, the interval it could ever
-//! occupy was 143 ms wide and its timer waits 400. The interval a person
-//! actually sees is the one BEFORE the webview exists, and nothing inside the
-//! webview can reach it by construction.
+//! The interval a person actually sees is the one BEFORE the shell exists,
+//! and nothing inside the shell can reach it by construction: it cannot paint
+//! until the view it lives in paints, and by then the application's own first
+//! frame is a few tens of milliseconds away.
 //!
 //! So the mark is painted by the window, on the surface the window already
-//! puts up while the webview is still being built. That surface is drawn
-//! within about 100 ms of exec; the document arrives around 900. This is what
-//! stands there in between.
+//! puts up while the rest of it is still being built. That surface is drawn
+//! within a few tens of milliseconds of exec.
+//!
+//! # Why most starts show nothing at all
+//!
+//! A splash on a fast start is a flicker, and a flicker reads as a fault. The
+//! handler therefore paints nothing until the process has been alive for
+//! [`crate::state::StartupPrefs::splash_after_ms`]: a start that reaches its
+//! first real frame before that shows the window's own background and then
+//! the application, with no third thing in between. A start that does not
+//! reach it shows the mark, centred, on the same background the application
+//! is about to paint over, so there is no colour change and no layout shift
+//! when content arrives.
+//!
+//! Both the delay and whether the mark appears at all are the operator's, in
+//! Settings. Neither can be applied to a boot surface already on screen, so a
+//! change takes effect at the next start; the row says so.
 //!
 //! # Why it draws rather than being a widget
 //!
 //! A widget in the window's box would take a share of the box and shrink the
-//! webview, and taking it away again once content arrived would mean watching
-//! the webview for a load signal from the wrong side of the abstraction. A
-//! draw handler owns no layout and needs no teardown: the webview covers it as
-//! soon as it has something to show, and the handler goes quiet because
-//! nothing asks the window to redraw its own background any more.
+//! content, and taking it away again once content arrived would mean watching
+//! for a load signal from the wrong side of the abstraction. A draw handler
+//! owns no layout and needs no teardown: the content covers it as soon as it
+//! has something to show, and the handler goes quiet because nothing asks the
+//! window to redraw its own background any more.
+
+/// Whether the mark should be on screen `elapsed_ms` into a start.
+///
+/// Pure, and the whole of the decision, so the threshold is checkable without
+/// a display server, a window or a clock.
+pub(crate) fn should_paint(elapsed_ms: u128, prefs: crate::state::StartupPrefs) -> bool {
+    prefs.show_splash && elapsed_ms >= u128::from(prefs.splash_after_ms)
+}
 
 /// Draw the mark on this window's own surface until something covers it.
 ///
@@ -39,22 +58,32 @@ pub(crate) fn install(window: &vitrum_dioxus_desktop::tao::window::Window) {
     use gtk::glib::value::ToValue;
     use vitrum_dioxus_desktop::tao::platform::unix::WindowExtUnix;
 
+    // The snapshot the whole start is built from, read once here rather than
+    // per draw: this handler runs on every expose for as long as the mark is
+    // up, and a settings lookup per frame on the path being measured is the
+    // kind of cost this module exists to avoid.
+    let prefs = crate::state::startup_prefs().0.settings.startup;
+
     window
         .gtk_window()
         .connect_local("draw", true, move |values| {
             let widget: gtk::Widget = values.first()?.get().ok()?;
             let cr: gtk::cairo::Context = values.get(1)?.get().ok()?;
-            if !retired(&widget) {
+            // Elapsed time first, because it is two atomics and the retirement
+            // check walks the widget tree. On a fast start this is the only
+            // work the handler ever does.
+            let elapsed = crate::boot::since_start().map_or(0, |d| d.as_millis());
+            if should_paint(elapsed, prefs) && !retired(&widget) {
                 paint(&widget, &cr);
             }
             // `false` is "the drawing is not finished with", which lets every
             // child of the window draw as usual. Returning `true` here would
-            // stop the webview being painted at all.
+            // stop the content being painted at all.
             Some(false.to_value())
         });
 }
 
-/// Whether the webview has taken the surface, so the mark is finished.
+/// Whether the shell has taken the surface, so the mark is finished.
 ///
 /// This handler runs AFTER the window's default one, which is the only way it
 /// can be seen at all: the default handler is where the CSS background and
@@ -63,12 +92,10 @@ pub(crate) fn install(window: &vitrum_dioxus_desktop::tao::window::Window) {
 /// mark down on its own, and a splash that never retires is not a splash, it
 /// is a diamond stamped over the running application.
 ///
-/// The condition is the webview being mapped rather than a timer or a message
-/// from the document. A mapped `WebKitWebView` is drawing, whatever it has
-/// managed to draw so far, and it is the same widget that will hold the first
-/// frame; a timer would be a guess about a machine we are not on, and a
-/// message from the document arrives on a path that only exists once the
-/// document does.
+/// The condition is the shell's own view being mapped rather than a timer. A
+/// mapped view is drawing, whatever it has managed to draw so far, and it is
+/// the same widget that will hold the first frame. A timer would be a guess
+/// about a machine we are not on.
 #[cfg(target_os = "linux")]
 fn retired(window: &gtk::Widget) -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,11 +111,12 @@ fn retired(window: &gtk::Widget) -> bool {
     true
 }
 
-/// Depth-first search for a mapped WebKit view under this widget.
+/// Depth-first search for the shell's mapped view under this widget.
 ///
 /// By type name, because the widget arrives through GTK rather than through
-/// wry and this crate never names WebKit's Rust types. The tree is a window, a
-/// box and its handful of children, so the walk is over before it starts.
+/// the shell toolkit and this crate never names that toolkit's Rust types.
+/// The tree is a window, a box and its handful of children, so the walk is
+/// over before it starts.
 #[cfg(target_os = "linux")]
 fn holds_a_mapped_webview(widget: &gtk::Widget) -> bool {
     use gtk::glib::object::{Cast, ObjectExt};
@@ -120,8 +148,9 @@ fn paint(widget: &gtk::Widget, cr: &gtk::cairo::Context) {
 
 /// How large the mark is drawn, in device pixels.
 ///
-/// The same 96 the document's own loading screen uses, so the two never
-/// disagree about how big the mark is on a launch slow enough to show both.
+/// Large enough to read as a deliberate mark at any window size this
+/// application opens at, small enough that a start which shows it briefly
+/// does not look like a full-screen takeover.
 #[cfg(target_os = "linux")]
 const MARK_PX: u32 = 96;
 

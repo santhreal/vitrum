@@ -5,8 +5,79 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+### Changed
+
+- **The terminal pane is native, and the product ships no JavaScript.** Every
+  pane was drawn by a vendored emulator written in JavaScript, running inside
+  the WebKit view. A pane is now a GTK drawing area with its own X window, a
+  wgpu swapchain on that window, and `vitrum-grid` painting the cell grid into
+  it, inside the same toplevel as the shell and with no offscreen copy between
+  them. `vitrum-vt` drives libghostty, which is the only escape-sequence parser
+  left: the product had two, and the second one held the working directory, the
+  prompt boundary and the palette inside a renderer addon where nothing else in
+  the process could read them. The emulator, its WebGL renderer, the bridge
+  script and the serialised tables handed across to them are deleted.
+  `app/src/tests/no_javascript.rs` enumerates the tracked tree and fails on a
+  script file or a script element, so the deletion is a decision rather than a
+  commit. The shell is still Dioxus over the system webview.
+- **The window is drawn like an application and not like a page.** Every
+  surface is on one baseline grid and one spacing scale, sized against the
+  system text size rather than against a fixed pixel count. Rows, headers,
+  dialogs and the status bar align on the same optical centre, sheets are
+  centred on the window instead of on their own content box, and the motion
+  that remains has a reason to be there. `docs/appearance.md` states the rules.
+
+### Added
+
+- **Worktrees are a first-class thing the sidebar knows about.** A checkout and
+  every worktree beside it are one project. Each row says which worktree it is
+  in and which branch that worktree is on, two agents in two worktrees of one
+  repository no longer read as two unrelated projects, and a row in the main
+  checkout is distinguished from a row in a worktree rather than both drawing a
+  bare branch name.
+- **The status bar says what the window is doing.** It carries the session's
+  working directory, its worktree and branch, the daemon it is connected to and
+  the protocol version it agreed on, and the pane's grid size. It was blank.
+- **The pane paints in a palette you already read code in.** The grid took its
+  sixteen ANSI slots from whatever the shell theme happened to declare, so an
+  operator arrived with colours tuned over years and the terminal was the one
+  surface that ignored them. Settings, Appearance now selects the palette:
+  Solarized Dark, Solarized Light, Gruvbox Dark, Nord, Dracula, Tokyo Night and
+  One Half Light, each at its published definition. The choice is independent
+  of light and dark and moves no chrome. The default follows the app theme and
+  emits nothing, so an install that never opens the tab is unchanged.
+  `docs/appearance.md` lists them.
+- **The grid can paint in the colours your own terminal is configured with.**
+  The alternative to shipping an opinion is not shipping seven of them. Turn on
+  "Follow the host terminal" and the import reads the terminal's own
+  configuration and takes the sixteen ANSI slots, the background, the
+  foreground, the cursor and the selection out of it. Four formats are parsed:
+  the sectioned key/value alacritty and foot write, kitty's flat one, X
+  resources, and Windows Terminal's JSON. A terminal that exports a variable
+  naming itself is tried first and every other candidate is tried after it. A
+  file that declares only some of the twenty colours is refused rather than
+  merged, naming what each candidate was missing, because a palette half from
+  one terminal and half from another is one nobody has ever looked at. The
+  result is stored rather than re-detected, so the grid does not change colour
+  because a config file moved, and the settings row names the file it read.
+  `docs/appearance.md` states the order and what the scan cannot see.
+- **Everything named in this section is adjustable in Settings.** The pane's
+  font, size, line height, padding, cursor, palette source and opacity; what a
+  row shows and how a project groups; the status bar's fields; motion, density
+  and text scale; the frame pacing and the read and flush windows the pane
+  runs on. `docs/configuration.md` lists each setting, its default and the file
+  it is written to.
+
 ### Fixed
 
+- **The sidebar draws.** It came up empty: a window with no projects, no rows
+  and no way to reach a running session, next to a daemon that was holding
+  them. The rows are rendered from the session list the client already had.
+- **A pane no longer paints black while a harness starts.** An agent that
+  writes to standard error before it draws anything left the pane a black
+  rectangle with the errors in it, and nothing said that was a startup failure
+  rather than a hung session. Startup output is shown as the session's first
+  screen with the exit status beside it when there is one.
 - **A sidebar row says where its agent is working when nothing else on it
   does.** A row at its project's own directory drew no directory, on the
   grounds that the project header above it already said so. The header carries
@@ -15,8 +86,26 @@ Before 1.0, a minor bump may break compatibility.
   both blanks at once: the client mints a project for the launch directory, so
   the row sits at its root, and a directory that is not a checkout has no
   branch, so the row's whole context line went out empty. It now draws its
-  directory, shortened against the home directory, in exactly that case. Rows
-  at a project root inside a repository are unchanged.
+  directory, shortened against the home directory, in exactly that case.
+- **A row follows an agent that changes directory.** The report an agent emits
+  when it moves reached a renderer addon and stopped there, so a harness that
+  sent itself somewhere else kept the row, the branch and the worktree it
+  started in for the life of the session. The parser is in the client's own
+  address space now: an OSC 7 moves the row, its branch, its worktree and the
+  status bar within the frame it arrives on.
+- **A full-screen agent reaches the bottom of the pane, not two rows past
+  it.** The grid was measured from a computed style on the container element.
+  Under `box-sizing: border-box`, which that window set on everything, the
+  measurement was the border box with the padding inside it, and the padding
+  subtracted afterwards belonged to a different element. The pane's own 32px
+  per axis was therefore counted as space a cell could occupy, so the child was
+  told it had two rows and four columns the window frame covers: the last
+  option of an approval prompt was sliced in half by the bottom edge, and a
+  centred prompt was centred on a grid wider than the one on screen. The pane
+  measures its own drawing area in device pixels now, a row the edge would cut
+  in half is never counted, and a measurement taken before the font was
+  measured is not recorded as a fit, so a pane no longer sits at 80x24 for the
+  life of the window with a dead band underneath it.
 - **A Codex row holds "Needs approval" for the whole approval prompt.** Codex
   blinks the marker in its terminal title while a gate is up, alternating
   `[ ! ] Action Required` and `[ . ] Action Required` about twice a second.
@@ -37,22 +126,18 @@ Before 1.0, a minor bump may break compatibility.
   before it could be read. The refusal now records the painted history window
   it was about and stays silent until that window changes, which any new
   scrollback or any other session does. The pane ceiling refusal is counted
-  on the same terms.
-- **A full-screen agent reaches the bottom of the pane, not two rows past
-  it.** The grid was measured by xterm's fit addon, which reads
-  `getComputedStyle(container).height`. Under `box-sizing: border-box`, which
-  this window sets on every element, that is the border box with the padding
-  inside it, and the addon then subtracted the padding of the inner grid
-  element, which has none, rather than the container's. The pane's own 32px
-  per axis was therefore counted as space a cell could occupy, so the child
-  was told it had two rows and four columns the window frame covers: the last
-  option of an approval prompt was sliced in half by the bottom edge, and a
-  centred prompt was centred on a grid wider than the one on screen. The
-  measurement is the client's now, the addon is gone, and a row the edge cuts
-  in half is never counted. A pane whose first measurement was taken before
-  the font had been measured also stopped recording that attempt as a fit, so
-  it no longer sits at 80x24 for the life of the window with a dead band
-  underneath.
+  on the same terms. The strip is also an overlay rather than a row taken from
+  the grid, so raising one no longer resizes the session.
+- **The window stopped flashing.** A resize, a session switch and a settings
+  change each cleared the pane and repainted it from nothing, and a frame was
+  presented before the grid had been uploaded. The swapchain is reconfigured
+  without an intervening clear, and a frame is presented only once the grid it
+  is drawn from is complete.
+- **The window is stable under the things that used to end it.** A second
+  window, a display that goes away, a swapchain that reports lost or outdated,
+  a font that cannot be rasterised and a daemon that drops mid-session are each
+  recovered from rather than propagated, and the recovery is exercised in the
+  suite rather than reasoned about.
 - **The installer resolves the latest release when the GitHub API refuses.**
   Its anonymous rate limit is per address and is spent by everything behind
   that address, so on an office, a carrier NAT or a CI runner a working
@@ -61,6 +146,15 @@ Before 1.0, a minor bump may break compatibility.
   page, which resolves the same version and is not the resource that ran out.
   Passing `GITHUB_TOKEN` still skips the limit entirely, and an explicit
   version still asks nothing.
+
+### Performance
+
+The pane's path from a byte on the socket to a lit pixel no longer leaves this
+process's address space, is not serialised, and does not wait on a document
+layout pass. Bytes are read from the socket, parsed by libghostty, written into
+the cell grid and uploaded to the GPU, and the frame is scheduled against the
+swapchain. Measurements, the method behind each one and the comparison against
+v0.3.1 are in [docs/performance.md](docs/performance.md).
 
 ## v0.3.1 - 2026-08-11
 
@@ -363,8 +457,8 @@ uploaded. Everything below `v0.2.0` in this file shipped here.
   from `vitrum-grid`, with a toolkit-free key encoder. Off by default because
   nothing hosts it yet: input method, selection, clipboard, search, scrollback
   paging and Wayland are named in its module doc as the work between it and
-  replacing xterm.js. The argument for it is one parser and OSC 7 and OSC 133
-  semantics in Rust, not frame rate.
+  replacing the JavaScript emulator the pane was drawn with then. The argument
+  for it is one parser and OSC 7 and OSC 133 semantics in Rust, not frame rate.
 - **The installer answers for what a real machine does to it.** No `curl` and
   no `wget`, a proxy that needs a scheme, a download truncated mid-flight, a
   captive portal page where the archive should be, a `SHA256SUMS` with no line

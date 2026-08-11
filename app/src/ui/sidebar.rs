@@ -163,6 +163,7 @@ pub struct SidebarProps {
 #[allow(non_snake_case)]
 pub fn Sidebar(props: SidebarProps) -> Element {
     let state = props.state;
+    let mut focus: Signal<crate::keys::Focus> = use_context();
     // The word the footer's primary control wears, read off the UI thread and
     // only when the session list changes. That is the one moment a launch can
     // have moved the ranking, and the memo itself is a `len()`, so a daemon
@@ -235,11 +236,17 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     // answer would be thrown away.
     let empty_words: Option<(String, String)> = groups.is_empty().then(|| {
         let policy = st.daemon.policy();
-        let ws = st.daemon.workspaces.get(st.window.workspace);
+        // The workspace the tree was built against, which is not always the
+        // one the window remembers. Counting against `st.window.workspace`
+        // while `tree` fell back to another one produced the worst sentence
+        // in the panel: every session counted as "in another workspace",
+        // under a heading naming a workspace that no longer existed.
+        let here = st.window.drawn_workspace(&st.daemon);
+        let ws = st.daemon.workspaces.get(here);
         let mut in_workspace = 0;
         let mut admitted = 0;
         for row in &st.daemon.sessions {
-            if st.daemon.workspaces.workspace_of(&row.info) != st.window.workspace {
+            if st.daemon.workspaces.workspace_of(&row.info) != here {
                 continue;
             }
             in_workspace += 1;
@@ -343,6 +350,26 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         input {
                             class: "rg-sidebar__search-input",
                             id: "rg-filter",
+                            // Hand the element to the focus registry.
+                            //
+                            // Every keyboard route into the filter goes
+                            // through `Bridge::focus_ui`, which looks the
+                            // element up by this id. Nothing registered
+                            // anything, so the registry was permanently
+                            // empty and the chord, the menu item and the
+                            // shortcuts sheet all logged a debug line and
+                            // left focus where it was.
+                            onmounted: move |e| {
+                                crate::register_focusable("rg-filter", e.data())
+                            },
+                            // Which scope the chord table answers in.
+                            //
+                            // A chord scoped `NotTextInput` must not fire
+                            // while the operator is typing a filter, and the
+                            // table cannot know where focus is unless the
+                            // surface holding it says so.
+                            onfocusin: move |_| focus.set(crate::keys::Focus::TextInput),
+                            onfocusout: move |_| focus.set(crate::keys::Focus::Shell),
                             r#type: "text",
                             // One word, and none at all at the panel's
                             // narrower widths. A placeholder is drawn against
@@ -421,7 +448,16 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                 }
             }
 
-            div { class: "rg-sidebar__body", id: "rg-sidebar-body",
+            div {
+                class: "rg-sidebar__body",
+                id: "rg-sidebar-body",
+                // The scroll container is the fallback focus target: when the
+                // row that had focus is closed there is no row to move to,
+                // and focus otherwise falls to the document, where no
+                // shortcut on the panel works.
+                onmounted: move |e| {
+                    crate::register_focusable("rg-sidebar-body", e.data())
+                },
                 if no_matches {
                     div { class: "rg-sidebar__empty rg-sidebar__empty--no-matches",
                         span { class: "rg-empty__title", "Nothing matches \u{201c}{query}\u{201d}" }
@@ -1067,6 +1103,12 @@ struct RowFields {
     status_word: bool,
     /// Draw the session's working directory when it is not the project's own.
     place: bool,
+    /// Draw the name of the linked git worktree the session's files are in.
+    ///
+    /// Off is not the same as absent: with the chip off the element is still
+    /// emitted and still empty, so switching the preference cannot move a
+    /// row's other elements.
+    worktree: bool,
     /// Force every row to the slim shape, whatever band it is in.
     always_slim: bool,
 }
@@ -1078,6 +1120,7 @@ impl RowFields {
             time: settings.show_time,
             status_word: settings.show_status_word,
             place: settings.show_place,
+            worktree: settings.show_worktree,
             always_slim: settings.always_slim,
         }
     }
@@ -1184,23 +1227,30 @@ const PLACE_COLUMNS: usize = 18;
 /// sitting at the project root repeats the header, so it yields the space to
 /// the branch.
 ///
-/// `has_branch` is what keeps the second half of that true. A group header
-/// carries a project NAME, not a path, so silence on a root row is readable
-/// only when the branch beside it is not also silent. A root row with neither
-/// drew an empty line and said nothing at all about where its agent was
-/// working, and the commonest shape of that is an agent started in a home
-/// directory that the client then minted a project for: the header reads as a
-/// username and the directory is not a repository, so both halves went blank
-/// together.
+/// `line_says_more` is what keeps the second half of that true. A group
+/// header carries a project NAME, not a path, so silence on a root row is
+/// readable only when something else on the line is not also silent. A root
+/// row with nothing beside it drew an empty line and said nothing at all
+/// about where its agent was working, and the commonest shape of that is an
+/// agent started in a home directory that the client then minted a project
+/// for: the header reads as a username and the directory is not a
+/// repository, so both halves went blank together.
+///
+/// It is "something else" and not "a branch" because the line now has two
+/// other elements that can carry the answer. A worktree name says where the
+/// files are more precisely than a directory does, so a root row inside a
+/// linked worktree yields to it exactly as it yields to a branch. The caller
+/// decides which of them is present; the rule is that the line is never
+/// silent on all three at once.
 ///
 /// The `Outside` arm is the case the element was added for. A git worktree
 /// lives beside its project rather than inside it, on another branch, and a
 /// row for one used to show a branch with no hint that the files were
 /// somewhere else. So does an agent that moved itself: sessions follow OSC 7,
 /// so a row's directory is where the agent is now, not where it was launched.
-fn place_label(cwd: &str, root: &str, home: &str, has_branch: bool) -> String {
+fn place_label(cwd: &str, root: &str, home: &str, line_says_more: bool) -> String {
     match path::under(cwd, root) {
-        Place::At if has_branch => String::new(),
+        Place::At if line_says_more => String::new(),
         Place::At | Place::Outside => path::shorten_home_relative(cwd, home, PLACE_COLUMNS),
         Place::Under(rest) => path::shorten(rest, PLACE_COLUMNS),
     }
@@ -1377,6 +1427,16 @@ fn row_tooltip(row: &SessionView, home: &str, pill: &Pill) -> String {
         AgentKind::of(&info.command).label(),
         pill.word
     );
+    // The worktree, on its own line under the directory it qualifies.
+    //
+    // The chip on the row is three characters at its floor and elides. The
+    // hover detail is the only place the whole name is guaranteed, and the
+    // whole name is what an operator needs to run a command against the
+    // right checkout.
+    if let Some(wt) = crate::ui::terminal::worktree_of(row) {
+        s.push_str("\nWorktree ");
+        s.push_str(&wt);
+    }
     // How the state was decided. An inferred status and a probed one look
     // identical apart from this sentence, and it is the one thing the pill's
     // own tooltip carried that nothing else on the row says. It also answers
@@ -1456,6 +1516,9 @@ fn AgentGlyph(props: AgentGlyphProps) -> Element {
 #[allow(non_snake_case)]
 fn SessionRow(props: SessionRowProps) -> Element {
     render_count::tick();
+    // Which scope the shell's one chord handler answers in. Published from
+    // the App root; a surface that can hold focus reports itself into it.
+    let mut focus: Signal<crate::keys::Focus> = use_context();
     let row = &props.row;
     let info = &row.info;
     let id = row.id();
@@ -1510,13 +1573,30 @@ fn SessionRow(props: SessionRowProps) -> Element {
     } else {
         ""
     };
+    // The linked worktree this session is in, or `None` for a main working
+    // tree. Resolved by the daemon, because only the daemon has the session's
+    // filesystem: a linked worktree's `.git` is a FILE pointing into
+    // `.git/worktrees/<name>`, and that name is what arrives here. Empty
+    // when the preference is off, which keeps the element in the tree at a
+    // zero width rather than removing it from the line.
+    let worktree = if props.fields.worktree {
+        crate::ui::terminal::worktree_of(row).unwrap_or_default()
+    } else {
+        String::new()
+    };
     // The working directory, drawn wherever it says something the group
-    // header above does not, and on a root row whose branch is also empty,
-    // where the alternative is a blank line. An agent can move its session
-    // after launch by reporting OSC 7, and the daemon follows it, so this is
-    // the live directory and not the one the session was started in.
+    // header above does not, and on a root row where nothing else on the
+    // line says it either, where the alternative is a blank line. An agent
+    // can move its session after launch by reporting OSC 7, and the daemon
+    // follows it, so this is the live directory and not the one the session
+    // was started in.
     let place = if props.fields.place {
-        place_label(&info.cwd, &props.root, &props.home, !branch.is_empty())
+        place_label(
+            &info.cwd,
+            &props.root,
+            &props.home,
+            !branch.is_empty() || !worktree.is_empty(),
+        )
     } else {
         String::new()
     };
@@ -1556,6 +1636,21 @@ fn SessionRow(props: SessionRowProps) -> Element {
             class: "{class}",
             id: "{dom_id}",
             tabindex: 0,
+            // Bare Down and Up traverse the list, and are scoped so they
+            // cannot take the arrow keys away from an agent in the pane.
+            // The scope is inert until the row says focus is here.
+            onfocusin: move |_| focus.set(crate::keys::Focus::SessionList),
+            onfocusout: move |_| focus.set(crate::keys::Focus::Shell),
+            // Same registry as the filter field. Keyboard traversal, the
+            // jump-to-attention chord and focus restoration after a row
+            // closes all resolve a session to `row_id` and then ask for it
+            // by that id, and every one of them was a no-op.
+            onmounted: {
+                let dom_id = dom_id.clone();
+                move |e: MountedEvent| {
+                    crate::register_focusable(dom_id.clone(), e.data())
+                }
+            },
             onclick: move |e| {
                 let m = e.modifiers();
                 props.on_select.call((id, click_kind(m.ctrl() || m.meta(), m.shift())));
@@ -1645,6 +1740,30 @@ fn SessionRow(props: SessionRowProps) -> Element {
                     // after it would be pushed to the far right and land in
                     // the tail's run of badges, where a path reads as one.
                     span { class: "rg-session__place", "{place}" }
+                    // The linked git worktree the session's files are in.
+                    //
+                    // A linked worktree lives BESIDE its project, on another
+                    // branch, and the row for one drew a branch name with
+                    // nothing anywhere saying the files were not in the
+                    // directory the group header names. Two agents on two
+                    // worktrees of one repository were told apart by a
+                    // branch, which is exactly the pair where the branch is
+                    // the least surprising difference between them.
+                    //
+                    // The value is git's own name for the worktree, taken
+                    // from `.git/worktrees/<name>` by the daemon. It is never
+                    // a filesystem path, and a path arriving here is a defect
+                    // upstream rather than a string for this row to shorten.
+                    //
+                    // EMITTED ON EVERY CARD, empty when there is none, for
+                    // the reason the branch is: a session's worktree resolves
+                    // after the row first paints, and an element that appears
+                    // then is an element that moves its neighbours then. The
+                    // element is always in the tree, the stylesheet collapses
+                    // it while it is empty, and the tail line's height is
+                    // fixed at `--rg-line-14`, so neither the card's height
+                    // nor anything right of the flex spacer can move.
+                    span { class: "rg-session__worktree", "{worktree}" }
                     span { class: "rg-session__branch", "{branch}" }
                     if let Some(badge) = disposition {
                         span { class: "{badge.class}",

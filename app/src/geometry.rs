@@ -443,8 +443,8 @@ pub(crate) fn load_geometry(monitors: &[Monitor]) -> Vec<WindowGeometry> {
 /// viewed workspace.
 ///
 /// Separate from [`save_geometry`] because they own different files, and
-/// separate from `settings::commit` because that also pushes scripts into the
-/// webview, which is wrong at the moment a window is going away.
+/// separate from `settings::commit` because that also publishes to the live
+/// settings bus, which is wrong at the moment a window is going away.
 ///
 /// This exists because those fields were persisted only by accident. They are
 /// in `WindowSnapshot`, which `save_prefs` writes and `restore_window` reads,

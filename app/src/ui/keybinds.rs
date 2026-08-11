@@ -26,7 +26,7 @@ use crate::keymap::{
 use crate::launch;
 use crate::state::UiState;
 use crate::ui::settings::{
-    BINDABLE_KEYS, Binding, action_label, chord_conflict, clear_override, commit, effective_chords,
+    BINDABLE_KEYS, Binding, action_label, clear_override, commit, effective_chords, live_conflict,
     pretty_key, rebindable, set_override,
 };
 
@@ -214,6 +214,7 @@ pub struct KeybindsProps {
 #[component]
 pub fn Keybinds(props: KeybindsProps) -> Element {
     let mut state = props.state;
+    // What the page DISPLAYS comes from the signal, so an edit repaints it.
     let prefs = state.read().daemon.settings.keyboard.clone();
     let effective = effective_chords(&prefs);
     let faults = prefs.custom.errors();
@@ -300,7 +301,7 @@ pub fn Keybinds(props: KeybindsProps) -> Element {
                         if open {
                             ChordRecorder {
                                 draft,
-                                conflict: chord_conflict(&effective, &draft(), action),
+                                conflict: live_conflict(&draft(), action),
                                 on_save: move |binding: Binding| {
                                     editing.set(None);
                                     let mut write = state.write();

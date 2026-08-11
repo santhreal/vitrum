@@ -4,8 +4,8 @@
 //! not a cosmetic failure: the same bytes are a different screen at a different width,
 //! so a header that is guessed at, defaulted, or dropped produces a replay that is
 //! confidently wrong. The other half of this file is the unknown-key contract, because
-//! asciinema keeps adding header keys and a reader that discarded the ones it did not
-//! model would damage every recording it touched.
+//! the format keeps acquiring header keys and a reader that discarded the ones it did
+//! not model would damage every recording it touched.
 
 use crate::asciicast::{self, Header, Utf8Policy};
 use crate::error::CastError;
@@ -113,19 +113,24 @@ fn a_wrong_version_is_refused_and_names_itself() {
 fn a_v1_file_is_reported_as_a_version_problem_not_a_geometry_one() {
     let v1 = "{\"version\":1,\"stdout\":[[0.1,\"hi\"]]}\n";
 
-    assert_eq!(
-        asciicast::read(v1),
-        Err(CastError::Version { found: 1 })
-    );
+    assert_eq!(asciicast::read(v1), Err(CastError::Version { found: 1 }));
 }
 
 /// Optional metadata is read into its own field rather than into `extra`.
+///
+/// The `TERM` value is the terminal name this product sets for a child process. It is
+/// `vte-256color`: the engine's own terminfo entry is not installed on every host, and a
+/// child that inherits a name the host's terminfo database does not know falls back to
+/// a dumb terminal and stops emitting colour at all. `vte-256color` ships in the base
+/// `ncurses` terminfo data on Linux and describes the same 256-colour, truecolour
+/// capable terminal this renderer is. A host without even that entry is a host with no
+/// terminfo database, which is reported rather than guessed at.
 #[test]
 fn the_modelled_optional_keys_are_read_into_their_fields() {
     let text = "{\"version\":2,\"width\":80,\"height\":24,\
                 \"timestamp\":1700000000,\"duration\":12.5,\"idle_time_limit\":2.0,\
                 \"command\":\"cargo test\",\"title\":\"a run\",\
-                \"env\":{\"TERM\":\"xterm-256color\"}}\n";
+                \"env\":{\"TERM\":\"vte-256color\",\"COLORTERM\":\"truecolor\"}}\n";
     let header = read_ok(text).header;
 
     assert_eq!(header.timestamp, Some(1_700_000_000));
@@ -133,7 +138,10 @@ fn the_modelled_optional_keys_are_read_into_their_fields() {
     assert_eq!(header.idle_time_limit, Some(2.0));
     assert_eq!(header.command.as_deref(), Some("cargo test"));
     assert_eq!(header.title.as_deref(), Some("a run"));
-    assert_eq!(header.env, Some(serde_json::json!({"TERM": "xterm-256color"})));
+    assert_eq!(
+        header.env,
+        Some(serde_json::json!({"TERM": "vte-256color", "COLORTERM": "truecolor"}))
+    );
     assert!(
         header.extra.is_empty(),
         "a modelled key leaked into extra: {:?}",
@@ -145,7 +153,7 @@ fn the_modelled_optional_keys_are_read_into_their_fields() {
 ///
 /// The bug this stops: `#[serde(deny_unknown_fields)]`, or a hand-built header struct
 /// that drops what it does not recognise. Either one silently strips metadata from every
-/// recording made by a newer asciinema than this reader, and the loss is invisible until
+/// recording made by a newer recorder than this reader, and the loss is invisible until
 /// someone compares the file to the one they started with.
 #[test]
 fn an_unmodelled_key_survives_a_round_trip_with_its_value() {
@@ -171,7 +179,10 @@ fn writing_forces_version_two() {
     let mut header = Header::new(80, 24);
     header.version = 0;
 
-    assert_eq!(read_ok(&format!("{}\n", header_line(&header))).header.version, 2);
+    assert_eq!(
+        read_ok(&format!("{}\n", header_line(&header))).header.version,
+        2
+    );
 }
 
 /// Writing fills in `duration` when the timeline has real times and the caller did not.
@@ -181,8 +192,14 @@ fn writing_forces_version_two() {
 #[test]
 fn a_recorded_timeline_supplies_the_duration() {
     let timeline = Timeline::recorded(vec![
-        ChunkStamp { end_seq: 1, micros: 500_000 },
-        ChunkStamp { end_seq: 2, micros: 2_250_000 },
+        ChunkStamp {
+            end_seq: 1,
+            micros: 500_000,
+        },
+        ChunkStamp {
+            end_seq: 2,
+            micros: 2_250_000,
+        },
     ]);
     let bytes: &[u8] = b"hi";
     let stream = Stream::new(0, core::slice::from_ref(&bytes));
@@ -200,18 +217,16 @@ fn a_recorded_timeline_supplies_the_duration() {
 /// A caller's own `duration` is not overwritten.
 #[test]
 fn an_explicit_duration_is_left_alone() {
-    let timeline = Timeline::recorded(vec![ChunkStamp { end_seq: 2, micros: 2_250_000 }]);
+    let timeline = Timeline::recorded(vec![ChunkStamp {
+        end_seq: 2,
+        micros: 2_250_000,
+    }]);
     let mut header = Header::new(80, 24);
     header.duration = Some(99.0);
     let bytes: &[u8] = b"hi";
     let stream = Stream::new(0, core::slice::from_ref(&bytes));
-    let text = asciicast::to_string(
-        &stream,
-        &timeline,
-        &header,
-        Utf8Policy::SurrogateEscape,
-    )
-    .expect("writes");
+    let text = asciicast::to_string(&stream, &timeline, &header, Utf8Policy::SurrogateEscape)
+        .expect("writes");
 
     assert_eq!(read_ok(&text).header.duration, Some(99.0));
 }
@@ -221,18 +236,31 @@ fn an_explicit_duration_is_left_alone() {
 /// Emitting a zero here would tell a player the recording is instantaneous.
 #[test]
 fn a_positional_timeline_writes_no_duration() {
-    assert_eq!(read_ok(&format!("{}\n", header_line(&Header::new(80, 24)))).header.duration, None);
+    assert_eq!(
+        read_ok(&format!("{}\n", header_line(&Header::new(80, 24))))
+            .header
+            .duration,
+        None
+    );
 }
 
 /// Unset optional keys are omitted from the file rather than written as null.
 ///
-/// `"title": null` is legal JSON and asciinema does not write it; a player that checks
-/// for the key's presence would see a title that is not there.
+/// `"title": null` is legal JSON and no recorder writes it; a player that checks for the
+/// key's presence would see a title that is not there.
 #[test]
 fn unset_optional_keys_are_omitted_entirely() {
     let line = header_line(&Header::new(80, 24));
 
-    for key in ["timestamp", "duration", "idle_time_limit", "command", "title", "env", "theme"] {
+    for key in [
+        "timestamp",
+        "duration",
+        "idle_time_limit",
+        "command",
+        "title",
+        "env",
+        "theme",
+    ] {
         assert!(!line.contains(key), "{key} was written while unset: {line}");
     }
 }

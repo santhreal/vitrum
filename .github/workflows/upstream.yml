@@ -1,11 +1,18 @@
 name: upstream
 
-# The vendored dioxus-desktop fork, checked against the crate it forked.
+# Every vendored fork, checked against the crate it forked.
 #
 # Weekly rather than per push, because nothing in a normal change can make this
-# fail except editing `vendor/`, and the failure it exists to catch is upstream
+# fail except editing a fork, and the failure it exists to catch is upstream
 # publishing a release while nobody was looking. A fork that is never diffed
 # becomes a permanent one, and this is the thing that keeps asking.
+#
+# `vendor-ghostty-vt-sys/` was outside this workflow while it was the fork that
+# mattered least. It is now the one that matters most: it carries the only
+# escape-sequence parser in the product, and its divergence is the pin that
+# stops a release emitting instructions a pre-Haswell CPU answers with SIGILL.
+# `ci.yml` ran the check for it on every push and this workflow did not, so an
+# upstream release of it went unnoticed for as long as nobody pushed.
 on:
   schedule:
     # Mondays, 07:00 UTC. Early enough in the week that absorbing a release is
@@ -17,11 +24,15 @@ on:
     branches: [main]
     paths:
       - "vendor/**"
+      - "vendor-pty/**"
+      - "vendor-ghostty-vt-sys/**"
       - "tools/upstream/**"
       - ".github/workflows/upstream.yml"
   pull_request:
     paths:
       - "vendor/**"
+      - "vendor-pty/**"
+      - "vendor-ghostty-vt-sys/**"
       - "tools/upstream/**"
       - ".github/workflows/upstream.yml"
   workflow_dispatch:
@@ -50,5 +61,8 @@ jobs:
 
       # No toolchain and no build: this compares source text and asks crates.io
       # a question. Installing Rust here would be a minute spent on nothing.
-      - name: Check the fork against upstream
-        run: sh tools/upstream/check.sh
+      - name: Check every fork against upstream
+        run: |
+          sh tools/upstream/check.sh
+          sh tools/upstream/check.sh --fork vendor-pty
+          sh tools/upstream/check.sh --fork vendor-ghostty-vt-sys

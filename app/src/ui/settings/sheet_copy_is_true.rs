@@ -4,8 +4,8 @@
 //! every test here reads the shipped source of the files that implement the
 //! behaviour and asserts that a sentence shown to an operator is true of the
 //! code beside it. Source scanning rather than a runtime assertion because
-//! neither behaviour has a hook a unit test can reach: one is a wheel event in
-//! a webview, the other is a D-Bus click on a live desktop.
+//! neither behaviour has a hook a unit test can reach: one is a scroll
+//! gesture on the pane, the other is a D-Bus click on a live desktop.
 
 use super::{Notification, SessionId};
 
@@ -76,7 +76,7 @@ fn the_scrollback_caption_matches_what_the_client_actually_fetches() {
     let settings = code_only(include_str!("../settings.rs"));
     let main_src = crate::testkit::shell();
     let main_src = main_src.as_str();
-    let bootstrap = include_str!("../../bootstrap.js");
+
 
     let at = settings
         .find("label: \"Scrollback\"")
@@ -139,9 +139,13 @@ fn the_scrollback_caption_matches_what_the_client_actually_fetches() {
          the top fetches nothing"
     );
     assert!(
-        bootstrap.contains("onScroll"),
-        "bootstrap.js registers no scroll handler, so reaching the top of \
-         a pane never asks for more"
+        main_src.contains("ClientEvent::PageBack"),
+        "nothing in the shell handles the pane's arrival at the top, so the \
+         caption's instruction to scroll up there fetches nothing"
+    );
+    assert!(
+        main_src.contains("page_back(bridge, st, session)"),
+        "the shell hears the pane reach the top and does not ask for a page"
     );
     assert!(
         caption.contains("8 MiB"),

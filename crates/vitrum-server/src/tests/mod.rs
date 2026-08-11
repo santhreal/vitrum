@@ -10,6 +10,7 @@ mod input_resize;
 mod lag;
 mod lifecycle;
 mod listing;
+mod liveness;
 mod multi_client;
 #[cfg(not(windows))]
 mod naming;

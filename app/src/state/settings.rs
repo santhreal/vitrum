@@ -29,26 +29,6 @@ pub enum ThemePref {
     Dark,
 }
 
-/// Which xterm.js renderer the terminal uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TermRenderer {
-    /// The DOM renderer, and the default.
-    ///
-    /// Measured, not assumed: under WebKitGTK the WebGL path costs a steady
-    /// 0.244% idle CPU and roughly 80 MB more resident, because the compositor
-    /// keeps the GL layer awake with nothing on screen changing. It is also
-    /// marginally SLOWER on the corpus, 71 MB/s against 73 MB/s, for a
-    /// workload that peaks near 0.4 MB/s. Idle cost is the number this product
-    /// is sold on, so the default is the one that is idle.
-    #[default]
-    Dom,
-    /// The GPU renderer. Offered because a machine with a cheap compositor may
-    /// genuinely prefer it, and disclosed with its idle cost in the settings
-    /// row rather than presented as the fast option.
-    Webgl,
-}
-
 /// How a backdrop image is fitted to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,42 +138,238 @@ impl AppearancePrefs {
     }
 }
 
+/// Reading the colours out of the host terminal's own configuration.
+pub mod hostterm;
+/// The bus that carries a settings change to the running pane and shell.
+pub mod live;
+/// Every setting this product has, as data.
+pub mod catalog;
+
+/// What the file format refuses, and what an operator's existing profile
+/// survives.
+#[cfg(test)]
+mod persistence;
+
+/// Smallest terminal font size the product will paint at.
+///
+/// A fact about the cell grid rather than about the preference: below this the
+/// cell box rounds to zero width, the pane has nothing to divide the viewport
+/// by, and it goes blank with nothing logged anywhere. Enforced on load by
+/// [`TerminalPrefs::clamp`], because a text editor is not a control.
+pub const TERM_FONT_MIN_PX: u16 = 8;
+/// Largest terminal font size the product will paint at.
+pub const TERM_FONT_MAX_PX: u16 = 32;
+/// Deepest local scrollback the pane will keep.
+///
+/// The server owns real history. This is the viewport buffer that makes the
+/// wheel work between repaints, and it is resident memory in this process, so
+/// it has a ceiling that a hand-edited file cannot raise.
+pub const SCROLLBACK_MAX_LINES: u32 = 200_000;
+
+/// Where a session's cell cursor is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CursorShape {
+    /// A filled cell.
+    #[default]
+    Block,
+    /// A vertical bar at the left edge of the cell.
+    Bar,
+    /// A rule along the bottom of the cell.
+    Underline,
+}
+
+impl CursorShape {
+    /// The value persisted and compared in the control.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            CursorShape::Block => "block",
+            CursorShape::Bar => "bar",
+            CursorShape::Underline => "underline",
+        }
+    }
+
+    /// What the control calls it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            CursorShape::Block => "Block",
+            CursorShape::Bar => "Bar",
+            CursorShape::Underline => "Underline",
+        }
+    }
+}
+
+/// Every cursor shape, in the order the control lists them.
+pub const CURSOR_SHAPES: [CursorShape; 3] = [
+    CursorShape::Block,
+    CursorShape::Bar,
+    CursorShape::Underline,
+];
+
+/// How the pane's swapchain hands finished frames to the compositor.
+///
+/// A real choice on this hardware and not a knob for its own sake. Vsync
+/// bounds the frame rate at the panel's refresh and never tears. Adaptive
+/// keeps the same bound but discards a frame that arrives late instead of
+/// blocking the renderer on it, so a burst of output does not queue up
+/// latency. Immediate presents the moment a frame is ready, which is the
+/// lowest keystroke-to-glyph latency available and the one that can tear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PresentMode {
+    /// `Fifo`. Always supported.
+    #[default]
+    Vsync,
+    /// `Mailbox`. Offered only when the adapter reports it.
+    Adaptive,
+    /// `Immediate`. Offered only when the adapter reports it.
+    Immediate,
+}
+
+impl PresentMode {
+    /// The value persisted and compared in the control.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            PresentMode::Vsync => "vsync",
+            PresentMode::Adaptive => "adaptive",
+            PresentMode::Immediate => "immediate",
+        }
+    }
+
+    /// What the control calls it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            PresentMode::Vsync => "Vsync",
+            PresentMode::Adaptive => "Adaptive",
+            PresentMode::Immediate => "Immediate",
+        }
+    }
+}
+
+/// Every present mode, in the order the control lists them.
+pub const PRESENT_MODES: [PresentMode; 3] = [
+    PresentMode::Vsync,
+    PresentMode::Adaptive,
+    PresentMode::Immediate,
+];
+
+/// Narrowest and widest cell box, as a percentage of the font's own advance.
+pub const CELL_WIDTH_MIN_PCT: u16 = 80;
+/// Widest cell box, as a percentage of the font's own advance.
+pub const CELL_WIDTH_MAX_PCT: u16 = 140;
+/// Tightest and loosest line box, as a percentage of the font's own height.
+pub const LINE_HEIGHT_MIN_PCT: u16 = 80;
+/// Loosest line box, as a percentage of the font's own height.
+pub const LINE_HEIGHT_MAX_PCT: u16 = 200;
+/// Fastest and slowest cursor blink period, in milliseconds.
+pub const BLINK_MIN_MS: u16 = 100;
+/// Slowest cursor blink period, in milliseconds.
+pub const BLINK_MAX_MS: u16 = 2_000;
+/// Most lines one wheel notch may scroll.
+pub const WHEEL_LINES_MAX: u8 = 25;
+
 /// Terminal preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TerminalPrefs {
-    pub renderer: TermRenderer,
-    /// Lines of scrollback the terminal keeps in the webview. Server-side
-    /// history is unaffected and is where deep scrollback actually lives.
-    ///
-    /// 1000 matches what `bootstrap.js` mounts with, and is the number the
-    /// 174.7 MB resident figure was measured at. The two have to agree or the
-    /// first write from the settings modal silently multiplies the terminal's
-    /// buffer without the operator touching the control.
+    /// Lines of scrollback the pane keeps locally. Server-side history is
+    /// unaffected and is where deep scrollback actually lives.
     pub scrollback_lines: u32,
-    /// CSS font stack, verbatim. Empty means "whatever `--rg-font-mono`
-    /// resolves to", which is the one place the default stack is written down;
-    /// copying it here would go stale the first time the stylesheet is retuned.
+    /// Font stack, verbatim. Empty means the platform's default monospace
+    /// face, which is the one place the default stack is written down;
+    /// copying it here would go stale the first time it is retuned.
     pub font_family: String,
     pub font_size_px: u16,
+    /// Line box height as a percentage of the font's own line height.
+    pub line_height_pct: u16,
+    /// Cell box width as a percentage of the font's own advance width.
+    pub cell_width_pct: u16,
+    pub cursor_shape: CursorShape,
+    pub cursor_blink: bool,
+    /// Cursor blink period, in milliseconds. Read only when
+    /// [`TerminalPrefs::cursor_blink`] is on.
+    pub blink_interval_ms: u16,
+    /// Lines one wheel notch scrolls.
+    pub wheel_lines: u8,
+    /// Wrap pasted text in the bracketed-paste markers when the program asked
+    /// for them. Off refuses the markers regardless, which is what a program
+    /// that enables the mode and then mishandles it needs.
+    pub bracketed_paste: bool,
+    /// How the swapchain presents. Clamped to what the adapter reports.
+    pub present_mode: PresentMode,
     /// Colour palette for the grid.
     ///
     /// Independent of [`Settings::theme`] on purpose. The chrome's light/dark
     /// choice is about the room the operator is sitting in; the grid's palette
     /// is about the colours their prompt and their agent's ANSI output were
     /// tuned for, and those two answers are routinely different.
+    ///
+    /// Ignored while [`TerminalPrefs::follow_host_terminal`] is on and
+    /// [`TerminalPrefs::host_palette`] holds an import.
     pub palette: crate::termpalette::TermPalette,
+    /// Paint with the colours read out of the host terminal's own
+    /// configuration rather than with a built-in scheme.
+    pub follow_host_terminal: bool,
+    /// The colours the last import found, and where they came from. Persisted
+    /// rather than re-detected each launch, so the grid does not change colour
+    /// because a config file moved.
+    pub host_palette: hostterm::HostPalette,
 }
 
 impl Default for TerminalPrefs {
     fn default() -> Self {
         TerminalPrefs {
-            renderer: TermRenderer::default(),
             scrollback_lines: 1_000,
             font_family: String::new(),
             font_size_px: 13,
+            line_height_pct: 100,
+            cell_width_pct: 100,
+            cursor_shape: CursorShape::default(),
+            cursor_blink: true,
+            blink_interval_ms: 530,
+            wheel_lines: 3,
+            bracketed_paste: true,
+            present_mode: PresentMode::default(),
             palette: crate::termpalette::TermPalette::default(),
+            follow_host_terminal: false,
+            host_palette: hostterm::HostPalette::default(),
         }
+    }
+}
+
+impl TerminalPrefs {
+    /// Force every value into the range the pane can paint.
+    ///
+    /// Applied on load. A zero font size is a zero-width cell box and a blank
+    /// pane; a zero blink period is a cursor strobing at the frame rate; a
+    /// wheel notch of 200 lines makes the wheel unusable. None of those can
+    /// come out of a control, and all of them can come out of a text editor.
+    pub fn clamp(&mut self) {
+        self.font_size_px = self.font_size_px.clamp(TERM_FONT_MIN_PX, TERM_FONT_MAX_PX);
+        self.line_height_pct = self
+            .line_height_pct
+            .clamp(LINE_HEIGHT_MIN_PCT, LINE_HEIGHT_MAX_PCT);
+        self.cell_width_pct = self
+            .cell_width_pct
+            .clamp(CELL_WIDTH_MIN_PCT, CELL_WIDTH_MAX_PCT);
+        self.blink_interval_ms = self.blink_interval_ms.clamp(BLINK_MIN_MS, BLINK_MAX_MS);
+        self.wheel_lines = self.wheel_lines.clamp(1, WHEEL_LINES_MAX);
+        self.scrollback_lines = self.scrollback_lines.min(SCROLLBACK_MAX_LINES);
+        self.host_palette.clamp();
+    }
+
+    /// Whether the host import is what the grid will actually paint with.
+    ///
+    /// Both halves matter. The switch alone is not enough: an operator can
+    /// turn it on before any import has succeeded, and painting with an empty
+    /// palette would blank the pane.
+    #[must_use]
+    pub fn host_palette_in_force(&self) -> bool {
+        self.follow_host_terminal && self.host_palette.is_complete()
     }
 }
 
@@ -222,6 +398,114 @@ impl Default for NotifyPrefs {
         }
     }
 }
+
+/// Transient strips: the flash line above the pane, and the notice the pane
+/// raises when it cannot show what was asked for.
+///
+/// Its own group because the two operator complaints here are opposite. A
+/// notice that will not dismiss is a defect; a notice that vanishes before it
+/// is read is also a defect, and which one an operator hits depends on how
+/// fast they read. So both durations are numbers, and zero means the strip
+/// stays until it is dismissed rather than meaning the strip is off. Turning
+/// a strip off is a separate switch, because those are separate decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NoticePrefs {
+    /// Seconds a confirmation flash stays up. 0 keeps it until dismissed.
+    pub flash_seconds: u8,
+    /// Seconds a scrollback notice stays up. 0 keeps it until dismissed.
+    pub notice_seconds: u8,
+    /// Show the strip that says the pane is showing history rather than the
+    /// live tail. Off leaves the scroll position alone and only removes the
+    /// strip.
+    pub show_history_notice: bool,
+    /// Show a harness's startup diagnostics in the pane.
+    ///
+    /// On. A harness that fails to start prints why, and hiding that leaves a
+    /// blank pane and no explanation. Off is for an operator whose harness
+    /// prints a banner they have read a thousand times.
+    pub show_startup_errors: bool,
+}
+
+impl Default for NoticePrefs {
+    fn default() -> Self {
+        NoticePrefs {
+            flash_seconds: 6,
+            notice_seconds: 0,
+            show_history_notice: true,
+            show_startup_errors: true,
+        }
+    }
+}
+
+impl NoticePrefs {
+    /// How long a flash lives, or `None` when it waits for a dismissal.
+    #[must_use]
+    pub const fn flash_life_ms(&self) -> Option<u64> {
+        match self.flash_seconds {
+            0 => None,
+            n => Some(n as u64 * 1_000),
+        }
+    }
+
+    /// How long a notice lives, or `None` when it waits for a dismissal.
+    #[must_use]
+    pub const fn notice_life_ms(&self) -> Option<u64> {
+        match self.notice_seconds {
+            0 => None,
+            n => Some(n as u64 * 1_000),
+        }
+    }
+
+    /// Force both durations into the range the strip can express.
+    pub fn clamp(&mut self) {
+        self.flash_seconds = self.flash_seconds.min(NOTICE_SECONDS_MAX);
+        self.notice_seconds = self.notice_seconds.min(NOTICE_SECONDS_MAX);
+    }
+}
+
+/// Longest a transient strip may be pinned for, in seconds.
+///
+/// A minute. Past that the operator wanted a strip that waits for a
+/// dismissal, which is what 0 already means.
+pub const NOTICE_SECONDS_MAX: u8 = 60;
+
+/// The boot surface: the mark drawn on the window before the first frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StartupPrefs {
+    /// Draw the mark at all.
+    pub show_splash: bool,
+    /// Milliseconds of process life before the mark is drawn.
+    ///
+    /// A start that beats this shows no mark, which is the point: a mark that
+    /// appears and disappears inside a tenth of a second reads as a rendering
+    /// fault rather than as progress. Raising it hides the mark on more
+    /// machines; lowering it shows it on more.
+    pub splash_after_ms: u16,
+}
+
+impl Default for StartupPrefs {
+    fn default() -> Self {
+        StartupPrefs {
+            show_splash: true,
+            splash_after_ms: 120,
+        }
+    }
+}
+
+impl StartupPrefs {
+    /// Force the delay into the range the boot surface can express.
+    pub fn clamp(&mut self) {
+        self.splash_after_ms = self.splash_after_ms.min(SPLASH_AFTER_MAX_MS);
+    }
+}
+
+/// Longest the boot surface may stay blank before the mark is drawn.
+///
+/// Five seconds. Past that an operator has a window that looks broken, and
+/// "never draw it" is already a separate switch.
+pub const SPLASH_AFTER_MAX_MS: u16 = 5_000;
 
 /// Rebound shortcuts.
 ///
@@ -270,6 +554,22 @@ pub struct Settings {
     /// Draw `rg-pill__word`. Off leaves the icon, which is what the collapsed
     /// sidebar already renders, so the narrow layout is reachable at any width.
     pub show_status_word: bool,
+    /// Draw the worktree label: which linked worktree of a repository a
+    /// session is in, on the rows and in the status bar where it is not the
+    /// repository's main working tree.
+    ///
+    /// On. A session in a worktree and a session in the main tree share a
+    /// branch name often enough that the branch chip alone identifies
+    /// neither, and the product ran for three releases with no way to tell
+    /// them apart.
+    pub show_worktree: bool,
+    /// Draw the status bar under the pane.
+    ///
+    /// The bar carries the focused session's working directory, its branch,
+    /// its worktree and the daemon connection. Each of those is separately
+    /// hideable; this switch removes the row itself, which is the one an
+    /// operator who wants the whole window to be grid reaches for.
+    pub show_status_bar: bool,
     /// Force every sidebar row to the slim variant.
     ///
     /// Distinct from [`Density::Compact`], which shrinks both variants: this
@@ -294,6 +594,10 @@ pub struct Settings {
     pub appearance: AppearancePrefs,
     pub notifications: NotifyPrefs,
     pub keyboard: KeyboardPrefs,
+    /// Flash and notice lifetimes, and which strips are drawn at all.
+    pub notices: NoticePrefs,
+    /// The boot surface.
+    pub startup: StartupPrefs,
     /// Daemon URL override. Empty means "use whatever the command line said",
     /// which keeps `--server` authoritative for the case it exists for.
     pub daemon_url: String,
@@ -337,6 +641,8 @@ impl Default for Settings {
             show_place: true,
             show_time: true,
             show_status_word: true,
+            show_worktree: true,
+            show_status_bar: true,
             always_slim: false,
             confirm_terminate: true,
             reduce_motion: false,
@@ -347,6 +653,8 @@ impl Default for Settings {
             appearance: AppearancePrefs::default(),
             notifications: NotifyPrefs::default(),
             keyboard: KeyboardPrefs::default(),
+            notices: NoticePrefs::default(),
+            startup: StartupPrefs::default(),
             daemon_url: String::new(),
             policy: DispositionPolicy::default(),
             onboarded: false,
@@ -366,6 +674,23 @@ impl Settings {
     /// unreadable window, and that path does not go through a slider.
     pub fn set_text_scale(&mut self, pct: u16) {
         self.text_scale_pct = pct.clamp(TEXT_SCALE_MIN_PCT, TEXT_SCALE_MAX_PCT);
+    }
+
+    /// Force every value in the document into the range the product can
+    /// render.
+    ///
+    /// One entry point, called by the load path. Each group owns its own
+    /// ranges; what this adds is that no group can be forgotten, because
+    /// forgetting one is invisible until an operator hand-edits exactly that
+    /// group and the window comes up unusable.
+    pub fn clamp(&mut self) {
+        self.text_scale_pct = self
+            .text_scale_pct
+            .clamp(TEXT_SCALE_MIN_PCT, TEXT_SCALE_MAX_PCT);
+        self.appearance.clamp();
+        self.terminal.clamp();
+        self.notices.clamp();
+        self.startup.clamp();
     }
 
     /// The daemon URL to dial, given whatever the command line asked for.

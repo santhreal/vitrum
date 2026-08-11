@@ -20,7 +20,7 @@
  *
  * main.rs enforces both halves against this file and against sidebar.css.
  *
- * Nothing here is webview-specific except the ::-webkit-scrollbar block, which
+ * Nothing here is engine-specific except the ::-webkit-scrollbar block, which
  * is inert on other engines. The same markup is meant to run under Blitz. */
 
 :root {
@@ -34,6 +34,32 @@
    * banner and the sidebar's wordmark header, which between them were 101px
    * of stacked chrome; two pixels back is the whole price. */
   --rg-titlebar-h: 2.25rem;
+
+  /* 28px. The bar under the pane, and a CONSTANT.
+   *
+   * Nothing it says changes its height: no session, a session, an exit and a
+   * failure are all one line. That is the whole reason it is a token and not
+   * content-sized. A strip that grows when a sentence arrives shortens the
+   * pane, the pane resizes the PTY, and every agent on screen redraws its
+   * entire viewport to answer a message about one of them.
+   *
+   * app/src/ui/terminal.rs holds the same figure as PANEBAR_REM, because the
+   * pane's rectangle is computed in Rust before layout has happened, and
+   * tests::the_frame_reads_the_same_tokens_the_stylesheet_does keeps the two
+   * equal. */
+  --rg-panebar-h: 1.75rem;
+
+  /* 8px, and the same 8 on all four sides.
+   *
+   * It was 4px above, 8px left and nothing right or below, so the grid's
+   * optical centre sat up and to the left of the box it lived in, the first
+   * row was inset and the last sat against the chrome. Four equal sides is
+   * the only arrangement in which a centred pane is centred.
+   *
+   * It comes out of the pane's box before the cell division, so it is
+   * geometry rather than decoration: terminal.rs subtracts it as PANE_PAD_REM
+   * to get the padding box the renderer divides. */
+  --rg-pane-pad: 0.5rem;
 
   /* Context menu geometry. app/src/ui/menu.rs clamps a menu against the
    * window edge before layout has happened, so it needs these two numbers in
@@ -128,8 +154,8 @@ body {
 }
 
 /* Only exists while the sidebar edge is being dragged. Its job is to keep the
- * pointer events coming after the cursor leaves the 6px handle, and to stop the
- * webview from starting a text selection over the terminal mid-drag. */
+ * pointer events coming after the cursor leaves the 6px handle, and to stop a
+ * text selection starting under the pointer mid-drag. */
 .rg-drag-shield {
   position: absolute;
   inset: 0;
@@ -145,6 +171,48 @@ body {
   min-height: 0;
   position: relative;
   background-color: var(--rg-terminal-bg);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * THE PANE COLUMN INVARIANT
+ *
+ * EXACTLY TWO THINGS IN THIS COLUMN OCCUPY SPACE: the pane and the bar
+ * under it. Everything else that is ever put inside .rg-main floats over
+ * the pane and is removed from flow.
+ *
+ * Why, in the order the damage happens. A strip that takes a line shortens
+ * the pane's box. A shorter box is fewer rows. Fewer rows is a PTY resize.
+ * A PTY resize makes the child reflow and repaint its ENTIRE screen, and on
+ * a full-screen agent TUI that repaint is a visible flash. So a two-line
+ * sentence about one session flashes every agent on screen, twice: once
+ * when it appears and once when it goes.
+ *
+ * This is not advice. The default below is `position: absolute`, so a strip
+ * added later is out of flow whether or not its author read this comment,
+ * and the opt-out list is two selectors long. Adding a third is a decision
+ * somebody has to make on purpose, and
+ * `tests::the_pane_column_holds_only_the_pane_and_its_bar` reads this file
+ * and fails until they record it.
+ *
+ * The pane's rectangle is computed in Rust from --rg-titlebar-h,
+ * --rg-panebar-h and --rg-pane-pad, and it knows nothing about anything
+ * else in this column. An in-flow strip would therefore not only reflow the
+ * child, it would put the pane's last rows behind the strip's box.
+ * ══════════════════════════════════════════════════════════════════════ */
+.rg-main > * {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
+/* The opt-out list. Two entries. See the invariant above before adding a
+ * third, and expect the guard to stop you. */
+.rg-main > .rg-terminal,
+.rg-main > .rg-panebar {
+  position: static;
+  z-index: auto;
 }
 
 /* ------------------------------------------------------------------ */
@@ -508,29 +576,64 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
-/* Flash strip                                                         */
+/* Flash notice                                                        */
 /* ------------------------------------------------------------------ */
 
-/* One strip, two kinds. A copy confirmation and a spawn failure are both
+/* One notice, two kinds. A copy confirmation and a spawn failure are both
  * "something happened that you did not see on screen"; giving them separate
  * rows would make the window grow a line for good news.
  *
- * In flow, above the terminal, not over it. The strip does take a line from
- * the pane and give it back, and that reflow was once enough to put the
- * viewport at the top of the buffer and re-fire the page-back gesture the
- * strip was reporting on. Taking it out of flow would stop the reflow and
- * hide a row the pane is actively drawing into, with nothing saying so. The
- * loop is cut where it belongs, in sync.rs: a refusal is stated once per
- * painted history window rather than once per arrival at the top. */
+ * A CORNER, not a band. It was a full-width strip in flow above the pane,
+ * which took a line and gave it back: see the pane column invariant. Out of
+ * flow it can no longer reflow anything, and the remaining question is what
+ * it covers instead. A full-width overlay at the top covers a whole row of
+ * live output; anchored bottom-right above the bar it covers the corner an
+ * agent TUI keeps its frame in, is sized to its own text rather than to the
+ * window, and sits where a notice belongs on every desktop this product
+ * runs on.
+ *
+ * `max-width` and not `width`: a short confirmation is a short box. A notice
+ * as wide as the window for the word "Copied" is the artificial look this
+ * pass exists to remove. */
 .rg-flash {
+  position: absolute;
+  z-index: 3;
+  top: auto;
+  left: auto;
+  right: calc(var(--rg-pane-pad) + var(--rg-space-2));
+  bottom: calc(var(--rg-panebar-h) + var(--rg-pane-pad) + var(--rg-space-2));
+
   display: flex;
   align-items: center;
   gap: var(--rg-space-2);
-  flex: 0 0 auto;
+  max-width: min(32rem, calc(100% - var(--rg-space-8)));
 
-  padding: var(--rg-space-1) var(--rg-space-3);
-  border-bottom: 1px solid var(--rg-border);
+  padding: var(--rg-space-1-5) var(--rg-space-3);
+  border: 1px solid var(--rg-border);
+  border-radius: var(--rg-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   font-size: var(--rg-text-xs);
+
+  /* Transform and opacity only, so the compositor animates it and nothing
+   * is laid out again. 6px is the distance at which the motion reads as the
+   * notice arriving rather than as the notice sliding. */
+  animation: rg-flash-in var(--rg-t-expand) ease-out both;
+  /* Written out rather than left to the default, for the reason given on
+   * `.rg-badge--pulse`: the intent has to survive a later shorthand, and the
+   * guard against looping motion has to have something to read. */
+  animation-iteration-count: 1;
+}
+
+@keyframes rg-flash-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .rg-flash--error {
@@ -642,33 +745,38 @@ body {
 /* Terminal pane                                                       */
 /* ------------------------------------------------------------------ */
 
-/* The one node Dioxus is not allowed to look inside.
+/* The one node the markup is not allowed to look inside.
  *
  * It is rendered unconditionally, with a stable key and no children in the
  * RSX, so the virtual DOM has no child templates for it and emits no mutations
- * for anything beneath it. Everything under here belongs to xterm.js. Diffing
- * a terminal grid would be both wrong and ruinously slow. */
+ * for anything beneath it. The region it reserves is painted by the native
+ * renderer, which owns every pixel of the grid. Diffing a terminal grid would
+ * be both wrong and ruinously slow. */
 .rg-terminal {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: var(--rg-space-1) 0 0 var(--rg-space-2);
+  /* Four equal sides. See --rg-pane-pad. The native renderer is handed this
+   * box with the padding already subtracted, so the figure here and
+   * PANE_PAD_REM in ui/terminal.rs are one measurement in two files and the
+   * guard keeps them equal. */
+  padding: var(--rg-pane-pad);
   background-color: var(--rg-terminal-bg);
   overflow: hidden;
-}
-
-.rg-terminal .xterm {
-  height: 100%;
 }
 
 /* Sits over the terminal when nothing is focused. A sibling of the terminal
  * container, never a child, so showing and hiding it cannot touch the grid. */
 .rg-terminal__empty {
   position: absolute;
-  /* Zero on every side: the strip is not rendered when nothing is focused,
-   * and the titlebar is a sibling of .rg-body rather than a child of .rg-main,
-   * so there is no chrome inside this box to leave room for. */
-  inset: 0;
+  /* The pane's box, exactly: the overlay covers the region the grid occupies
+   * and stops at the bar, so an empty state is centred on the same rectangle
+   * a session's output is. Full-bleed `inset: 0` centred it against a box
+   * 28px taller than the pane, which put every empty state 14px low. */
+  top: 0;
+  right: 0;
+  bottom: var(--rg-panebar-h);
+  left: 0;
   z-index: 1;
 
   display: flex;
@@ -708,33 +816,141 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* One measured column, centred against the pane.
+ *
+ * The empty states were a bare centred flex column with no width, so the
+ * column was as wide as its widest child and every line in it was centred
+ * against a different axis. The agent roster arrives after a PATH walk, so
+ * when it landed the column changed width and every line above it moved
+ * sideways. A stated width centres once and holds still. */
+.rg-first {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rg-space-4);
+  width: min(28rem, 100%);
+  padding-inline: var(--rg-space-6);
+  text-align: center;
+}
+
 /* ------------------------------------------------------------------ */
-/* Exit bar                                                            */
+/* Pane bar                                                            */
 /* ------------------------------------------------------------------ */
 
-/* A dead child gets a bar under the grid, not an overlay over it. The output
- * the agent left behind is the most valuable thing on screen at that moment,
- * and covering it to announce the exit is exactly the wrong trade. */
-.rg-exitbar {
+/* WHERE THE AGENT IS WORKING, AND IT IS ALWAYS ON SCREEN.
+ *
+ * The window used to say this nowhere. The titlebar carries a session title,
+ * which an operator can rename to anything; the sidebar row yields its
+ * directory to the branch when the session sits at its project root; and a
+ * session that followed OSC 7 into another directory changed nothing visible
+ * anywhere. So the one fact an operator needs before answering an agent, what
+ * files it is about to touch, was not in the window.
+ *
+ * ONE LINE, AT EVERY STATE. The height is --rg-panebar-h and comes from the
+ * token, never from the content: `height` and not `min-height`, and no
+ * `flex: 0 0 auto` sizing itself off children. A bar with nothing in it is the
+ * same box as a bar with an exit sentence in it, which is what lets the pane's
+ * rectangle be a constant. See the pane column invariant.
+ *
+ * This replaced the exit bar, which appeared when a child died and
+ * disappeared when the operator stopped viewing it. That bar was correct
+ * about one thing, that a dead child's output is the most valuable thing on
+ * screen and must not be covered, and wrong about the cost: it took 28px from
+ * the pane at the exact moment the operator was reading. The exit is a
+ * sentence in this bar now, in a box that was already there. */
+.rg-panebar {
   display: flex;
   align-items: center;
-  gap: var(--rg-space-2);
-  flex: 0 0 auto;
+  gap: var(--rg-space-3);
+  flex: 0 0 var(--rg-panebar-h);
+  height: var(--rg-panebar-h);
 
-  padding: var(--rg-space-1) var(--rg-space-3);
+  padding-inline: var(--rg-space-3);
   border-top: 1px solid var(--rg-border);
   background-color: var(--rg-bg-elevated);
   color: var(--rg-fg-muted);
   font-family: var(--rg-font-ui);
   font-size: var(--rg-text-xs);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.rg-exitbar__text {
+/* 14px in a 16px box, so the mark's optical centre lands on the text's
+ * baseline centre rather than on the box's. Every mark is symmetric about
+ * y = 8, which is what makes one nudge correct for all of them. */
+.rg-panebar__agent {
+  flex: 0 0 auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--rg-fg-subtle);
+}
+
+/* The directory is the reason the bar exists, so it is the element that
+ * survives a narrow window: everything else here is `flex: 0 0 auto` and this
+ * one shrinks. It never disappears, and it truncates from the START, because
+ * a path's tail is the part that says which crate the agent is in. */
+.rg-panebar__place {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
+  color: var(--rg-fg);
+  direction: rtl;
+  text-align: left;
   text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+}
+
+.rg-panebar__branch,
+.rg-panebar__worktree,
+.rg-panebar__grid {
+  flex: 0 0 auto;
+  color: var(--rg-fg-subtle);
+  font-family: var(--rg-font-mono);
+  font-size: var(--rg-text-10);
+}
+
+/* A worktree is a place, not a label, so it is drawn as a keyed pair rather
+ * than as a bare name: `wt-review` alone beside a branch name reads as a
+ * second branch. */
+.rg-panebar__worktree {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--rg-space-1);
+}
+
+.rg-panebar__key {
+  color: var(--rg-fg-faint);
+  font-family: var(--rg-font-ui);
+  letter-spacing: 0.02em;
+}
+
+.rg-panebar__value {
+  color: var(--rg-fg-muted);
+}
+
+/* The only flexible gap. Everything before it is about where the agent is,
+ * everything after it is about what it is doing, and the split is what makes
+ * the bar scannable at a glance instead of a run of chips. */
+.rg-panebar__gap {
+  flex: 1 1 0;
+  min-width: var(--rg-space-4);
+}
+
+.rg-panebar__exit {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--rg-fg);
+  text-overflow: ellipsis;
+}
+
+/* The pill's own hue and box, at the bar's scale. It is the SAME `Pill` the
+ * sidebar row draws, from the same resolution, so the bar and the row can
+ * never name one state two ways. That was a real defect: the status read
+ * Approval in one place and Ready in the other while the gate was still up. */
+.rg-panebar__state {
+  flex: 0 0 auto;
 }
 
 /* ------------------------------------------------------------------ */
@@ -744,7 +960,7 @@ body {
 /* The backdrop for whichever single layer is open. It is a real element and
  * not a document-level listener, so there is nothing attached while no layer
  * is open and no click anywhere in the window wakes the process. Its presence
- * is also what the bridge tests for before claiming Escape. */
+ * is also what the key dispatcher tests for before claiming Escape. */
 .rg-layer {
   position: absolute;
   inset: 0;
@@ -1279,8 +1495,9 @@ body {
 /* Every duration in this file reads from one of the five tokens above, so
  * zeroing them disables all of it from one place and anything added later
  * inherits the behaviour, provided it uses a token rather than a literal.
- * The two keyframe animations are pinned to a single iteration anyway; at a
- * zero duration they resolve to their end state on the first frame.
+ * Every keyframe animation in this file is pinned to a single iteration
+ * anyway; at a zero duration they resolve to their end state on the first
+ * frame.
  *
  * sidebar.css declares its own block for its own tokens. Each stylesheet
  * honours the preference for what it owns rather than depending on the other,

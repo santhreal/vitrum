@@ -272,6 +272,12 @@ impl Seen {
                 self.data_frames += 1;
             }
             Message::Close(_) => {}
+            // The daemon probes a silent connection to tell a live client from
+            // a vanished one, and tungstenite answers the pong from inside the
+            // read. A conforming client treats these as nothing happening; a
+            // test that panicked on one would be asserting that the daemon
+            // never checks whether anyone is still there.
+            Message::Ping(_) | Message::Pong(_) => {}
             other => panic!("unexpected frame kind from the server: {other:?}"),
         }
     }
@@ -398,10 +404,15 @@ impl Client {
     }
 
     /// Assert nothing further arrives within the quiet window.
+    ///
+    /// A liveness ping is not something arriving. It carries no application
+    /// content, the peer answers it from inside the read, and the daemon sends
+    /// one precisely because the connection has been quiet.
     pub(crate) async fn quiet(&mut self) {
         match tokio::time::timeout(QUIET, self.ws.next()).await {
             Err(_) => {}
             Ok(None) => self.closed = true,
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
             Ok(Some(Ok(frame))) => panic!("expected silence, got {frame:?}"),
             Ok(Some(Err(e))) => panic!("expected silence, got a websocket error: {e}"),
         }

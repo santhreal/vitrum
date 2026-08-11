@@ -68,6 +68,9 @@ fn Harness(props: HarnessProps) -> Element {
     // an extra band on every paint is one more thing the row count has to
     // be read past.
     let update_standing = use_signal(crate::update::Standing::default);
+    // The row reads focus the way it does in the shipped window; without the
+    // context the first paint panics inside the row rather than here.
+    use_context_provider(|| Signal::new(crate::keys::Focus::Shell));
     CLOCK.with(|c| c.set(Some(millis)));
     STATE.with(|c| c.set(Some(state)));
     let clock = crate::clock::render_clock(millis(), 0);

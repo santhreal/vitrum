@@ -24,6 +24,11 @@ and exited successfully.
 Without the flag the query is never asked. The session starts at the origin, which
 is what a fresh session should do anyway, and there is no handshake to lose.
 
+`UPSTREAM.toml` is the authoritative copy of that list.
+`sh tools/upstream/check.sh --fork vendor-pty` downloads the pristine crate and
+fails if the real divergence is not the declared one, or if upstream has
+released a newer version. It runs weekly in CI.
+
 ## Why a fork and not a patch
 
 `[patch.crates-io]` applies to builds of this workspace and is ignored by anyone
@@ -35,3 +40,11 @@ upstream and shipped the hang, so the fork is a real, named dependency instead.
 When `portable-pty` lets a caller choose the pseudoconsole flags. The rest of the
 crate is upstream and is not modified, so tracking a new release means copying
 `src/` and reapplying four bytes.
+
+## Absorbing a new release
+
+1. `sh tools/upstream/check.sh --fork vendor-pty --patches /tmp/p` writes the
+   divergence as a patch against 0.9.0.
+2. Download the new version and replace `src/`.
+3. Reapply the patch, set the new version in `UPSTREAM.toml` and in
+   `Cargo.toml`, and run the check again.

@@ -1,26 +1,313 @@
-//! Keyboard actions, resolved against the focused row.
+//! Keyboard actions, resolved against the focused surface.
+//!
+//! # One table, folded once, matched everywhere
+//!
+//! A key press is turned into an action HERE, against
+//! [`ui::settings::live_chords`]: the shipped table, with the operator's
+//! rebindings applied and their saved presets appended. Every surface that
+//! can receive a key press comes through [`claim`], so a chord cannot work in
+//! one place and be dead in another.
+//!
+//! That is not a hypothetical. The preset half of the fold used to have no
+//! caller outside its own tests, so a shortcut an operator saved against a
+//! preset was displayed in Settings, listed in the overlay, checked for
+//! conflicts, and fired nothing.
+//!
+//! # Why the table is cached rather than folded per press
+//!
+//! The fold walks every shipped chord and every saved preset and allocates a
+//! `String` per row. Doing that on each key press would put it on the path
+//! between a keystroke and the agent seeing it, which is the one latency in
+//! this product an operator feels directly. It is folded when the profile
+//! changes instead, which is what [`crate::state::live::subscribe_keyboard`]
+//! delivers, and a press reads a shared snapshot.
+//!
+//! # Why the terminal wins by default
+//!
+//! The pane is where the operator types. A shell that claimed chords freely
+//! would eat Ctrl-A, Ctrl-E and Ctrl-K inside readline, so a chord reaches
+//! the shell from inside the pane only when its scope is
+//! [`Scope::Global`], and a printable key is never a candidate at all.
 
 use super::*;
 
-use crate::keymap::{AttentionKind, CustomBinding, Effect, Facts, FocusedSession, LayerKind};
+use std::sync::{Arc, LazyLock, RwLock};
 
-/// The wire prefix the bridge uses for a chord the operator defined.
-///
-/// A custom binding needs the webview to report the keystroke, and the webview
-/// only reports chords in the keymap table. Rather than teaching that table a
-/// second shape, a custom binding appears in it as an ordinary entry whose
-/// action is this prefix followed by the chord text, which is self-describing:
-/// a table left over from before a reorder still names the binding it meant,
-/// where a positional index would fire the wrong one.
-pub(crate) const CUSTOM_ACTION_PREFIX: &str = "custom:";
+use crate::keymap::{
+    AttentionKind, CustomBinding, Effect, Facts, FocusedSession, LayerKind, Scope, Shift,
+};
+use crate::launch::Chord;
+use crate::state::KeyboardPrefs;
+use crate::ui::settings::EffectiveChord;
 
-/// Handle one chord the bridge reported.
+#[cfg(test)]
+mod tests;
+
+/// What a key press turned out to mean.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Claim {
+    /// A chord in the live table, built-in or preset.
+    Action(KeyAction),
+    /// A chord the operator bound to their own action list. Carried as the
+    /// chord rather than the binding because the binding is looked up again
+    /// against the window's own profile at the moment it runs, and a binding
+    /// captured here could have been edited in between.
+    Custom(Chord),
+}
+
+/// Which surface had the key press.
 ///
-/// The custom bindings are consulted FIRST. That is the whole point of
+/// Not a boolean pair, because the four cases are not independent and the
+/// combinations that do not exist should not be representable: focus is in
+/// exactly one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Focus {
+    /// The pane. Everything printable belongs to the agent.
+    Terminal,
+    /// A text field in a dialog, the sidebar filter, the rename box.
+    TextInput,
+    /// A row in the session list, where the bare arrows traverse.
+    SessionList,
+    /// The window frame: no text entry and no list row has focus.
+    Shell,
+}
+
+/// Whether a chord with this scope may fire from this surface.
+///
+/// Pure and total, so the whole policy is one function a test can enumerate
+/// rather than a condition spread over the event handlers. Adding a
+/// [`Scope`] variant makes this fail to compile, which is the point.
+pub(crate) fn allows(scope: Scope, focus: Focus, layer_open: bool) -> bool {
+    match scope {
+        // Reserved for modifier combinations no terminal program binds, so it
+        // is claimed wherever focus is.
+        Scope::Global => true,
+        Scope::NotTerminal => focus != Focus::Terminal,
+        // The pane passes every printable key to the agent, so it is a text
+        // entry for this purpose as much as an input element is.
+        Scope::NotTextInput => !matches!(focus, Focus::Terminal | Focus::TextInput),
+        Scope::LayerOnly => layer_open,
+        // Never while a layer is open: the arrows belong to whatever the
+        // layer put on screen, and the list behind it is not what the
+        // operator is looking at.
+        Scope::SessionList => focus == Focus::SessionList && !layer_open,
+    }
+}
+
+/// What this key press means, or `None` to pass it on untouched.
+///
+/// Custom bindings are consulted FIRST, and that is the whole point of
 /// rebinding: an operator who put their own action list on Ctrl+B meant it to
 /// happen instead of the sidebar toggling, not as well as.
-pub(crate) fn dispatch_key(
-    wire: &str,
+///
+/// Pure in its inputs, including the table, so the resolution is testable
+/// without a window, a profile on disk or a display.
+pub(crate) fn claim(
+    pressed: &Chord,
+    prefs: &KeyboardPrefs,
+    table: &[EffectiveChord],
+    focus: Focus,
+    layer_open: bool,
+) -> Option<Claim> {
+    // A custom binding always carries Ctrl or Alt, which `parse_chord`
+    // enforces, so it can be treated as global without eating a printable
+    // key. A bare letter is refused at the moment it is bound rather than
+    // ignored here, so that the operator is told.
+    if prefs.custom.lookup(pressed).is_some() {
+        return Some(Claim::Custom(pressed.clone()));
+    }
+    table
+        .iter()
+        .find(|chord| matches(chord, pressed) && allows(chord.scope, focus, layer_open))
+        .map(|chord| Claim::Action(chord.action))
+}
+
+/// Whether one live chord is the key press that arrived.
+fn matches(chord: &EffectiveChord, pressed: &Chord) -> bool {
+    chord.key == pressed.key
+        && chord.ctrl == pressed.ctrl
+        && chord.alt == pressed.alt
+        && match chord.shift {
+            Shift::On => pressed.shift,
+            Shift::Off => !pressed.shift,
+            Shift::Any => true,
+        }
+}
+
+/// The live chord table and the rebindings behind it.
+///
+/// One lock rather than two, because the two are folded from the same publish
+/// and a reader that took them separately could match a table folded from one
+/// profile against the custom bindings of another.
+struct Live {
+    prefs: Arc<KeyboardPrefs>,
+    table: Arc<Vec<EffectiveChord>>,
+}
+
+/// The table as the profile last published it.
+///
+/// Seeded with the shipped table so a key press before the first publish
+/// resolves to the shipped chord rather than to nothing. A window whose
+/// profile has not been restored yet is still a window somebody can press
+/// Ctrl+Shift+N in.
+static LIVE: LazyLock<RwLock<Live>> = LazyLock::new(|| {
+    let prefs = KeyboardPrefs::default();
+    let table = ui::settings::live_chords(&prefs, &[]);
+    RwLock::new(Live {
+        prefs: Arc::new(prefs),
+        table: Arc::new(table),
+    })
+});
+
+/// Refold the table whenever a rebinding or a saved command changes.
+///
+/// Held for the life of the process on purpose: dropping the subscription
+/// would unsubscribe, and there is exactly one table however many windows are
+/// open.
+static WATCH: LazyLock<crate::state::live::Subscription> = LazyLock::new(|| {
+    crate::state::live::subscribe_keyboard(|prefs, presets| {
+        let table = ui::settings::live_chords(prefs, presets);
+        if let Ok(mut live) = LIVE.write() {
+            live.prefs = Arc::new(prefs.clone());
+            live.table = Arc::new(table);
+        }
+    })
+});
+
+/// Start folding the live table. Idempotent, and cheap after the first call.
+///
+/// Called once per window rather than once per process because a window is
+/// the thing that can be opened first; the `LazyLock` makes the second call
+/// an atomic load.
+pub(crate) fn watch_chords() {
+    LazyLock::force(&WATCH);
+}
+
+/// The rebindings and the folded table, as one consistent pair.
+fn live() -> (Arc<KeyboardPrefs>, Arc<Vec<EffectiveChord>>) {
+    match LIVE.read() {
+        Ok(live) => (Arc::clone(&live.prefs), Arc::clone(&live.table)),
+        // A poisoned lock means a fold panicked, which cannot happen from
+        // pure data. Falling back to the shipped table keeps the keyboard
+        // working rather than taking the window down with it.
+        Err(_) => {
+            let prefs = KeyboardPrefs::default();
+            let table = ui::settings::live_chords(&prefs, &[]);
+            (Arc::new(prefs), Arc::new(table))
+        }
+    }
+}
+
+/// Resolve a key press that arrived at `focus`, against the live table.
+pub(crate) fn claim_live(pressed: &Chord, focus: Focus, layer_open: bool) -> Option<Claim> {
+    let (prefs, table) = live();
+    claim(pressed, &prefs, &table, focus, layer_open)
+}
+
+/// Whether the shell takes this key press instead of the agent.
+///
+/// The pane's key handler calls this before encoding, and sends nothing when
+/// it answers `true`. That ordering is the contract: a chord the shell claims
+/// must not also reach the child, or Ctrl+Shift+N opens a session AND types
+/// an escape sequence into the one that was already there.
+///
+/// `digit` is the top-row digit the physical key carries, when it carries
+/// one. The layout's name for Ctrl+Shift+1 is `!` rather than `1`, so a chord
+/// bound to a digit would never match the keystroke it is named after; this
+/// is the same rule [`crate::keymap::chord_from_event`] applies to the shell's
+/// own key events, and `None` is correct for every key that is not a top-row
+/// digit.
+///
+/// The claim is posted to the window rather than performed here. This runs
+/// inside a toolkit callback with no access to the window's state, and the
+/// pane and the shell are on the same thread, so the post is a queue push and
+/// the action runs on the next turn of the loop.
+pub(crate) fn claim_in_pane(
+    window: WindowId,
+    key: pane::key::Key,
+    digit: Option<char>,
+    mods: pane::key::Mods,
+) -> bool {
+    let Some(name) = key_name(key, digit) else {
+        return false;
+    };
+    let pressed = Chord {
+        key: name,
+        ctrl: mods.ctrl,
+        alt: mods.alt,
+        shift: mods.shift,
+    };
+    // The pane only has focus when no layer is open: a layer is a webview
+    // surface on top of it and takes the keyboard with it.
+    let Some(claim) = claim_live(&pressed, Focus::Terminal, false) else {
+        return false;
+    };
+    let Some(tx) = crate::window_sender(window) else {
+        tracing::debug!("a pane outlived its window and claimed {pressed:?}");
+        return false;
+    };
+    let event = match claim {
+        Claim::Action(action) => ClientEvent::Key { action },
+        Claim::Custom(chord) => ClientEvent::CustomKey { chord },
+    };
+    // A send that fails means the window is closing. The keystroke is lost
+    // either way, and passing it to a child that is about to be detached is
+    // not better.
+    tx.send(event).is_ok()
+}
+
+/// The chord name a pane key press is bound under.
+///
+/// `None` for a key that cannot appear in a binding: the keypad's Enter is
+/// the main Enter as far as a chord is concerned, and a character with no
+/// lowercase form is passed through unchanged rather than dropped.
+fn key_name(key: pane::key::Key, digit: Option<char>) -> Option<String> {
+    use pane::key::{Key, Named};
+
+    if let Some(d) = digit {
+        return Some(d.to_string());
+    }
+    Some(match key {
+        Key::Char(c) => c.to_lowercase().collect(),
+        Key::Named(named) => match named {
+            Named::Enter | Named::KeypadEnter => "enter",
+            Named::Tab => "tab",
+            Named::Backspace => "backspace",
+            Named::Escape => "escape",
+            Named::Up => "arrowup",
+            Named::Down => "arrowdown",
+            Named::Right => "arrowright",
+            Named::Left => "arrowleft",
+            Named::Home => "home",
+            Named::End => "end",
+            Named::PageUp => "pageup",
+            Named::PageDown => "pagedown",
+            Named::Insert => "insert",
+            Named::Delete => "delete",
+            Named::F1 => "f1",
+            Named::F2 => "f2",
+            Named::F3 => "f3",
+            Named::F4 => "f4",
+            Named::F5 => "f5",
+            Named::F6 => "f6",
+            Named::F7 => "f7",
+            Named::F8 => "f8",
+            Named::F9 => "f9",
+            Named::F10 => "f10",
+            Named::F11 => "f11",
+            Named::F12 => "f12",
+        }
+        .to_string(),
+    })
+}
+
+/// Handle one chord bound to the operator's own action list.
+///
+/// The binding is looked up again here, against this window's profile, rather
+/// than carried from the press: the list can be edited between the two, and
+/// running the binding as it was is running a binding that no longer exists.
+pub(crate) fn dispatch_custom(
+    pressed: &Chord,
     bridge: Bridge,
     st: Signal<UiState>,
     attached: Signal<Option<SessionId>>,
@@ -28,41 +315,16 @@ pub(crate) fn dispatch_key(
     pending_terminate: Signal<Vec<SessionId>>,
     pending_open: Signal<Option<PendingLaunch>>,
 ) {
-    if let Some(text) = wire.strip_prefix(CUSTOM_ACTION_PREFIX) {
-        let found = launch::parse_chord(text).and_then(|chord| {
-            st.peek()
-                .daemon
-                .settings
-                .keyboard
-                .custom
-                .lookup(&chord)
-                .cloned()
-        });
-        match found {
-            Some(binding) => run_binding(
-                &binding,
-                bridge,
-                st,
-                attached,
-                opts,
-                pending_terminate,
-                pending_open,
-            ),
-            None => tracing::warn!("bridge sent custom chord {text:?}, which is not bound"),
-        }
-        return;
-    }
-
-    let Some(action) = KeyAction::parse(wire) else {
-        tracing::warn!("bridge sent unknown chord {wire:?}");
-        return;
-    };
-
-    // The built-in chord fired, so a custom binding on the same chord has to be
-    // caught here as well: the operator's list must win even when the webview
-    // matched the built-in table entry first.
-    if let Some(binding) = shadowing(st, action) {
-        run_binding(
+    let found = st
+        .peek()
+        .daemon
+        .settings
+        .keyboard
+        .custom
+        .lookup(pressed)
+        .cloned();
+    match found {
+        Some(binding) => run_binding(
             &binding,
             bridge,
             st,
@@ -70,40 +332,12 @@ pub(crate) fn dispatch_key(
             opts,
             pending_terminate,
             pending_open,
-        );
-        return;
+        ),
+        None => tracing::debug!(
+            "{} is no longer bound",
+            crate::launch::format_chord(pressed)
+        ),
     }
-
-    on_key(
-        action,
-        bridge,
-        st,
-        attached,
-        opts,
-        pending_terminate,
-        pending_open,
-    );
-}
-
-/// The custom binding sitting on this action's live chord, if there is one.
-///
-/// Resolved through [`ui::settings::effective_chords`] rather than the raw
-/// table, so a chord the operator has already rebound is still the chord a
-/// custom binding shadows. Cloned, because every effect below re-enters code
-/// that takes `st.write()` and a live read guard there panics.
-fn shadowing(st: Signal<UiState>, action: KeyAction) -> Option<CustomBinding> {
-    let snapshot = st.peek();
-    let prefs = &snapshot.daemon.settings.keyboard;
-    if prefs.custom.is_empty() {
-        return None;
-    }
-    let chord = ui::settings::effective_chords(prefs)
-        .into_iter()
-        .find(|chord| chord.action == action)?;
-    prefs
-        .custom
-        .shadowing(&chord.key, chord.ctrl, chord.alt, chord.shift)
-        .cloned()
 }
 
 /// Plan one custom binding against the live window and perform the result.
@@ -264,9 +498,7 @@ pub(crate) fn on_key(
             // Expanding first: focusing a field inside a 48px rail that hides
             // the input would put the caret nowhere.
             st.write().window.sidebar_collapsed = false;
-            bridge.cmd(BridgeCmd::FocusDom {
-                selector: "#rg-filter".to_string(),
-            });
+            bridge.focus_ui("#rg-filter".to_string());
         }
         KeyAction::OpenSearch => toggle_layer(st, Layer::Search),
         KeyAction::FocusSidebar => {
@@ -283,7 +515,7 @@ pub(crate) fn on_key(
                 // the caret out of the terminal, which is the point.
                 None => "#rg-sidebar-body".to_string(),
             };
-            bridge.cmd(BridgeCmd::FocusDom { selector });
+            bridge.focus_ui(selector);
         }
         KeyAction::NewSession => open_new_session(st, None),
         KeyAction::LaunchPreset(id) => launch_preset(bridge, st, pending_open, id),
@@ -364,9 +596,7 @@ pub(crate) fn jump_to_attention(bridge: Bridge, mut st: Signal<UiState>, directi
         w.reveal(id, tick.model);
         w.open(id, tick.now_ms);
     }
-    bridge.cmd(BridgeCmd::FocusDom {
-        selector: format!("#{}", ui::sidebar::row_id(id)),
-    });
+    bridge.focus_ui(format!("#{}", ui::sidebar::row_id(id)));
 }
 
 /// Move focus one row through the visible list, optionally extending the
@@ -376,7 +606,7 @@ pub(crate) fn jump_to_attention(bridge: Bridge, mut st: Signal<UiState>, directi
 /// bottom of a twenty-row list must stop, not spin back to the top: this is
 /// list traversal, not a queue, and the queue has its own key.
 ///
-/// Always asks the bridge to scroll the row into view. Focus moving to a row
+/// Always asks the shell to scroll the row into view. Focus moving to a row
 /// below the fold with no scroll is indistinguishable from the key doing
 /// nothing, which is defect 7's other half.
 pub(crate) fn step_rows(
@@ -408,7 +638,5 @@ pub(crate) fn step_rows(
             w.window.focused = Some(id);
         }
     }
-    bridge.cmd(BridgeCmd::FocusDom {
-        selector: format!("#{}", ui::sidebar::row_id(id)),
-    });
+    bridge.focus_ui(format!("#{}", ui::sidebar::row_id(id)));
 }

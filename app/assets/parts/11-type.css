@@ -11,11 +11,11 @@
  * No colour, no spacing, no layout, no motion. It declares no duration and
  * no animation, so it needs no `prefers-reduced-motion` block.
  *
- * The terminal is not ours. `#rg-term` gets its family and size from the
- * xterm.js options object built in `ui/settings.rs::term_options_script`,
- * and `vendor/xterm.css` declares no font-size at all, so nothing here can
- * reach the grid: no selector below names `rg-term`, `rg-terminal` (except
- * the empty-state overlay, which is DOM, not grid) or `--rg-terminal-*`.
+ * The terminal grid is not typeset here. It is painted by the native
+ * renderer, which takes its family and size from `state::TerminalPrefs`
+ * (`font_family`, `font_size_px`) and nothing else. No rule in this file can
+ * reach a cell: no selector below names `rg-term`, `rg-terminal` (except the
+ * empty-state overlay, which is chrome, not grid) or `--rg-terminal-*`.
  *
  * Authored at 1x in rem. The root font size is the user's text-scale lever
  * (`document.documentElement.style.fontSize`, 16px by default), and the
@@ -306,9 +306,9 @@
 /* --------------------------------------------------------------------- */
 
 /* Unstyled text inherited the browser's 16px, which is three steps above
- * anything the design uses. The shell's base is the body step. Safe to
- * inherit into #rg-term: xterm.js sets fontSize and fontFamily on the grid
- * from its own options object, so this never reaches a cell. */
+ * anything the design uses. The shell's base is the body step. It never
+ * reaches a cell: the grid's font comes from `state::TerminalPrefs`, read by
+ * the native renderer, and no cascade touches it. */
 .rg-app {
   font-family: var(--rg-font-ui);
   font-size: var(--rg-text-13);

@@ -3,15 +3,15 @@
 //! Screen size is the only thing here with no sensible default. A terminal's
 //! output is meaningless without it: the same bytes wrap at column 80 and at
 //! column 200 into two different screens, and `CSI 24 ; 80 H` addresses a cell
-//! that may not exist. The daemon knows the geometry (it set the PTY window size),
-//! and an asciicast header carries it, so a caller always has it.
+//! that may not exist. The daemon knows the geometry because it set the PTY
+//! window size, and an asciicast header carries it, so a caller always has it.
 //!
-//! # What used to be here
+//! # What is not here
 //!
-//! A keyframe stride and a ground-scan bound, both of which configured an index
-//! of cloned screens that no longer exists. Ghostty's terminal state cannot be
-//! cloned, so there is nothing to tune: a forward seek feeds the bytes it crosses
-//! and a rewind replays from the base of the stream. See [`crate::replay`].
+//! A keyframe stride and a ground-scan bound. Both configured an index of cloned
+//! screens that no longer exists: the engine's terminal state cannot be cloned,
+//! so there is nothing to tune. A forward seek feeds the bytes it crosses and a
+//! rewind replays from the base of the stream. See [`crate::replay`].
 
 use vitrum_grid::{MAX_CELLS, MAX_COLS, MAX_ROWS};
 
@@ -35,13 +35,13 @@ impl ReplayConfig {
     /// # Errors
     ///
     /// [`Error::Geometry`] when the size is not one [`vitrum_grid::CellGrid`]
-    /// accepts, checked here rather than at first use so a caller finds out before
-    /// building a replay.
+    /// accepts, checked here rather than at first use so a caller finds out
+    /// before building a replay.
     pub fn new(cols: u16, rows: u16) -> Result<Self> {
         let config = Self {
             cols,
             rows,
-            palette: Palette::XTERM,
+            palette: Palette::DEFAULT,
         };
         config.validate()?;
         Ok(config)

@@ -1,13 +1,20 @@
 //! Tests for the crate root.
 //!
-//! Split out of `main.rs`, which had reached six thousand lines with two
-//! fifths of them down here. Shipped code and the guards that police it are
-//! different reading tasks, and a file you scroll past a thousand assertions
-//! to reach the next function is a file nobody reads twice.
+//! Split out of `main.rs`, because shipped code and the guards that police it
+//! are different reading tasks and a file you scroll past a thousand
+//! assertions to reach the next function is a file nobody reads twice.
+//!
+//! What lives here is what `main.rs` itself owns: how a panel's density
+//! becomes a magnification, how a window claims and gives back a slot, how a
+//! second launch reaches the process that already has one, what the command
+//! line accepts, when the client gives up reconnecting, and what the document
+//! is allowed to contain. Everything narrower belongs to its own module's
+//! test file.
 
 mod actions;
 mod assets;
 mod integrations;
+mod no_javascript;
 mod platform_build;
 mod readme;
 mod startup;
@@ -193,8 +200,8 @@ fn a_platform_that_already_scaled_is_not_scaled_twice() {
 /// The sidebar default is a fraction of the window, not a constant.
 ///
 /// The shipped constant was 256 px: a fifth of a 1280 px window, and 6.7%
-/// of the 3840 px one this user actually has. The second number is a
-/// column of elided titles beside an ocean of empty terminal.
+/// of a 3840 px one. The second number is a column of elided titles beside
+/// an ocean of empty pane.
 #[test]
 fn the_sidebar_default_tracks_the_window_rather_than_a_constant() {
     let narrow = default_sidebar_width(1280.0);
@@ -211,8 +218,8 @@ fn the_sidebar_default_tracks_the_window_rather_than_a_constant() {
         );
     }
 
-    // The old constant was 6.7% of this user's window. The new default is
-    // not, and that ratio is the whole defect.
+    // The old constant was 6.7% of a 4K window. The new default is not, and
+    // that ratio is the whole defect.
     let share = wide / 3840.0;
     assert!(
         share > 0.10,
@@ -221,19 +228,19 @@ fn the_sidebar_default_tracks_the_window_rather_than_a_constant() {
     );
 }
 
-/// The terminal wins when the window is too narrow for both.
+/// The pane wins when the window is too narrow for both.
 ///
-/// A sidebar beside a 30-column terminal is a file manager. The floor is
-/// the stylesheet's minimum, because below that the sidebar shows neither
-/// a title nor a pill and is worse than useless.
+/// A sidebar beside a 30-column pane is a file manager. The floor is the
+/// stylesheet's minimum, because below that the sidebar shows neither a
+/// title nor a pill and is worse than useless.
 #[test]
-fn a_narrow_window_gives_the_room_to_the_terminal() {
+fn a_narrow_window_gives_the_room_to_the_pane() {
     assert_eq!(default_sidebar_width(500.0), SIDEBAR_MIN_PX);
     let cramped = default_sidebar_width(640.0);
     assert_eq!(cramped, SIDEBAR_MIN_PX);
     assert!(
         640.0 - cramped >= MIN_CONTENT_CSS_PX - 1.0,
-        "terminal left with {} px",
+        "pane left with {} px",
         640.0 - cramped
     );
 }
@@ -586,109 +593,6 @@ fn the_daemon_starts_itself_unless_told_not_to() {
     );
 }
 
-/// The DOM renderer is the shipped default and WebGL must stay selectable.
-///
-/// The default is load-bearing: measured on this machine, WebKitGTK
-/// composites a live WebGL layer at a steady 0.244% CPU and ~80 MB more
-/// PSS, with nothing on screen changing and no JS timer scheduled, against
-/// 0.000% for the DOM renderer. The throughput WebGL buys is headroom
-/// nobody at 20 agents can consume.
-#[test]
-fn renderer_defaults_to_dom_and_webgl_is_selectable() {
-    assert_eq!(
-        Options::parse(Vec::<String>::new()).unwrap().renderer,
-        Renderer::Dom
-    );
-    assert_eq!(
-        Options::parse(vec!["--renderer".into(), "dom".into()])
-            .unwrap()
-            .renderer,
-        Renderer::Dom
-    );
-    assert_eq!(
-        Options::parse(vec![
-            "--renderer".into(),
-            "webgl".into(),
-            "--fixture".into()
-        ])
-        .unwrap(),
-        Options {
-            fixture: true,
-            renderer: Renderer::Webgl,
-            server: wire::DEFAULT_WS_URL,
-            ui_scale: None,
-            // Implied by --fixture: a fixture window must never be handed
-            // to an instance talking to a real daemon.
-            standalone: true,
-            autostart: true,
-            token_file: None,
-        }
-    );
-}
-
-/// An unknown or missing renderer must be rejected. Falling back to the
-/// default on a typo would silently give the user the renderer they were
-/// explicitly trying to avoid, which is the whole reason the flag exists.
-#[test]
-fn bad_renderer_values_are_rejected() {
-    let err = Options::parse(vec!["--renderer".into(), "vulkan".into()]).unwrap_err();
-    assert!(err.message.contains("unknown renderer vulkan"), "{err}");
-    let err = Options::parse(vec!["--renderer".into()]).unwrap_err();
-    assert!(err.message.contains("--renderer needs a value"), "{err}");
-}
-
-/// The renderer names Rust writes into the page must be the ones the bridge
-/// switches on. A mismatch silently gives WebGL in every case, because the
-/// bridge's test is `!== "dom"`.
-#[test]
-fn renderer_names_match_what_the_bridge_checks() {
-    assert_eq!(Renderer::Dom.as_str(), "dom");
-    assert_eq!(Renderer::Webgl.as_str(), "webgl");
-    assert!(
-        BOOTSTRAP_JS.contains(r#"window.__vitrum_renderer !== "dom""#),
-        "bridge no longer reads the injected renderer choice"
-    );
-}
-
-/// The WebGL addon ships only when WebGL is the renderer.
-///
-/// It is 100 KB of JavaScript and it used to be injected unconditionally,
-/// so every window on the DEFAULT `dom` path parsed a bundle nothing would
-/// ever call, twenty times over in a twenty-window session. The renderer is
-/// a command-line option and this head is built once per process, so there
-/// is no path where a window needs the addon after being told not to load
-/// it.
-///
-/// Locked in both directions: dropping it on the dom path is the saving,
-/// and KEEPING it on the webgl path is what stops that saving from
-/// silently breaking the renderer the flag exists to select.
-#[test]
-fn the_webgl_addon_ships_only_for_the_webgl_renderer() {
-    let dom = Options::parse(Vec::<String>::new()).expect("no args parses");
-    assert_eq!(dom.renderer, Renderer::Dom, "the default must stay dom");
-
-    let webgl =
-        Options::parse(vec!["--renderer".into(), "webgl".into()]).expect("--renderer webgl parses");
-
-    // `document_head` memoises into a process-wide OnceLock, so it cannot
-    // be called twice with different options in one test binary. Assert
-    // over the same string it builds instead.
-    let head_for = |opts: &Options| {
-        if opts.renderer == Renderer::Webgl {
-            format!("<script>{ADDON_WEBGL_JS}</script>")
-        } else {
-            String::new()
-        }
-    };
-    assert!(
-        head_for(&dom).is_empty(),
-        "the dom path still ships the WebGL bundle"
-    );
-    assert!(
-        head_for(&webgl).contains("WebglAddon"),
-        "the webgl path no longer ships the addon it needs"
-    );
-}
 /// The default option set, pinned whole so a new field cannot be added
 /// with a surprising default and go unnoticed.
 #[test]
@@ -697,7 +601,6 @@ fn default_options_connect_for_real() {
         Options::parse(Vec::<String>::new()).unwrap(),
         Options {
             fixture: false,
-            renderer: Renderer::Dom,
             server: wire::DEFAULT_WS_URL,
             ui_scale: None,
             standalone: false,
@@ -721,7 +624,6 @@ fn fixture_requires_its_flag() {
         Options::parse(vec!["--fixture".to_string()]).unwrap(),
         Options {
             fixture: true,
-            renderer: Renderer::Dom,
             server: wire::DEFAULT_WS_URL,
             ui_scale: None,
             standalone: true,
@@ -767,7 +669,10 @@ fn a_non_websocket_server_url_is_rejected() {
         "{err}"
     );
     let err = Options::parse(vec!["--server".into()]).unwrap_err();
-    assert!(err.message.contains("--server needs a ws:// or wss:// URL"), "{err}");
+    assert!(
+        err.message.contains("--server needs a ws:// or wss:// URL"),
+        "{err}"
+    );
 }
 
 /// An unknown argument must be rejected with the usage text, not silently
@@ -779,10 +684,7 @@ fn a_non_websocket_server_url_is_rejected() {
 #[test]
 fn unknown_arguments_are_rejected_loudly() {
     let err = Options::parse(vec!["--fixtures".to_string()]).unwrap_err();
-    assert!(
-        err.message.contains("unknown argument --fixtures"),
-        "{err}"
-    );
+    assert!(err.message.contains("unknown argument --fixtures"), "{err}");
     assert!(err.message.contains("usage: vitrum"), "{err}");
     assert_ne!(err.exit.code(), 0, "a typo exited successfully");
 }
@@ -833,7 +735,7 @@ fn a_deep_link_url_is_not_an_unknown_argument() {
 /// is none, and it is here because a window can now be pointed at a daemon
 /// across a network: a laptop that closes its lid must not need a click to
 /// come back. What keeps that honest is that it is a schedule rather than a
-/// loop -- each attempt is one `sleep` that fires once, a connected window
+/// loop: each attempt is one `sleep` that fires once, a connected window
 /// has none outstanding, and the schedule terminates.
 #[test]
 fn the_reconnect_schedule_backs_off_and_terminates() {
@@ -869,9 +771,9 @@ fn the_reconnect_schedule_backs_off_and_terminates() {
 /// Doubling must not overflow into a shorter wait.
 ///
 /// `base << attempt` overflows a u64 at attempt 64 and wraps to zero, which
-/// would turn the far end of the schedule into a tight reconnect loop --
-/// the exact failure this design exists to avoid, arriving only after a
-/// long outage when nobody is watching.
+/// would turn the far end of the schedule into a tight reconnect loop: the
+/// exact failure this design exists to avoid, arriving only after a long
+/// outage when nobody is watching.
 #[test]
 fn a_long_outage_never_wraps_into_a_tight_loop() {
     for n in 0..RECONNECT_ATTEMPTS {
@@ -973,230 +875,18 @@ fn help_text_contains_no_unrendered_escapes() {
              was mis-escaped: {help}"
         );
     }
-    // The percent that SHOULD be there still is, so this cannot be
-    // satisfied by deleting the number.
-    assert!(
-        help.contains("0.24% idle CPU"),
-        "the measured idle-CPU cost of the WebGL renderer left the help: {help}"
-    );
 }
 
-/// The bootstrap must be present and must not terminate: the JS half is
-/// what keeps the eval channel to Rust open. An early return there closes
-/// the channel and the app goes deaf to the server with no error anywhere.
-#[test]
-fn bootstrap_js_holds_the_channel_open() {
-    assert!(
-        BOOTSTRAP_JS.contains("for (;;)"),
-        "bootstrap.js lost its command loop"
-    );
-    assert!(
-        BOOTSTRAP_JS.contains("await dioxus.recv()"),
-        "bootstrap.js lost its receive path"
-    );
-}
-
-/// The bridge must not introduce a timer, an interval, or an animation
-/// frame. Any one of them is a wakeup per tick for as long as the window is
-/// open, which is the specific idle-CPU bug this client exists to avoid.
-#[test]
-fn bootstrap_js_has_no_timers_or_animation() {
-    for banned in ["setInterval", "requestAnimationFrame", "setTimeout"] {
-        assert!(
-            !BOOTSTRAP_JS.contains(banned),
-            "bootstrap.js uses {banned}, which wakes the process while idle"
-        );
-    }
-}
-
-/// The terminal's colours must be resolved against the themed subtree, not
-/// the document element.
+/// One WebKit context and one web process, however many windows are open.
 ///
-/// `data-theme` is set on `div.rg-app` (see the `rsx!` above), never on
-/// `<html>`. `cssVar` defaulted to `getComputedStyle(document.documentElement)`,
-/// so `[data-theme="light"]` never matched for it and every terminal colour
-/// resolved to the `:root` dark value. The light palette declares
-/// `--rg-terminal-bg: #ffffff` and the running binary painted `#08080a`,
-/// on a fresh launch as well as a live switch: light mode shipped with a
-/// black terminal.
-///
-/// Custom properties inherit, so reading from the terminal's own container
-/// resolves whatever theme is in force. This asserts the colours go through
-/// `termTheme(el, ...)` and that no terminal colour is read without an
-/// element.
-///
-/// `termTheme` now takes the settings push too, because a named palette
-/// from the Colours row arrives whole from `termpalette.rs` and never
-/// touches CSS. The element argument is still required: the default
-/// preference is to follow the app theme, and that path is the one this
-/// guard was written for.
-#[test]
-fn the_terminal_theme_is_read_from_its_own_container() {
-    // A bare `contains` is satisfied by a MENTION, so commenting the real
-    // read out, hardcoding the dark palette and leaving a `// was:` line
-    // behind would ship a black terminal in light mode with this guard
-    // still green. That is precisely the regression it exists to prevent.
-    // Matching a trimmed line start rejects the comment and survives
-    // reindentation, which anchoring on "\n    theme:" would not.
-    assert!(
-        BOOTSTRAP_JS
-            .lines()
-            .any(|l| l.trim_start().starts_with("theme: termTheme(el,")),
-        "the Terminal no longer takes its theme from termTheme(el, ...); a \
-         mention in a comment does not count, because commenting the read \
-         out and hardcoding the dark palette is the regression"
-    );
-    // The follow-the-app-theme branch must still resolve against the
-    // element. `termTheme` returning the pushed object unconditionally
-    // would satisfy the clause above and blank the grid for every operator
-    // who never opened the Colours row.
-    assert!(
-        BOOTSTRAP_JS.contains("cssTheme(el)"),
-        "nothing falls back to the stylesheet, so following the app theme \
-         hands xterm an empty palette"
-    );
-    // And pin the resolver itself. The clause above checks that each read
-    // is HANDED an element, which a `styleOf` that accepts the argument
-    // and then discards it satisfies completely. That mutation was run:
-    // reverting `styleOf` to read `document.documentElement` reintroduces
-    // the light-theme defect verbatim, and it passed the clause above, the
-    // colour-read scan below, and three separate JS harnesses. Four checks
-    // blind to the bug they were written for, because an instrument that
-    // returns one palette for every node cannot represent the distinction
-    // the code under test exists to make.
-    assert!(
-        BOOTSTRAP_JS
-            .lines()
-            .any(|l| l.trim() == "return getComputedStyle(el || document.documentElement);"),
-        "styleOf must resolve against the element it is given; discarding \
-         it resolves every terminal colour against <html>, which never \
-         carries data-theme, and light mode ships a black terminal"
-    );
-    for name in [
-        "--rg-terminal-bg",
-        "--rg-terminal-fg",
-        "--rg-terminal-selection",
-    ] {
-        for (at, _) in BOOTSTRAP_JS.match_indices(name) {
-            let rest = &BOOTSTRAP_JS[at..];
-            let call = &rest[..rest.find(')').unwrap_or(rest.len())];
-            assert!(
-                call.matches(',').count() >= 2,
-                "{name} is read without an element, so it resolves against \
-                 <html>, which never carries data-theme: {call}"
-            );
-        }
-    }
-}
-
-/// Picking WebGL in Settings must work without a command-line flag.
-///
-/// THE BUG: the addon script was emitted into the document head only when
-/// `opts.renderer == Webgl`, which `--renderer webgl` sets and nothing
-/// else does. The Terminal settings row offered WebGL anyway, so an
-/// operator who picked it got `WebglAddon is not defined`, a red error
-/// flash and a silent revert to DOM. Restarting did not help, because the
-/// head still keyed off the flag, and no copy anywhere mentioned one.
-///
-/// Two halves, both required. The source must always be present, and it
-/// must NOT be in `loadVendor`'s eager list, because compiling 100 KB in
-/// every window is exactly the cost lazy vendor loading exists to avoid.
-#[test]
-fn the_webgl_renderer_needs_no_command_line_flag() {
-    let bare = Options::parse(Vec::<String>::new()).expect("no arguments parses");
-    assert_eq!(
-        bare.renderer,
-        Renderer::Dom,
-        "this guard is about the DEFAULT launch shipping the addon"
-    );
-    assert!(
-        document_head(bare).contains("id=\"rg-vendor-webgl\""),
-        "a default launch ships no WebGL source, so the settings row can \
-         never turn it on"
-    );
-    let eager = BOOTSTRAP_JS
-        .split_once("function loadVendor()")
-        .expect("bootstrap.js has no loadVendor")
-        .1;
-    let body = &eager[..eager.find("\n}").unwrap_or(eager.len())];
-    assert!(
-        !body.contains("rg-vendor-webgl"),
-        "loadVendor compiles the WebGL addon eagerly, which costs every \
-         DOM-renderer window 100 KB of parse work it never uses"
-    );
-    assert!(
-        BOOTSTRAP_JS.contains("function loadWebgl()") && BOOTSTRAP_JS.contains("if (!loadWebgl())"),
-        "nothing compiles the addon on demand, so selecting WebGL at \
-         runtime still throws"
-    );
-}
-
-/// A search hit must carry its byte offset all the way to the grid.
-///
-/// THE BUG: the tooltip read "Jump to this line (byte N of this session's
-/// output)" and the handler was written `|(id, _line_seq)|`. The offset
-/// was discarded, the session was focused, the usual head-anchored history
-/// was painted, and the operator landed wherever that stopped, which for a
-/// hit written an hour ago is nowhere near the line. The comment above it
-/// said "scroll-to-offset is not built", which was true and shipped
-/// underneath a tooltip that promised otherwise.
-///
-/// Four links in the chain, each breakable on its own and each silent when
-/// broken, so all four are asserted here.
-#[test]
-fn a_search_hit_carries_its_offset_to_the_grid() {
-    // The SHIPPED half only. Every needle below appears in this test's own
-    // body, so scanning the whole file would make each assertion satisfy
-    // itself and the guard would stay green with the feature deleted.
-    let code = crate::testkit::shell();
-    let code = code.as_str();
-    assert!(
-        !code.contains("_line_seq"),
-        "the search handler still discards the hit offset"
-    );
-    assert!(
-        code.contains("state::HistoryIntent::Jump(line_seq)"),
-        "activating a hit records no jump, so reconcile has nothing to \
-         anchor the request on"
-    );
-    assert!(
-        code.contains("state::HistoryIntent::Jump(seq) => seq.saturating_add"),
-        "the scrollback request is still head-anchored, so a hit older \
-         than one window is not among the painted bytes to scroll to"
-    );
-    assert!(
-        BOOTSTRAP_JS.contains("scrollToLine"),
-        "the bridge never moves the viewport, so the jump ends at a repaint"
-    );
-    // The tooltip is the promise, and it may only say "jump" while the
-    // chain above is intact. Tying the two together here is what stops the
-    // promise and the behaviour drifting apart again.
-    let search = include_str!("../ui/search.rs");
-    assert!(
-        search.contains("Jump to this line"),
-        "the tooltip was reworded; if the promise changed this guard must \
-         change with it rather than be left asserting a dead string"
-    );
-}
-
-/// Both memory patches in the vendored `dioxus-desktop` must survive a
-/// re-vendor.
-///
-/// Upstream gives every window its own `WebContext` and its own webview,
-/// which on Linux means its own `WebKitNetworkProcess` and its own
-/// `WebKitWebProcess`. Two edits in `vendor/src/webview.rs` collapse both:
-/// one shared context for the process, and every webview built as a
-/// *related view* of a still-live one so they share a single web process.
-/// Together they are worth roughly 850 MB at twenty windows, measured:
-/// 1101.0 MB before, 395.6 MB after.
-///
-/// Neither edit has a runtime surface a unit test can reach, and both are
-/// in vendored code, which is exactly the code a routine dependency bump
-/// overwrites without anybody noticing. The failure is silent: the
-/// application still works, it just quietly costs three times the memory.
-/// So this reads the vendored source. `relation_target` must be consulted
-/// before the build and the built view registered after it, or later
-/// windows stop sharing.
+/// The shell around the pane is still a webview, and the fork it is built
+/// on is where the sharing lives. Upstream builds a fresh `WebContext` per
+/// webview and each one starts its own network process; the fork shares
+/// one, and relates each new view to a live one so they also share a web
+/// process. Both are one-line changes in a vendored file that a routine
+/// upstream merge overwrites without anybody noticing, and the failure is
+/// silent: the application still works, it just quietly costs three times
+/// the memory. So this reads the vendored source.
 #[test]
 fn the_vendored_webview_keeps_one_context_and_one_web_process() {
     let src = include_str!("../../../vendor/src/webview.rs");
@@ -1237,55 +927,34 @@ fn the_vendored_webview_keeps_one_context_and_one_web_process() {
     );
 }
 
-/// The cursor must not blink. xterm.js implements blinking with a repeating
-/// timer that repaints the cell forever, on an otherwise idle window.
-#[test]
-fn terminal_cursor_does_not_blink() {
-    assert!(
-        BOOTSTRAP_JS.contains("cursorBlink: false"),
-        "cursorBlink must be explicitly disabled"
-    );
-    assert!(
-        !BOOTSTRAP_JS.contains("cursorBlink: true"),
-        "cursor blinking is a repeating repaint on an idle window"
-    );
-}
-
 /// Every stylesheet in [`stylesheets`] actually reaches the document, and
 /// nothing reaches it that the guards do not cover.
 ///
 /// The guards below iterate that list, so a sheet missing from it is a
 /// sheet exempt from all of them, silently.
 ///
-/// This used to count `<style>` tags and compare the number to the list's
-/// length. That was a proxy, and it broke the moment the sheets were
+/// This used to count `<style>` elements and compare the number to the
+/// list's length. That was a proxy, and it broke the moment the sheets were
 /// concatenated into one element for the cascade's sake: the head was
 /// correct and the guard failed. Counting the CONTENT is the real check
 /// and is strictly stronger, because a sheet silently dropped from the
-/// bundle fails it whether or not the tag count still adds up.
-///
-/// Then the tag count came back as the literal two, and adding the boot
-/// splash's `<style>` read as an off-by-one instead of as a decision
-/// nobody had recorded. The expectation is now derived from
-/// [`style_origins`], which is what the head is built from: a fourth sheet
-/// is red until its row appears below, and a stale row is red once its
-/// sheet stops shipping.
+/// bundle fails it whether or not the element count still adds up.
 #[test]
 fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
-    /// A `<style>` the design-system guards do not read, and the reason.
+    /// A style element the design-system guards do not read, and the
+    /// reason.
     ///
     /// The guards iterate `stylesheets()`, so the bundle built from that
     /// array is covered by construction. Everything else is outside their
     /// reach and says so here in writing.
-    const GUARD_EXEMPT: &[(&str, &str)] = &[
-        (
-            "vendored xterm.css",
-            "vendored, and not held to our motion, colour or grid rules",
-        ),
-    ];
+    ///
+    /// Empty. It held one row for a vendored stylesheet that came with a
+    /// JavaScript terminal, and that stylesheet is gone with it: every
+    /// declaration in the document is now this project's own and is held
+    /// to this project's motion, colour and grid rules.
+    const GUARD_EXEMPT: &[(&str, &str)] = &[];
 
-    let opts = Options::parse(Vec::<String>::new()).expect("no args always parses");
-    let head = document_head(opts);
+    let head = chrome::document_head();
 
     for (name, sheet) in stylesheets() {
         let stripped = strip_css(sheet);
@@ -1310,7 +979,7 @@ fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
             let rest = &head[at + tag.len()..];
             let end = rest
                 .find("</style>")
-                .expect("every <style> the head opens is closed");
+                .expect("every style element the head opens is closed");
             &rest[..end]
         })
         .collect();
@@ -1368,6 +1037,46 @@ fn every_shipped_stylesheet_is_covered_by_the_css_guards() {
     }
 }
 
+/// The document carries declarations and nothing else.
+///
+/// The head is the one place in this program that assembles a document, so
+/// it is the one place a script could be reintroduced without touching a
+/// file whose name gives it away. `tests::no_javascript` reads the tree;
+/// this reads the bytes the window is actually built from, which is the
+/// claim an operator cares about.
+#[test]
+fn the_document_head_is_stylesheets_and_nothing_else() {
+    let head = chrome::document_head();
+    let mut rest = head;
+    let mut elements = 0usize;
+    while let Some(open) = rest.find('<') {
+        assert!(
+            rest[open..].starts_with("<style>"),
+            "the head opens an element that is not a stylesheet: {:?}",
+            &rest[open..(open + 40).min(rest.len())]
+        );
+        let close = rest[open..]
+            .find("</style>")
+            .expect("every style element the head opens is closed");
+        let body = &rest[open + "<style>".len()..open + close];
+        assert!(
+            !body.contains('<'),
+            "a stylesheet body carries markup, so it is not a stylesheet"
+        );
+        elements += 1;
+        rest = &rest[open + close + "</style>".len()..];
+    }
+    assert!(
+        rest.trim().is_empty(),
+        "the head carries text outside a stylesheet: {rest:?}"
+    );
+    assert_eq!(
+        elements,
+        style_origins().len(),
+        "the head does not carry one element per named origin"
+    );
+}
+
 /// No stylesheet may hide a comment delimiter inside a string.
 ///
 /// `strip_css` runs over every sheet before it is inlined, and it is a
@@ -1397,10 +1106,10 @@ fn no_css_string_hides_a_comment_delimiter() {
 
 /// Stripping removes comments and keeps every declaration.
 ///
-/// The saving is real (37.3 MB across twenty windows) and worthless if it
-/// also removes a rule. Asserted on a shape that has caught the two
-/// mistakes a scanner like this makes: a comment between declarations, and
-/// one that opens immediately after a value with no space.
+/// The saving is real and worthless if it also removes a rule. Asserted on
+/// a shape that has caught the two mistakes a scanner like this makes: a
+/// comment between declarations, and one that opens immediately after a
+/// value with no space.
 #[test]
 fn stripping_keeps_the_declarations_and_drops_the_prose() {
     let src = ".a {\n  color: red; /* why red */\n  /* a whole line */\n  gap: 4px;/*tight*/\n}";
@@ -1419,10 +1128,22 @@ fn stripping_keeps_the_declarations_and_drops_the_prose() {
     );
 }
 
+/// The stylesheets are inlined into style elements, so none of them may
+/// close one early and dump the remainder into the document as text.
+#[test]
+fn stylesheets_cannot_break_out_of_their_style_tags() {
+    for (name, css) in stylesheets() {
+        assert!(
+            !css.to_ascii_lowercase().contains("</style"),
+            "{name} contains a closing style tag"
+        );
+    }
+}
+
 /// Every stylesheet concatenated, for resolving a token declared in one
 /// file and used in another.
 ///
-/// The browser sees one document with one cascade; `--rg-t-fast` is
+/// The engine sees one document with one cascade; `--rg-t-fast` is
 /// declared in sidebar.css and used in settings.css, and a per-file
 /// resolver would find no declaration, leave the `var()` unresolved, and
 /// report that settings.css declares no transitions at all. That is a
@@ -1489,9 +1210,9 @@ fn styled(css: &str, class: &str) -> bool {
 /// An unstyled class is not an error anywhere: the element renders, with
 /// no padding, no colour and no box, and looks like a layout bug rather
 /// than a missing rule. `sidebar.rs` has guarded itself against this for a
-/// while. Every other module — the settings sheet, both dialogs, the
-/// titlebar, the tab strip, the menu, the shortcuts overlay — had no such
-/// check at all, which is most of the surfaces in the product.
+/// while. Every other module, the settings sheet, both dialogs, the
+/// titlebar, the menu, the shortcuts overlay, had no such check at all,
+/// which is most of the surfaces in the product.
 ///
 /// The class names are read out of each module's own source rather than a
 /// hand-kept list, because a list is exactly the thing that silently stops
@@ -1523,13 +1244,12 @@ fn no_ui_module_emits_an_unpainted_class() {
     for (name, src) in modules {
         // Anchor on the test MODULE, not on the first `#[cfg(test)]`.
         //
-        // `main.rs` carries `#[cfg(test)] mod testkit;` at line 26, so the
-        // short anchor truncates its scan to 26 lines and every check
-        // below passes on an almost empty string. That is how adding
-        // main.rs to this array in the first place verified nothing: the
-        // unpainted density classes it was added to catch sit at line
-        // 1842, far past the cut. Three people hit this same trap today in
-        // three different guards.
+        // `main.rs` carries `#[cfg(test)] mod testkit;` near the top, so
+        // the short anchor truncates its scan to a couple of dozen lines
+        // and every check below passes on an almost empty string. That is
+        // how adding main.rs to this array in the first place verified
+        // nothing: the unpainted density classes it was added to catch sat
+        // far past the cut.
         //
         // The length assertion is the part that matters. An anchor that
         // stops matching degrades to scanning the WHOLE file, which is
@@ -1541,11 +1261,11 @@ fn no_ui_module_emits_an_unpainted_class() {
             .split_once("\n#[cfg(test)]\nmod tests {")
             .map_or(src, |(before, _)| before);
         // The subject is "the scan still sees markup", not "the scan is
-        // big". A byte-fraction threshold is the wrong shape and I had it
-        // wrong first: settings.rs is legitimately more than half tests
-        // and failed a half-the-file rule while scanning perfectly well.
-        // Every module in this list emits at least one class, so a scan
-        // that finds none has collapsed, whatever its size.
+        // big". A byte-fraction threshold is the wrong shape: settings.rs
+        // is legitimately more than half tests and would fail a
+        // half-the-file rule while scanning perfectly well. Every module
+        // in this list emits at least one class, so a scan that finds none
+        // has collapsed, whatever its size.
         assert!(
             markup.contains("class: \""),
             "the {name} scan found no markup at all, so it is checking \
@@ -1576,8 +1296,8 @@ fn no_ui_module_emits_an_unpainted_class() {
 
 /// A card is exactly `--rg-card-h` tall, whatever it carries.
 ///
-/// This guards the defining layout defect of this build. Row pitch used to
-/// alternate 86 and 68 px down the sidebar, and the cause was not a stray
+/// This guards the defining layout defect of an earlier build. Row pitch
+/// alternated 86 and 68 px down the sidebar, and the cause was not a stray
 /// element: line three rendered only when a disposition or completion
 /// badge earned it, growing that one card past the height its neighbours
 /// had taught the eye to expect. Uneven pitch is a P0 here, because
@@ -1598,9 +1318,6 @@ fn no_ui_module_emits_an_unpainted_class() {
 /// below the natural height is not a constraint, it is a comment, and
 /// `--rg-card-h` sat at 58px against a 66px natural height where it never
 /// bound at any value. A hard height cannot be inert.
-///
-/// It is the reference's own mechanism too: T3's row is `h-[4.875rem]`,
-/// a fixed height, at `SidebarV2.tsx:921`.
 #[test]
 fn a_card_is_one_height_whatever_it_carries() {
     let css = strip_css_comments(&all_css());
@@ -1668,17 +1385,16 @@ fn a_card_is_one_height_whatever_it_carries() {
 /// `ui/keybinds.rs`: `.rg-keys__chord { flex: 0 0 11.5rem }`. That basis
 /// alone did NOT hold the column, because a flex item defaults to
 /// `min-width: auto`, which floors it at its own min-content width. The two
-/// widest chords in the shortcuts sheet (`Ctrl+Shift+Tab /
-/// Ctrl+Shift+PageUp` and `Ctrl+K / Ctrl+Shift+F`) outgrew the basis and
-/// pushed their descriptions right: measured on the running binary, one
-/// column had every description at x=588 and one at x=638, a left-edge
-/// ladder in a design whose stated rule is one left edge per column. The
-/// `min-width: 0` floor is the fix and it is invisible until a chord grows,
-/// so a future chord rename can reintroduce it silently.
+/// widest chords in the shortcuts sheet outgrew the basis and pushed their
+/// descriptions right: measured on the running binary, one column had every
+/// description at x=588 and one at x=638, a left-edge ladder in a design
+/// whose stated rule is one left edge per column. The `min-width: 0` floor
+/// is the fix and it is invisible until a chord grows, so a future chord
+/// rename can reintroduce it silently.
 ///
 /// GRID, in the shortcuts sheet: 18-dialog.css makes `.rg-keys__group` a
 /// two-column grid and dissolves the row into it. Here `minmax(0, 11.5rem)`
-/// carries both bounds in one track — the 0 is the same floor the flex
+/// carries both bounds in one track: the 0 is the same floor the flex
 /// layout spells `min-width`, and the 11.5rem is a CAP rather than a spend,
 /// so a group of short chords hands the slack to its descriptions instead of
 /// wrapping them four lines deep. The dissolve is asserted too: without
@@ -1771,7 +1487,7 @@ fn css_comment_stripper_removes_only_comments() {
     assert_eq!(strip_css_comments("/*1*/keep/*2*/this/*3*/"), "keepthis");
 }
 
-/// Every `transition:` duration in either stylesheet, in milliseconds.
+/// Every `transition:` duration in every stylesheet, in milliseconds.
 ///
 /// Parsed rather than pattern-matched because the rule is about duration,
 /// not about the word. A shorthand carries its durations inline
@@ -1782,7 +1498,7 @@ fn transition_durations(css: &str) -> Vec<(String, f64)> {
     // The sheet's own declarations first, so a caller passing a snippet
     // with a local token gets that value, then every shipped stylesheet,
     // because `--rg-t-fast` is declared in sidebar.css and used in
-    // settings.css and the browser sees one cascade.
+    // settings.css and the engine sees one cascade.
     let tokens = strip_css_comments(&format!("{css}\n{}", all_css()));
     let code = resolve_custom_properties_from(&strip_css_comments(css), &tokens);
     let mut out = Vec::new();
@@ -1809,8 +1525,8 @@ fn transition_durations(css: &str) -> Vec<(String, f64)> {
 /// reading the declarations from `sources` rather than from the text being
 /// substituted into.
 ///
-/// Both stylesheets keep their durations in custom properties, which is
-/// the right thing to do and makes a literal scan for "90ms" useless: the
+/// Every stylesheet keeps its durations in custom properties, which is the
+/// right thing to do and makes a literal scan for "90ms" useless: the
 /// declaration reads `transition: color var(--rg-t-fast) linear`. Without
 /// this, the duration cap would silently pass on any stylesheet that used
 /// a token, which is every stylesheet in this repo.
@@ -1822,7 +1538,7 @@ fn resolve_custom_properties_from(css: &str, sources: &str) -> String {
     // The reduced-motion block redeclares every duration token as `0s`.
     // Those are the zeroed copies, never the live values, and a table
     // built from them reports that a stylesheet transitions in no time at
-    // all -- source that does not exist. Dropped before anything is read.
+    // all: source that does not exist. Dropped before anything is read.
     let sources = without_reduced_motion(sources);
     let mut vars: Vec<(String, String)> = Vec::new();
     for decl in sources.split(';') {
@@ -1944,7 +1660,7 @@ fn transition_parser_reads_durations_and_ignores_delays() {
     assert_eq!(ms, vec![90.0, 120.0], "{got:?}");
     assert!(transition_durations(".a { color: red; }").is_empty());
 
-    // Both stylesheets hold their durations in custom properties, so the
+    // The stylesheets hold their durations in custom properties, so the
     // parser has to resolve them or it measures nothing at all.
     let via_var =
         transition_durations(":root { --t: 120ms; }\n.a { transition: color var(--t) linear; }");
@@ -1954,7 +1670,7 @@ fn transition_parser_reads_durations_and_ignores_delays() {
     );
 }
 
-/// Longest transition either stylesheet may declare.
+/// Longest transition any stylesheet may declare.
 ///
 /// 200ms rather than 150ms, for exactly one case: the status pill's colour
 /// change. The pill's word and glyph swap instantly, so the fade is not
@@ -1966,16 +1682,16 @@ const MAX_TRANSITION_MS: f64 = 200.0;
 
 /// Longest transition allowed on a property that triggers layout.
 ///
-/// Layout is the expensive kind of motion: the terminal grid refits for
-/// the whole duration. One property is allowed to do it at all, and it is
-/// capped tighter than the paint-only ones.
+/// Layout is the expensive kind of motion: the pane refits for the whole
+/// duration. One property is allowed to do it at all, and it is capped
+/// tighter than the paint-only ones.
 const MAX_LAYOUT_TRANSITION_MS: f64 = 150.0;
 
-/// The only layout property either stylesheet may transition.
+/// The only layout property a stylesheet may transition.
 ///
 /// The sidebar's collapse IS a width change and there is nothing else to
-/// animate; translating instead would slide the terminal pane out from
-/// under itself. Every other geometric property is banned outright.
+/// animate; translating instead would slide the pane out from under
+/// itself. Every other geometric property is banned outright.
 const ALLOWED_LAYOUT_PROPERTY: &str = "width";
 
 /// Geometric properties a transition must never name, because animating
@@ -1984,7 +1700,7 @@ const BANNED_LAYOUT_PROPERTIES: [&str; 8] = [
     "height", "top", "left", "right", "bottom", "margin", "padding", "flex",
 ];
 
-/// Neither stylesheet may loop, and no transition may outstay its welcome.
+/// No stylesheet may loop, and no transition may outstay its welcome.
 ///
 /// The two halves are different rules and only one of them is absolute. A
 /// LOOPING animation repaints the window at the display's refresh rate for
@@ -2013,7 +1729,8 @@ fn stylesheets_never_loop_and_keep_transitions_brief() {
         let pinned = code.matches("animation-iteration-count: 1").count();
         assert_eq!(
             shorthands, pinned,
-            "{name} has {shorthands} animation shorthands but pins only {pinned} of them to a single iteration"
+            "{name} has {shorthands} animation shorthands but pins only \
+             {pinned} of them to a single iteration"
         );
         for (decl, ms) in transition_durations(css) {
             let names_layout = BANNED_LAYOUT_PROPERTIES
@@ -2021,7 +1738,8 @@ fn stylesheets_never_loop_and_keep_transitions_brief() {
                 .find(|prop| decl.split_whitespace().any(|tok| tok == **prop));
             assert_eq!(
                 names_layout, None,
-                "{name} transitions {names_layout:?} in {decl:?}, which reflows every frame it runs"
+                "{name} transitions {names_layout:?} in {decl:?}, which \
+                 reflows every frame it runs"
             );
             let cap = if decl
                 .split_whitespace()
@@ -2102,7 +1820,7 @@ fn every_app_duration_token_is_zeroed_under_reduced_motion() {
 /// Every scroller in every shipped stylesheet paints its own background.
 ///
 /// WHY: `overflow: auto` promotes an element to its own composited scrolling
-/// layer. WebKit fills such a layer with the engine's base colour -- white --
+/// layer. WebKit fills such a layer with the engine's base colour, white,
 /// for the frames between promotion and the first content paint, so a
 /// scroller that inherits its surface visually instead of declaring it
 /// flashes white the first time it is shown. `.rg-search__results` did
@@ -2132,7 +1850,7 @@ fn every_scroller_paints_its_own_background() {
             let body = &rest[open + 1..open + 1 + close];
             rest = &rest[open + 1 + close + 1..];
 
-            // Nested blocks -- @media, @supports -- hold rules, not
+            // Nested blocks, @media and @supports, hold rules rather than
             // declarations, and their own text carries no overflow.
             let scrolls = body.split(';').any(|decl| {
                 let Some((prop, value)) = decl.split_once(':') else {
@@ -2170,8 +1888,7 @@ fn every_scroller_paints_its_own_background() {
 /// paint. The assertion this replaces forbade `@keyframes` in sidebar.css
 /// outright, which contradicted its own name and would have to be relaxed
 /// the first time the sidebar wanted a row to announce itself. Checking
-/// the property that actually matters is both stricter and stable: it now
-/// covers all three stylesheets instead of exempting two.
+/// the property that actually matters is both stricter and stable.
 #[test]
 fn every_keyframe_animation_is_one_shot_and_composited() {
     let mut found = 0;
@@ -2294,142 +2011,33 @@ fn the_product_uses_the_motion_it_is_allowed() {
     );
 }
 
-/// The vendored terminal libraries must actually be vendored, not stubs. A
-/// truncated bundle fails at runtime with "Terminal is not a function",
-/// which surfaces as a blank pane rather than a build error.
-#[test]
-fn vendored_terminal_libraries_are_complete() {
-    assert!(
-        XTERM_JS.len() > 200_000,
-        "xterm.js is {} bytes, expected the full bundle",
-        XTERM_JS.len()
-    );
-    assert!(
-        ADDON_WEBGL_JS.contains("WebglAddon"),
-        "webgl addon bundle does not export WebglAddon"
-    );
-    assert!(XTERM_CSS.contains(".xterm"), "xterm.css is not xterm's CSS");
-}
-
-/// Inlining the bundles into `<script>` tags is only safe while none of
-/// them contains a closing script tag, which would end the element early
-/// and dump the rest of the bundle into the document as visible text.
-#[test]
-fn vendored_bundles_cannot_break_out_of_their_script_tags() {
-    for (name, src) in [
-        ("xterm.js", XTERM_JS),
-        ("addon-webgl.js", ADDON_WEBGL_JS),
-    ] {
-        assert!(
-            !src.to_ascii_lowercase().contains("</script"),
-            "{name} contains a closing script tag"
-        );
-    }
-}
-
-/// The stylesheets are inlined into `<style>` tags for the same reason and
-/// carry the same hazard.
-#[test]
-fn stylesheets_cannot_break_out_of_their_style_tags() {
-    for (name, css) in [
-        ("xterm.css", XTERM_CSS),
-        ("sidebar.css", SIDEBAR_CSS),
-        ("app.css", APP_CSS),
-    ] {
-        assert!(
-            !css.to_ascii_lowercase().contains("</style"),
-            "{name} contains a closing style tag"
-        );
-    }
-}
-
-/// The terminal container's id must match what the bridge looks for. A
-/// rename on either side leaves the terminal permanently unmounted, and
-/// because the bridge waits on a MutationObserver it would hang silently
-/// rather than error.
-#[test]
-fn bridge_and_markup_agree_on_the_container_id() {
-    assert!(
-        BOOTSTRAP_JS.contains(r#"getElementById("rg-term")"#),
-        "bridge no longer looks for #rg-term"
-    );
-    let markup = include_str!("../ui/terminal.rs");
-    assert!(
-        markup.contains(r#"id: "rg-term""#),
-        "terminal pane no longer renders #rg-term"
-    );
-}
-
-/// The terminal container must stay childless in the RSX. The moment it
-/// gains a child, Dioxus starts emitting mutations inside the node xterm.js
-/// owns, and the virtual DOM begins diffing a terminal grid.
-///
-/// Checked against the source because there is no runtime hook for "this
-/// element's template has no children"; the invariant lives in the markup,
-/// so that is where it has to be enforced.
-#[test]
-fn terminal_container_has_no_rsx_children() {
-    let markup = include_str!("../ui/terminal.rs");
-    let start = markup
-        .find(r#"key: "{TERMINAL_KEY}""#)
-        .expect("terminal container is keyed");
-    let end = start
-        + markup[start..]
-            .find("\n        }")
-            .expect("container block is closed");
-    let block = &markup[start..end];
-    assert!(
-        block.contains(r#"id: "rg-term""#),
-        "the keyed block is not the terminal container: {block}"
-    );
-    // Every line inside the block must be an `name: value,` attribute. An
-    // element, a text node, or an interpolated expression all fail this,
-    // which is exactly the set of things that would give Dioxus a child to
-    // diff underneath xterm.js.
-    for line in block.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let Some((name, _)) = line.split_once(':') else {
-            panic!("terminal container gained a non-attribute child: {line:?}");
-        };
-        assert!(
-            line.ends_with(',')
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
-            "terminal container gained a non-attribute child: {line:?}"
-        );
-    }
-}
-
 /// Frame headers are decoded once, by the crate that defines them.
 ///
-/// The webview used to parse the 17-byte output header itself, with the length,
-/// the frame kind and two little-endian reads written out again in JavaScript.
-/// Two decoders for one wire format drift, and the failure is a stray byte at
-/// the head of a line, which corrupts an escape sequence and is very hard to
-/// trace back here. The socket now hands `vitrum_proto::decode_output` the
-/// bytes, so this asserts the client keeps no second copy of that arithmetic.
+/// Two decoders for one wire format drift, and the failure is a stray byte
+/// at the head of a line, which corrupts an escape sequence and is very
+/// hard to trace back here. The socket hands `vitrum_proto`'s decoder the
+/// bytes, so this asserts the client keeps no second copy of that
+/// arithmetic.
 ///
-/// What this does not catch: a decoder written in another module. It reads the
-/// two files that carry the data plane, which is where one would land.
+/// What this does not catch: a decoder written in another module. It reads
+/// the file that carries the data plane, which is where one would land.
 #[test]
 fn the_client_decodes_frames_only_through_the_protocol_crate() {
     let socket = include_str!("../socket.rs");
     assert!(
-        socket.contains("decode_output"),
-        "the socket no longer decodes through vitrum-proto"
+        socket.contains("OUTPUT_HEADER_LEN"),
+        "the socket no longer names the protocol crate's header length, so \
+         it is finding the payload some other way"
     );
-    for (name, text) in [("socket.rs", socket), ("bootstrap.js", BOOTSTRAP_JS)] {
-        for hand_rolled in [
-            "OUTPUT_HEADER_LEN = 17",
-            "getBigUint64",
-            &format!("[{}..]", vitrum_proto::OUTPUT_HEADER_LEN),
-        ] {
-            assert!(
-                !text.contains(hand_rolled),
-                "{name} parses the output header itself with `{hand_rolled}`, so the \
-                 wire format now has two decoders that can disagree"
-            );
-        }
+    for hand_rolled in [
+        "OUTPUT_HEADER_LEN = 17".to_string(),
+        "OUTPUT_HEADER_LEN: usize = 17".to_string(),
+        format!("[{}..]", vitrum_proto::OUTPUT_HEADER_LEN),
+    ] {
+        assert!(
+            !socket.contains(&hand_rolled),
+            "socket.rs parses the output header itself with `{hand_rolled}`, \
+             so the wire format now has two decoders that can disagree"
+        );
     }
 }
-

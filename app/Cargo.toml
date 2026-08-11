@@ -6,11 +6,6 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "The vitrum desktop client: sidebar and terminal panes."
-# crates.io shows a crate by its keywords, categories and floor, and the ones
-# left unset are the ones a search never turns up. The floor is the highest in
-# this workspace rather than this package's own: `cargo install vitrum` builds
-# the whole graph, and a number that only covers the client is a floor that
-# fails at a dependency.
 rust-version = "1.90"
 keywords = ["terminal", "agents", "sessions", "pty", "desktop"]
 categories = ["command-line-utilities", "development-tools", "gui"]
@@ -21,9 +16,8 @@ categories = ["command-line-utilities", "development-tools", "gui"]
 # It was `vitrum-app` for both. `--help` has always said `usage: vitrum`, every
 # error message names `vitrum`, and the README tells you to type `vitrum`, so
 # the old name made all of those wrong the moment anybody followed them. The
-# registry entry is `vitrum` for the same reason: `cargo install vitrum` should
-# install the thing this product is called. The daemon is located beside the
-# executable or on PATH by its own name, so none of this touches it.
+# daemon is located beside the executable or on PATH by its own name, so none
+# of this touches it.
 
 [dependencies]
 vitrum-proto = { workspace = true }
@@ -38,13 +32,10 @@ dioxus = "0.7"
 # The renderer, forked. Upstream builds a fresh `WebContext` per webview, and
 # on Linux each one starts its own `WebKitNetworkProcess`: measured here, 20
 # windows ran 20 of them at 8.6 MB PSS each, so 171.2 MB went on twenty copies
-# of one cache and cookie jar. That is the entire gap between the measured
-# 1138.2 MB and this product's stated 1 GB target for 20 windows.
+# of one cache and cookie jar.
 #
 # It is a dependency rather than a `[patch.crates-io]` because a patch applies
-# only to a workspace build. Anyone running `cargo install vitrum` would have
-# resolved upstream and got the per-window process behaviour with nothing
-# saying so.
+# only to a workspace build.
 #
 # Sharing one leaked WebContext was tried and REVERTED. Two independent
 # blockers, both confirmed by reading dioxus-desktop 0.7.10 rather than
@@ -68,16 +59,14 @@ dioxus = "0.7"
 # for, and the id is not known to the caller until `build()` has returned. The
 # fix belongs upstream, where the registration and the id can be ordered.
 #
-# Measured consequence: 55.1 MB per window, of which 9.1 MB is this. Fifteen
-# windows fit in 1 GB; twenty are 1263.9 MB. Even with this recovered, twenty
-# would be ~1090 MB, so it is necessary and NOT sufficient. `docs/performance.md`
-# carries the published figures for the build that shares one web process.
+# Measured consequence: 55.1 MB per window, of which 9.1 MB is this.
+# `docs/performance.md` carries the published figures.
 vitrum-dioxus-desktop = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-# The session socket lives in this process now, so the client needs the same
+# The session socket lives in this process, so the client needs the same
 # runtime pieces the daemon does: `net` and `io-util` for the TCP stream under
 # the WebSocket, `rt` and `sync` for the task that owns it and the channels it
 # talks to the UI thread over, `macros` for the select in that task's loop, and
@@ -103,40 +92,51 @@ sha2 = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 
-# Reached only through `tao::platform::unix::MonitorHandleExtUnix::gdk_monitor`,
-# which hands back a `gtk::gdk::Monitor` whose `width_mm`/`height_mm` are the
-# only interface on X11 that knows a panel's physical size. tao reports a scale
-# factor of 1.0 for both a 82 dpi and a 163 dpi monitor on a session with
-# `GDK_SCALE` unset, so without this the HiDPI detection has no signal to read.
-# Already in the lockfile via wry, so this costs no extra compilation.
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18"
-
-# The native pane's dependencies, all optional and all behind `native-pane`.
+# The terminal pane. Not optional and not behind a feature: it is the only
+# pane this product has. A session's bytes are parsed by libghostty's VT in
+# `vitrum-vt`, kept in a `vitrum-grid` cell grid and painted by wgpu onto a
+# native surface. The product shipped a JavaScript emulator in a webview once;
+# that cost a second escape-sequence parser, a working directory and prompt
+# boundary held where no Rust could read them, and a frame budget owned by a
+# DOM layout pass.
 #
-# Off by default on purpose. The pane is not hosted by the shell yet, and
-# turning it on drags `wgpu` and a Vulkan backend into every build of the
-# client for code nothing calls. The change that adopts the pane flips the
-# default; until then `cargo build -p vitrum` is exactly what it was.
-#
-# gdk and glib are the versions gtk 0.18 above already re-exports, so this
-# adds two crate names and no new compilation. `wgpu` is pinned to the version
-# `vitrum-grid` uses, so one device and one set of types cross the boundary.
-gdk = { version = "0.18", optional = true }
-glib = { version = "0.18", optional = true }
-vitrum-grid = { workspace = true, optional = true }
+# `wgpu` is pinned to the version `vitrum-grid` uses, so one device and one set
+# of types cross the boundary.
+vitrum-grid = { workspace = true }
+# The emulator the pane hosts. One escape-sequence parser in the product, and
+# this is where a session's bytes meet it.
+vitrum-vt = { workspace = true }
+# The same matcher the daemon's cross-session search compiles. In-pane find and
+# the daemon have to agree on what a match is, and two implementations of that
+# question disagree the first time either one is changed.
+vitrum-search = { workspace = true }
 wgpu = { version = "29", default-features = false, features = [
     "std",
     "vulkan",
     "gles",
     "wgsl",
-], optional = true }
-pollster = { version = "1.0", optional = true }
+] }
+pollster = { version = "1.0" }
+# The settings bus and the coalescing preferences writer each hold a lock and a
+# condition variable. `std`'s poison every call site into an
+# `unwrap_or_else(PoisonError::into_inner)`, because a listener that panics must
+# not take every later settings change down with it; parking_lot does not
+# poison, so that path stops existing rather than being handled at each caller.
+# wgpu already pulls this in through `vitrum-grid`, so it adds no new tree.
+parking_lot = "0.12"
 
-[features]
-# The GPU terminal pane. See `app/src/pane/mod.rs` for what it still lacks
-# before it can replace xterm.js.
-native-pane = ["dep:gdk", "dep:glib", "dep:vitrum-grid", "dep:wgpu", "dep:pollster"]
+# `gtk` is reached through `tao::platform::unix::MonitorHandleExtUnix::gdk_monitor`,
+# which hands back a `gtk::gdk::Monitor` whose `width_mm`/`height_mm` are the
+# only interface on X11 that knows a panel's physical size, and it also owns
+# the drawing area the pane presents to. tao reports a scale factor of 1.0 for
+# both a 82 dpi and a 163 dpi monitor on a session with `GDK_SCALE` unset, so
+# without this the HiDPI detection has no signal to read. gdk and glib are the
+# versions gtk 0.18 re-exports, so they add two crate names and no new
+# compilation.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+gdk = "0.18"
+glib = "0.18"
 
 # Server-side rendering, tests only. The search module had 25 green tests that
 # exercised pure functions and stylesheet text, and not one of them built the

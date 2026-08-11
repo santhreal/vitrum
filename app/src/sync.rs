@@ -1,7 +1,16 @@
 //! Keeping the client and the daemon agreeing: attachment, backfill, deep
-//! links, and reconnection.
+//! links, reconnection, and the one reducer every event goes through.
 
 use super::*;
+
+/// First reconnect delay, in milliseconds.
+pub(crate) const RECONNECT_BASE_MS: u64 = 250;
+
+/// Longest reconnect delay, in milliseconds.
+pub(crate) const RECONNECT_MAX_MS: u64 = 30_000;
+
+/// How many times the schedule tries before it gives up and offers Retry.
+pub(crate) const RECONNECT_ATTEMPTS: u32 = 25;
 
 /// Make the server's attachment match the focused session.
 ///
@@ -28,7 +37,7 @@ pub(crate) fn reconcile(
         bridge.msg(&ClientMsg::Detach { session: prev });
     }
 
-    // Resets the grid and starts buffering live frames until the backfill
+    // Resets the screen and starts holding live frames until the backfill
     // lands, so history and live output cannot interleave.
     bridge.focus(want);
 
@@ -60,7 +69,7 @@ pub(crate) fn reconcile(
             // rather than a constant. The setting's caption promises that
             // raising it is how you see further back, and against a fixed
             // 64 KiB budget that was false for everything written before the
-            // attach: the xterm buffer grew and not one extra byte arrived.
+            // attach: the local buffer grew and not one extra byte arrived.
             //
             // A pending jump anchors the window on the hit instead of on the
             // head. Without that, activating a search result for a line
@@ -83,21 +92,21 @@ pub(crate) fn reconcile(
 
 /// Ask the daemon for history older than what is painted, and repaint.
 ///
-/// THE SHAPE, and why it is a repaint rather than a prepend: xterm.js has no
-/// way to insert lines above its buffer. Everything else is a workaround that
-/// gets the splice wrong somewhere. So a page-back re-requests a BIGGER window
-/// ending at the same head, resets the grid and writes the whole thing again.
-/// The daemon already holds the bytes, so nothing has to be retained on the
-/// hot path to make this exact.
+/// THE SHAPE, and why it is a repaint rather than a prepend: the terminal
+/// engine keeps scrollback of what it has been fed and offers no way to splice
+/// older bytes in above it. So a page-back re-requests a BIGGER window ending
+/// at the same head, resets the screen and replays the whole span. The daemon
+/// already holds the bytes, so nothing has to be retained on the hot path to
+/// make this exact.
 ///
 /// It is affordable because a granted page-back costs one request per arrival
 /// at the top of the buffer, never one per wheel tick, and
 /// [`wire::PAGE_CEILING_BYTES`] stops the window growing without bound.
 ///
 /// A REFUSED page-back is the case that has to be counted separately. An
-/// arrival at the top is not a click: a grid that is reset and repainted
-/// arrives at the top again on its own, so a refusal that speaks every time
-/// it is asked never stops speaking. [`plan_page_back`] holds that rule.
+/// arrival at the top is not a click: a screen that is reset and repainted
+/// arrives at the top again on its own, so a refusal that speaks every time it
+/// is asked never stops speaking. [`plan_page_back`] holds that rule.
 pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: SessionId) {
     let (history, refused, scrollback_lines, focused) = {
         let r = st.peek();
@@ -109,7 +118,7 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
         )
     };
     // The operator may have moved on while the event was in flight. Repainting
-    // another session's history into this grid is the one outcome worse than
+    // another session's history into this pane is the one outcome worse than
     // not paging.
     if focused != Some(session) || history.session != Some(session) {
         return;
@@ -126,8 +135,8 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
                 max_bytes,
             });
             // Only now, and never before the request went out. Arming on the
-            // gesture instead would leave the pane buffering live output
-            // forever for a request the plan declined to send.
+            // gesture instead would leave the pane holding live output forever
+            // for a request the plan declined to send.
             bridge.arm_page_back();
         }
     }
@@ -153,10 +162,10 @@ pub(crate) enum PageBackPlan {
     Ask(u32),
 }
 
-/// Decide a page-back without touching signals, the bridge or the socket.
+/// Decide a page-back without touching signals, the pane or the socket.
 ///
 /// Split out because the gesture is not a click. It is arrival at the top of
-/// the buffer, which the pane reaches again every time its grid is reset and
+/// the buffer, which the pane reaches again every time its screen is reset and
 /// repainted, and the notice strip itself used to cause exactly that. A
 /// refusal that re-raises on every arrival is a strip that flickers on and off
 /// under the operator with no way to make it stop, which is what shipped.
@@ -207,13 +216,93 @@ pub(crate) fn record_refusal(window: &mut state::WindowState, text: &'static str
 #[cfg(test)]
 mod a_refusal_speaks_once;
 
+/// What the socket and the pane owe each other, proven end to end.
+#[cfg(test)]
+mod what_a_dropped_daemon_costs;
+
+/// What to present on a socket that just opened.
+///
+/// Pure, so the three token outcomes can be exercised without a socket, a
+/// signal or a daemon. The distinction that matters is between the two
+/// failures: a token nobody named is not an error, because a daemon from an
+/// older release wants no token at all and gets to say so itself, while a
+/// token that was named and could not be read is a refusal this client makes
+/// before it sends anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Handshake {
+    /// Say hello with this token.
+    Present(String),
+    /// Say hello with no token, and let the daemon answer. Carries the reason
+    /// for the log.
+    Anonymous(String),
+    /// Send nothing at all, and fail closed with this sentence.
+    Refuse(String),
+}
+
+/// Decide what a freshly opened socket presents.
+#[must_use]
+pub(crate) fn plan_handshake(token: cli::Token) -> Handshake {
+    match token {
+        cli::Token::Present(token) => Handshake::Present(token),
+        // The daemon gets to answer. It knows the path it wrote, and an older
+        // one wants no token at all.
+        cli::Token::Unnamed(e) => Handshake::Anonymous(e.to_string()),
+        cli::Token::Named(e) => Handshake::Refuse(e.to_string()),
+    }
+}
+
+/// What a `Welcome` means for the connection it arrived on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WelcomePlan {
+    /// The handshake was accepted. Reset the backoff and subscribe.
+    Subscribe,
+    /// The handshake was refused, with a reason already recorded. Stop using
+    /// this socket.
+    HangUp,
+}
+
+/// Decide what to do with the connection a `Welcome` was folded into.
+///
+/// Reads the state the fold produced rather than the message, because the
+/// protocol comparison and the sentence that names the corrective action both
+/// live in `DaemonState::apply`, and a second place that decides whether a
+/// daemon is usable is a second answer.
+#[must_use]
+pub(crate) fn plan_welcome(conn: &ConnState) -> WelcomePlan {
+    match conn {
+        ConnState::Live { .. } => WelcomePlan::Subscribe,
+        // Includes `Connecting`, which after a `Welcome` means the fold did
+        // not accept it. Continuing to talk on a socket the daemon is about to
+        // close is a window that looks connected and answers nothing.
+        _ => WelcomePlan::HangUp,
+    }
+}
+
+/// The reason to record for a socket that closed, or `None` to keep the one
+/// already on the state.
+///
+/// A reason already recorded wins. The daemon says why it is refusing and then
+/// closes, and the close carries no reason at all, so overwriting replaced
+/// "restart vitrum-server, and that ends every session it holds" with "the
+/// connection dropped". The operator then had a red banner naming a symptom
+/// and no action.
+#[must_use]
+pub(crate) fn plan_close(conn: &ConnState, detail: Option<String>) -> Option<String> {
+    if matches!(conn, ConnState::Failed { .. }) {
+        return None;
+    }
+    // A close frame can carry no reason at all, and a banner that says nothing
+    // is a banner an operator cannot act on.
+    Some(detail.unwrap_or_else(|| "connection lost".to_string()))
+}
+
 /// Open the session a `vitrum://session/N` handoff named, once the daemon has
 /// confirmed it exists.
 ///
-/// Retried after every bridge event rather than only on the first snapshot.
-/// The link is known before the socket is even open, and a session the daemon
-/// has not listed yet is the normal case, not the exception; giving up on the
-/// first miss would silently discard the request.
+/// Retried after every event rather than only on the first snapshot. The link
+/// is known before the socket is even open, and a session the daemon has not
+/// listed yet is the normal case, not the exception; giving up on the first
+/// miss would silently discard the request.
 ///
 /// A link naming a session that no longer exists never fires and never does
 /// anything else either, which is the honest outcome: there is nothing to open
@@ -252,8 +341,6 @@ pub(crate) fn claim_link(
 /// `SessionCreated` is broadcast to every window, so without a record of who
 /// asked, a window cannot tell its own launch from another's and focusing on
 /// receipt would yank nineteen operators into a session they did not start.
-/// That is why Launch used to leave you on "No session focused" with a new row
-/// in the sidebar.
 pub(crate) fn claim_launch(
     bridge: Bridge,
     mut st: Signal<UiState>,
@@ -322,17 +409,11 @@ pub(crate) fn flush_notices(bridge: Bridge, mut st: Signal<UiState>) {
 /// Everything the session socket has to say, in the vocabulary the rest of the
 /// client already reacts to.
 ///
-/// The control-plane and lifecycle cases are forwarded to
-/// [`on_bridge_event`] unchanged, deliberately: whether a `Welcome` was
-/// observed by a WebSocket in JavaScript or by a tokio task in this process
-/// must not change what the client does with it, and two reducers is two
-/// answers to that question.
-///
-/// Output is the one case that is not a [`BridgeEvent`], because it never
-/// reaches the reducer at all. It goes to the pane state machine and from
-/// there to the webview over the binary route, which is the whole point of
-/// moving the socket: the hot path does not touch UI state, does not mark a
-/// signal dirty and does not cause a paint.
+/// Output is the one case that never becomes a [`ClientEvent`]. It goes to the
+/// pane state machine and from there to the terminal engine, so the hot path
+/// does not touch UI state, does not mark a signal dirty and does not cause a
+/// paint. Everything else is forwarded, because what a `Welcome` means to the
+/// client cannot depend on which part of the process observed it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn on_socket_event(
     ev: socket::SocketEvent,
@@ -344,8 +425,8 @@ pub(crate) fn on_socket_event(
     pending_open: Signal<Option<PendingLaunch>>,
     reconnect: Signal<u32>,
 ) {
-    let forward = |ev: BridgeEvent| {
-        on_bridge_event(
+    let forward = |ev: ClientEvent| {
+        on_client_event(
             ev,
             bridge,
             st,
@@ -357,29 +438,31 @@ pub(crate) fn on_socket_event(
         );
     };
     match ev {
-        socket::SocketEvent::Output { session, seq, data } => {
-            bridge.output(session, seq, data);
+        socket::SocketEvent::Output(frame) => {
+            bridge.output(frame);
             flush_notices(bridge, st);
         }
-        socket::SocketEvent::Server(msg) => forward(BridgeEvent::Server { msg: *msg }),
-        socket::SocketEvent::Open => forward(BridgeEvent::Conn {
+        socket::SocketEvent::Server(msg) => forward(ClientEvent::Server { msg: *msg }),
+        socket::SocketEvent::Open => forward(ClientEvent::Conn {
             state: ConnEvent::Open,
             detail: None,
         }),
-        socket::SocketEvent::Closed(detail) => forward(BridgeEvent::Conn {
+        socket::SocketEvent::Closed(detail) => forward(ClientEvent::Conn {
             state: ConnEvent::Closed,
             detail: Some(detail),
         }),
-        socket::SocketEvent::Error(detail) => forward(BridgeEvent::Conn {
+        socket::SocketEvent::Error(detail) => forward(ClientEvent::Conn {
             state: ConnEvent::Error,
             detail: Some(detail),
         }),
-        socket::SocketEvent::Bad(detail) => forward(BridgeEvent::Bad { detail }),
+        socket::SocketEvent::Bad(detail) => forward(ClientEvent::Bad { detail }),
     }
 }
 
-pub(crate) fn on_bridge_event(
-    ev: BridgeEvent,
+/// The one reducer. Everything that can move the client's state arrives here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn on_client_event(
+    ev: ClientEvent,
     bridge: Bridge,
     mut st: Signal<UiState>,
     mut attached: Signal<Option<SessionId>>,
@@ -389,7 +472,7 @@ pub(crate) fn on_bridge_event(
     mut reconnect: Signal<u32>,
 ) {
     match ev {
-        BridgeEvent::Server { msg } => {
+        ClientEvent::Server { msg } => {
             // The server starts a per-connection status watcher for every
             // session named in a List snapshot, so a session we never listed
             // never pushes SessionUpdated or Exited and its sidebar row looks
@@ -411,9 +494,9 @@ pub(crate) fn on_bridge_event(
             // AND the message can actually move a session. A transition is a
             // difference between two session lists, so a scrollback chunk, a
             // search answer or a collision report can never produce one, and
-            // cloning twenty `SessionView`s (four strings and a vector each)
-            // to diff a list against itself was the whole cost of the feature
-            // on the busiest messages the daemon sends.
+            // cloning twenty `SessionView`s to diff a list against itself was
+            // the whole cost of the feature on the busiest messages the daemon
+            // sends.
             let moves_sessions = matches!(
                 msg,
                 vitrum_proto::ServerMsg::Sessions { .. }
@@ -439,36 +522,55 @@ pub(crate) fn on_bridge_event(
             // one badge per process and the sessions it is most worth
             // reporting are the ones nobody has on screen.
             badge::publish(st.peek().daemon.attention_total(now.model));
-            if welcome && !opts.fixture && matches!(st.peek().daemon.conn, ConnState::Live { .. }) {
-                // The schedule starts from zero again, here and nowhere else.
-                //
-                // It used to reset when the SOCKET opened, which is not the
-                // same event: a daemon that refuses the handshake accepts the
-                // socket first and closes it after saying why. The reset
-                // therefore fired on every attempt, the backoff never grew,
-                // and a client facing a permanent refusal reconnected about
-                // four times a second forever. Measured against a daemon one
-                // release behind: 75 attempts in 20 seconds, each one a
-                // refusal written to the log. Resetting on the accepted
-                // handshake keeps the blip case that this exists for, since a
-                // dropped link that comes back does reach Welcome.
-                reconnect.set(0);
-                bridge.msg(&ClientMsg::List);
-                // Subscribe, on every connect.
-                //
-                // The daemon holds no watcher, no thread and no watch
-                // descriptors until a client asks, which is what keeps a
-                // headless daemon at zero. But a window IS a client, and an
-                // operator running two agents in one checkout wants to be
-                // told they are overwriting each other whether or not they
-                // found a setting first. Two agents silently clobbering one
-                // file is work already lost by the time anybody notices, so
-                // the default has to be on and the option unnecessary.
-                //
-                // Measured cost on a 65-directory checkout with twenty
-                // sessions: 64 inotify watches, 612 KiB, no measurable CPU
-                // while nothing writes.
-                bridge.msg(&ClientMsg::WatchCollisions { enabled: true });
+            if welcome && !opts.fixture {
+                let plan = plan_welcome(&st.peek().daemon.conn);
+                match plan {
+                    WelcomePlan::Subscribe => {
+                        // The schedule starts from zero again, here and
+                        // nowhere else.
+                        //
+                        // It used to reset when the SOCKET opened, which is
+                        // not the same event: a daemon that refuses the
+                        // handshake accepts the socket first and closes it
+                        // after saying why. The reset therefore fired on every
+                        // attempt, the backoff never grew, and a client facing
+                        // a permanent refusal reconnected about four times a
+                        // second forever. Measured against a daemon one
+                        // release behind: 75 attempts in 20 seconds, each one
+                        // a refusal written to the log. Resetting on the
+                        // accepted handshake keeps the blip case that this
+                        // exists for, since a dropped link that comes back
+                        // does reach Welcome.
+                        reconnect.set(0);
+                        bridge.msg(&ClientMsg::List);
+                        // Subscribe, on every connect.
+                        //
+                        // The daemon holds no watcher, no thread and no watch
+                        // descriptors until a client asks, which is what keeps
+                        // a headless daemon at zero. But a window IS a client,
+                        // and an operator running two agents in one checkout
+                        // wants to be told they are overwriting each other
+                        // whether or not they found a setting first.
+                        //
+                        // Measured cost on a 65-directory checkout with twenty
+                        // sessions: 64 inotify watches, 612 KiB, no measurable
+                        // CPU while nothing writes.
+                        bridge.msg(&ClientMsg::WatchCollisions { enabled: true });
+                    }
+                    WelcomePlan::HangUp => {
+                        // A refused handshake. The daemon named the reason and
+                        // the corrective action in `ConnState::failed`, and
+                        // this client will not send another message on this
+                        // socket: holding it open is a window that looks
+                        // connected and answers nothing. Hanging up also means
+                        // the close that follows is ours, so it cannot
+                        // overwrite the reason.
+                        bridge.hang_up();
+                        attached.set(None);
+                        schedule_reconnect(bridge, st, reconnect, opts);
+                        return;
+                    }
+                }
             }
             if membership && !opts.fixture && st.peek().daemon.collisions.watching {
                 bridge.msg(&ClientMsg::Collisions);
@@ -484,9 +586,9 @@ pub(crate) fn on_bridge_event(
                     keep_view,
                     more,
                 } => {
-                    // `more` never leaves this process now: whether the daemon
+                    // `more` never leaves this process: whether the daemon
                     // holds older bytes is a fact about the daemon, and the
-                    // only thing that reads it is `page_back` below. It is
+                    // only thing that reads it is `page_back` above. It is
                     // already recorded on `window.history` by `apply`.
                     let _ = more;
                     bridge.backfill(session, from_seq, resume_seq, bytes, jump_seq, keep_view);
@@ -501,29 +603,27 @@ pub(crate) fn on_bridge_event(
             reconcile(bridge, st, attached, opts);
         }
 
-        BridgeEvent::Conn { state, detail } => match state {
+        ClientEvent::Conn { state, detail } => match state {
             ConnEvent::Open => {
                 // The token is resolved here, on the open socket, and not at
                 // startup. The daemon writes a new one every time it starts,
                 // so a reconnect after a daemon restart needs the token that
                 // daemon wrote, not the one that was on disk when this window
                 // opened.
-                let token = match cli::resolve_token(opts) {
-                    cli::Token::Present(token) => token,
-                    // The daemon gets to answer. It knows the path it wrote,
-                    // and an older one wants no token at all.
-                    cli::Token::Unnamed(e) => {
+                let token = match plan_handshake(cli::resolve_token(opts)) {
+                    Handshake::Present(token) => token,
+                    Handshake::Anonymous(why) => {
                         tracing::info!(
-                            "no token to present ({e}); the daemon will say what it wants"
+                            "no token to present ({why}); the daemon will say what it wants"
                         );
                         String::new()
                     }
-                    cli::Token::Named(e) => {
+                    Handshake::Refuse(detail) => {
                         // Nothing is sent. The daemon refuses every message
                         // before a hello, so holding the socket open would be
                         // a window that looks connected and answers nothing.
                         bridge.hang_up();
-                        st.write().daemon.conn = ConnState::failed(e.to_string());
+                        st.write().daemon.conn = ConnState::failed(detail);
                         schedule_reconnect(bridge, st, reconnect, opts);
                         return;
                     }
@@ -539,21 +639,16 @@ pub(crate) fn on_bridge_event(
                 reconcile(bridge, st, attached, opts);
             }
             ConnEvent::Closed | ConnEvent::Error => {
-                // A reason already recorded wins over this one. The daemon
-                // says why it is refusing and then closes, and the close
-                // carries no reason at all, so overwriting here replaced
-                // "restart vitrum-server, and that ends every session it
-                // holds" with "the connection dropped".
-                if !matches!(st.peek().daemon.conn, ConnState::Failed { .. }) {
-                    st.write().daemon.conn =
-                        ConnState::failed(detail.unwrap_or_else(|| "connection lost".to_string()));
+                let reason = plan_close(&st.peek().daemon.conn, detail);
+                if let Some(reason) = reason {
+                    st.write().daemon.conn = ConnState::failed(reason);
                 }
                 attached.set(None);
                 schedule_reconnect(bridge, st, reconnect, opts);
             }
         },
 
-        BridgeEvent::Resize { cols, rows } => {
+        ClientEvent::Resize { cols, rows } => {
             // Guarded: writing an unchanged value would still mark the signal
             // dirty and repaint the whole shell on every layout pass.
             let changed = {
@@ -565,11 +660,10 @@ pub(crate) fn on_bridge_event(
                 w.window.cols = cols;
                 w.window.rows = rows;
             }
-            // Telling the daemon is this side's job now. The webview used to
-            // put a `resize` on the socket itself, which meant it had to know
-            // which session was attached; it no longer does, and a resize
-            // addressed to a session the pane stopped showing was a real way
-            // to reflow somebody else's grid.
+            // Telling the daemon is this side's job. Only this side knows
+            // which session the pane is attached to, and a resize addressed to
+            // a session the pane stopped showing is a real way to reflow
+            // somebody else's grid.
             let focused = st.peek().window.focused;
             if let Some(session) = focused
                 && !opts.fixture
@@ -582,12 +676,9 @@ pub(crate) fn on_bridge_event(
             }
         }
 
-        // Bytes the terminal grid captured: a keystroke, a paste, or a raw
-        // 8-bit reply. Addressed here rather than in the webview for the same
-        // reason the resize above is: only this side knows which session the
-        // pane is attached to, so a keystroke cannot be addressed to a session
-        // the pane stopped showing while the event was in flight.
-        BridgeEvent::Input { data } => {
+        // Bytes the pane captured: a keystroke, a paste, or a raw 8-bit reply.
+        // Addressed here for the same reason the resize above is.
+        ClientEvent::Input { data } => {
             let focused = st.peek().window.focused;
             if let Some(session) = focused
                 && !opts.fixture
@@ -596,26 +687,26 @@ pub(crate) fn on_bridge_event(
             }
         }
 
-        // Unguarded on the webview's side by design: whether there is more
+        // Unguarded on the pane's side by design: whether there is more
         // history, and whether a request is already in flight, are both known
         // here and nowhere else.
         //
         // The focus is READ OUT before the call, never held across it.
         // `page_back` writes the state signal, and a read guard still alive
         // over that write is a panic rather than a stale value.
-        BridgeEvent::PageBack => {
+        ClientEvent::PageBack => {
             let focused = st.peek().window.focused;
             if let Some(session) = focused {
                 page_back(bridge, st, session);
             }
         }
 
-        // Through the custom dispatcher, not straight to `on_key`. It
-        // consults the operator's own bindings first, so a chord they rebound
-        // shadows the built-in one, and it reports an unknown chord itself.
-        BridgeEvent::Key { action } => {
-            dispatch_key(
-                &action,
+        // Already resolved against the live table by whichever surface took
+        // the press, so there is nothing to match here and nothing that can
+        // fail.
+        ClientEvent::Key { action } => {
+            on_key(
+                action,
                 bridge,
                 st,
                 attached,
@@ -625,7 +716,21 @@ pub(crate) fn on_bridge_event(
             );
         }
 
-        BridgeEvent::Copied { ok, text } => {
+        // The operator's own binding, looked up again against this window's
+        // profile at the moment it runs.
+        ClientEvent::CustomKey { chord } => {
+            dispatch_custom(
+                &chord,
+                bridge,
+                st,
+                attached,
+                opts,
+                pending_terminate,
+                pending_open,
+            );
+        }
+
+        ClientEvent::Copied { ok, text } => {
             st.write().window.flash = Some(if ok {
                 Flash::notice(format!("Copied {text}"))
             } else {
@@ -633,8 +738,8 @@ pub(crate) fn on_bridge_event(
             });
         }
 
-        BridgeEvent::Bad { detail } => {
-            tracing::warn!("bridge: {detail}");
+        ClientEvent::Bad { detail } => {
+            tracing::warn!("client: {detail}");
             st.write().window.flash = Some(Flash::error(detail));
         }
     }
@@ -660,15 +765,14 @@ pub(crate) fn reconnect_delay_ms(attempt: u32) -> Option<u64> {
 /// Try the daemon again, later.
 ///
 /// This is the one automatic reconnect in the program, and it is here because
-/// a window may be pointed at a daemon across a network now: a laptop that
-/// closes its lid must not need a click to come back. It is a SCHEDULE, not a
-/// loop. Each attempt is one `sleep` that fires once; a connected window has
-/// none outstanding, so the idle cost this program is built around is
-/// unchanged at rest.
+/// a window may be pointed at a daemon across a network: a laptop that closes
+/// its lid must not need a click to come back. It is a SCHEDULE, not a loop.
+/// Each attempt is one `sleep` that fires once; a connected window has none
+/// outstanding, so the idle cost this program is built around is unchanged at
+/// rest.
 ///
 /// The schedule ends. When it does the window keeps saying the connection
-/// failed and the Retry button is still the way back, which is what it was
-/// before any of this existed.
+/// failed and the Retry button is still the way back.
 pub(crate) fn schedule_reconnect(
     bridge: Bridge,
     st: Signal<UiState>,

@@ -6,7 +6,7 @@
 //! it. The daemon under test is an ordinary `vitrum-server`, started however the
 //! operator wants and named by `--server`.
 //!
-//! Five workloads, one report format:
+//! Six workloads, one report format:
 //!
 //! - [`load`]: many sessions streaming at once. Cost and delivery.
 //! - [`race`]: many connections mutating shared state. Correctness under
@@ -16,21 +16,32 @@
 //!   in the middle. Where a megabyte's time and allocations go.
 //! - [`profile`]: samples the daemon's process tree from `/proc` while any of
 //!   the above runs.
+//! - [`latency`]: the pane, not the daemon. The interval between a cause and
+//!   the pixels that answer it, ending on the GPU's fence.
 //!
 //! Every run writes `report.json` and `report.md` into its own directory, so a
 //! result is a file someone can read later rather than terminal scrollback.
+//!
+//! # Features
+//!
+//! `daemon` is on by default and brings in [`vitrum_core`], which [`pipeline`]
+//! drives directly. [`latency`] needs a GPU and no daemon at all, so
+//! `--no-default-features` builds a harness that measures the pane on a host
+//! where the daemon's crate is not wanted.
 
 pub mod client;
 pub mod fuzz;
+pub mod latency;
 pub mod load;
-pub mod profile;
+#[cfg(feature = "daemon")]
 pub mod pipeline;
 pub mod probe;
+pub mod profile;
 pub mod race;
-mod rng;
 pub mod report;
-pub mod world;
+mod rng;
 pub mod stats;
+pub mod world;
 
 #[cfg(test)]
 mod tests;

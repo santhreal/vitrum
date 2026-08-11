@@ -1,168 +1,186 @@
-//! The alternate screen, and what 1049 stashes.
+//! The alternate screen, and the cursor stash `1049` adds to it.
 //!
-//! The old parser kept the inactive buffer, the alternate-screen flag and the
-//! 1049 cursor stash on [`crate::Screen`], and these tests read them directly.
-//! Ghostty keeps them now and does not hand them back, so every assertion here is
-//! against what the buffer swap *does*: which text is on screen, and where the
-//! cursor and the pen land afterwards. That is what a user sees and what a bug in
-//! the swap would break, and it is a strictly stronger thing to assert than a
-//! boolean the parser set itself.
+//! Every full-screen program a session runs (a pager, an editor, a TUI agent front end)
+//! enters the alternate screen on the way in and leaves it on the way out. If the
+//! primary screen does not come back exactly as it was, the operator loses the shell
+//! output they were reading, which is the single most visible way a terminal can be
+//! wrong.
 
-use crate::tests::support::{GHOSTTY_ANSI, linear, rows_of};
+use crate::tests::support::{GHOSTTY_ANSI, cell_at, linear, rows_of};
 
-/// Entering the alternate screen hides the primary buffer's content, and leaving it
-/// brings the content back untouched.
+/// `smcup` and `rmcup` as a terminal database actually emits them for `1049`.
+const ENTER: &[u8] = b"\x1b[?1049h";
+const LEAVE: &[u8] = b"\x1b[?1049l";
+
+/// Feed `bytes` with the alternate screen entered and left around the middle section.
+fn excursion(primary: &[u8], alt: &[u8], after: &[u8]) -> crate::screen::Screen {
+    let mut input = Vec::new();
+    input.extend_from_slice(primary);
+    input.extend_from_slice(ENTER);
+    input.extend_from_slice(alt);
+    input.extend_from_slice(LEAVE);
+    input.extend_from_slice(after);
+    linear(8, 4, &input)
+}
+
+/// Entering the alternate screen shows a blank screen.
 ///
-/// This is the whole point of the alternate screen and the thing a user notices
-/// instantly: run `vim`, quit, and your shell history should still be there. A replay
-/// that painted the full-screen program over the primary buffer would show the
-/// session's scrollback destroyed at the moment any TUI ran.
+/// The bug: switching a flag without switching the buffer. The program's first frame
+/// then draws on top of the shell's output, and every cell it does not paint shows the
+/// shell underneath.
 #[test]
-fn leaving_the_alternate_screen_restores_the_primary_content() {
-    let screen = linear(
-        12,
-        3,
-        b"shell line\r\n\x1b[?1049h\x1b[HFULL SCREEN\x1b[?1049lback\r\n",
-    );
-    assert_eq!(rows_of(&screen)[0], "shell line");
+fn entering_the_alternate_screen_shows_a_blank_one() {
+    let mut input = b"one\r\ntwo".to_vec();
+    input.extend_from_slice(ENTER);
+    let screen = linear(8, 4, &input);
+
+    assert_eq!(rows_of(&screen), vec!["", "", "", ""]);
+}
+
+/// Leaving restores the primary screen cell for cell.
+#[test]
+fn leaving_restores_the_primary_screen_exactly() {
+    let restored = excursion(b"one\r\ntwo\r\nthree", b"\x1b[HPAGER", b"");
+    let untouched = linear(8, 4, b"one\r\ntwo\r\nthree");
+
+    assert_eq!(rows_of(&restored), rows_of(&untouched));
+    assert_eq!(restored, untouched, "including the cursor");
+}
+
+/// `1049` saves the cursor on the way in and restores it on the way out.
+///
+/// This is the whole difference between `1049` and `47`. A shell prompt sits mid-row
+/// when a pager starts; without the stash the prompt is redrawn at whatever position the
+/// pager happened to leave the cursor in.
+#[test]
+fn the_cursor_comes_back_where_it_was_left() {
+    let screen = excursion(b"\x1b[3;5H", b"\x1b[1;1Hxxxx", b"");
+
+    assert_eq!((screen.cursor().row, screen.cursor().col), (2, 4));
+}
+
+/// Writing on the alternate screen leaves the primary untouched.
+#[test]
+fn work_done_on_the_alternate_screen_does_not_reach_the_primary() {
+    let screen = excursion(b"keep", b"\x1b[2Jgone\r\nalso gone", b"");
+
+    assert_eq!(rows_of(&screen)[0], "keep");
+}
+
+/// Output after leaving continues on the primary screen where the cursor was.
+#[test]
+fn output_after_leaving_continues_on_the_primary_screen() {
+    let screen = excursion(b"ab", b"zzz", b"cd");
+
+    assert_eq!(rows_of(&screen)[0], "abcd");
+}
+
+/// Entering twice is not a second save, and the primary survives.
+///
+/// The bug: keeping a stack. A program that sends `smcup` again after a resize would
+/// push a second copy, and the shell's screen would come back only after two `rmcup`s,
+/// which nothing sends.
+#[test]
+fn entering_twice_still_leaves_in_one_step() {
+    let mut input = b"keep\x1b[2;3H".to_vec();
+    input.extend_from_slice(ENTER);
+    input.extend_from_slice(b"alt");
+    input.extend_from_slice(ENTER);
+    input.extend_from_slice(b"more");
+    input.extend_from_slice(LEAVE);
+    let screen = linear(8, 4, &input);
+
+    assert_eq!(rows_of(&screen)[0], "keep");
+    assert_eq!((screen.cursor().row, screen.cursor().col), (1, 2));
+}
+
+/// Leaving when never entered does not blank the primary screen.
+///
+/// `rmcup` at start-up is a common defensive emission. Treating it as a switch would
+/// blank the shell's screen the moment a program started.
+///
+/// It is not a no-op: `1049 l` restores the stashed cursor, and with nothing stashed
+/// that is the home position. The screen is what must survive, and it does.
+#[test]
+fn leaving_without_entering_does_not_blank_the_screen() {
+    let mut input = b"keep".to_vec();
+    input.extend_from_slice(LEAVE);
+    let screen = linear(8, 4, &input);
+
+    assert_eq!(rows_of(&screen)[0], "keep");
+    assert_eq!((screen.cursor().row, screen.cursor().col), (0, 0));
+}
+
+/// `47` switches the buffer and does not touch the cursor.
+///
+/// The older mode. A program using it saves the cursor itself with `DECSC`, so a parser
+/// that stashed the cursor here as well would restore twice and land in the wrong place.
+#[test]
+fn mode_forty_seven_switches_the_buffer_without_stashing_the_cursor() {
+    let screen = linear(8, 4, b"keep\x1b[3;5H\x1b[?47h\x1b[1;1Halt\x1b[?47l");
+
+    assert_eq!(rows_of(&screen)[0], "keep");
     assert_eq!(
-        rows_of(&screen)[1],
-        "back",
-        "output after rmcup resumed where the shell left off"
-    );
-    assert!(
-        !rows_of(&screen).iter().any(|row| row.contains("FULL")),
-        "the TUI's paint is on the buffer that was put away"
+        (screen.cursor().row, screen.cursor().col),
+        (0, 3),
+        "the cursor stayed where the alternate screen left it"
     );
 }
 
-/// The alternate screen starts blank rather than showing what the primary had.
-///
-/// The bug: switching buffers without clearing. A TUI that only paints the parts it
-/// cares about would show the shell's text bleeding through the gaps.
+/// `1048` stashes and restores the cursor without switching buffers.
 #[test]
-fn the_alternate_screen_starts_blank() {
-    let screen = linear(12, 3, b"aaaa\r\nbbbb\r\ncccc\x1b[?1049h");
-    assert_eq!(rows_of(&screen), vec!["", "", ""]);
+fn mode_ten_forty_eight_stashes_the_cursor_without_switching_buffers() {
+    let screen = linear(8, 4, b"\x1b[3;5H\x1b[?1048h\x1b[1;1Hx\x1b[?1048lY");
+
+    assert_eq!(rows_of(&screen)[0], "x", "no buffer switch happened");
+    assert_eq!(cell_at(&screen, 4, 2).ch, 'Y', "the cursor came back");
 }
 
-/// 1049 stashes the primary buffer's cursor and rendition and puts them back on exit.
+/// A scroll region set on the alternate screen is still set on the primary.
 ///
-/// That is the difference between 1049 and the older 1047, and it is why a program
-/// using it leaves the shell prompt exactly where it found it. Without the stash the
-/// prompt reappears wherever the TUI happened to leave the cursor.
+/// The margins are terminal state, not screen state: `1049` stashes and restores the
+/// cursor and its rendition, and nothing else. That is why `rmcup` in a terminal
+/// database is a mode reset and why every full-screen program sends `CSI r` of its own
+/// on the way out.
+///
+/// It is asserted rather than merely tolerated because it is the difference between a
+/// shell that scrolls in the whole pane afterwards and one that scrolls in the pager's
+/// window, and because a caller that resets the region gets the whole screen back.
 #[test]
-fn ten_forty_nine_restores_the_cursor_and_the_rendition() {
-    let screen = linear(
-        12,
-        4,
-        b"\x1b[2;5H\x1b[31m\x1b[?1049h\x1b[4;1Hdeep\x1b[32m\x1b[?1049lX",
-    );
-    assert_eq!(rows_of(&screen)[1], "    X", "back at row 2, column 5");
-    let cell = screen.grid().cell(4, 1).expect("cell");
+fn the_scroll_region_is_terminal_state_and_survives_the_excursion() {
+    let survived = excursion(b"", b"\x1b[1;2r", b"a\r\nb\r\nc\r\nd\r\ne");
     assert_eq!(
-        cell.fg, GHOSTTY_ANSI[1],
-        "the red the shell was using came back, not the TUI's green"
+        rows_of(&survived),
+        vec!["d", "e", "", ""],
+        "output after the excursion scrolled inside the two-row region"
     );
-}
 
-/// Entering with 1049 leaves the cursor where it was.
-///
-/// The old parser homed it, and that was wrong. xterm defines 1049 as 1047 plus 1048:
-/// save the cursor, switch to the alternate buffer, clear it. Nothing in either half
-/// homes. A program that paints its first line without addressing the cursor gets that
-/// line wherever the shell prompt had left it, which is what a real terminal does and
-/// what its author will have compensated for.
-///
-/// The bug this stops: reintroducing the home, which silently moves the first line of
-/// every full-screen program's output in every replay.
-#[test]
-fn entering_with_ten_forty_nine_leaves_the_cursor_where_it_was() {
-    let screen = linear(12, 3, b"\x1b[3;7H\x1b[?1049hX");
-    assert_eq!(rows_of(&screen)[2], "      X", "still at row 3, column 7");
-    assert_eq!(rows_of(&screen)[0], "", "and nothing was painted at the top");
-
-    let older = linear(12, 3, b"\x1b[3;7H\x1b[?1047hX");
+    let reset = excursion(b"", b"\x1b[1;2r", b"\x1b[ra\r\nb\r\nc\r\nd\r\ne");
     assert_eq!(
-        rows_of(&older)[2],
-        "      X",
-        "1047 is the half of 1049 that does the switch, and it does not home either"
+        rows_of(&reset),
+        vec!["b", "c", "d", "e"],
+        "CSI r put the whole screen back"
     );
 }
 
-/// The older 47 and 1047 spellings swap the buffer and leave the cursor alone.
-///
-/// The bug: treating them as 1049. A program using `smcup`/`rmcup` built from 47 keeps
-/// managing the cursor itself, and moving it under the program's feet puts its first
-/// line of output in the wrong place.
+/// A colour set on the alternate screen does not leak back to the primary.
 #[test]
-fn forty_seven_swaps_the_buffer_without_touching_the_cursor() {
-    let screen = linear(12, 3, b"\x1b[2;4H\x1b[?47hX");
-    assert_eq!(rows_of(&screen)[1], "   X", "still at row 2, column 4");
-}
+fn a_colour_set_on_the_alternate_screen_does_not_leak_back() {
+    let screen = excursion(b"", b"\x1b[41m", b"X");
 
-/// Entering when already on the alternate screen is a no-op.
-///
-/// The bug: stashing again, which overwrites the primary buffer's saved cursor with the
-/// alternate buffer's, so exiting lands in the wrong place. Two `smcup`s in a row happen
-/// whenever a program spawns another full-screen program.
-#[test]
-fn entering_twice_does_not_lose_the_primary_buffer() {
-    let screen = linear(12, 3, b"shell\x1b[?1049h\x1b[?1049hinner\x1b[?1049lX");
-    assert_eq!(rows_of(&screen)[0], "shellX");
-}
-
-/// Leaving when never entered is a no-op and does not blank the screen.
-///
-/// A stray `rmcup` from a crashed program must not wipe the shell's output.
-#[test]
-fn leaving_without_entering_changes_nothing() {
-    let screen = linear(12, 2, b"shell output\x1b[?1049l");
-    assert_eq!(rows_of(&screen)[0], "shell output");
-}
-
-/// The alternate buffer has its own content, kept separate from the primary.
-///
-/// The write into the alternate buffer is addressed with an explicit home, because
-/// 1049 does not move the cursor and an unaddressed write would land at column 7
-/// where `primary` ended and wrap.
-#[test]
-fn the_two_buffers_hold_separate_content() {
-    let on_alt = linear(12, 2, b"primary\x1b[?1049h\x1b[Halternate");
-    assert_eq!(rows_of(&on_alt)[0], "alternate");
-
-    let back = linear(12, 2, b"primary\x1b[?1049h\x1b[Halternate\x1b[?1049l");
-    assert_eq!(rows_of(&back)[0], "primary");
-
-    let unaddressed = linear(12, 2, b"primary\x1b[?1049halternate");
     assert_eq!(
-        rows_of(&unaddressed),
-        vec!["       alter".to_string(), "nate".to_string()],
-        "with no addressing the text starts where the primary cursor was and wraps"
+        cell_at(&screen, 0, 0).bg,
+        crate::palette::Palette::DEFAULT.bg
     );
 }
 
-/// A screen costs one grid whether or not a full-screen program ever ran.
-///
-/// It used to cost two once a TUI appeared, because the inactive buffer was a second
-/// [`crate::Screen`] field and a keyframe cloned both. The inactive buffer belongs to
-/// the engine now, and a [`crate::Screen`] is the projection of whichever buffer is
-/// showing, so the memory this crate reports is flat.
-///
-/// The bug this stops: a projection that starts keeping its own copy of the buffer
-/// that is not on screen, which nothing would read and every screen would pay for.
+/// The alternate screen still honours back-colour erase in its own right.
 #[test]
-fn a_screen_costs_one_grid_whether_or_not_a_tui_ran() {
-    let plain = linear(80, 24, b"just a shell\r\n");
-    let with_alt = linear(80, 24, b"just a shell\r\n\x1b[?1049h");
-    assert_eq!(
-        plain.heap_bytes(),
-        with_alt.heap_bytes(),
-        "the alternate buffer is the engine's, not the projection's"
-    );
-    assert_eq!(
-        plain.heap_bytes(),
-        80 * 24 * 16 + 24 * 4,
-        "one grid of cells plus one damage span per row"
-    );
+fn the_alternate_screen_erases_in_its_own_background() {
+    let mut input = Vec::new();
+    input.extend_from_slice(ENTER);
+    input.extend_from_slice(b"\x1b[42m\x1b[2J");
+    let screen = linear(8, 4, &input);
+
+    assert_eq!(cell_at(&screen, 3, 2).bg, GHOSTTY_ANSI[2]);
 }

@@ -83,6 +83,7 @@ impl Row {
             cols: 120,
             rows: 40,
             git_branch: Some("main".to_string()),
+            worktree: None,
             unread: false,
             attention: Attention {
                 bell: false,

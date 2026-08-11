@@ -56,6 +56,42 @@ const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// are bounded by the ring they come from.
 const MAX_INBOUND_MESSAGE: usize = 4 * 1024 * 1024;
 
+/// How long a connection may be silent before the daemon probes it.
+///
+/// A client that vanishes without closing its socket — a laptop suspended, a
+/// network dropped, a process killed with `SIGKILL` on a machine that then
+/// went away — leaves a live TCP connection that will never carry another
+/// byte. Nothing above notices. The read parks forever, the connection's
+/// sessions stay attached, and their geometry stays registered, so every other
+/// window is held to the layout of a window that no longer exists. The kernel
+/// does eventually give up, after two hours of default keepalive that this
+/// socket has not even enabled.
+///
+/// Silence itself is normal and must not be punished: an operator watching an
+/// agent work sends nothing for minutes. So silence triggers a probe rather
+/// than a close, and every conforming WebSocket peer answers a ping without
+/// its application code being involved.
+pub(crate) const IDLE_PROBE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How long the peer has to say anything at all once probed.
+///
+/// Any frame counts, not just the pong: a client that is talking is alive.
+pub(crate) const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long the daemon will hold one frame for a client that is not reading.
+///
+/// The outbound queue is bounded so a stalled client applies backpressure
+/// instead of growing the daemon's heap, and every send onto it therefore
+/// waits. Waiting with no deadline is the other half of that bargain going
+/// wrong: a client that stops draining parks the connection task inside
+/// `dispatch`, which is upstream of the read that the heartbeat above lives
+/// in, so the connection can never be probed and never ends.
+///
+/// Thirty seconds is far past a rendering client. The queue holds 256 frames,
+/// and a client that has not taken one of them in half a minute is not drawing
+/// anything.
+const SEND_STALL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The websocket limits every accepted connection runs under.
 fn socket_limits() -> WebSocketConfig {
     let mut config = WebSocketConfig::default();
@@ -124,10 +160,42 @@ pub async fn serve_connection(stream: TcpStream, hub: Arc<Hub>) -> anyhow::Resul
     let mut writer = tokio::spawn(write_loop(sink, out_rx));
 
     let mut conn = Conn::new(hub, out_tx);
+    // Whether a probe is already outstanding. Cleared by any frame at all,
+    // because a peer that speaks is a peer that is there.
+    let mut probed = false;
     let result = loop {
-        let Some(frame) = incoming.next().await else {
-            break Ok(());
+        let quiet_for = if probed { PROBE_DEADLINE } else { IDLE_PROBE };
+        let frame = match tokio::time::timeout(quiet_for, incoming.next()).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break Ok(()),
+            Err(_) if !probed => {
+                probed = true;
+                // Queued with a deadline like everything else: a client that
+                // cannot take a two-byte ping in thirty seconds is the case
+                // this probe exists to end, not a reason to park here.
+                match tokio::time::timeout(SEND_STALL, conn.out.send(Message::Ping(Vec::new())))
+                    .await
+                {
+                    Ok(Ok(())) => continue,
+                    // The writer is gone, which means the socket is.
+                    Ok(Err(_)) => break Ok(()),
+                    Err(_) => {
+                        break Err(anyhow!(
+                            "client stopped reading: it took no frame for {SEND_STALL:?}. \
+                             Reconnect the window; its sessions keep running."
+                        ));
+                    }
+                }
+            }
+            Err(_) => {
+                break Err(anyhow!(
+                    "client vanished: no frame for {IDLE_PROBE:?} and no answer to a ping \
+                     within {PROBE_DEADLINE:?}. Reconnect the window; its sessions keep \
+                     running and its scrollback is retained."
+                ));
+            }
         };
+        probed = false;
         let frame = match frame {
             Ok(f) => f,
             // A GUI that is quit, crashes, or loses its network does not send a
@@ -685,11 +753,25 @@ pub fn gap_notice(session: SessionId, dropped: u64, resume_seq: u64) -> ServerMs
     )
 }
 
+/// Queue one control-plane message, waiting no longer than [`SEND_STALL`].
+///
+/// The wait is bounded because the queue is. Backpressure is the design — a
+/// client that stops reading must slow the daemon down rather than grow its
+/// heap — but an unbounded wait on a bounded queue is not backpressure, it is
+/// a parked task holding a viewer registration and every attachment behind it.
+/// A client that has taken nothing for half a minute has stopped rendering,
+/// and the connection is ended so its sessions stop being held to its
+/// geometry. The sessions themselves keep running.
 async fn send_json(out: &mpsc::Sender<Message>, msg: &ServerMsg) -> anyhow::Result<()> {
     let text = serde_json::to_string(msg).context("serializing a server message")?;
-    out.send(Message::Text(text))
-        .await
-        .map_err(|_| anyhow!("client connection is gone"))
+    match tokio::time::timeout(SEND_STALL, out.send(Message::Text(text))).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(anyhow!("client connection is gone")),
+        Err(_) => Err(anyhow!(
+            "client stopped reading: it took no frame for {SEND_STALL:?}. Reconnect the \
+             window; its sessions keep running."
+        )),
+    }
 }
 
 /// Owns the socket's write half so every producer can queue without a lock.

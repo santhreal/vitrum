@@ -9,7 +9,7 @@ the full texts. You do not have to satisfy both.
 Bundled third-party work
 ================================================================================
 
-Two forks of other people's crates ship inside this repository. They are
+Three forks of other people's crates ship inside this repository. They are
 upstream's code, carried here under upstream's own copyright and license, and
 nothing in this repository relicenses them.
 
@@ -29,6 +29,16 @@ nothing in this repository relicenses them.
    Copyright (c) 2018 Wez Furlong
    MIT license, full text at: vendor-pty/LICENSE.md
    The single divergence is explained in vendor-pty/README.md.
+
+3. vendor-ghostty-vt-sys/  (crate: libghostty-vt-sys)
+
+   A fork of the `libghostty-vt-sys` crate, the FFI bindings for Ghostty's
+   terminal engine.
+   Upstream: https://crates.io/crates/libghostty-vt-sys
+   MIT license, as declared by upstream's own package metadata, which this
+   fork carries unchanged in vendor-ghostty-vt-sys/Cargo.toml.
+   The single divergence is declared in vendor-ghostty-vt-sys/UPSTREAM.toml
+   and explained in vendor-ghostty-vt-sys/README.md.
 
 ================================================================================
 Other dependencies

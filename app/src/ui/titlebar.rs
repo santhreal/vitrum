@@ -407,6 +407,7 @@ mod tests {
             cols: 80,
             rows: 24,
             git_branch: branch.map(str::to_string),
+            worktree: None,
             unread: false,
             attention: Attention::default(),
             hint: None,

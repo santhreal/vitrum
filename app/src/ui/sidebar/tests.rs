@@ -59,19 +59,29 @@ fn row_markup_tokens() -> Vec<&'static str> {
         .split_once("fn SessionRow(")
         .expect("this file defines SessionRow")
         .1;
-    let bytes = src.as_bytes();
     let mut out = Vec::new();
-    let mut at = 0;
-    while let Some(found) = src[at..].find("rg-") {
-        let start = at + found;
-        let mut end = start;
-        while end < bytes.len()
-            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-' || bytes[end] == b'_')
-        {
-            end += 1;
+    // Line by line, with the comment cut off first. The RSX in this function
+    // is commented heavily and those comments name classes and CSS variables;
+    // a scan over the raw text reads `--rg-line-14` out of a sentence and
+    // reports it as an element between two elements.
+    for line in src.lines() {
+        let code = match line.split_once("//") {
+            Some((before, _)) => before,
+            None => line,
+        };
+        let bytes = code.as_bytes();
+        let mut at = 0;
+        while let Some(found) = code[at..].find("rg-") {
+            let start = at + found;
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-' || bytes[end] == b'_')
+            {
+                end += 1;
+            }
+            out.push(&code[start..end]);
+            at = end;
         }
-        out.push(&src[start..end]);
-        at = end;
     }
     out
 }
@@ -1196,9 +1206,10 @@ fn the_card_is_exactly_two_lines_and_neither_is_conditional() {
     // which should be pushed right comes after it. An element with a FIXED
     // flex basis may precede it: the contest marker does, so that on a row
     // with no branch it sits under the title instead of floating alone
-    // against the timestamp with the left half of the line empty, and the
-    // working directory does, because it is `flex: 0 1 auto` and so shrinks
-    // but never grows into a second spacer.
+    // against the timestamp with the left half of the line empty; the
+    // working directory does, because it is `flex: 0 1 auto`; and the
+    // worktree chip does, at `flex: 0 2 auto`. All three shrink and none
+    // grows, so none of them becomes a second spacer.
     let tail = tokens
         .iter()
         .position(|t| *t == "rg-session__line--tail")
@@ -1211,7 +1222,11 @@ fn the_card_is_exactly_two_lines_and_neither_is_conditional() {
     assert!(
         tokens[tail + 1..branch]
             .iter()
-            .all(|t| t.starts_with("rg-session__contest") || *t == "rg-session__place"),
+            .all(|t| {
+                t.starts_with("rg-session__contest")
+                    || *t == "rg-session__place"
+                    || *t == "rg-session__worktree"
+            }),
         "something other than a fixed-basis element was put \
          ahead of the flex spacer: {:?}",
         &tokens[tail + 1..branch]

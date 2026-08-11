@@ -1,75 +1,63 @@
-//! The session WebSocket, and the data plane behind it.
+//! The session socket, and the data plane behind it.
 //!
-//! # What this module replaced
+//! # The path one byte takes
 //!
-//! Until this module existed the socket lived in `bootstrap.js`, and the
-//! inventory below is what that file did with it. It is written down because
-//! it is the specification this module has to satisfy byte for byte, not
-//! because it is history: every clause here is a guarantee some server-side
-//! seam test in `crates/vitrum-server/src/tests/seam_*.rs` already pins from
-//! the other end.
+//! A byte written by an agent reaches the screen through exactly these steps,
+//! and no others:
 //!
-//! 1. **Connect.** `connect(url)` tore down any previous socket first, and
-//!    detached its handlers before closing so a dying socket's `onclose` could
-//!    not overwrite the new one's state with a stale "disconnected". A
-//!    constructor throw was reported as `conn/error` rather than thrown.
-//! 2. **Lifecycle.** `onopen`, `onerror` and `onclose` each pushed one
-//!    `conn` event to Rust. Close codes were translated to sentences (1000,
-//!    1001, 1006, 1011, 1012), and anything unrecognised kept its number so an
-//!    unknown failure stayed identifiable.
-//! 3. **Reconnect.** None here. The schedule is Rust's, in
-//!    [`crate::sync::schedule_reconnect`], and it re-entered this file only by
-//!    sending another `connect` command.
-//! 4. **Two planes on one socket.** A text frame was `JSON.parse`d and
-//!    forwarded to Rust verbatim as `{ev:"server"}`. A binary frame went to
-//!    `onFrame` and never reached Rust at all.
-//! 5. **Framing and the header strip.** `onFrame` refused a frame shorter than
-//!    the 17-byte header, refused a kind other than
-//!    [`vitrum_proto::FRAME_KIND_OUTPUT`], read the session id from bytes 1..9
-//!    as a little-endian u64, and took the payload from byte 17. The seq at
-//!    bytes 9..17 was decoded ONLY while a backfill was in flight, because on
-//!    the live path nothing needs it.
-//! 6. **Filtering.** A frame for a session other than the focused one, or an
-//!    empty payload, or a window with no terminal built yet, was dropped
-//!    before the header was decoded.
-//! 7. **Batching.** None on the live path: that was measured and removed.
-//!    `join` coalesced only where frames genuinely arrive in bulk, which is
-//!    the splice after a focus and the overflow flush.
-//! 8. **The multi-byte guarantee.** Concatenation happened in arrival order
-//!    and nothing decoded a payload as text anywhere on the path, so a UTF-8
-//!    character split across two frames was whole again before xterm's decoder
-//!    saw it. This module keeps that by moving `Vec<u8>` and never a `String`.
-//! 9. **Backlog and seq.** On a focus change the pane buffered live frames
-//!    instead of painting them, up to [`PENDING_CAP`]; past the cap it gave up
-//!    on ordering, painted the live bytes and marked the late backfill to be
-//!    discarded. When the backfill landed it was painted first and the
-//!    buffered frames were spliced onto it BY BYTE OFFSET against
-//!    `resume_seq`, dropping the prefix of the first overlapping frame and
-//!    reporting a hole if the ring had evicted the joint.
-//! 10. **Scrollback paging.** `sync.rs` asks for a bigger window ending at the
-//!     same head and repaints, because xterm.js cannot prepend. The pane
-//!     buffered live output from the moment the request went out, reset the
-//!     grid, painted history plus the spliced live bytes as ONE write, and
-//!     then put the viewport back on the line the operator was reading,
-//!     counted as a distance from the END of the buffer so a scrollback trim
-//!     could not move it. A search jump did the same with a line computed from
-//!     `jump_seq - from_seq`.
+//! 1. The daemon reads it from a PTY and puts it in a binary WebSocket frame
+//!    behind a 17-byte header: kind, session, byte offset.
+//! 2. [`run`] receives that frame on a tokio worker. tungstenite hands over a
+//!    `Vec<u8>` it already owns; nothing here copies out of it.
+//! 3. [`Frame::parse`] validates the header and records where the payload
+//!    starts. The frame is moved, not resliced, into a [`SocketEvent::Output`].
+//! 4. The UI thread takes it off an unbounded channel and gives it to
+//!    [`PaneStream::output`], which checks the offset is contiguous and emits
+//!    a [`PaneOp::Write`] carrying the same allocation.
+//! 5. [`Net::drive`] hands the payload to [`PaneSink::write`] as a borrowed
+//!    slice, which is [`vitrum_vt::Vt::feed`].
 //!
-//! # What is here now
+//! There is no JSON, no base64, no `String`, no UTF-8 validation and no
+//! re-encoding anywhere on that path, and there is exactly one copy on it: the
+//! one tungstenite makes when it reads the socket into a buffer. A payload is
+//! never revalidated, because a terminal must forward bytes it cannot
+//! interpret, and because validating a stream that is only being forwarded is
+//! work the operator waits for and never sees.
 //!
-//! [`Net`] owns the connection. A tokio task holds the socket off the UI
-//! thread and forwards decoded frames as [`SocketEvent`]s; [`PaneStream`] is
-//! the state machine from clauses 5 to 10, on the UI thread, pure and
-//! testable. It emits [`PaneOp`]s, which reach the webview over the binary
-//! route in [`PaneQueue`] rather than through the JSON eval channel, so
-//! nothing on this path is base64 and nothing is re-decoded.
+//! The one channel hop is the thread boundary, and it is load-bearing: socket
+//! I/O on the UI thread would put a blocking read between two frames.
 //!
-//! # What is NOT here
+//! # What the client owes the pane
 //!
-//! The pane still renders with xterm.js this pass, so the last hop is a
-//! `fetch` the webview drives. That hop is a `memcpy` and an
-//! `ArrayBuffer`, not an encode; see `pane_channel_cost` in the tests for the
-//! measurement.
+//! [`PaneStream`] is the state machine, on the UI thread, pure and testable:
+//! frames and commands in, [`PaneOp`]s and notices out. It owns the guarantees
+//! the pane cannot check for itself.
+//!
+//! 1. **Framing.** A frame shorter than the header, or of an unknown kind, is
+//!    refused with a reason. Nothing is painted from a header that did not
+//!    parse.
+//! 2. **Filtering.** A frame for a session the pane is not showing is dropped
+//!    before it can move that session's offset.
+//! 3. **Sequence continuity.** The offset on a frame is the session's
+//!    cumulative byte count. A jump within one attachment is output that was
+//!    lost between the daemon's ring and this process, and is said out loud,
+//!    because the missing byte is as likely to be inside an escape sequence as
+//!    inside a word. A re-attach resumes wherever the child has reached, which
+//!    is not a gap and is not reported.
+//! 4. **The backlog splice.** Between a focus change and its backfill the live
+//!    frames are held, up to [`PENDING_CAP`]. When history lands, the held
+//!    frames are spliced onto it BY BYTE OFFSET: the overlapping prefix of the
+//!    straddling frame is dropped exactly once, and a joint the daemon's ring
+//!    evicted is reported rather than papered over. Past the cap ordering is
+//!    abandoned, the live bytes are painted, and the late backfill is
+//!    discarded rather than allowed to rewind the transcript.
+//! 5. **Reassembly.** Concatenation happens in arrival order and nothing on
+//!    the path types a payload as text, so a character split across two frames
+//!    is whole again before the parser sees it.
+//! 6. **Ordering.** Everything that touches the screen travels as a
+//!    [`PaneOp`], in one sequence. Two channels into one pane is two
+//!    orderings, and a reset that overtook the write it was meant to precede
+//!    would clear the repaint it was clearing for.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -77,8 +65,6 @@ use std::rc::Rc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::Message;
-use vitrum_dioxus_desktop::RequestAsyncResponder;
-use vitrum_dioxus_desktop::wry::http::{Response, StatusCode};
 use vitrum_proto::{FRAME_KIND_OUTPUT, OUTPUT_HEADER_LEN, ServerMsg, SessionId, decode_output};
 
 #[cfg(test)]
@@ -88,22 +74,122 @@ mod tests;
 ///
 /// Past this the backfill is abandoned and the buffer is flushed: a stalled
 /// repaint must not turn into unbounded client memory just because an agent is
-/// chatty. Unchanged from the JavaScript it came from, because
-/// [`crate::wire::BACKFILL_CEILING_BYTES`] is sized against it.
+/// chatty. [`crate::wire::BACKFILL_CEILING_BYTES`] is sized against it.
 pub(crate) const PENDING_CAP: usize = 1 << 20;
 
-/// Path the webview pulls pane bytes from.
+/// How far into a trimmed history window to look for a line boundary.
 ///
-/// A wry asset handler rather than the Dioxus eval channel. The eval channel
-/// is JSON, and JSON strings must be valid UTF-8, so PTY bytes could only
-/// cross it base64-encoded: a 4/3 size tax, an encode in Rust and an `atob`
-/// plus a per-byte copy in JavaScript, on the hottest path in the product.
-/// This route hands the same `Vec<u8>` the socket produced straight to the
-/// webview as an `ArrayBuffer`.
+/// See [`resync_offset`]. 64 KiB is a thousand lines at the byte estimate in
+/// [`crate::wire::BACKFILL_BYTES_PER_LINE`]; a window whose first 64 KiB hold
+/// no line break at all is one long line, where there is nothing to
+/// resynchronise to and the scan should stop rather than walk 8 MiB.
+const RESYNC_SCAN: usize = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Bytes on the way to the screen
+// ---------------------------------------------------------------------------
+
+/// A run of PTY bytes, and where inside its own allocation they start.
 ///
-/// The name is the first path segment, which is what
-/// `dioxus-desktop`'s `desktop_handler` matches a registered handler on.
-pub(crate) const PANE_ROUTE: &str = "vitrum-pane";
+/// The offset exists so a live frame can be moved from the socket to the
+/// terminal engine without the payload ever being copied out from behind its
+/// header. A spliced or trimmed run starts at a different index of a buffer
+/// this module built; either way the pane is handed one slice and the
+/// allocation is freed once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Chunk {
+    buf: Vec<u8>,
+    at: usize,
+}
+
+impl Chunk {
+    /// Take ownership of `buf`, painting all of it.
+    pub(crate) fn owned(buf: Vec<u8>) -> Self {
+        Self { buf, at: 0 }
+    }
+
+    /// Take ownership of `buf`, painting it from `at` onward.
+    ///
+    /// `at` is clamped, because the callers derive it from a header length and
+    /// a scan, and a panic on the data path would take the window down over a
+    /// frame.
+    fn from(buf: Vec<u8>, at: usize) -> Self {
+        let at = at.min(buf.len());
+        Self { buf, at }
+    }
+
+    /// The bytes to paint.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        // The constructors clamp `at`, so this cannot be out of range.
+        &self.buf[self.at..]
+    }
+
+    /// How many bytes will be painted.
+    pub(crate) fn len(&self) -> usize {
+        self.buf.len() - self.at
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// One decoded data-plane frame: a payload, and where it sits in the stream.
+///
+/// Constructed only by [`Frame::parse`], so a `Frame` in hand is a header that
+/// was validated. The whole WebSocket message is kept rather than the payload,
+/// which is what makes the hop from the socket to the terminal engine free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Frame {
+    chunk: Chunk,
+    /// Which session's stream this belongs to.
+    pub(crate) session: SessionId,
+    /// Absolute byte offset of the first payload byte within that stream.
+    pub(crate) seq: u64,
+}
+
+impl Frame {
+    /// Validate one binary WebSocket message and take ownership of it.
+    ///
+    /// Total: every rejected shape returns a sentence naming what was wrong,
+    /// because the bytes arrive from a socket and a header that did not parse
+    /// says nothing about which pane its tail belongs to.
+    pub(crate) fn parse(buf: Vec<u8>) -> Result<Self, String> {
+        let (session, seq) = match decode_output(&buf) {
+            Ok((session, seq, _)) => (session, seq),
+            Err(e) => {
+                // Named separately because the two are different operator
+                // problems: a short frame is a truncated read or a foreign
+                // sender, an unknown kind is a daemon from another release.
+                return Err(match e {
+                    vitrum_proto::FrameError::TooShort { len } => format!(
+                        "data frame is {len} bytes, need at least {OUTPUT_HEADER_LEN}; \
+                         the daemon sent a truncated frame"
+                    ),
+                    vitrum_proto::FrameError::UnknownKind(kind) => format!(
+                        "unknown data frame kind {kind}; this client understands \
+                         only kind {FRAME_KIND_OUTPUT}"
+                    ),
+                });
+            }
+        };
+        Ok(Self {
+            chunk: Chunk::from(buf, OUTPUT_HEADER_LEN),
+            session,
+            seq,
+        })
+    }
+
+    /// The PTY bytes, borrowed out of the message they arrived in.
+    pub(crate) fn payload(&self) -> &[u8] {
+        self.chunk.bytes()
+    }
+
+    /// Offset one past this frame's last byte.
+    fn end(&self) -> u64 {
+        self.seq.saturating_add(self.chunk.len() as u64)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pane operations
@@ -111,77 +197,100 @@ pub(crate) const PANE_ROUTE: &str = "vitrum-pane";
 
 /// One instruction for the terminal pane, in the order it must be applied.
 ///
-/// Everything that touches the grid travels this way, including the resets
-/// that used to be their own bridge command. Two channels into one pane is two
-/// orderings, and a reset that overtook the write it was meant to precede
-/// would clear the repaint it was clearing FOR.
+/// Everything that touches the screen travels this way, including the resets.
+/// Two channels into one pane is two orderings, and a reset that overtook the
+/// write it was meant to precede would clear the repaint it was clearing FOR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PaneOp {
-    /// Write these bytes to the grid, verbatim.
-    Write(Vec<u8>),
-    /// Full reset. Not a clear: the previous session may have left the grid in
-    /// alternate-screen mode, with a scroll region set or with SGR state
+    /// Feed these bytes to the terminal engine, verbatim.
+    Write(Chunk),
+    /// Full reset. Not a clear: the previous session may have left the screen
+    /// in alternate-screen mode, with a scroll region set or with SGR state
     /// pending, and any of those would corrupt the incoming repaint.
     Reset,
-    /// Scroll to the logical line `n` lines from the end of the buffer, with a
-    /// third of a screen of context above it. Used for a search jump.
+    /// Put the viewport on the logical line `n` lines from the end of the
+    /// buffer. Used for a search jump.
     ScrollFromEnd(u32),
-    /// Scroll back to the line the operator was reading when they asked for
-    /// more history. The distance is the webview's, because only the webview
-    /// can count wrapped rows.
+    /// Put the viewport back on the line the operator was reading when they
+    /// asked for more history.
     ScrollKeep,
 }
 
-const OP_WRITE: u8 = 0;
-const OP_RESET: u8 = 1;
-const OP_SCROLL_FROM_END: u8 = 2;
-const OP_SCROLL_KEEP: u8 = 3;
-
-/// Byte length of one pane-op header: tag plus payload length.
-pub(crate) const OP_HEADER_LEN: usize = 1 + 4;
-
-/// Append `ops` to `out` in the wire form `bootstrap.js::applyOps` reads.
+/// What the terminal pane offers this module.
 ///
-/// `[tag:u8][len:u32 LE][payload]`, repeated. Length-prefixed rather than
-/// self-delimiting because a `Write` payload is arbitrary bytes: any sentinel
-/// a terminal stream cannot contain does not exist.
-pub(crate) fn encode_ops(ops: &[PaneOp], out: &mut Vec<u8>) {
+/// Four calls, all of them things only the pane can do, and none of them
+/// carrying a session id or a byte offset: which session is attached and where
+/// its stream has reached are this module's to know. [`Self::write`] takes a
+/// borrowed slice because the bytes are already in the right place; copying
+/// them to hand them over would be the copy this whole path exists to avoid.
+pub(crate) trait PaneSink {
+    /// Reset the screen: modes, scroll region, rendition, alternate screen.
+    fn reset(&mut self);
+    /// Feed PTY bytes to the parser.
+    fn write(&mut self, bytes: &[u8]);
+    /// Put the viewport `lines` logical lines above the end of the buffer.
+    fn scroll_from_end(&mut self, lines: u32);
+    /// Put the viewport back where it was before the last reset.
+    fn keep_view(&mut self);
+    /// One batch of the above is over.
+    ///
+    /// Sixty-four frames delivered in one wakeup are sixty-four `feed` calls
+    /// and one present. Without a batch end the pane would have to guess where
+    /// a burst stopped, and guessing means either a frame per payload or a
+    /// timer, and this program has no timers.
+    fn flush(&mut self);
+}
+
+/// Apply `ops` to `sink`, in order, then end the batch.
+fn apply(ops: &[PaneOp], sink: &mut dyn PaneSink) {
     for op in ops {
-        let scroll;
-        let (tag, payload): (u8, &[u8]) = match op {
-            PaneOp::Write(bytes) => (OP_WRITE, bytes),
-            PaneOp::Reset => (OP_RESET, &[]),
-            PaneOp::ScrollFromEnd(back) => {
-                scroll = back.to_le_bytes();
-                (OP_SCROLL_FROM_END, &scroll)
-            }
-            PaneOp::ScrollKeep => (OP_SCROLL_KEEP, &[]),
-        };
-        out.reserve(OP_HEADER_LEN + payload.len());
-        out.push(tag);
-        // A payload longer than u32::MAX cannot exist: the largest single op
-        // is a backfill, and `wire::PAGE_CEILING_BYTES` is 8 MiB.
-        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        out.extend_from_slice(payload);
+        match op {
+            PaneOp::Write(chunk) => sink.write(chunk.bytes()),
+            PaneOp::Reset => sink.reset(),
+            PaneOp::ScrollFromEnd(lines) => sink.scroll_from_end(*lines),
+            PaneOp::ScrollKeep => sink.keep_view(),
+        }
     }
+    sink.flush();
 }
 
 // ---------------------------------------------------------------------------
 // The data-plane state machine
 // ---------------------------------------------------------------------------
 
-/// A live frame held back while a backfill is in flight.
-#[derive(Debug)]
-struct Held {
-    /// Absolute byte offset of this payload in the session's stream.
-    seq: u64,
-    data: Vec<u8>,
+/// Where a trimmed history window can safely be replayed from.
+///
+/// The daemon's ring is a byte range, so a window that does not start at the
+/// beginning of the stream can start in the middle of anything: a UTF-8
+/// sequence, a CSI, an OSC string. Replaying from there feeds the parser the
+/// tail of a sequence it never saw the head of, and the pane paints the
+/// remainder as literal text.
+///
+/// A line break is the one byte that resynchronises this exactly. It cannot
+/// occur inside a UTF-8 multi-byte sequence, whose continuation bytes are all
+/// above 0x7F, and it cannot occur inside an escape sequence, whose parameter
+/// and intermediate bytes are all above 0x1F. So the first CR or LF in the
+/// window is a position the parser's state is known at, and everything before
+/// it is at most the tail of one truncated line.
+///
+/// Bounded by [`RESYNC_SCAN`] and skipped entirely for a window that starts at
+/// the beginning of the stream, where there is nothing to resynchronise from.
+#[must_use]
+fn resync_offset(history: &[u8], from_seq: u64) -> usize {
+    if from_seq == 0 {
+        return 0;
+    }
+    let scan = history.len().min(RESYNC_SCAN);
+    history[..scan]
+        .iter()
+        .position(|b| *b == b'\n' || *b == b'\r')
+        .map_or(0, |at| at + 1)
 }
 
 /// Everything the pane knows about the bytes it is painting.
 ///
 /// Pure: it takes frames and commands and returns [`PaneOp`]s and notices, and
-/// touches neither the socket nor the webview. That is what lets the ordering
+/// touches neither the socket nor the pane. That is what lets the ordering
 /// guarantees be tested without either.
 #[derive(Debug, Default)]
 pub(crate) struct PaneStream {
@@ -200,12 +309,12 @@ pub(crate) struct PaneStream {
     /// True between a focus change or a page-back request and its backfill.
     backfilling: bool,
     /// Set when [`PENDING_CAP`] was hit, so the late backfill is discarded
-    /// instead of painted after the live bytes that already went to the grid.
+    /// instead of painted after the live bytes that already went to the pane.
     drop_backfill: bool,
     /// True between a page-back request and its repaint, so holding the wheel
     /// at the top sends one request rather than one per tick.
     paging: bool,
-    pending: Vec<Held>,
+    pending: Vec<Frame>,
     pending_bytes: usize,
     /// Things the operator has to be told, drained by the caller.
     notices: Vec<String>,
@@ -216,8 +325,7 @@ impl PaneStream {
     ///
     /// Test-only: production reads the focus through the state signal that set
     /// it, and a second reader of the same fact in the shipped build is how
-    /// the two drift. Without the attribute this is a dead function, and this
-    /// crate builds with warnings denied.
+    /// the two drift.
     #[cfg(test)]
     pub(crate) fn focused(&self) -> Option<SessionId> {
         self.focus
@@ -236,7 +344,7 @@ impl PaneStream {
 
     /// Point the pane at `session`, or clear it.
     ///
-    /// Resets the grid and starts buffering live frames, so history and live
+    /// Resets the screen and starts holding live frames, so history and live
     /// output cannot interleave while the backfill is in flight.
     pub(crate) fn focus(&mut self, session: Option<SessionId>, ops: &mut Vec<PaneOp>) {
         self.focus = session;
@@ -252,65 +360,59 @@ impl PaneStream {
     /// Claim the pane for a page-back, if one is not already in flight.
     ///
     /// Called only once the `Scrollback` request has actually gone out, so a
-    /// request the client declined to send cannot leave the pane buffering
-    /// live output forever.
+    /// request the client declined to send cannot leave the pane holding live
+    /// output forever.
     pub(crate) fn arm_page_back(&mut self) {
         self.paging = true;
         self.backfilling = true;
     }
 
     /// One decoded data frame.
-    pub(crate) fn output(
-        &mut self,
-        session: SessionId,
-        seq: u64,
-        data: Vec<u8>,
-        ops: &mut Vec<PaneOp>,
-    ) {
-        if self.focus != Some(session) || data.is_empty() {
+    pub(crate) fn output(&mut self, frame: Frame, ops: &mut Vec<PaneOp>) {
+        if self.focus != Some(frame.session) || frame.chunk.is_empty() {
             return;
         }
         // Contiguity, checked once per frame against the offset the previous
         // frame ended at. The server's seq is the cumulative byte count of the
         // session's stream, so a mismatch is output that was lost or repeated
         // between the ring and this process, and painting across it corrupts
-        // the parse from there on: the missing byte is as likely to be inside
-        // an escape sequence as inside a word.
+        // the parse from there on.
         if let Some(want) = self.next_seq
-            && want != seq
+            && want != frame.seq
         {
+            let seq = frame.seq;
             self.notices.push(format!(
                 "the session stream jumped from byte {want} to byte {seq}; \
                  what is painted from here may be wrong"
             ));
         }
-        self.next_seq = Some(seq.saturating_add(data.len() as u64));
+        self.next_seq = Some(frame.end());
 
         if self.backfilling {
-            self.pending_bytes += data.len();
-            self.pending.push(Held { seq, data });
+            self.pending_bytes += frame.chunk.len();
+            self.pending.push(frame);
             if self.pending_bytes > PENDING_CAP {
                 // Give up on ordering the repaint rather than grow without
                 // bound. The live bytes are what the operator actually needs.
                 let mut all = Vec::with_capacity(self.pending_bytes);
                 for held in self.pending.drain(..) {
-                    all.extend_from_slice(&held.data);
+                    all.extend_from_slice(held.payload());
                 }
                 self.pending_bytes = 0;
                 self.backfilling = false;
                 self.paging = false;
                 self.drop_backfill = true;
-                ops.push(PaneOp::Write(all));
+                ops.push(PaneOp::Write(Chunk::owned(all)));
                 self.notices.push(
                     "backfill buffer overflowed; painted live output without history".to_string(),
                 );
             }
             return;
         }
-        ops.push(PaneOp::Write(data));
+        ops.push(PaneOp::Write(frame.chunk));
     }
 
-    /// History for `session`, followed by whatever was buffered behind it.
+    /// History for `session`, followed by whatever was held behind it.
     ///
     /// `history` starts at `from_seq`. `resume_seq` is the offset the live
     /// stream is owed from; the two windows overlap by exactly the bytes the
@@ -336,35 +438,37 @@ impl PaneStream {
             return;
         }
         // A page-back is a REPAINT of a bigger window ending at the same head,
-        // so the grid has to be cleared first. On an attach the focus change
+        // so the screen has to be cleared first. On an attach the focus change
         // already reset it and this would be a second clear of an empty grid.
         if keep_view {
             ops.push(PaneOp::Reset);
         }
 
-        // Painted as one write. The history and the live frames that overlap
+        // Replayed as one write. The history and the live frames that overlap
         // it are consecutive bytes of one stream with nothing between them, so
-        // there is no reason for the emulator to decode and reflow them in
-        // pieces — and a split inside a multi-byte character would be a split
-        // this module put there.
+        // there is no reason for the parser to see a boundary the daemon never
+        // put there, and a split inside a multi-byte character would be a
+        // split this module introduced.
+        let start = resync_offset(&history, from_seq);
+        let painted_from = from_seq.saturating_add(start as u64);
         let mut painted = history;
         let mut hole = 0u64;
         // Where the painted stream currently ends. It starts at the offset the
         // history was computed to and advances with each frame, because the
         // question a frame answers is whether it abuts what is already
-        // painted — not whether it abuts the resume offset. Measuring every
+        // painted, not whether it abuts the resume offset. Measuring every
         // frame against `resume_seq` reports a hole for the second frame of
         // any healthy pair, since only the first one starts there.
         let mut painted_to = resume_seq;
         for held in self.pending.drain(..) {
-            let end = held.seq.saturating_add(held.data.len() as u64);
+            let end = held.end();
             if end <= painted_to {
                 continue;
             }
             // The reverse of an overlap: after a reported gap the bytes
             // between the backfill and the first live frame may have been
             // evicted from the server's ring, so the painted stream ends BELOW
-            // the oldest buffered frame. The grid was reset before this ran, so
+            // the oldest held frame. The screen was reset before this ran, so
             // painting the frames anyway is correct rather than a splice at
             // the wrong offset, but the hole is real history the operator will
             // never see and it gets said out loud.
@@ -372,7 +476,8 @@ impl PaneStream {
                 hole = held.seq - painted_to;
             }
             let skip = painted_to.saturating_sub(held.seq) as usize;
-            painted.extend_from_slice(&held.data[skip.min(held.data.len())..]);
+            let payload = held.payload();
+            painted.extend_from_slice(&payload[skip.min(payload.len())..]);
             painted_to = painted_to.max(end);
         }
         self.pending_bytes = 0;
@@ -385,14 +490,20 @@ impl PaneStream {
 
         // Where to land, computed here because the offset arithmetic is a u64
         // subtraction and the newline count is over the bytes that were just
-        // painted. The webview is left with only the part it alone can do:
-        // turning a logical line index into a buffer row, which depends on how
-        // the grid wrapped it.
+        // painted. The pane is left with only the part it alone can do:
+        // turning a logical line index into a viewport position, which depends
+        // on how the grid wrapped it.
+        let body = &painted[start.min(painted.len())..];
         let scroll = match jump_seq {
             Some(jump) if jump >= from_seq => {
-                let at = (jump - from_seq) as usize;
-                (at < painted.len()).then(|| {
-                    let back = painted[at..].iter().filter(|b| **b == b'\n').count();
+                // Clamped, not skipped. A hit inside the partial first line
+                // that `resync_offset` removed lands on the top of what was
+                // actually replayed: the line it sat on is the line the trim
+                // took, and leaving the viewport at the bottom would answer a
+                // search by showing the operator somewhere else entirely.
+                let at = jump.saturating_sub(painted_from) as usize;
+                (at < body.len()).then(|| {
+                    let back = body[at..].iter().filter(|b| **b == b'\n').count();
                     PaneOp::ScrollFromEnd(u32::try_from(back).unwrap_or(u32::MAX))
                 })
             }
@@ -402,8 +513,8 @@ impl PaneStream {
             None => keep_view.then_some(PaneOp::ScrollKeep),
         };
 
-        if !painted.is_empty() {
-            ops.push(PaneOp::Write(painted));
+        if !body.is_empty() {
+            ops.push(PaneOp::Write(Chunk::from(painted, start)));
         }
         if let Some(scroll) = scroll {
             ops.push(scroll);
@@ -414,64 +525,7 @@ impl PaneStream {
     pub(crate) fn banner(&mut self, lines: &[String], ops: &mut Vec<PaneOp>) {
         self.backfilling = false;
         ops.push(PaneOp::Reset);
-        ops.push(PaneOp::Write(lines.join("\r\n").into_bytes()));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The route the webview pulls from
-// ---------------------------------------------------------------------------
-
-/// Bytes waiting for the webview, and the request parked on them.
-///
-/// A long poll, not a timer and not a poll loop: the webview holds one `fetch`
-/// open, this answers it the moment there is anything to say, and the webview
-/// immediately opens the next one. An idle window has one parked request and
-/// wakes for nothing, which is the same idle cost the WebSocket had when it
-/// lived in JavaScript.
-#[derive(Default)]
-pub(crate) struct PaneQueue {
-    buf: Vec<u8>,
-    waiting: Option<RequestAsyncResponder>,
-}
-
-impl PaneQueue {
-    /// Hand `body` to the webview.
-    fn answer(responder: RequestAsyncResponder, body: Vec<u8>) {
-        // `no-store` because every response is different and a cached one
-        // would be the same bytes painted twice.
-        let response = Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "application/octet-stream")
-            .header("Cache-Control", "no-store")
-            .body(body)
-            .expect("a static header set and a byte body always build");
-        responder.respond(response);
-    }
-
-    /// Queue encoded ops, and deliver them now if a request is parked.
-    pub(crate) fn push(&mut self, encoded: &[u8]) {
-        self.buf.extend_from_slice(encoded);
-        if self.buf.is_empty() {
-            return;
-        }
-        if let Some(responder) = self.waiting.take() {
-            Self::answer(responder, std::mem::take(&mut self.buf));
-        }
-    }
-
-    /// Answer a `fetch`, or park it until there is something to send.
-    pub(crate) fn serve(&mut self, responder: RequestAsyncResponder) {
-        if !self.buf.is_empty() {
-            Self::answer(responder, std::mem::take(&mut self.buf));
-            return;
-        }
-        // Only one request can be in flight; the webview's pump is a single
-        // loop. A second means the previous page is gone, so the old responder
-        // is closed out rather than leaked.
-        if let Some(stale) = self.waiting.replace(responder) {
-            Self::answer(stale, Vec::new());
-        }
+        ops.push(PaneOp::Write(Chunk::owned(lines.join("\r\n").into_bytes())));
     }
 }
 
@@ -485,12 +539,12 @@ pub(crate) enum SocketEvent {
     Open,
     /// A control-plane message, already parsed.
     Server(Box<ServerMsg>),
-    /// One data-plane payload, header stripped, bytes untouched.
-    Output {
-        session: SessionId,
-        seq: u64,
-        data: Vec<u8>,
-    },
+    /// One data-plane frame, header validated, bytes untouched.
+    ///
+    /// Deliberately not a member of [`crate::wire::ClientEvent`]: PTY output
+    /// never reaches the reducer, never marks a signal dirty, and never causes
+    /// the shell to repaint. It goes to the pane and stops there.
+    Output(Frame),
     /// The socket closed, cleanly or otherwise. Carries a sentence, not a code.
     Closed(String),
     /// The socket could not be opened, or refused mid-stream.
@@ -502,7 +556,7 @@ pub(crate) enum SocketEvent {
 /// Handle on the session socket and on the pane behind it.
 ///
 /// Not `Copy`, and reached through a `CopyValue` in `main.rs`, because it owns
-/// a channel and a queue. One per window: two windows are two attachments to
+/// a channel and a sink. One per window: two windows are two attachments to
 /// the same daemon and two independent panes.
 pub(crate) struct Net {
     /// Where control-plane text goes. `None` before the first connect and
@@ -510,20 +564,28 @@ pub(crate) struct Net {
     out: Option<UnboundedSender<String>>,
     /// Which socket is current. Events from an earlier one are discarded:
     /// without this a dying socket's close would overwrite the new socket's
-    /// state with a stale "disconnected", which is the exact bug the
-    /// JavaScript detached its handlers to avoid.
+    /// state with a stale "disconnected".
     epoch: u64,
     events: UnboundedSender<(u64, SocketEvent)>,
     /// The runtime the socket task runs on. Captured on the UI thread, where
     /// dioxus-desktop's multi-threaded runtime is in context, so the socket
     /// does its I/O on a worker rather than between two paints.
     runtime: Option<tokio::runtime::Handle>,
-    pub(crate) pane: Rc<RefCell<PaneQueue>>,
+    /// The pane, once its surface exists.
+    sink: Option<Rc<RefCell<dyn PaneSink>>>,
+    /// Ops emitted before the surface existed.
+    ///
+    /// A window can be told to focus a session before its drawing area has
+    /// been realised. Dropping those ops would lose the attach repaint and
+    /// leave a blank pane with a live socket behind it, which is the worst of
+    /// the three options; replaying them on attach costs one deferred vector
+    /// that is emptied once per window.
+    deferred: Vec<PaneOp>,
+    deferred_bytes: usize,
     pub(crate) stream: PaneStream,
     /// Scratch, reused so a live frame costs no allocation beyond the payload
     /// it already owns.
     ops: Vec<PaneOp>,
-    encoded: Vec<u8>,
 }
 
 impl Net {
@@ -534,16 +596,28 @@ impl Net {
             epoch: 0,
             events,
             runtime: tokio::runtime::Handle::try_current().ok(),
-            pane: Rc::new(RefCell::new(PaneQueue::default())),
+            sink: None,
+            deferred: Vec::new(),
+            deferred_bytes: 0,
             stream: PaneStream::default(),
             ops: Vec::new(),
-            encoded: Vec::new(),
         };
         (net, rx)
     }
 
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Give this window's pane to the socket, and replay what it missed.
+    pub(crate) fn attach_pane(&mut self, sink: Rc<RefCell<dyn PaneSink>>) {
+        self.sink = Some(sink.clone());
+        if self.deferred.is_empty() {
+            return;
+        }
+        let held = std::mem::take(&mut self.deferred);
+        self.deferred_bytes = 0;
+        apply(&held, &mut *sink.borrow_mut());
     }
 
     /// Open, or reopen, the session socket.
@@ -559,7 +633,10 @@ impl Net {
         let Some(runtime) = self.runtime.clone() else {
             let _ = self.events.send((
                 epoch,
-                SocketEvent::Error(format!("{url}: no async runtime to open a socket on")),
+                SocketEvent::Error(format!(
+                    "{url}: this window has no async runtime to open a socket on; \
+                     restart vitrum"
+                )),
             ));
             return;
         };
@@ -569,9 +646,7 @@ impl Net {
     /// Close the current socket without opening another.
     ///
     /// Dropping the sender is the whole mechanism, the same one
-    /// [`Net::connect`] relies on: the socket task's outbound receiver returns
-    /// `None` and it shuts the connection down without reporting a close,
-    /// because the close is ours. Used when the client has decided it cannot
+    /// [`Net::connect`] relies on. Used when the client has decided it cannot
     /// complete the handshake, where leaving the socket open would hold a
     /// connection that will never say anything.
     pub(crate) fn hang_up(&mut self) {
@@ -589,10 +664,10 @@ impl Net {
         }
     }
 
-    /// Encode whatever the pane state machine just produced and hand it over.
+    /// Run one pane state-machine step and apply what it produced.
     ///
     /// Every mutation of [`Self::stream`] goes through here, so ops reach the
-    /// webview in the order the state machine emitted them and no caller can
+    /// pane in the order the state machine emitted them and no caller can
     /// forget to flush.
     pub(crate) fn drive(&mut self, act: impl FnOnce(&mut PaneStream, &mut Vec<PaneOp>)) {
         self.ops.clear();
@@ -600,9 +675,28 @@ impl Net {
         if self.ops.is_empty() {
             return;
         }
-        self.encoded.clear();
-        encode_ops(&self.ops, &mut self.encoded);
-        self.pane.borrow_mut().push(&self.encoded);
+        match &self.sink {
+            Some(sink) => {
+                let sink = sink.clone();
+                apply(&self.ops, &mut *sink.borrow_mut());
+            }
+            None => {
+                for op in self.ops.drain(..) {
+                    if let PaneOp::Write(chunk) = &op {
+                        self.deferred_bytes += chunk.len();
+                    }
+                    self.deferred.push(op);
+                }
+                // The same bound the live path has, for the same reason: a
+                // window whose surface never appears must not accumulate a
+                // session's whole output in a vector nobody will read.
+                if self.deferred_bytes > PENDING_CAP {
+                    self.deferred.clear();
+                    self.deferred_bytes = 0;
+                    self.deferred.push(PaneOp::Reset);
+                }
+            }
+        }
         // The payloads are the only large thing here and they were moved in,
         // so releasing them now keeps the scratch vector's capacity without
         // keeping a megabyte of a backfill alive until the next frame.
@@ -622,7 +716,10 @@ async fn run(
     let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
         Ok((ws, _)) => ws,
         Err(e) => {
-            say(SocketEvent::Error(format!("cannot reach {url}: {e}")));
+            say(SocketEvent::Error(format!(
+                "cannot reach {url}: {e}. Start vitrum-server, or point this \
+                 window at another daemon in Settings."
+            )));
             return;
         }
     };
@@ -636,7 +733,9 @@ async fn run(
             text = outbound.recv() => match text {
                 Some(text) => {
                     if let Err(e) = sink.send(Message::Text(text)).await {
-                        say(SocketEvent::Error(format!("the connection failed while sending: {e}")));
+                        say(SocketEvent::Error(format!(
+                            "the connection to {url} failed while sending: {e}"
+                        )));
                         return;
                     }
                 }
@@ -674,19 +773,16 @@ fn accept(frame: Message, say: &impl Fn(SocketEvent) -> bool) -> bool {
         Message::Text(text) => match serde_json::from_str::<ServerMsg>(&text) {
             Ok(msg) => say(SocketEvent::Server(Box::new(msg))),
             Err(e) => say(SocketEvent::Bad(format!(
-                "the daemon sent a control frame this client cannot read: {e}"
+                "the daemon sent a control frame this client cannot read: {e}. \
+                 Restart vitrum-server so both ends come from the same release."
             ))),
         },
-        Message::Binary(bytes) => match split_output(&bytes) {
-            Ok((session, seq, at)) => say(SocketEvent::Output {
-                session,
-                seq,
-                // The one copy on this path, and it is the copy that gets the
-                // payload out of the socket's own buffer. Nothing decodes it,
-                // so a multi-byte character split across two frames is still
-                // split exactly where the child split it.
-                data: bytes[at..].to_vec(),
-            }),
+        // The whole message is moved into the frame. Nothing decodes it, so a
+        // multi-byte character split across two frames is still split exactly
+        // where the child split it, and nothing copies it, so the payload the
+        // parser reads is the one the socket wrote.
+        Message::Binary(bytes) => match Frame::parse(bytes) {
+            Ok(frame) => say(SocketEvent::Output(frame)),
             Err(detail) => say(SocketEvent::Bad(detail)),
         },
         Message::Close(frame) => {
@@ -700,25 +796,6 @@ fn accept(frame: Message, say: &impl Fn(SocketEvent) -> bool) -> bool {
         // tungstenite answers pings itself; nothing else is ours to handle.
         Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => true,
     }
-}
-
-/// Validate a data frame's header and return where its payload starts.
-///
-/// Returns the offset rather than the slice so the caller can copy out of the
-/// frame it already owns without borrowing across the match.
-pub(crate) fn split_output(frame: &[u8]) -> Result<(SessionId, u64, usize), String> {
-    if frame.len() < OUTPUT_HEADER_LEN {
-        return Err(format!(
-            "data frame is {} bytes, need at least {OUTPUT_HEADER_LEN}",
-            frame.len()
-        ));
-    }
-    if frame[0] != FRAME_KIND_OUTPUT {
-        return Err(format!("unknown frame kind {}", frame[0]));
-    }
-    let (session, seq, _) =
-        decode_output(frame).map_err(|e| format!("undecodable data frame: {e}"))?;
-    Ok((session, seq, OUTPUT_HEADER_LEN))
 }
 
 /// A close code as a sentence.

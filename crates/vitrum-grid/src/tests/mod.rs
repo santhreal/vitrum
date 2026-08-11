@@ -9,6 +9,7 @@
 //! - [`atlas_packing`]: shelf placement, reset, and exhaustion.
 //! - [`instance_layout`]: the byte layout the vertex shader reads.
 //! - [`render_pixels`]: headless renders with exact pixel assertions.
+//! - [`render_cursor`]: the caret shapes, composited over the cell beneath.
 //! - [`render_cost`]: upload counts, the zero-work idle path, and frame timing.
 
 mod atlas_packing;
@@ -19,5 +20,6 @@ mod grid_geometry;
 mod grid_wide_chars;
 mod instance_layout;
 mod render_cost;
+mod render_cursor;
 mod render_pixels;
 mod support;

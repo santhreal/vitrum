@@ -362,75 +362,31 @@ fn the_list_keeps_the_order_the_operator_gave_it() {
     );
 }
 
-/// The webview only reports chords that are in its table, so a custom binding
-/// needs a row of its own. Without one, a binding on a chord no built-in owns is
-/// saved, listed, validated, and never fires: the keystroke never leaves
-/// JavaScript.
+/// A custom binding is reachable by the chord it was saved under, and a
+/// binding whose chord does not parse is reachable by nothing.
+///
+/// WHY: a binding that is saved, listed and validated, and then fires
+/// nothing, is the worst shape this feature can take, because every surface
+/// tells the operator it works. It happened once already: the dispatcher
+/// matched a table that custom bindings were never folded into, so a chord no
+/// built-in owned was dead. The lookup below is the step that was missing, and
+/// `keys::claim_live` is what calls it now.
 #[test]
-fn a_custom_binding_contributes_a_bridge_row_the_dispatcher_can_read() {
+fn a_custom_binding_is_found_by_the_chord_it_was_saved_under() {
     let bindings = CustomBindings::from(vec![
         binding("Interrupt", "Ctrl+Shift+G", vec![Step::text("\\x03")]),
         binding("Typo", "Ctrl+", vec![Step::text("x")]),
     ]);
 
-    let rows = bindings.bridge_rows();
+    let chord = crate::launch::parse_chord("Ctrl+Shift+G").expect("a chord that parses");
     assert_eq!(
-        rows.len(),
-        1,
-        "a chord that does not parse must not put a row in front of the built-ins"
-    );
-    assert_eq!(
-        rows[0],
-        serde_json::json!({
-            "key": "g",
-            "ctrl": true,
-            "alt": false,
-            "shift": "on",
-            "scope": "global",
-            "action": "custom:Ctrl+Shift+G",
-        }),
-        "the row shape must match what bootstrap.js matches against"
-    );
-
-    // And the action string round-trips back to the binding, which is what the
-    // dispatcher does with it.
-    let wire = rows[0]["action"].as_str().unwrap();
-    let text = wire.strip_prefix(crate::CUSTOM_ACTION_PREFIX).unwrap();
-    assert_eq!(
-        bindings
-            .lookup(&crate::launch::parse_chord(text).unwrap())
-            .map(|found| found.label.as_str()),
+        bindings.lookup(&chord).map(|found| found.label.as_str()),
         Some("Interrupt")
     );
-}
 
-/// The custom rows have to sit in FRONT of the built-in table, because
-/// `bootstrap.js` takes the first match. Appending them instead leaves the
-/// built-in action winning the chord in JavaScript while Rust says the operator's
-/// binding won, and the two disagreeing is a keystroke whose behaviour depends
-/// on which matcher saw it.
-#[test]
-fn custom_rows_go_in_front_of_the_builtin_table() {
-    let bindings = CustomBindings::from(vec![binding(
-        "Interrupt",
-        "Ctrl+B",
-        vec![Step::text("\\x03")],
-    )]);
-    let table = r#"[{"key":"b","ctrl":true,"alt":false,"shift":"off","scope":"notTextInput","action":"sidebar"}]"#;
-
-    let merged: Vec<serde_json::Value> =
-        serde_json::from_str(&with_custom_first(table, &bindings)).unwrap();
-    assert_eq!(merged.len(), 2);
-    assert_eq!(merged[0]["action"], "custom:Ctrl+B");
-    assert_eq!(merged[1]["action"], "sidebar");
-}
-
-/// A table this build cannot read comes back whole. Replacing it with only the
-/// custom rows would take every built-in chord out of the window at once, which
-/// is a keyboard with nothing on it.
-#[test]
-fn an_unreadable_table_is_left_alone() {
-    let bindings = CustomBindings::from(vec![binding("X", "Ctrl+B", Vec::new())]);
-    assert_eq!(with_custom_first("not json", &bindings), "not json");
-    assert_eq!(with_custom_first("{}", &bindings), "{}");
+    assert!(
+        crate::launch::parse_chord("Ctrl+").is_none(),
+        "a chord that does not parse must not be reachable, and must not \
+         shadow a built-in by matching loosely"
+    );
 }

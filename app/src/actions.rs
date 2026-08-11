@@ -683,9 +683,9 @@ pub(crate) fn report_move(
 
 /// Put one field of a session on the clipboard.
 ///
-/// The outcome is reported by the bridge rather than assumed here. A webview
-/// can refuse a clipboard write, and "Copied" for a copy that did not happen
-/// is a lie the user discovers only when they paste.
+/// The outcome is reported back as [`ClientEvent::Copied`] rather than assumed
+/// here. A clipboard write can be refused, and "Copied" for a copy that did
+/// not happen is a lie the operator discovers only when they paste.
 pub(crate) fn copy(
     bridge: Bridge,
     st: Signal<UiState>,
@@ -696,5 +696,5 @@ pub(crate) fn copy(
     if text.is_empty() {
         return;
     }
-    bridge.cmd(BridgeCmd::Clipboard { text });
+    bridge.clipboard(text);
 }

@@ -17,8 +17,6 @@ use dioxus::prelude::*;
 
 use crate::state::UiState;
 
-use super::apply_live;
-
 /// Longest label the editor will store, in characters.
 ///
 /// Counted in `char`s and not bytes, so a label in a non-Latin script gets the
@@ -201,6 +199,24 @@ fn accept_shortcut(
     if let Some(why) = crate::launch::chord_conflict(&chord) {
         return Err(PresetRefusal::ShortcutTaken(why));
     }
+    // And again against the table key dispatch is matching right now, which
+    // the check above cannot see: it reads the shipped chords, so an action
+    // the operator moved ONTO this chord is invisible to it and the command
+    // would be stored, displayed, and then shadowed by the rebinding.
+    let candidate = crate::ui::settings::Binding {
+        key: chord.key.clone(),
+        ctrl: chord.ctrl,
+        alt: chord.alt,
+        shift: chord.shift,
+    };
+    let mine = crate::keymap::KeyAction::LaunchPreset(except);
+    if let Some(owner) = crate::ui::settings::live_conflict(&candidate, mine) {
+        return Err(PresetRefusal::ShortcutTaken(format!(
+            "{} is already {}.",
+            crate::launch::format_chord(&chord),
+            crate::ui::settings::action_label(owner)
+        )));
+    }
     let canonical = crate::launch::format_chord(&chord);
     // And the same argument one level down: the dialog takes the first preset
     // in list order that matches, so a second preset on one chord is a row
@@ -358,7 +374,6 @@ pub fn move_by(list: &mut [crate::launch::SavedPreset], id: u64, delta: isize) -
 fn edit_presets(
     mut list: Signal<Vec<crate::launch::SavedPreset>>,
     mut error: Signal<String>,
-    state: Signal<UiState>,
     change: impl FnOnce(&mut Vec<crate::launch::SavedPreset>) -> Result<(), PresetRefusal>,
 ) {
     let mut next = crate::launch::presets_saved();
@@ -373,14 +388,14 @@ fn edit_presets(
         Ok(()) => match crate::launch::save_presets(&next) {
             Ok(()) => {
                 error.set(String::new());
-                list.set(next);
                 // A preset's chord lives in the SAME table the built-in
-                // chords do, so saving one has to re-push that table or the
-                // shortcut the operator just bound does nothing until the app
-                // restarts. Presets are not part of `Settings`, so the commit
-                // path that normally does this never runs for them: this is
-                // the one place that closes the link.
-                apply_live(&state.peek().daemon.settings);
+                // chords do, so saving one has to re-announce that table or
+                // the shortcut the operator just bound does nothing until the
+                // app restarts. Presets are not part of `Settings`, so the
+                // commit path that normally announces never runs for them:
+                // this is the one place that closes the link.
+                crate::state::live::publish_presets(&next);
+                list.set(next);
             }
             Err(why) => error.set(format!(
                 "The saved commands could not be written: {why}. Nothing on disk changed."
@@ -478,7 +493,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                 edit_presets(
                                     list,
                                     error,
-                                    state,
                                     |l| revise(l, id, PresetField::Label, &text),
                                 );
                             },
@@ -493,7 +507,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                     edit_presets(
                                         list,
                                         error,
-                                        state,
                                         |l| {
                                             move_by(l, id, -1).then_some(()).ok_or(PresetRefusal::Vanished)
                                         },
@@ -510,7 +523,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                     edit_presets(
                                         list,
                                         error,
-                                        state,
                                         |l| {
                                             move_by(l, id, 1).then_some(()).ok_or(PresetRefusal::Vanished)
                                         },
@@ -525,7 +537,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                     edit_presets(
                                         list,
                                         error,
-                                        state,
                                         |l| remove(l, id).then_some(()).ok_or(PresetRefusal::Vanished),
                                     );
                                 },
@@ -545,7 +556,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                 edit_presets(
                                     list,
                                     error,
-                                    state,
                                     |l| revise(l, id, PresetField::CommandLine, &text),
                                 );
                             },
@@ -560,7 +570,7 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                             aria_label: "Default working directory",
                             onchange: move |e| {
                                 let text = e.value();
-                                edit_presets(list, error, state, |l| revise(l, id, PresetField::Cwd, &text));
+                                edit_presets(list, error, |l| revise(l, id, PresetField::Cwd, &text));
                             },
                         }
                         input {
@@ -576,7 +586,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                 edit_presets(
                                     list,
                                     error,
-                                    state,
                                     |l| revise(l, id, PresetField::Shortcut, &text),
                                 );
                             },
@@ -592,7 +601,6 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                                 edit_presets(
                                     list,
                                     error,
-                                    state,
                                     |l| revise(l, id, PresetField::Icon, &text),
                                 );
                             },
@@ -630,7 +638,7 @@ pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
                     onclick: move |_| {
                         let label = new_label.peek().clone();
                         let command = new_command.peek().clone();
-                        edit_presets(list, error, state, |l| create(l, &label, &command).map(|_| ()));
+                        edit_presets(list, error, |l| create(l, &label, &command).map(|_| ()));
                         if error.peek().is_empty() {
                             new_label.set(String::new());
                             new_command.set(String::new());

@@ -43,6 +43,7 @@ fn session(id: u64, project: u64, created_at_ms: u64) -> SessionInfo {
         cols: 120,
         rows: 40,
         git_branch: Some("main".to_string()),
+        worktree: None,
         unread: false,
         attention: Attention {
             bell: false,

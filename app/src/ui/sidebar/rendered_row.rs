@@ -24,6 +24,8 @@ struct HarnessProps {
 
 #[component]
 fn Harness(props: HarnessProps) -> Element {
+    // The row reads focus out of context, as it does in the shipped window.
+    use_context_provider(|| Signal::new(crate::keys::Focus::Shell));
     rsx! {
         SessionRow {
             row: props.row.clone(),
@@ -46,6 +48,7 @@ fn Harness(props: HarnessProps) -> Element {
 fn all_fields() -> RowFields {
     RowFields {
         branch: true,
+        worktree: true,
         time: true,
         status_word: true,
         place: true,
@@ -53,7 +56,7 @@ fn all_fields() -> RowFields {
     }
 }
 
-/// One row's HTML, exactly as the webview would receive it.
+/// One row's HTML, exactly as the shell renders it.
 fn render(view: SessionView, section: Section) -> String {
     render_with(view, section, all_fields())
 }
@@ -1020,5 +1023,62 @@ fn the_rows_working_directory_reaches_the_markup() {
         ),
         Some(""),
         "the switch is off and the directory is still drawn"
+    );
+}
+
+/// The worktree chip carries git's name for the worktree, and its switch
+/// empties it without removing it.
+///
+/// WHY at the row and not only at the sidebar: the sidebar test proves one
+/// session in a linked worktree says so, which is satisfiable by a row that
+/// draws the name it was handed regardless of the switch. The switch is the
+/// half an operator touches, and a control that round-trips to disk and
+/// changes no markup is the defect this file exists for.
+///
+/// The element stays in the tree when the switch is off, empty. Removing it
+/// would move everything right of it on the tail line the moment the daemon
+/// resolves a worktree, on a row already under the operator's eyes.
+#[test]
+fn the_rows_worktree_reaches_the_markup_and_is_never_a_path() {
+    let linked = render_under(
+        row(1).cwd("/src/vitrum").worktree(Some("review")).build(),
+        Section::Active,
+        all_fields(),
+        "/src/vitrum",
+    );
+    assert_eq!(
+        element_text(&linked, "rg-session__worktree"),
+        Some("review"),
+        "a row in a linked worktree must name it"
+    );
+
+    let main_tree = render_under(
+        row(1).cwd("/src/vitrum").worktree(None).build(),
+        Section::Active,
+        all_fields(),
+        "/src/vitrum",
+    );
+    assert_eq!(
+        element_text(&main_tree, "rg-session__worktree"),
+        Some(""),
+        "a row in the main working tree must emit the element and leave it empty"
+    );
+
+    let off = RowFields {
+        worktree: false,
+        ..all_fields()
+    };
+    assert_eq!(
+        element_text(
+            &render_under(
+                row(1).cwd("/src/vitrum").worktree(Some("review")).build(),
+                Section::Active,
+                off,
+                "/src/vitrum",
+            ),
+            "rg-session__worktree"
+        ),
+        Some(""),
+        "the switch is off and the worktree is still drawn"
     );
 }

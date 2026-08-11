@@ -70,7 +70,7 @@ impl std::fmt::Display for CliExit {
 /// One owner, read by [`usage`] and by every diagnostic, so a caller told how
 /// to call this program is told the same thing whichever way they arrived.
 pub(crate) const SYNOPSIS: &str = "\
-usage: vitrum [--server URL] [--fixture] [--renderer webgl|dom]\n              \
+usage: vitrum [--server URL] [--fixture]\n              \
 [--ui-scale auto|N] [--standalone] [--no-autostart]\n              \
 [--token-file PATH]\n       \
 vitrum update|hint|icons";
@@ -95,31 +95,6 @@ fn misuse(problem: impl AsRef<str>) -> CliExit {
     CliExit::misuse(diagnostic("vitrum", problem.as_ref(), SYNOPSIS))
 }
 
-/// Which xterm.js renderer to mount.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Renderer {
-    /// The WebGL addon. Faster at redraw, and opt-in only.
-    ///
-    /// NOT the default, and this comment used to say it was. Measured against
-    /// DOM at twenty windows it is heavier, not lighter: a compositing layer
-    /// per window costs both memory and idle CPU, which are the two axes this
-    /// product is built to win. `--renderer webgl` exists for the one case
-    /// that wants it, tailing a very large build log in a single pane.
-    Webgl,
-    /// xterm.js's DOM renderer. The default; see [`Options::parse`], which is
-    /// pinned by a test that says so.
-    Dom,
-}
-
-impl Renderer {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Renderer::Webgl => "webgl",
-            Renderer::Dom => "dom",
-        }
-    }
-}
-
 /// Command-line options.
 ///
 /// `Copy`, and deliberately so: every event handler in the shell captures it,
@@ -135,16 +110,6 @@ pub(crate) struct Options {
     /// "FIXTURE DATA" banner. It is not a fallback for a failed connection,
     /// because a fallback that looks like success hides an outage.
     pub(crate) fixture: bool,
-    /// Renderer for the terminal grid.
-    ///
-    /// The DOM renderer by default, because the choice is measurable rather
-    /// than a preference: on this machine WebKitGTK 2.52 composites a live
-    /// WebGL layer at a steady 0.24% CPU and ~80 MB more PSS, with nothing on
-    /// screen changing and no JS timer scheduled, while the DOM renderer idles
-    /// at 0.00%. Throughput is not the deciding factor at 20 agents: they
-    /// produce ~0.4 MB/s combined. WebGL stays available for the one case that
-    /// does want it, tailing a very large build log in a single pane.
-    pub(crate) renderer: Renderer,
     /// WebSocket URL of the session daemon.
     ///
     /// Leaked on purpose. It is parsed once at startup and read for the life
@@ -281,7 +246,6 @@ impl Options {
     pub(crate) fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Options, CliExit> {
         let mut opts = Options {
             fixture: false,
-            renderer: Renderer::Dom,
             server: wire::DEFAULT_WS_URL,
             ui_scale: None,
             standalone: false,
@@ -312,20 +276,6 @@ impl Options {
                         )));
                     }
                     opts.server = v.leak();
-                }
-                "--renderer" => {
-                    let v = args
-                        .next()
-                        .ok_or_else(|| misuse("--renderer needs a value: webgl or dom"))?;
-                    opts.renderer = match v.as_str() {
-                        "webgl" => Renderer::Webgl,
-                        "dom" => Renderer::Dom,
-                        other => {
-                            return Err(misuse(format!(
-                                "unknown renderer {other}. The renderers are dom and webgl."
-                            )));
-                        }
-                    };
                 }
                 "--ui-scale" => {
                     let v = args
@@ -400,10 +350,6 @@ pub(crate) fn usage() -> String {
          --fixture            render an in-memory fixture instead of connecting\n                       \
          to the session server. Development only; the\n                       \
          sidebar says so. Implies --standalone.\n  \
-         --renderer <r>       terminal renderer: dom (default) or webgl. WebGL\n                       \
-         redraws faster but keeps a compositing layer awake:\n                       \
-         0.24% idle CPU, and 23 MB more across twenty\n                       \
-         windows, both measured.\n  \
          --ui-scale <s>       magnification: auto (default) reads the panel's\n                       \
          physical size, or a number from {MIN_UI_SCALE} to {MAX_UI_SCALE} to\n                       \
          override a monitor that misreports it.\n  \

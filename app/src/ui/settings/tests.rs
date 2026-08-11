@@ -1,5 +1,4 @@
 use super::*;
-use crate::state::OPACITY_MAX_PCT;
 use crate::state::{NotifyPrefs, TEXT_SCALE_MAX_PCT, TEXT_SCALE_MIN_PCT};
 use vitrum_proto::{Attention, ProjectId, SessionInfo};
 
@@ -17,6 +16,7 @@ fn info(id: u64) -> SessionInfo {
         cols: 80,
         rows: 24,
         git_branch: None,
+        worktree: None,
         unread: false,
         attention: Attention::default(),
         hint: None,
@@ -191,10 +191,7 @@ fn the_system_theme_resolves_to_a_palette_that_exists() {
 /// for no reason.
 #[test]
 fn the_default_text_scale_is_exactly_the_browser_default() {
-    assert_eq!(
-        ui_scale_script(100),
-        "document.documentElement.style.fontSize=\"16px\";"
-    );
+    assert_eq!(ui_scale_px(100), "16px");
 }
 
 /// Every offered step must produce a clean length, so the operator never
@@ -202,16 +199,13 @@ fn the_default_text_scale_is_exactly_the_browser_default() {
 #[test]
 fn every_text_scale_step_produces_a_clean_length() {
     for step in UI_SCALE_STEPS {
-        let script = ui_scale_script(*step);
+        let length = ui_scale_px(*step);
         assert!(
-            !script.contains("0000") && !script.contains("9999"),
-            "step {step} produced {script}"
+            !length.contains("0000") && !length.contains("9999"),
+            "step {step} produced {length}"
         );
     }
-    assert_eq!(
-        ui_scale_script(150),
-        "document.documentElement.style.fontSize=\"24px\";"
-    );
+    assert_eq!(ui_scale_px(150), "24px");
 }
 
 /// A hand-edited file must not be able to produce a window whose first row
@@ -225,73 +219,6 @@ fn an_absurd_saved_text_scale_is_clamped_into_range() {
 }
 
 // -- Terminal -----------------------------------------------------------
-
-/// Both renderer choices must state their cost. An unlabelled WebGL option
-/// is a switch that silently makes the application heavier, which is only
-/// marginally better than one that does nothing.
-#[test]
-fn both_renderers_disclose_what_they_cost() {
-    assert!(renderer_note(TermRenderer::Webgl).contains("0.244%"));
-    assert!(renderer_note(TermRenderer::Webgl).contains("80 MB"));
-    assert!(renderer_note(TermRenderer::Dom).contains("0% idle"));
-}
-
-/// The wire strings must be exactly what `bootstrap.js` compares against.
-/// A mismatch makes the renderer control silently inert.
-#[test]
-fn the_renderer_wire_strings_match_the_bridge() {
-    assert_eq!(renderer_wire(TermRenderer::Dom), "dom");
-    assert_eq!(renderer_wire(TermRenderer::Webgl), "webgl");
-    let js = include_str!("../../bootstrap.js");
-    assert!(
-        js.contains(r#"want === "webgl""#),
-        "bridge renderer check moved"
-    );
-}
-
-/// The script must both stash the options and call the applier. Only
-/// stashing means a live change does nothing until restart; only calling
-/// means a restart mounts at the default and visibly reflows.
-#[test]
-fn the_terminal_script_survives_either_load_order() {
-    let script = term_options_script(&TerminalPrefs::default(), OPACITY_MAX_PCT);
-    assert!(
-        script.contains("window.__vitrum_termOptions="),
-        "no stash for a pre-mount push: {script}"
-    );
-    assert!(
-        script.contains("if(window.__vitrum_applyTerm)window.__vitrum_applyTerm("),
-        "no live apply for a post-mount push: {script}"
-    );
-}
-
-/// A font stack contains double quotes. Pasting one into a script with
-/// naive quoting is a syntax error in the webview, which surfaces as "the
-/// terminal stopped responding" and not as anything resembling its cause.
-#[test]
-fn a_quoted_font_stack_is_escaped_into_the_script() {
-    let prefs = TerminalPrefs {
-        font_family: "\"JetBrains Mono\", ui-monospace, monospace".to_string(),
-        ..TerminalPrefs::default()
-    };
-    let script = term_options_script(&prefs, OPACITY_MAX_PCT);
-    assert!(
-        script.contains(r#"fontFamily:"\"JetBrains Mono\", ui-monospace, monospace""#),
-        "font stack not escaped: {script}"
-    );
-}
-
-/// An unset stack means "whatever the stylesheet says", and must reach the
-/// bridge as `null`. xterm treats `""` as a real font family and falls
-/// back to a proportional face, which destroys the character grid.
-#[test]
-fn an_unset_font_reaches_the_bridge_as_null() {
-    let prefs = TerminalPrefs {
-        font_family: String::new(),
-        ..TerminalPrefs::default()
-    };
-    assert!(term_options_script(&prefs, OPACITY_MAX_PCT).contains("fontFamily:null"));
-}
 
 /// Every offered stack must end in the generic `monospace`, so a font the
 /// machine lacks degrades to another monospace and not to a proportional
@@ -309,33 +236,25 @@ fn every_font_stack_falls_back_to_monospace() {
     }
 }
 
-/// A degenerate saved font size makes xterm's cell width zero, the fit
-/// addon divide by zero, and the pane go blank with nothing logged.
+/// A degenerate saved font size makes the cell width zero and the pane go
+/// blank with nothing logged.
 #[test]
-fn a_degenerate_saved_font_size_is_clamped_before_it_reaches_the_bridge() {
+fn a_degenerate_saved_font_size_is_clamped_before_it_reaches_the_pane() {
     let tiny = TerminalPrefs {
         font_size_px: 0,
         ..TerminalPrefs::default()
     };
-    assert!(
-        term_options_script(&tiny, OPACITY_MAX_PCT)
-            .contains(&format!("fontSize:{TERM_FONT_MIN_PX}")),
-        "{}",
-        term_options_script(&tiny, OPACITY_MAX_PCT)
-    );
+    assert_eq!(term_font_px(&tiny), TERM_FONT_MIN_PX);
 
     let huge = TerminalPrefs {
         font_size_px: 900,
         ..TerminalPrefs::default()
     };
-    assert!(
-        term_options_script(&huge, OPACITY_MAX_PCT)
-            .contains(&format!("fontSize:{TERM_FONT_MAX_PX}"))
-    );
+    assert_eq!(term_font_px(&huge), TERM_FONT_MAX_PX);
 }
 
-/// Every offered size must be within the range the script clamps to, or
-/// the menu would show a choice that silently becomes a different one.
+/// Every offered size must be within the range the clamp allows, or the
+/// menu would show a choice that silently becomes a different one.
 #[test]
 fn every_offered_terminal_size_survives_the_clamp() {
     for px in TERM_FONT_STEPS {
@@ -516,14 +435,14 @@ fn every_notification_kind_is_explained() {
 
 // -- Keyboard -----------------------------------------------------------
 
-/// With no overrides, the live table must BE the built-in one, and must
-/// carry the exact field names `bootstrap.js` reads.
+/// With no overrides, the live table must BE the built-in one, field for
+/// field.
 ///
 /// Asserted against `CHORDS` itself rather than against a second encoder.
-/// There used to be two functions producing this JSON, one here and one in
+/// There used to be two functions producing this table, one here and one in
 /// `keymap.rs`, and this test compared them to each other: a comparison
-/// that holds just as well when both are wrong. It held while the document
-/// head shipped the defaults-only table, which is what made every rebound
+/// that holds just as well when both are wrong. It held while the shipped
+/// startup table was the defaults-only one, which is what made every rebound
 /// chord and every preset shortcut dead until a later push landed.
 #[test]
 fn no_overrides_reproduces_the_builtin_table_exactly() {
@@ -531,29 +450,22 @@ fn no_overrides_reproduces_the_builtin_table_exactly() {
     assert_eq!(effective.len(), CHORDS.len());
     assert!(effective.iter().all(|chord| !chord.rebound));
 
-    let v: serde_json::Value = serde_json::from_str(&keymap_json(&effective)).unwrap();
-    let arr = v.as_array().unwrap();
-    assert_eq!(arr.len(), CHORDS.len());
-    for (entry, chord) in arr.iter().zip(CHORDS) {
-        for k in ["key", "ctrl", "alt", "shift", "scope", "action"] {
-            assert!(entry.get(k).is_some(), "chord entry {entry} is missing {k}");
-        }
-        assert_eq!(entry["key"], chord.key, "key drifted from CHORDS");
-        assert_eq!(entry["ctrl"], chord.ctrl);
-        assert_eq!(entry["alt"], chord.alt);
-        assert_eq!(entry["action"], chord.action.wire());
-        assert_eq!(entry["shift"], shift_wire(chord.shift));
-        assert_eq!(entry["scope"], scope_wire(chord.scope));
+    for (entry, chord) in effective.iter().zip(CHORDS) {
+        assert_eq!(entry.key, chord.key, "key drifted from CHORDS");
+        assert_eq!(entry.ctrl, chord.ctrl);
+        assert_eq!(entry.alt, chord.alt);
+        assert_eq!(entry.action, chord.action);
+        assert_eq!(entry.shift, chord.shift);
+        assert_eq!(entry.scope, chord.scope);
     }
 }
 
-/// The table the document head ships must be the one the operator has.
+/// The table in place at startup must be the one the operator has.
 ///
-/// The head is the only copy guaranteed to be in place before the first
-/// keydown. It used to be built from the compile-time defaults, so a
-/// preset shortcut did nothing at all: the store was read correctly, the
-/// chord was encoded correctly, and the table that actually reached the
-/// webview had never heard of it.
+/// It is the only copy guaranteed to be there before the first keydown. It
+/// used to be built from the compile-time defaults, so a preset shortcut did
+/// nothing at all: the store was read correctly, the chord was encoded
+/// correctly, and the table dispatch matched against had never heard of it.
 #[test]
 fn the_startup_table_carries_saved_preset_chords() {
     let preset = crate::launch::SavedPreset {
@@ -565,14 +477,14 @@ fn the_startup_table_carries_saved_preset_chords() {
         shortcut: Some("ctrl+shift+j".to_string()),
         icon: None,
     };
-    let json = keymap_json(&live_chords(&KeyboardPrefs::default(), &[preset]));
+    let table = live_chords(&KeyboardPrefs::default(), &[preset]);
     assert!(
-        json.contains("\"preset:42\""),
-        "the startup table has no preset chord in it: {json}"
+        table.iter().any(|chord| chord.action.wire() == "preset:42"),
+        "the startup table has no preset chord in it"
     );
 }
 
-/// A rebinding must reach the bridge, and the old chord must be gone. A
+/// A rebinding must reach the live table, and the old chord must be gone. A
 /// rebinder that adds without removing leaves the action reachable at both
 /// chords, which is the ghost binding the feature exists to avoid.
 #[test]
@@ -596,10 +508,11 @@ fn a_rebinding_replaces_the_old_chord_rather_than_adding_to_it() {
         assert_eq!(chord.key, "j", "an alias kept its default chord");
         assert!(chord.rebound);
     }
-    let json = keymap_json(&effective);
     assert!(
-        !json.contains(r#""key":"b","ctrl":true"#),
-        "the default Ctrl+B is still live: {json}"
+        !effective
+            .iter()
+            .any(|chord| chord.key == "b" && chord.ctrl && !chord.alt),
+        "the default Ctrl+B is still live"
     );
 }
 
@@ -652,8 +565,8 @@ fn an_unparsable_override_falls_back_to_the_default_binding() {
         .insert(KeyAction::ToggleSidebar.wire(), "super+hyper+q".to_string());
     assert_eq!(override_for(&prefs, KeyAction::ToggleSidebar), None);
     assert_eq!(
-        keymap_json(&effective_chords(&prefs)),
-        keymap_json(&effective_chords(&KeyboardPrefs::default())),
+        effective_chords(&prefs),
+        effective_chords(&KeyboardPrefs::default()),
         "a junk override changed the live table"
     );
 }
@@ -687,8 +600,8 @@ fn clearing_a_rebinding_restores_the_default_exactly() {
     clear_override(&mut prefs, KeyAction::NewSession);
     assert!(prefs.overrides.is_empty());
     assert_eq!(
-        keymap_json(&effective_chords(&prefs)),
-        keymap_json(&effective_chords(&KeyboardPrefs::default()))
+        effective_chords(&prefs),
+        effective_chords(&KeyboardPrefs::default())
     );
 }
 
@@ -848,28 +761,6 @@ fn the_bindable_menu_offers_no_reserved_key() {
     }
 }
 
-/// The push must both stash the table and call the applier, so it works
-/// whether it runs before or after `bootstrap.js` reads the global.
-#[test]
-fn the_keymap_script_survives_either_load_order() {
-    let script = keymap_script(&KeyboardPrefs::default());
-    assert!(script.contains("window.__vitrum_keymap="), "{script}");
-    assert!(
-        script.contains("if(window.__vitrum_applyKeymap)window.__vitrum_applyKeymap("),
-        "{script}"
-    );
-}
-
-/// One eval, not three. Three separate pushes are three IPC round trips
-/// and three points at which a failure leaves the settings half applied.
-#[test]
-fn one_script_carries_every_live_setting() {
-    let script = live_script(&settings());
-    assert!(script.contains("style.fontSize"), "no text scale: {script}");
-    assert!(script.contains("__vitrum_termOptions"), "no terminal push");
-    assert!(script.contains("__vitrum_keymap"), "no keymap push");
-}
-
 /// Every token the compact density overrides must be one the stylesheet
 /// actually declares. Overriding a name nothing reads is the exact shape
 /// of a dead control: the style attribute changes, the DOM changes, and
@@ -898,30 +789,6 @@ fn the_motion_tokens_are_the_stylesheets_only_durations() {
         css.contains("prefers-reduced-motion"),
         "the stylesheet stopped honouring the OS preference, so the switch is now the \
          only path and its doc comment is wrong"
-    );
-}
-
-/// The bridge must expose the entry points these scripts call. Renaming
-/// one in `bootstrap.js` would leave every Terminal and Keyboard control
-/// silently inert, with no compiler error anywhere.
-#[test]
-fn the_bridge_exposes_the_entry_points_this_module_calls() {
-    let js = include_str!("../../bootstrap.js");
-    assert!(
-        js.contains("window.__vitrum_applyTerm ="),
-        "bootstrap.js no longer defines the terminal applier"
-    );
-    assert!(
-        js.contains("window.__vitrum_applyKeymap ="),
-        "bootstrap.js no longer defines the keymap applier"
-    );
-    assert!(
-        js.contains("window.__vitrum_termOptions"),
-        "bootstrap.js no longer reads the stashed terminal options"
-    );
-    assert!(
-        js.contains("let KEYMAP ="),
-        "the chord table went back to const and can no longer be rebound"
     );
 }
 
@@ -1199,211 +1066,188 @@ fn the_appearance_tab_renders_the_stored_defaults_as_selected() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Live settings reach every window
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// WHY THIS SUITE EXISTS (LIVE-SETTINGS FAN-OUT).
+/// The sheet's own source, read for what its rows declare.
 ///
-/// `Settings` is one shared model and `document::eval` is per-document, so
-/// applying a change by evaluating in the calling scope reached exactly one
-/// window. Markup-driven settings looked global because every window renders
-/// from the shared model; the four that ride the script — text scale, terminal
-/// options, terminal opacity and the chord table — were silently window-local.
+/// A row's catalogue path is a literal in this file, so the only way to check
+/// every row has one the catalogue knows is to read the file back. Deriving
+/// the list at run time is what makes a row added tomorrow fail here instead
+/// of shipping a hint that says nothing.
+const SHEET_SOURCE: &str = include_str!("../settings.rs");
+
+/// Every control that names a catalogue path names one that exists.
 ///
-/// The class is "a settings change that reaches some live windows and not
-/// others", not the specific control that exposed it. These tests are written
-/// against the fan-out itself, at the one choke point every control passes
-/// through, so a fifth script-borne setting is covered the day it is added
-/// without a test per control:
+/// THE BUG this stops: a row carrying a path that was renamed in the
+/// catalogue. `setting` returns `None`, `when_note` returns the empty string,
+/// and the row silently loses its timing sentence with nothing failing.
+#[test]
+fn every_control_in_the_sheet_is_catalogued() {
+    let mut unknown = Vec::new();
+    for rest in SHEET_SOURCE.split("path: \"").skip(1) {
+        let Some(path) = rest.split('"').next() else {
+            continue;
+        };
+        if crate::state::catalog::setting(path).is_none() {
+            unknown.push(path.to_string());
+        }
+    }
+    assert!(
+        unknown.is_empty(),
+        "the sheet names settings the catalogue does not have: {unknown:?}"
+    );
+}
+
+/// Every setting that does not apply on the spot says so on its own row.
 ///
-/// - every subscriber gets it, at one through four windows, not just the first
-/// - the payload is whatever `live_script` builds, so the bus cannot drift
-///   into shipping a stale or constant script
-/// - order is preserved, so two quick changes cannot land inverted
-/// - a closed window is forgotten, and the listener list does not grow without
-///   bound across window churn
-/// - mounting a window subscribes it exactly once, and dropping it
-///   unsubscribes, so the fan-out cannot be correct while nothing is wired to
-///   it
+/// THE BUG this stops: a control that looks like it did nothing. Window
+/// opacity applies to the next window and the splash to the next launch, so a
+/// row without the sentence reads as broken and gets toggled back.
 ///
-/// What it does NOT catch: that WebKit executes the script. Everything past
-/// `document::eval` needs a live webview, so `apply_here` and the eval call
-/// itself are unproven here and are covered only by running the app.
-
-/// Serialize the process-global listener list and hand each test a clean bus.
-fn with_bus<T>(body: impl FnOnce() -> T) -> T {
-    static BUS: Mutex<()> = Mutex::new(());
-    let _held = BUS.lock().unwrap_or_else(|e| e.into_inner());
-    listeners().clear();
-    let out = body();
-    listeners().clear();
-    out
-}
-
-/// Everything one window has been handed since the last drain.
-fn drain(inbox: &Arc<Mailbox<String>>) -> Vec<String> {
-    inbox.lock().queue.drain(..).collect()
-}
-
+/// The variant space comes from the catalogue at run time, so adding a setting
+/// with a delay and no row goes red here rather than reaching an operator.
 #[test]
-fn every_live_window_receives_a_settings_broadcast() {
-    with_bus(|| {
-        for windows in 1..=4 {
-            listeners().clear();
-            let inboxes: Vec<_> = (0..windows).map(|_| subscribe()).collect();
-
-            broadcast("SCRIPT");
-
-            for (n, inbox) in inboxes.iter().enumerate() {
-                assert_eq!(
-                    drain(inbox),
-                    vec!["SCRIPT".to_string()],
-                    "window {n} of {windows} did not get the change"
-                );
-            }
+fn every_setting_that_needs_a_restart_says_so_on_its_row() {
+    let mut silent = Vec::new();
+    for s in crate::state::catalog::SETTINGS {
+        if s.live == crate::state::catalog::Live::Immediately {
+            continue;
         }
-    });
-}
-
-#[test]
-fn a_broadcast_carries_exactly_what_live_script_builds() {
-    with_bus(|| {
-        let inbox = subscribe();
-
-        let mut small = settings();
-        small.text_scale_pct = TEXT_SCALE_MIN_PCT;
-        apply_live(&small);
-
-        let mut large = settings();
-        large.text_scale_pct = TEXT_SCALE_MAX_PCT;
-        apply_live(&large);
-
-        let sent = drain(&inbox);
-        assert_eq!(
-            sent,
-            vec![live_script(&small), live_script(&large)],
-            "the bus must carry the script for the settings it was given"
-        );
-        assert_ne!(
-            sent[0], sent[1],
-            "two different settings that produce the same script would make \
-             the assertion above pass for the wrong reason"
-        );
-    });
-}
-
-#[test]
-fn changes_reach_every_window_in_the_order_they_were_made() {
-    with_bus(|| {
-        let first = subscribe();
-        let second = subscribe();
-
-        broadcast("one");
-        broadcast("two");
-
-        for (n, inbox) in [&first, &second].into_iter().enumerate() {
-            assert_eq!(
-                drain(inbox),
-                vec!["one".to_string(), "two".to_string()],
-                "window {n} saw the two changes out of order"
-            );
+        if !SHEET_SOURCE.contains(&format!("path: \"{}\",", s.path)) {
+            silent.push(s.path);
         }
-    });
+    }
+    assert!(
+        silent.is_empty(),
+        "these settings apply later and no row says when: {silent:?}"
+    );
 }
 
+/// Text scale moves the document root, which is the only element `rem` reads.
+///
+/// THE BUG this stops: scaling a descendant. Both stylesheets declare their
+/// geometry and type tokens in `rem`, and the pane computes its own pixel
+/// sizes from the same root, so a rule applied anywhere below `html` leaves
+/// the shell and the grid disagreeing about how big a line is.
 #[test]
-fn a_window_that_opens_later_gets_the_next_change_and_no_replay() {
-    with_bus(|| {
-        let early = subscribe();
-        broadcast("before");
-        let late = subscribe();
-
-        assert!(
-            drain(&late).is_empty(),
-            "a window that did not exist yet must not be handed history"
-        );
-
-        broadcast("after");
-        assert_eq!(drain(&late), vec!["after".to_string()]);
-        assert_eq!(drain(&early), vec!["before".to_string(), "after".to_string()]);
-    });
+fn the_root_font_rule_scales_the_document_root() {
+    let mut settings = Settings::default();
+    settings.text_scale_pct = 100;
+    assert_eq!(root_font_rule(&settings), "html{font-size:16px;}");
+    settings.text_scale_pct = 150;
+    assert_eq!(root_font_rule(&settings), "html{font-size:24px;}");
 }
 
+/// The rule on the document root carries exactly the rem the pane lays out
+/// against.
+///
+/// THE BUG this stops: the two arithmetics drifting. `ui/terminal.rs` sizes
+/// the pane from [`rem_px`] and the stylesheet resolves every `rem` against
+/// this rule, so a rounding or clamping change on one side alone moves the
+/// pane's left edge off the sidebar it sits against by a whole scale step.
+/// The out-of-range values are here because clamping is where the two would
+/// disagree first.
 #[test]
-fn a_closed_window_is_forgotten_and_the_list_does_not_grow() {
-    with_bus(|| {
-        let survivor = subscribe();
-        for _ in 0..64 {
-            drop(subscribe());
-        }
-        assert_eq!(listeners().len(), 65, "every subscription is recorded");
-
-        broadcast("A");
-
+fn the_root_rule_carries_the_rem_the_pane_uses() {
+    for pct in [0u16, 1, 50, 80, 100, 125, 150, 200, 400, u16::MAX] {
+        let mut settings = Settings::default();
+        settings.text_scale_pct = pct;
         assert_eq!(
-            listeners().len(),
-            1,
-            "opening and closing windows must not accumulate dead entries"
+            root_font_rule(&settings),
+            format!("html{{font-size:{}px;}}", trim_num(rem_px(pct))),
+            "the document root and the pane disagree at {pct}%"
         );
-        assert_eq!(drain(&survivor), vec!["A".to_string()]);
-
-        drop(survivor);
-        broadcast("B");
-        assert!(
-            listeners().is_empty(),
-            "a broadcast with no window left must be a no-op, not a panic"
-        );
-    });
+    }
 }
 
-/// A window, reduced to the one hook this suite is about.
-#[component]
-fn LiveHarness() -> Element {
-    use_live_settings();
-    rsx! { div {} }
+/// A saved command with a chord, for the conflict table.
+fn command_on(id: u64, chord: &str) -> crate::launch::SavedPreset {
+    crate::launch::SavedPreset {
+        id,
+        label: "Review the diff".to_string(),
+        command: "claude".to_string(),
+        args: Vec::new(),
+        cwd: Some("/src/vitrum".to_string()),
+        shortcut: Some(chord.to_string()),
+        icon: None,
+    }
 }
 
+/// A chord collides in both directions, against one folded table.
+///
+/// THE BUG this stops: two shortcut editors answering "is this taken" from two
+/// different tables. The saved commands tab asked a list of built-in chords
+/// compiled into the binary, so a chord the operator had rebound an action
+/// ONTO was reported free, stored, shown on the row, and then never fired
+/// because the rebinding matched first. The keybinds tab had the mirror hole:
+/// a chord a saved command owned looked free to a rebinding.
+///
+/// [`live_conflict`] is this same fold with the two lists read from the bus,
+/// which is what both tabs now call.
 #[test]
-fn mounting_a_window_subscribes_it_exactly_once() {
-    with_bus(|| {
-        let mut windows = Vec::new();
-        for expected in 1..=3 {
-            let mut dom = VirtualDom::new(LiveHarness);
-            dom.rebuild_in_place();
-            windows.push(dom);
-            assert_eq!(
-                listeners().len(),
-                expected,
-                "mounting a window must register one inbox, and only one"
-            );
-        }
+fn a_chord_collides_in_both_directions() {
+    let candidate = Binding::parse("ctrl+shift+j").expect("ctrl+shift+j is a chord");
 
-        broadcast("SCRIPT");
-        assert_eq!(
-            listeners().len(),
-            3,
-            "a mounted window's subscription outlives the broadcast"
-        );
-    });
+    let owned = live_chords(&KeyboardPrefs::default(), &[command_on(7, "ctrl+shift+j")]);
+    assert_eq!(
+        chord_conflict(&owned, &candidate, KeyAction::ToggleSidebar),
+        Some(KeyAction::LaunchPreset(7)),
+        "a chord a saved command owns was offered to a rebinding"
+    );
+
+    let mut prefs = KeyboardPrefs::default();
+    set_override(&mut prefs, KeyAction::ToggleSidebar, &candidate);
+    let rebound = live_chords(&prefs, &[]);
+    assert_eq!(
+        chord_conflict(&rebound, &candidate, KeyAction::LaunchPreset(9)),
+        Some(KeyAction::ToggleSidebar),
+        "a chord an action was rebound onto was offered to a saved command"
+    );
 }
 
+/// A chord an action was moved off is free, and one moved onto it is not.
+///
+/// THE BUG this stops: a conflict answer read from the shipped table rather
+/// than the folded one. Both halves are wrong in the direction that costs an
+/// operator time: the chord they just freed stays refused, and the chord they
+/// just took stays on offer.
 #[test]
-fn closing_a_window_unsubscribes_it() {
-    with_bus(|| {
-        let mut dom = VirtualDom::new(LiveHarness);
-        dom.rebuild_in_place();
-        let staying = subscribe();
-        assert_eq!(listeners().len(), 2);
+fn rebinding_moves_which_chord_is_taken() {
+    let vacated = Binding::parse("ctrl+shift+b").expect("ctrl+shift+b is a chord");
+    let taken = Binding::parse("ctrl+alt+shift+y").expect("ctrl+alt+shift+y is a chord");
 
-        drop(dom);
-        broadcast("SCRIPT");
+    let shipped = live_chords(&KeyboardPrefs::default(), &[]);
+    assert_eq!(
+        chord_conflict(&shipped, &vacated, KeyAction::LaunchPreset(9)),
+        Some(KeyAction::ToggleSidebar),
+        "the built-in sidebar chord was on offer to a saved command"
+    );
 
-        assert_eq!(
-            listeners().len(),
-            1,
-            "a window that closed must drop off the bus"
-        );
-        assert_eq!(drain(&staying), vec!["SCRIPT".to_string()]);
-    });
+    let mut prefs = KeyboardPrefs::default();
+    set_override(&mut prefs, KeyAction::ToggleSidebar, &taken);
+    let moved = live_chords(&prefs, &[]);
+    assert_eq!(
+        chord_conflict(&moved, &vacated, KeyAction::LaunchPreset(9)),
+        None,
+        "a chord the operator moved the action off is still refused"
+    );
+    assert_eq!(
+        chord_conflict(&moved, &taken, KeyAction::LaunchPreset(9)),
+        Some(KeyAction::ToggleSidebar),
+        "a chord the operator moved the action onto is still on offer"
+    );
+}
+
+/// Deleting the saved command frees its chord on the spot.
+///
+/// THE BUG this stops: a conflict table folded once at startup. The operator
+/// deletes the command holding a chord, types that chord into another row, and
+/// is refused on behalf of a command that no longer exists.
+#[test]
+fn deleting_a_saved_command_frees_its_chord() {
+    let candidate = Binding::parse("ctrl+shift+j").expect("ctrl+shift+j is a chord");
+    let gone = live_chords(&KeyboardPrefs::default(), &[]);
+    assert_eq!(
+        chord_conflict(&gone, &candidate, KeyAction::ToggleSidebar),
+        None,
+        "a chord no command and no action holds was refused"
+    );
 }

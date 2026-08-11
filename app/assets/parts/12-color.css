@@ -469,10 +469,11 @@
 /* light counterpart is a bug on sight, not a bug in waiting.               */
 /*                                                                          */
 /* Read colours here against the element that carries the attribute, never  */
-/* against <html>. `cssVar` used to read getComputedStyle(documentElement)  */
-/* and every terminal colour resolved to the :root dark value, so light     */
-/* mode shipped with a black terminal on a fresh launch as well as a live   */
-/* switch. See `termTheme(el)` in bootstrap.js.                             */
+/* against <html>. A reader that resolved against the document root got the */
+/* :root dark value for every terminal colour, so light mode shipped with a */
+/* black pane on a fresh launch and on a live switch. The pane is painted   */
+/* from `crate::termpalette`, which reads the same roles from the element   */
+/* the attribute is on.                                                     */
 /* ====================================================================== */
 
 [data-theme="light"] {

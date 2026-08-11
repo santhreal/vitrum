@@ -70,7 +70,7 @@ fn override_rows_contain_their_own_chord() {
     }
 }
 
-/// Every action the bridge can send must round-trip. A typo in either
+/// Every action must round-trip through its wire string. A typo in either
 /// direction makes a key silently do nothing, which is indistinguishable
 /// from a broken keyboard.
 #[test]
@@ -106,9 +106,9 @@ fn no_two_chords_match_the_same_event() {
     }
 }
 
-/// Single-character keys must be stored lowercase. `KeyboardEvent.key` is
-/// "W" when shift is held, so the bridge lowercases before comparing; a
-/// table entry of "W" would then never match anything.
+/// Single-character keys must be stored lowercase. The key name reported for
+/// a shifted letter is "W", and `chord_from_event` lowercases before
+/// comparing; a table entry of "W" would then never match anything.
 #[test]
 fn character_keys_are_lowercase() {
     for ch in CHORDS {
@@ -158,9 +158,9 @@ fn tab_index_is_bounded() {
     assert_eq!(KeyAction::parse("tab:-1"), None);
 }
 
-/// Unknown wire strings must be rejected, never defaulted. A bridge that
-/// starts sending an action this build does not know about must do
-/// nothing, not switch tabs.
+/// Unknown action strings must be rejected, never defaulted. A settings file
+/// naming an action this build does not know about must do nothing, not
+/// switch tabs.
 #[test]
 fn unknown_actions_are_rejected() {
     assert_eq!(KeyAction::parse(""), None);
@@ -192,9 +192,10 @@ fn ctrl_k_yields_to_the_terminal() {
     assert_eq!(ch.action, KeyAction::FocusSearch);
 }
 
-/// A bare `?` must not fire inside any text entry. xterm.js reads keys
-/// through a hidden textarea, so `NotTextInput` is what keeps a question
-/// mark typed at an agent from opening the help overlay instead.
+/// A bare `?` must not fire inside any text entry. The terminal pane receives
+/// key events directly and passes printable keys to the agent, so it counts as
+/// a text entry too, and `NotTextInput` is what keeps a question mark typed at
+/// an agent from opening the help overlay instead.
 #[test]
 fn bare_question_mark_yields_to_text_entry() {
     let ch = CHORDS

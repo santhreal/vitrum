@@ -298,6 +298,27 @@ pub struct SessionInfo {
     /// `None` until the program announces something.
     #[serde(default)]
     pub term_title: Option<String>,
+    /// Name of the linked worktree `cwd` sits in, or `None` for a main working
+    /// tree and for anything outside a repository.
+    ///
+    /// Separate from [`SessionInfo::git_branch`] because they answer different
+    /// questions and drift apart in the case that matters. Two worktrees of one
+    /// repository can sit on branches whose names look alike, or on the same
+    /// detached commit, and then the branch alone tells the operator nothing
+    /// about which of the two a session is editing. `git worktree add` names
+    /// each linked tree, and that name is the only thing that distinguishes
+    /// them.
+    ///
+    /// The name is git's, not a path: the last component of the
+    /// `.git/worktrees/<name>` directory the tree's `.git` file points at. A
+    /// path here would put the machine's directory layout in the sidebar and
+    /// on every wire capture.
+    ///
+    /// Additive, so it carries no protocol bump. A daemon that predates the
+    /// field omits it and a client reads `None`, which is what a session in a
+    /// main working tree reports anyway.
+    #[serde(default)]
+    pub worktree: Option<String>,
 }
 
 /// Client to server, control plane.
@@ -1127,6 +1148,7 @@ mod tests {
                 received_at_ms: 1_700_000_000_400,
             }),
             term_title: Some("[ ! ] Action Required - claude".to_string()),
+            worktree: Some("attention".to_string()),
         }
     }
 
@@ -1518,6 +1540,40 @@ mod tests {
         assert_eq!(hint.state, HintState::Approval);
         assert_eq!(hint.label.as_deref(), Some("run `rm -rf build/`?"));
         assert!(hint.state.blocks_on_operator());
+    }
+
+    /// WHY: `worktree` was added to a shipped protocol version without a bump,
+    /// on the rule that an additive field needs none. That rule only holds if
+    /// the field is optional on the way IN as well as out: a daemon built
+    /// before it omits the key entirely, and a client that refuses the message
+    /// draws an empty sidebar rather than a session list.
+    ///
+    /// Also pins the key. The sidebar reads `worktree`, and a rename to
+    /// `workTree` or `worktreeName` would deserialize to `None` on every
+    /// session and silently retire the whole feature.
+    #[test]
+    fn a_session_info_without_a_worktree_key_still_parses() {
+        let json = serde_json::to_string(&sample_session()).expect("serializes");
+        assert!(json.contains(r#""worktree":"attention""#), "key: {json}");
+
+        let mut fields: serde_json::Value =
+            serde_json::from_str(&json).expect("the sample is an object");
+        fields
+            .as_object_mut()
+            .expect("an object")
+            .remove("worktree")
+            .expect("the key was there to remove");
+        let older: SessionInfo =
+            serde_json::from_value(fields).expect("a daemon without the field is readable");
+        assert_eq!(older.worktree, None);
+        assert_eq!(
+            SessionInfo {
+                worktree: None,
+                ..sample_session()
+            },
+            older,
+            "removing the key changed something other than the worktree"
+        );
     }
 
     /// WHY: every field on the control plane that carries raw PTY bytes must

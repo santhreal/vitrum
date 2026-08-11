@@ -38,6 +38,32 @@ use regex::bytes::{Regex, RegexBuilder};
 use crate::error::{Error, Result};
 use crate::query::{Pattern, Query};
 
+/// Bytes of compiled program one pattern may occupy.
+///
+/// The default is ten megabytes, and a search box compiles a pattern on every
+/// keystroke. `\p{Any}{1000}{1000}` is fourteen characters that expand to a
+/// program near that ceiling, so an operator who types one — or a client that
+/// forwards one — spends the daemon's CPU building it and its memory holding
+/// it, per keystroke, on the connection thread of a process that is also
+/// pumping every session's output.
+///
+/// A quarter of a megabyte compiles every pattern a person types and every
+/// pattern the shipped search box builds. A pattern that exceeds it is
+/// refused by name, with the limit in the message, which is a better answer
+/// than a daemon that stalls: the corrective action is to write a narrower
+/// pattern.
+const MAX_PROGRAM_BYTES: usize = 256 * 1024;
+
+/// Bytes of lazy DFA cache one pattern may occupy while it runs.
+///
+/// Separate from the program size and separately unbounded by default. The
+/// cache grows with the input the pattern is run against, which here is every
+/// byte of every session's ring, so this is the one that grows during the
+/// sweep rather than before it. The regex engine falls back to a slower
+/// engine when the cache fills; it does not fail, so this costs throughput on
+/// a pathological pattern and nothing on any other.
+const MAX_DFA_BYTES: usize = 256 * 1024;
+
 /// A compiled query, ready to run against lines.
 ///
 /// The finder is boxed because `memmem::Finder` embeds a 256-byte shift table
@@ -167,6 +193,10 @@ impl Matcher {
             // pattern containing `.` should not be able to reach past one if a
             // caller ever hands us a multi-line buffer.
             .multi_line(false)
+            // Both limits are set rather than left at their defaults. See
+            // MAX_PROGRAM_BYTES.
+            .size_limit(MAX_PROGRAM_BYTES)
+            .dfa_size_limit(MAX_DFA_BYTES)
             .build()
             .map_err(|source| Error::BadPattern {
                 pattern: query.pattern.text().to_string(),

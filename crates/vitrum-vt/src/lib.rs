@@ -1,95 +1,79 @@
-//! Ghostty's terminal engine, driving a [`CellGrid`](vitrum_grid::CellGrid).
+//! The terminal engine: escape sequences in, a [`CellGrid`] out.
 //!
-//! `vitrum-vt` is the parser and screen model that sits between a PTY byte
-//! stream and [`vitrum-grid`](vitrum_grid). It has no window, no event loop,
-//! and no renderer: bytes go in through [`Vt::feed`], and a grid of cells comes
-//! out through [`Vt::sync`].
+//! This crate is the only escape-sequence parser in the product. A session's
+//! bytes are handed to libghostty's VT, which is the state machine shipped in
+//! the Ghostty terminal, and the screen it maintains is projected onto a
+//! [`vitrum_grid::CellGrid`] that a wgpu surface paints. There is no second
+//! parser anywhere: the daemon, the replay tool, the benchmark harness and the
+//! live pane all read the same implementation, so a replayed screen and a live
+//! one cannot disagree.
 //!
-//! # Why Ghostty and not a parser of our own
+//! # What a renderer needs, and where it is
 //!
-//! The client renders terminals with xterm.js inside a webview today, which
-//! costs a JavaScript engine per session and looks like a web page pretending
-//! to be a terminal. Replacing it needs a VT implementation, and a VT
-//! implementation is not a weekend of work: it is DEC modes, scroll regions,
-//! reflow on resize, OSC handling, grapheme clustering, and a decade of
-//! terminal quirks. `libghostty-vt` is that implementation, extracted from
-//! Ghostty and shipped as a C library, so vitrum gets the engine of a terminal
-//! people already trust instead of a new one that has to earn trust.
+//! | Question | Answer |
+//! |----------|--------|
+//! | give it bytes | [`Vt::feed`] |
+//! | what changed | [`Vt::sync`], returning [`SyncStats`] |
+//! | where is the cursor | [`Vt::cursor`], returning [`CursorState`] |
+//! | what modes are set | [`Vt::mode`], [`Vt::mouse_tracking`], [`Vt::cols`], [`Vt::rows`], [`Vt::scrollback_rows`] |
+//! | what does the program want back | [`Vt::drain_pty_write`] |
+//! | what did it announce | [`Vt::events`], returning [`Events`] |
+//! | move the viewport | [`Vt::scroll`] |
+//! | the window changed size | [`Vt::resize`] |
 //!
-//! It also brings capabilities the webview path never had: OSC 7 working
-//! directory and OSC 133 shell integration, semantic selection by word and by
-//! command output, and scrollback that reflows when the window resizes.
+//! [`Vt::sync`] is the damage contract. It reads only the rows the engine
+//! reports as dirty and writes only the cells whose value differs, so an idle
+//! terminal produces [`SyncStats::is_noop`] and costs the renderer no upload
+//! and no frame. That is the property a live renderer is driven from: a frame
+//! is presented because something changed, never because a clock ticked.
 //!
-//! # How the engine is obtained
+//! # Threading
 //!
-//! Two features, one choice, because the answer differs per installation:
-//!
-//! - `vendored` (default) builds libghostty from source, which needs a Zig
-//!   toolchain at build time and pins the exact engine commit.
-//! - `system` links a libghostty the platform already provides, which needs no
-//!   Zig and tracks whatever the system ships.
-//!
-//! # Cost model
-//!
-//! - One engine allocation per session, plus the scrollback it is given.
-//! - [`Vt::sync`] reads only the rows the terminal reports as changed, and
-//!   writes through to the grid, which itself records damage only for cells
-//!   whose value differs. An idle terminal produces
-//!   [`SyncStats::is_noop`], and the renderer then records no GPU work.
-//! - Grapheme clusters are read into a stack buffer. Nothing is allocated per
-//!   frame, per row, or per cell.
-//!
-//! # Example
-//!
-//! ```
-//! use vitrum_grid::{CellGrid, Style};
-//! use vitrum_vt::{Vt, VtOptions};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut vt = Vt::new(VtOptions { cols: 20, rows: 3, max_scrollback: 0 })?;
-//! let mut grid = CellGrid::new(20, 3, Style::DEFAULT)?;
-//!
-//! vt.feed(b"\x1b[1;32mgreen\x1b[0m\r\n");
-//! let stats = vt.sync(&mut grid)?;
-//! assert!(stats.cells_changed > 0);
-//! assert_eq!(grid.row_text(0).unwrap().trim_end(), "green");
-//!
-//! // Nothing arrived since, so the next frame changes nothing.
-//! assert!(vt.sync(&mut grid)?.is_noop());
-//! # Ok(())
-//! # }
-//! ```
+//! A [`Vt`] is not [`Send`]. libghostty invokes its callbacks on the thread
+//! that calls [`Vt::feed`], so a session belongs to the thread that created it.
+//! One session per thread is the intended shape; sharing one across threads is
+//! not offered rather than being offered and unsound.
 
-#![deny(missing_docs)]
-
-pub mod bridge;
-pub mod engine;
+mod bridge;
+mod engine;
 pub mod events;
 pub mod linkage;
 pub mod pwd;
 
-#[cfg(test)]
-mod tests;
-
 pub use bridge::{CursorShape, CursorState, SyncStats};
 pub use engine::{Vt, VtError, VtOptions};
 pub use events::Events;
+pub use linkage::linkage;
 pub use pwd::pwd_path;
 
-// Re-exported so a host can drive scrolling and read colours without taking a
-// direct dependency on the engine crate, whose version this crate pins.
+/// Where the viewport sits in the scrollback.
+///
+/// Re-exported from the engine rather than mirrored, because a second enum
+/// with the same variants is a second thing to keep in step and buys nothing.
 pub use libghostty_vt::terminal::ScrollViewport;
-pub use libghostty_vt::style::RgbColor;
 
-/// What a host must advertise in `COLORTERM` for this engine.
+/// One terminal mode, and whether it is a DEC or an ANSI mode.
 ///
-/// The claim lives beside the engine that has to keep it. A host sets this in
-/// every child's environment, and an agent reads it to decide whether to emit
-/// `\x1b[38;2;r;g;b` or quantise itself to the 256-colour cube first — so the
-/// string is a promise about what the code in THIS crate does with those
-/// bytes, and the crate that renders is the only one positioned to make it.
+/// Re-exported for the same reason as [`ScrollViewport`]: the numbers are the
+/// terminal's, not this crate's. A host reads [`Vt::mode`] with one of the
+/// constants on [`Mode`] to find out how to encode input, because bracketed
+/// paste, DECCKM and the six mouse protocols each turn the same key, paste or
+/// click into different bytes.
+pub use libghostty_vt::terminal::{Mode, ModeKind};
+
+/// The colour depth this engine renders, as a child process reads it.
 ///
-/// `the_engine_keeps_the_promise_this_crate_makes` asserts the two together. An
-/// engine that started rounding colours would fail there rather than shipping a
-/// lie that surfaces as wrong colours inside somebody else's TUI.
+/// A host puts this in every session's environment as `COLORTERM`, and agents
+/// read it to decide whether to emit 24-bit colour at all: Gemini CLI prints
+/// "True color (24-bit) support not detected" and quantises itself to 256
+/// colours when it is absent.
+///
+/// The claim belongs here and not to whoever sets the variable, because this
+/// is the crate that either reproduces a colour or does not.
+/// `the_engine_keeps_the_promise_this_crate_makes` feeds every channel value
+/// through the engine and asserts the cell comes back exact, so weakening the
+/// renderer and weakening this string fail together.
 pub const COLORTERM: &str = "truecolor";
+
+#[cfg(test)]
+mod tests;

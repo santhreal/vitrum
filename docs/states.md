@@ -1,8 +1,8 @@
 # Session states
 
-A row carries the agent's mark, the session name, its branch and working
-directory, one state, and the time since the session last printed. Rows group
-by project, or by folders you name.
+A row carries the agent's mark, the session name, its worktree, its branch and
+working directory, one state, and the time since the session last printed. Rows
+group by project, or by folders you name.
 
 <p align="center">
   <img src="../assets/screenshots/session-transcript.png" alt="Three projects in the vitrum sidebar holding Claude Code, Codex and Gemini CLI sessions: two ready, two working, one waiting for approval, one waiting for input and one failed, beside the transcript of the working Codex session" width="900" />
@@ -91,12 +91,21 @@ reach the PTY another way.
 [`integrations/claude-code`](../integrations/claude-code) contains the hook,
 the `settings.json` entries that call it, and the event mapping.
 
-## Working directory
+## Worktrees and the working directory
 
-A session's row is grouped under a project and shows the part of its working
-directory that the project heading does not already give. A session at the
-project root shows nothing extra. A session in a worktree beside the project,
-or anywhere else, shows its own path.
+A checkout and every linked worktree beside it are one project. A row in a
+linked worktree carries that worktree's name, which is the name git gives it
+and never a path. A row in the main working tree carries none, because there is
+nothing to distinguish it from. Two agents in two worktrees of one repository
+are therefore two rows under one project heading rather than two projects.
+
+A branch is resolved in the worktree the session is in, so two rows under one
+project can be on different branches, which is the arrangement worktrees exist
+for.
+
+A session's row shows the part of its working directory that the project
+heading does not already give. A session at the project root shows nothing
+extra. A session outside the project entirely shows its own path.
 
 The directory is the one the session is in now, not the one it was launched
 in. An agent that changes directory reports the move with OSC 7:

@@ -5189,6 +5189,7 @@ dependencies = [
  "gdk",
  "glib",
  "gtk",
+ "parking_lot",
  "pollster 1.0.1",
  "saphyr",
  "semver",
@@ -5207,6 +5208,8 @@ dependencies = [
  "vitrum-model",
  "vitrum-os",
  "vitrum-proto",
+ "vitrum-search",
+ "vitrum-vt",
  "wgpu",
  "winresource",
 ]
@@ -5217,6 +5220,7 @@ version = "0.3.1"
 dependencies = [
  "anyhow",
  "futures-util",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -5228,6 +5232,7 @@ dependencies = [
  "vitrum-replay",
  "vitrum-search",
  "vitrum-vt",
+ "wgpu",
 ]
 
 [[package]]

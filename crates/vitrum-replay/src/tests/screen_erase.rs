@@ -1,127 +1,141 @@
-//! ED, EL, ECH, and back-colour erase.
+//! `ED`, `EL`, `ECH`, and back-colour erase.
+//!
+//! Erasing is where a terminal decides what "blank" means. It is not "black": a cell
+//! erased while a background colour is set keeps that colour, which is how a program
+//! paints a coloured pane. Getting this wrong shows up as black holes in a full-screen
+//! program the moment it clears anything.
 
-use vitrum_grid::{Attrs, Rgba};
+use crate::tests::support::{GHOSTTY_ANSI, cell_at, linear, rows_of};
 
-use crate::palette::Palette;
-use crate::tests::support::{GHOSTTY_ANSI, linear, rows_of};
-
-/// `CSI K` with no parameter erases from the cursor to the end of the line and
-/// leaves everything before it.
-///
-/// The bug: reading the absent parameter as one, which erases the *start* of the
-/// line instead. Every progress bar in the fixture is `\r` followed by `CSI K`, so
-/// getting this backwards erases the text the program is about to overwrite anyway
-/// and keeps the stale tail it meant to remove.
+/// `CSI 0 K` erases from the cursor to the end of the row and leaves the head alone.
 #[test]
-fn el_with_no_parameter_erases_from_the_cursor_forwards() {
-    let screen = linear(10, 2, b"abcdefghij\r\x1b[3C\x1b[K");
+fn el_zero_erases_to_the_end_of_the_row() {
+    let screen = linear(8, 2, b"abcdefgh\x1b[1;4H\x1b[0K");
+
     assert_eq!(rows_of(&screen)[0], "abc");
 }
 
-/// `CSI 1 K` erases from the start of the line through the cursor, inclusive.
-#[test]
-fn el_1_erases_through_the_cursor_inclusive() {
-    let screen = linear(10, 2, b"abcdefghij\r\x1b[3C\x1b[1K");
-    assert_eq!(rows_of(&screen)[0], "    efghij");
-}
-
-/// `CSI 2 K` erases the whole line and leaves the cursor where it was.
-#[test]
-fn el_2_erases_the_whole_line_without_moving_the_cursor() {
-    let screen = linear(10, 2, b"abcdefghij\r\x1b[3C\x1b[2KX");
-    assert_eq!(rows_of(&screen)[0], "   X");
-    assert_eq!(screen.cursor().col, 4);
-}
-
-/// `CSI J` erases from the cursor to the bottom right, including the rest of the
-/// cursor's own row.
+/// `CSI 1 K` erases from the start of the row through the cursor cell inclusive.
 ///
-/// The bug: erasing whole rows from the cursor's row down, which wipes the text to
-/// the left of the cursor on that row. A shell that clears below its prompt would
-/// erase the prompt.
+/// The bug: erasing up to but not including the cursor. `CSI 1 K` is defined to include
+/// it, and a prompt redraw that leaves one stale character behind is the visible result.
 #[test]
-fn ed_0_erases_the_rest_of_the_row_and_every_row_below() {
-    let screen = linear(6, 3, b"aaaaaa\r\nbbbbbb\r\ncccccc\x1b[2;4H\x1b[J");
-    assert_eq!(rows_of(&screen), vec!["aaaaaa", "bbb", ""]);
+fn el_one_erases_the_head_of_the_row_including_the_cursor_cell() {
+    let screen = linear(8, 2, b"abcdefgh\x1b[1;4H\x1b[1K");
+
+    assert_eq!(rows_of(&screen)[0], "    efgh");
 }
 
-/// `CSI 1 J` erases from the top left through the cursor, inclusive.
+/// `CSI 2 K` erases the whole row and does not move the cursor.
 #[test]
-fn ed_1_erases_from_the_top_through_the_cursor_inclusive() {
-    let screen = linear(6, 3, b"aaaaaa\r\nbbbbbb\r\ncccccc\x1b[2;4H\x1b[1J");
-    assert_eq!(rows_of(&screen), vec!["", "    bb", "cccccc"]);
+fn el_two_erases_the_whole_row_and_leaves_the_cursor_where_it_was() {
+    let screen = linear(8, 2, b"abcdefgh\x1b[1;4H\x1b[2K");
+
+    assert_eq!(rows_of(&screen)[0], "");
+    assert_eq!(screen.cursor().col, 3);
 }
 
-/// `CSI 2 J` erases the screen and does not move the cursor.
+/// A bare `CSI K` is `CSI 0 K`.
 ///
-/// The bug: homing the cursor as part of `ED 2`. Programs emit `CSI 2 J` followed by
-/// `CSI H` precisely because `ED` does not move the cursor; one that homed would make
-/// the following `CSI 5 ; 1 H` land in the wrong place for every program that clears
-/// then addresses.
+/// An omitted parameter defaults to zero, and every shell prompt in existence writes the
+/// bare form. Defaulting it to 2 instead would erase the prompt the user is typing at.
 #[test]
-fn ed_2_erases_everything_and_leaves_the_cursor_alone() {
-    let screen = linear(6, 3, b"aaaaaa\r\nbbbbbb\x1b[2;4H\x1b[2JX");
-    assert_eq!(rows_of(&screen), vec!["", "   X", ""]);
+fn a_bare_el_is_the_same_as_el_zero() {
+    let bare = linear(8, 2, b"abcdefgh\x1b[1;4H\x1b[K");
+    let explicit = linear(8, 2, b"abcdefgh\x1b[1;4H\x1b[0K");
+
+    assert_eq!(bare, explicit);
 }
 
-/// `CSI 3 J` erases the scrollback and leaves the visible screen untouched.
-///
-/// The bug that made this a test: treating any unrecognised `ED` parameter as "erase
-/// everything". `clear` on many systems sends `CSI H CSI 2 J CSI 3 J`, and a plain
-/// `CSI 3 J` also arrives on its own from tools that only want the scrollback gone.
-/// Wiping the screen for it makes output vanish that the user was still reading.
+/// `CSI 0 J` erases from the cursor to the end of the screen.
 #[test]
-fn ed_3_leaves_the_visible_screen_alone() {
-    let screen = linear(6, 2, b"aaaaaa\r\nbbbbbb\x1b[3J");
-    assert_eq!(rows_of(&screen), vec!["aaaaaa", "bbbbbb"]);
+fn ed_zero_erases_to_the_end_of_the_screen() {
+    let screen = linear(4, 3, b"aaaa\r\nbbbb\r\ncccc\x1b[2;3H\x1b[0J");
+
+    assert_eq!(rows_of(&screen), vec!["aaaa", "bb", ""]);
 }
 
-/// `CSI X` blanks a run of cells from the cursor and does not move it or shift the
-/// tail.
-///
-/// The bug: implementing ECH as DCH. `ECH` overwrites in place; `DCH` pulls the rest
-/// of the line left. Confusing them corrupts every table a TUI redraws.
+/// `CSI 1 J` erases from the start of the screen through the cursor cell.
 #[test]
-fn ech_blanks_in_place_without_shifting_or_moving() {
-    let screen = linear(10, 2, b"abcdefghij\r\x1b[2C\x1b[3X");
-    assert_eq!(rows_of(&screen)[0], "ab   fghij");
+fn ed_one_erases_the_head_of_the_screen_including_the_cursor_cell() {
+    let screen = linear(4, 3, b"aaaa\r\nbbbb\r\ncccc\x1b[2;3H\x1b[1J");
+
+    assert_eq!(rows_of(&screen), vec!["", "   b", "cccc"]);
+}
+
+/// `CSI 2 J` erases the whole screen without moving the cursor.
+///
+/// The bug: homing the cursor as part of the erase. `clear` sends `CSI 2 J` followed by
+/// `CSI H` precisely because the erase does not home; a parser that homes anyway
+/// disagrees with every program that erases and then writes where it already was.
+#[test]
+fn ed_two_erases_everything_and_does_not_home_the_cursor() {
+    let screen = linear(4, 3, b"aaaa\r\nbbbb\r\ncccc\x1b[2;3H\x1b[2J");
+
+    assert_eq!(rows_of(&screen), vec!["", "", ""]);
+    assert_eq!(screen.cursor().row, 1);
     assert_eq!(screen.cursor().col, 2);
 }
 
-/// `CSI X` past the end of the row stops at the row and does not touch the next one.
+/// `CSI X` erases `n` cells from the cursor without moving anything.
+///
+/// The bug: implementing `ECH` as `DCH`. Deleting would pull the tail of the row left,
+/// so a program overwriting a field in place would have the rest of its line shift.
 #[test]
-fn ech_clamps_at_the_end_of_the_row() {
-    let screen = linear(6, 2, b"aaaaaa\r\nbbbbbb\x1b[2;3H\x1b[99X");
-    assert_eq!(rows_of(&screen), vec!["aaaaaa", "bb"]);
+fn ech_blanks_cells_in_place_without_pulling_the_tail_left() {
+    let screen = linear(8, 2, b"abcdefgh\x1b[1;3H\x1b[3X");
+
+    assert_eq!(rows_of(&screen)[0], "ab   fgh");
+    assert_eq!(screen.cursor().col, 2, "ECH does not move the cursor");
 }
 
-/// An erase keeps the current background colour and drops the other rendition bits.
-///
-/// Back-colour erase is what lets a program paint a coloured panel and then clear part
-/// of it without the cleared part turning black. Keeping the *other* bits would be
-/// the opposite bug: an erase under an active underline would draw a rule across
-/// empty space.
+/// `ECH` past the end of the row stops at the margin.
 #[test]
-fn an_erase_keeps_the_background_and_drops_the_other_attributes() {
-    // Blue background, underline on, then erase the line.
-    let screen = linear(6, 2, b"\x1b[44;4mxxxxxx\r\x1b[2K");
-    let cell = screen.grid().cell(0, 0).expect("cell");
-    assert_eq!(cell.ch, ' ');
-    assert_eq!(cell.bg, GHOSTTY_ANSI[4], "the panel colour survived");
-    assert_eq!(cell.fg, Palette::XTERM.fg, "the foreground went back to default");
-    assert_eq!(cell.attrs, Attrs::NONE, "no underline across the blank");
+fn ech_past_the_margin_stops_at_the_margin() {
+    let screen = linear(8, 2, b"abcdefgh\x1b[1;7H\x1b[99X");
+
+    assert_eq!(rows_of(&screen)[0], "abcdef");
 }
 
-/// An untouched screen and an erased screen are painted identically.
+/// An erase paints the current background, not the default one.
 ///
-/// If they differed, a `clear` would leave a visible seam between the part of the
-/// screen the program wrote and the part it never reached.
+/// This is back-colour erase, and it is what makes a full-screen program's pane one
+/// colour. Without it every clear punches the default background through the pane.
 #[test]
-fn an_erased_screen_matches_an_untouched_one() {
-    let untouched = linear(6, 2, b"");
-    let erased = linear(6, 2, b"abc\r\ndef\x1b[2J");
-    let blank = untouched.grid().cell(0, 0).expect("cell");
-    let cleared = erased.grid().cell(0, 0).expect("cell");
-    assert_eq!(blank, cleared);
-    assert_eq!(blank.bg, Rgba::rgb(0, 0, 0), "xterm's default background");
+fn an_erase_paints_the_current_background() {
+    let screen = linear(4, 2, b"\x1b[44m\x1b[2J");
+
+    assert_eq!(
+        cell_at(&screen, 2, 1).bg,
+        GHOSTTY_ANSI[4],
+        "the erased cell kept the blue that was set when it was erased"
+    );
+}
+
+/// An erase after the background is reset paints the default again.
+///
+/// The pair matters: a parser that latched the pane colour would keep painting blue
+/// after the program went back to the default.
+#[test]
+fn an_erase_after_a_reset_paints_the_default_background() {
+    let screen = linear(4, 2, b"\x1b[44m\x1b[2J\x1b[49m\x1b[2J");
+
+    assert_eq!(
+        cell_at(&screen, 2, 1).bg,
+        crate::palette::Palette::DEFAULT.bg,
+    );
+}
+
+/// The foreground of an erased cell is the default, not the colour that was set.
+///
+/// An erased cell has no glyph, so carrying a foreground into it would only show up
+/// later, when something wrote a character there and inherited a colour nobody set.
+#[test]
+fn an_erased_cell_carries_no_foreground_of_its_own() {
+    let screen = linear(4, 2, b"\x1b[31;44m\x1b[2J");
+
+    assert_eq!(
+        cell_at(&screen, 0, 0).fg,
+        crate::palette::Palette::DEFAULT.fg
+    );
 }

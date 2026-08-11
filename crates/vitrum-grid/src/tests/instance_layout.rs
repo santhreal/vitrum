@@ -28,7 +28,7 @@ fn cell_instance_field_offsets_match_the_vertex_attribute_table() {
     assert_eq!(offset_of!(CellInstance, fg), 16, "location 4, Unorm8x4");
     assert_eq!(offset_of!(CellInstance, bg), 20, "location 5, Unorm8x4");
     assert_eq!(offset_of!(CellInstance, flags), 24, "location 6, Uint32");
-    assert_eq!(offset_of!(CellInstance, _pad), 28);
+    assert_eq!(offset_of!(CellInstance, cursor), 28, "location 7, Unorm8x4");
 }
 
 /// The instance must serialise to an exact, byte-for-byte known image.
@@ -47,7 +47,7 @@ fn cell_instance_serializes_to_exact_bytes() {
         fg: [0x11, 0x22, 0x33, 0x44],
         bg: [0x55, 0x66, 0x77, 0x88],
         flags: 0x0000_0006,
-        _pad: 0,
+        cursor: [0x99, 0xaa, 0xbb, 0xcc],
     };
     let bytes = bytemuck::bytes_of(&instance);
     assert_eq!(bytes.len(), 32);
@@ -67,8 +67,8 @@ fn cell_instance_serializes_to_exact_bytes() {
             0x55, 0x66, 0x77, 0x88, //
             // flags: span 2 plus the underline bit
             0x06, 0x00, 0x00, 0x00, //
-            // padding
-            0x00, 0x00, 0x00, 0x00,
+            // cursor colour, in r,g,b,a order
+            0x99, 0xaa, 0xbb, 0xcc,
         ][..]
     );
 }

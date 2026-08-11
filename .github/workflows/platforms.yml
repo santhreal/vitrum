@@ -71,7 +71,16 @@ on:
       - "**/build.rs"
       - "vendor/**"
       - "vendor-pty/**"
+      - "vendor-ghostty-vt-sys/**"
       - "crates/vitrum-vt/**"
+      # The pane is the most platform-conditional code in the tree. The wgpu
+      # backend differs on every one of these legs, Direct3D 12's software
+      # adapter is the only device a GPU-less Windows runner has, and the
+      # surface is created from a toolkit handle that exists on one platform.
+      # None of that was in this filter while the pane was drawn by a script
+      # inside the webview, and it is what breaks on a platform now.
+      - "crates/vitrum-grid/**"
+      - "app/src/pane/**"
       - "packaging/**"
       - "install.sh"
       - "install.ps1"

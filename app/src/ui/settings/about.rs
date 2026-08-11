@@ -1,13 +1,35 @@
-//! The About tab: what is installed, and the update control.
+//! The About tab: what is installed, and the update controls.
 //!
-//! Separate from the rest of the sheet because it edits no preference at all.
-//! Every other panel reads and writes [`crate::state::Settings`]; this one
-//! runs [`crate::update`] and reports what it found, which is a different
-//! job with a different failure mode.
+//! Separate from the rest of the sheet because most of it edits no preference
+//! at all: it runs [`crate::update`] and reports what it found. The two
+//! preferences it does own are the ones an operator looks for while reading
+//! that report, which is why they are here and not on another tab.
 
 use dioxus::prelude::*;
 
 use crate::state::UiState;
+use crate::update::Channel;
+
+use super::{SelectRow, SwitchRow};
+
+/// Every release stream, in the order the menu lists them.
+///
+/// [`channel_label`] matches exhaustively over the same enum, so a third
+/// stream added to [`Channel`] fails to compile here rather than shipping a
+/// menu that cannot express it.
+const CHANNELS: [Channel; 2] = [Channel::Stable, Channel::Nightly];
+
+/// What the menu calls a stream.
+///
+/// Distinct from [`Channel::as_str`], which is the word the setting is stored
+/// and logged as. A stored word is not a menu entry: this one says what
+/// picking it does.
+fn channel_label(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Stable => "Stable — published releases",
+        Channel::Nightly => "Nightly — the moving build, and stable when it is newer",
+    }
+}
 
 /// What the update control is doing right now.
 ///
@@ -211,6 +233,37 @@ pub(super) fn AboutPanel(props: AboutPanelProps) -> Element {
                 "vitrum update --check   reports what is available and installs nothing. \
                  vitrum update           installs it. Same code as the button above."
             }
+        }
+
+        SelectRow {
+            label: "Release stream",
+            desc: "Stable takes published releases. Nightly also takes the moving nightly \
+                   build, and still takes a stable release when one of them is newer. \
+                   Neither installs a version older than the one running."
+                .to_string(),
+            value: state.read().daemon.settings.update_channel.as_str().to_string(),
+            options: CHANNELS
+                .iter()
+                .map(|c| (c.as_str().to_string(), channel_label(*c).to_string()))
+                .collect(),
+            onpick: move |v: String| {
+                let picked = CHANNELS
+                    .iter()
+                    .copied()
+                    .find(|c| c.as_str() == v)
+                    .unwrap_or_default();
+                super::edit(state, |s| s.update_channel = picked);
+            },
+        }
+
+        SwitchRow {
+            label: "Offer the restart in the sidebar".to_string(),
+            desc: "A staged update is applied on the next start whatever this says. Off hides \
+                   the band that offers to restart now, and hides nothing else: checking, \
+                   staging and applying are unaffected, and so is this tab."
+                .to_string(),
+            on: state.read().daemon.settings.show_restart_to_update,
+            onchange: move |on| super::edit(state, |s| s.show_restart_to_update = on),
         }
     }
 }

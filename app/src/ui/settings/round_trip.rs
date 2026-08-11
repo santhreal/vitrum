@@ -15,11 +15,11 @@
 //! visible without reading the tests.
 
 use super::*;
-use crate::state::OPACITY_MAX_PCT;
 use crate::state::{
     DaemonState, Grouping, Persisted, SettingsTab, UiStateLoad, WindowState, encode_ui_state,
     parse_ui_state,
 };
+use crate::termpalette::{TermPalette, css_tokens};
 use vitrum_model::{Clock, Disposition, SessionView};
 use vitrum_proto::{Attention, ProjectId, SessionId, SessionInfo, SessionStatus};
 
@@ -64,6 +64,7 @@ fn info(id: u64, cwd: &str) -> SessionInfo {
         cols: 80,
         rows: 24,
         git_branch: None,
+        worktree: None,
         unread: false,
         attention: Attention::default(),
         hint: None,
@@ -109,7 +110,7 @@ fn density() {
     assert!(root_style(&restored).contains("--rg-card-h:3.75rem;"));
 }
 
-/// Text scale changes the root font size the bridge is told to set, and
+/// Text scale changes the root font size the shell paints at, and
 /// survives.
 #[test]
 fn text_scale() {
@@ -118,18 +119,12 @@ fn text_scale() {
         text_scale_pct: 150,
         ..before.clone()
     };
-    assert_eq!(
-        ui_scale_script(before.text_scale_pct),
-        "document.documentElement.style.fontSize=\"16px\";"
-    );
-    assert_eq!(
-        ui_scale_script(big.text_scale_pct),
-        "document.documentElement.style.fontSize=\"24px\";"
-    );
+    assert_eq!(ui_scale_px(before.text_scale_pct), "16px");
+    assert_eq!(ui_scale_px(big.text_scale_pct), "24px");
 
     let restored = after_restart(|s| s.set_text_scale(150));
     assert_eq!(restored.text_scale_pct, 150);
-    assert!(ui_scale_script(restored.text_scale_pct).contains("24px"));
+    assert_eq!(ui_scale_px(restored.text_scale_pct), "24px");
 }
 
 /// Reduced motion zeroes both duration tokens, and survives.
@@ -253,35 +248,32 @@ fn the_settle_menu_can_express_the_shipped_default() {
 
 // -- Terminal -----------------------------------------------------------
 
-/// Every terminal control changes the script pushed at the live xterm
-/// instance, and every one survives the file.
+/// Every terminal control survives the file, and the palette changes the
+/// tokens the grid paints with.
 #[test]
 fn terminal_controls() {
-    let base = term_options_script(&Settings::default().terminal, OPACITY_MAX_PCT);
+    let base = css_tokens(Settings::default().terminal.palette);
 
-    let renderer = after_restart(|s| s.terminal.renderer = TermRenderer::Webgl);
-    assert_eq!(renderer.terminal.renderer, TermRenderer::Webgl);
-    let script = term_options_script(&renderer.terminal, OPACITY_MAX_PCT);
-    assert!(script.contains(r#"renderer:"webgl""#), "{script}");
-    assert_ne!(script, base);
+    let palette = after_restart(|s| s.terminal.palette = TermPalette::Nord);
+    assert_eq!(palette.terminal.palette, TermPalette::Nord);
+    let tokens = css_tokens(palette.terminal.palette);
+    assert_ne!(tokens, base);
+    assert!(tokens.contains("--rg-terminal-bg:#2e3440;"), "{tokens}");
 
     let font = after_restart(|s| {
         s.terminal.font_family = "\"Fira Code\", ui-monospace, monospace".to_string();
     });
-    assert!(
-        term_options_script(&font.terminal, OPACITY_MAX_PCT).contains("Fira Code"),
+    assert_eq!(
+        font.terminal.font_family,
+        "\"Fira Code\", ui-monospace, monospace",
         "the font choice did not survive the file"
     );
 
     let size = after_restart(|s| s.terminal.font_size_px = 20);
     assert_eq!(size.terminal.font_size_px, 20);
-    assert!(term_options_script(&size.terminal, OPACITY_MAX_PCT).contains("fontSize:20"));
 
     let scrollback = after_restart(|s| s.terminal.scrollback_lines = 20_000);
     assert_eq!(scrollback.terminal.scrollback_lines, 20_000);
-    assert!(
-        term_options_script(&scrollback.terminal, OPACITY_MAX_PCT).contains("scrollback:20000")
-    );
 }
 
 // -- Notifications ------------------------------------------------------
@@ -313,7 +305,7 @@ fn notification_switches() {
 
 // -- Keyboard -----------------------------------------------------------
 
-/// A rebinding changes the table the bridge matches on AND the row the
+/// A rebinding changes the table key dispatch matches on AND the row the
 /// overlay prints, and survives the file. Three assertions because a
 /// rebinder that gets any one of them wrong produces an undiscoverable
 /// binding.
@@ -335,9 +327,9 @@ fn keyboard_rebinding() {
         "the rebinding did not survive the file"
     );
     assert_ne!(
-        keymap_json(&effective_chords(&restored.keyboard)),
-        keymap_json(&effective_chords(&KeyboardPrefs::default())),
-        "the bridge is still matching the default table"
+        effective_chords(&restored.keyboard),
+        effective_chords(&KeyboardPrefs::default()),
+        "the default table is still what dispatch would match"
     );
     assert!(
         effective_help_rows(&restored.keyboard)

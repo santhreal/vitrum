@@ -36,6 +36,7 @@ fn sample_session() -> SessionInfo {
             received_at_ms: 1_700_000_000_400,
         }),
         term_title: Some("[ ! ] Action Required - claude".to_string()),
+        worktree: Some("review".to_string()),
     }
 }
 

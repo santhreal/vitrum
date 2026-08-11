@@ -84,27 +84,135 @@ fn the_window_mark_is_rasterised_once_for_the_process() {
 
 /// The document head is one string, built once, whoever asks first.
 ///
-/// It is now built on the prewarm thread while the main thread brings up the
+/// It is built on the prewarm thread while the main thread brings up the
 /// toolkit. Both call the same one-shot cache, so the guarantee that matters
 /// is that a second caller gets the same bytes and pays nothing: a per-window
-/// rebuild would copy 800 KB of vendored script for every window that opens.
+/// rebuild would copy every stylesheet again for every window that opens.
 #[test]
 fn the_document_head_is_built_once_and_shared() {
-    let opts = Options::parse(std::iter::empty()).expect("no arguments is a valid command line");
-    let first = chrome::document_head(opts);
-    let second = chrome::document_head(opts);
+    let first = chrome::document_head();
+    let second = chrome::document_head();
     assert!(
         std::ptr::eq(first, second),
         "the document head was rebuilt for a second caller"
     );
     assert!(
-        first.contains("window.__vitrum_keymap="),
-        "the head lost the operator's keymap; every rebound chord would be dead \
-         until the mount-time push landed"
-    );
-    assert!(
         !first.contains("__vitrum_boot"),
         "a boot splash is back in the document; the mark is the window's to \
-         draw, on a surface that exists 600 ms before the webview has one"
+         draw, on a surface that exists hundreds of milliseconds before the \
+         shell's view has one"
+    );
+}
+
+/// Every phase of a start names the phase that must precede it.
+///
+/// Derived from `PHASES` at run time rather than listed here, so a phase
+/// added with no prerequisite turns this red instead of silently opting out
+/// of the ordering rule. `process.start` is the only row allowed to have
+/// none, because it is the first thing the process does.
+#[test]
+fn every_boot_phase_but_the_first_states_what_precedes_it() {
+    let mut placed = vec![];
+    for (name, needs) in boot::PHASES {
+        match needs {
+            None => assert_eq!(
+                name, "process.start",
+                "{name} is traced with no prerequisite, so nothing states when \
+                 it is allowed to happen"
+            ),
+            Some(needs) => assert!(
+                placed.contains(&needs),
+                "{name} requires {needs}, which PHASES lists after it"
+            ),
+        }
+        placed.push(name);
+    }
+    assert!(
+        placed.len() > 1,
+        "PHASES is empty, so the ordering guard checks nothing"
+    );
+}
+
+/// The stylesheets are finished before the window exists.
+///
+/// The defect this closes: the document was assembled between the window
+/// being created and its first frame, so the operator watched an empty
+/// rectangle for the length of a several-hundred-kilobyte string build. The
+/// build now happens on the prewarm thread and the window is made from the
+/// finished string.
+#[test]
+fn a_window_is_not_created_before_its_stylesheets_are_built() {
+    assert!(
+        boot::out_of_order(&["styles.built", "window.created"]).is_empty(),
+        "the documented order was rejected by the guard that enforces it"
+    );
+    let backwards = boot::out_of_order(&["window.created"]);
+    assert_eq!(
+        backwards.len(),
+        1,
+        "a window created before its stylesheets were built was accepted"
+    );
+    assert!(
+        backwards[0].contains("styles.built"),
+        "the violation does not name the phase that was skipped: {}",
+        backwards[0]
+    );
+}
+
+/// The pane is installed with the window, not when the shell mounts it.
+///
+/// A pane that waits for its mount starts parsing output hundreds of
+/// milliseconds late and drops everything that arrived in between. Both the
+/// shell and the pane therefore hang off `window.created`, and neither is
+/// allowed to precede it.
+#[test]
+fn the_shell_and_the_pane_both_wait_on_the_window_and_not_on_each_other() {
+    for phase in ["shell.mounted", "pane.first-paint"] {
+        assert!(
+            boot::out_of_order(&["window.created", phase]).is_empty(),
+            "{phase} after the window was rejected"
+        );
+        assert_eq!(
+            boot::out_of_order(&[phase]).len(),
+            1,
+            "{phase} was accepted before the window it is painted on existed"
+        );
+    }
+    assert!(
+        boot::out_of_order(&["window.created", "pane.first-paint"]).is_empty(),
+        "the pane is required to wait for the shell to mount, which is the \
+         ordering this build exists to remove"
+    );
+}
+
+/// A start fast enough not to need the mark does not show it.
+///
+/// The defect: a splash on a fast start is a flicker, and a flicker reads as
+/// a fault. The threshold and the switch are both the operator's, so this
+/// drives the same pure function the draw handler calls.
+#[test]
+fn the_mark_is_not_painted_on_a_start_that_beats_the_threshold() {
+    let prefs = state::StartupPrefs {
+        show_splash: true,
+        splash_after_ms: 120,
+    };
+    assert!(
+        !splash::should_paint(0, prefs),
+        "the mark was painted at the instant of exec"
+    );
+    assert!(
+        !splash::should_paint(119, prefs),
+        "the mark was painted one millisecond before its own threshold"
+    );
+    assert!(
+        splash::should_paint(120, prefs),
+        "a start that reached the threshold showed no mark at all"
+    );
+    assert!(
+        !splash::should_paint(10_000, state::StartupPrefs {
+            show_splash: false,
+            splash_after_ms: 120,
+        }),
+        "the mark was painted after the operator turned it off"
     );
 }

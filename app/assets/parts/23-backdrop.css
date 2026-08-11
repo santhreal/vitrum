@@ -115,8 +115,10 @@ body {
  *
  * Its own opacity, because the arrangement people actually want is an opaque
  * shell with a see-through grid: the wallpaper reads behind the text while the
- * sidebar stays legible. The cells themselves are xterm's to paint, and
- * `ui/settings.rs::term_options_script` hands it a matching alpha. */
+ * sidebar stays legible. This rule tints the region the pane occupies; the
+ * cells are the native renderer's to paint, and it reads the same
+ * `terminal_opacity_pct` that `ui/settings.rs::appearance_tokens` turns into
+ * `--rg-terminal-opacity`, so the two alphas match. */
 .rg-terminal,
 .rg-pane {
   background-color: color-mix(

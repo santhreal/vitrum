@@ -8,8 +8,8 @@
 //! shortcut must be able to open a session in a named folder with a named
 //! command, and the shipped behaviour did not do that.
 //!
-//! `bootstrap.js` matches exactly ONE table. These tests are about what is in
-//! it.
+//! Key dispatch matches exactly ONE table, the one [`live_chords`] folds.
+//! These tests are about what is in it.
 
 use super::*;
 use crate::launch::SavedPreset;
@@ -47,9 +47,9 @@ fn a_presets_chord_reaches_the_live_table() {
 
 /// It must be GLOBAL, or it is still a dialog accelerator.
 ///
-/// `bootstrap.js` refuses to fire a chord whose scope does not match the
-/// current surface, so a preset scoped to a layer would do nothing while
-/// the operator is typing at an agent, which is where they are.
+/// Dispatch refuses to fire a chord whose scope does not match the current
+/// surface, so a preset scoped to a layer would do nothing while the operator
+/// is typing at an agent, which is where they are.
 #[test]
 fn a_presets_chord_fires_from_anywhere() {
     let live = live_chords(
@@ -107,10 +107,10 @@ fn an_unreadable_chord_is_skipped_and_the_others_still_load() {
 
 /// Presets come last, so one can never shadow a shipped chord.
 ///
-/// `bootstrap.js` takes the FIRST matching entry. Settings refuses a
-/// conflicting chord up front, but ordering is what makes that refusal
-/// something we do not have to trust: a preset that somehow carried
-/// Ctrl+Shift+N still loses to New session.
+/// Dispatch takes the FIRST matching entry. Settings refuses a conflicting
+/// chord up front, but ordering is what makes that refusal something we do
+/// not have to trust: a preset that somehow carried Ctrl+Shift+N still loses
+/// to New session.
 #[test]
 fn a_preset_can_never_outrank_a_built_in_chord() {
     let prefs = KeyboardPrefs::default();
@@ -131,26 +131,29 @@ fn a_preset_can_never_outrank_a_built_in_chord() {
     assert!(new_session < at, "the preset would win over New session");
 }
 
-/// The table the webview receives must carry the preset's action id.
+/// A preset's action survives the form the settings file stores it in.
 ///
-/// Everything above is about the Rust-side vector. This is the wire: if
-/// the id does not survive serialisation the bridge sends a string Rust
-/// cannot parse, and the chord silently does nothing.
+/// Everything above is about the folded vector, which lives for as long as
+/// the process. This is the part that outlives it: a rebinding is persisted
+/// as `action -> chord`, with the action written by [`KeyAction::wire`] and
+/// read back by [`KeyAction::parse`]. An id that does not survive that pair
+/// comes back from a restart as an action this build cannot name, and the
+/// chord silently does nothing.
 #[test]
-fn the_serialised_table_carries_the_presets_action() {
+fn a_presets_action_survives_the_form_it_is_stored_in() {
     let live = live_chords(
         &KeyboardPrefs::default(),
         &[preset(42, "Resume here", Some("ctrl+shift+j"))],
     );
-    let json = keymap_json(&live);
-    assert!(
-        json.contains("\"preset:42\""),
-        "the wire table has no preset action in it: {json}"
-    );
+    let entry = live
+        .iter()
+        .find(|c| c.action == KeyAction::LaunchPreset(42))
+        .expect("the folded table has no preset action in it");
+    assert_eq!(entry.action.wire(), "preset:42");
     assert_eq!(
-        KeyAction::parse("preset:42"),
+        KeyAction::parse(&entry.action.wire()),
         Some(KeyAction::LaunchPreset(42)),
-        "the bridge would send a string this build cannot parse back"
+        "a restart would read back an action this build cannot name"
     );
 }
 
@@ -160,10 +163,10 @@ fn the_serialised_table_carries_the_presets_action() {
 /// sparse. `SelectTab` shares the same `other =>` parse arm and IS range
 /// checked, so a preset id must not be quietly clamped by it.
 #[test]
-fn a_large_preset_id_survives_the_wire() {
+fn a_large_preset_id_survives_being_stored() {
     for id in [0u64, 9, 10, 1_000_000, u64::MAX] {
-        let wire = KeyAction::LaunchPreset(id).wire();
-        assert_eq!(wire, format!("preset:{id}"));
-        assert_eq!(KeyAction::parse(&wire), Some(KeyAction::LaunchPreset(id)));
+        let stored = KeyAction::LaunchPreset(id).wire();
+        assert_eq!(stored, format!("preset:{id}"));
+        assert_eq!(KeyAction::parse(&stored), Some(KeyAction::LaunchPreset(id)));
     }
 }

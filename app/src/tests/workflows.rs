@@ -748,3 +748,139 @@ fn published_targets() -> Vec<String> {
     );
     targets
 }
+
+/// The workflow that pushes a release tag hands that tag to the one that
+/// builds it.
+///
+/// WHY: this repository intends ten or more releases a day, which only works
+/// while one dispatch is the whole operation. It is one because of a link
+/// nothing else in the pipeline states: a tag pushed with the workflow token
+/// starts no workflow, by GitHub's own rule against a run triggering a run, so
+/// `release.yml` is asked for by name with the tag as an input. Delete that
+/// step and the cut still succeeds. It commits, it tags, it pushes, it reports
+/// green, and no archive is ever built for the tag it published, which is the
+/// same end state as the v0.1.0 release that carries no assets.
+///
+/// The two ends are found rather than named. The cutting workflow is whichever
+/// one pushes a tag, which [`one_script_cuts_a_release`] has already
+/// established is exactly one, and the building workflow is whichever file
+/// that one dispatches. Renaming either file keeps this true; dropping the
+/// link between them does not.
+#[test]
+fn a_cut_hands_the_tag_to_the_workflow_that_builds_it() {
+    let all = workflows();
+    let (cutter, body) = all
+        .iter()
+        .map(|(name, text)| (name, instructions(text)))
+        .find(|(_, body)| {
+            body.lines()
+                .any(|line| line.contains("git push") && line.contains("tag"))
+        })
+        .expect("one workflow pushes a release tag");
+
+    let dispatched = body
+        .split("gh workflow run ")
+        .skip(1)
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dispatched.len(),
+        1,
+        "{cutter} pushes a release tag and dispatches {dispatched:?}. A tag \
+         pushed by a workflow token starts nothing, so exactly one dispatch is \
+         what turns a cut into a release; none means the tag is never built, \
+         and two means two builds race for the same release."
+    );
+    let built = &dispatched[0];
+
+    let (_, target) = all
+        .iter()
+        .find(|(name, _)| name == built)
+        .unwrap_or_else(|| {
+            panic!(
+                "{cutter} dispatches {built}, which is not a workflow in this \
+                 repository. `gh workflow run` on a name that does not resolve \
+                 fails after the tag has already been pushed."
+            )
+        });
+
+    let target_body = instructions(target);
+    assert!(
+        target.contains("workflow_dispatch:") && target.contains("tag:"),
+        "{built} takes no `tag` input, so the tag {cutter} just pushed cannot \
+         be handed to it and the dispatch builds whatever main is at instead"
+    );
+    assert!(
+        target_body.contains("gh release edit") || target_body.contains("gh release create"),
+        "{built} is what {cutter} dispatches to publish a release and it never \
+         touches a release, so a cut ends with a tag and no assets"
+    );
+}
+
+/// Every channel a release publishes on is exercised by the install workflow.
+///
+/// WHY: a channel is a promise to a machine that already has vitrum on it. The
+/// nightly channel published every day for weeks with nothing in the pipeline
+/// ever downloading one of its archives, because `install.sh` cannot reach it
+/// at all: it resolves `v<x.y.z>` tags and a nightly lives under a moving tag,
+/// so `vitrum update --channel nightly` is the only way in and the only thing
+/// that can prove the way in still works.
+///
+/// The channels are read out of `release.yml`, which decides what a run is, so
+/// a third channel turns this red until somebody says how it is proved. The
+/// mapping from a channel to its evidence is exhaustive for the same reason
+/// the target mapping above is: a new member panics naming itself rather than
+/// passing.
+#[test]
+fn every_release_channel_is_installed_by_something() {
+    let all = workflows();
+    let (_, release) = all
+        .iter()
+        .find(|(name, _)| name == "release.yml")
+        .expect("release.yml is the workflow that publishes a release");
+
+    let mut channels: Vec<String> = instructions(release)
+        .split("channel=")
+        .skip(1)
+        .filter_map(|rest| rest.split(|c: char| !c.is_ascii_alphabetic()).next())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect();
+    channels.sort();
+    channels.dedup();
+    assert!(
+        channels.len() >= 2,
+        "release.yml names {channels:?} as its channels, which is fewer than \
+         the stable and nightly pair that has shipped; the assignment was \
+         probably reformatted out from under this"
+    );
+
+    let (_, install) = all
+        .iter()
+        .find(|(name, _)| name == "install.yml")
+        .expect("install.yml is the workflow that runs the installers");
+    let install = instructions(install);
+
+    for channel in channels {
+        let evidence = match channel.as_str() {
+            // The installer resolves the newest published stable and nothing
+            // else, so the whole container matrix is evidence for this one.
+            "stable" => "sh install.sh",
+            // Unreachable from the installer by construction: `update` is the
+            // only client of this channel anywhere.
+            "nightly" => "--channel nightly",
+            other => panic!(
+                "release.yml publishes a `{other}` channel and nothing here \
+                 says what proves a machine can install from it. Add the case \
+                 with the step that downloads one of its archives."
+            ),
+        };
+        assert!(
+            install.contains(evidence),
+            "release.yml publishes the {channel} channel and install.yml never \
+             runs `{evidence}`, so archives are uploaded to it that nothing \
+             ever downloads"
+        );
+    }
+}

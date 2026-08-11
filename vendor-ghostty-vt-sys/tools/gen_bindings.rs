@@ -66,6 +66,13 @@ fn main() {
         .allowlist_type("[Gg]hostty.*")
         .allowlist_var("GHOSTTY_.*")
         .generate_cstr(true)
+        // The header's prose is not carried into the generated file. It
+        // documents the C API in the terms of the terminals that defined the
+        // sequences, and this product does not repeat another terminal's name
+        // in its own tree. The documentation for this layer is
+        // include/ghostty/vt.h in the vendored sources, and the safe surface
+        // over it is documented in vitrum-vt.
+        .generate_comments(false)
         .derive_default(true)
         .size_t_is_usize(true)
         .default_enum_style(EnumVariation::ModuleConsts)

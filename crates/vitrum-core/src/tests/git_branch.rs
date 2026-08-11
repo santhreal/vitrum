@@ -1,7 +1,18 @@
 //! Branch resolution for the sidebar, read from `.git` directly.
 
-use crate::session::git_branch;
+use std::path::Path;
+
+use crate::session::git_context;
 use crate::tests::helpers::TempDir;
+
+/// The branch half of the shared resolution walk.
+///
+/// Branch and worktree come from one read of `.git`, so there is one function
+/// and no second implementation to drift. Every assertion below is about the
+/// branch, which is what this names.
+fn git_branch(from: &Path) -> Option<String> {
+    git_context(from).branch
+}
 
 /// A normal repository must report its branch name.
 ///

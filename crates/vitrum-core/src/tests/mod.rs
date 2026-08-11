@@ -4,6 +4,7 @@ mod agent_title;
 mod attention;
 mod close_tree;
 mod git_branch;
+mod git_worktree;
 mod helpers;
 #[cfg(not(windows))]
 mod hint_session;

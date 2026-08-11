@@ -10,15 +10,15 @@
 //! # One source of truth
 //!
 //! A palette is sixteen ANSI slots plus four surface colours, and it has to
-//! reach two consumers: xterm.js, which wants a JS object, and the CSS behind
-//! the grid, which paints the letterboxing around the cell matrix and the
-//! empty state. Writing the numbers twice, once in a stylesheet and once in a
-//! Rust table, is how the two drift and how the pane ends up a different black
-//! from the cells inside it.
+//! reach two consumers: the native renderer, which paints the cell matrix
+//! from these values directly, and the CSS behind the grid, which paints the
+//! letterboxing around the matrix and the empty state. Writing the numbers
+//! twice, once in a stylesheet and once in a Rust table, is how the two drift
+//! and how the pane ends up a different black from the cells inside it.
 //!
 //! So the table below is the only copy. [`css_tokens`] feeds the stylesheet
-//! through the app root's `style` attribute, and [`js_theme`] feeds xterm
-//! through the same settings push that already carries font and scrollback.
+//! through the app root's `style` attribute, and [`TermPalette::colours`]
+//! hands the renderer the same numbers.
 //!
 //! # Why these palettes
 //!
@@ -37,8 +37,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TermPalette {
-    /// Follow the app theme. The grid uses `--rg-terminal-*` and xterm's own
-    /// ANSI defaults, which is what every build before this preference did.
+    /// Follow the app theme. The grid uses `--rg-terminal-*` and the
+    /// renderer's own ANSI defaults, which is what every build before this
+    /// preference did.
     #[default]
     Inherit,
     SolarizedDark,
@@ -53,9 +54,9 @@ pub enum TermPalette {
 /// The colours of one palette.
 ///
 /// `ansi` is the standard order: black, red, green, yellow, blue, magenta,
-/// cyan, white, then the eight bright variants. xterm.js names these fields
-/// individually, so the order here is load-bearing and is asserted by
-/// [`tests::the_ansi_slots_are_named_in_the_standard_order`].
+/// cyan, white, then the eight bright variants. The renderer indexes this
+/// array by SGR colour number, so the order is load-bearing and is asserted
+/// by [`tests::the_ansi_slots_are_in_the_standard_order`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Colours {
     pub background: &'static str,
@@ -64,26 +65,6 @@ pub struct Colours {
     pub selection: &'static str,
     pub ansi: [&'static str; 16],
 }
-
-/// xterm.js theme field names, in `Colours::ansi` order.
-const ANSI_FIELDS: [&str; 16] = [
-    "black",
-    "red",
-    "green",
-    "yellow",
-    "blue",
-    "magenta",
-    "cyan",
-    "white",
-    "brightBlack",
-    "brightRed",
-    "brightGreen",
-    "brightYellow",
-    "brightBlue",
-    "brightMagenta",
-    "brightCyan",
-    "brightWhite",
-];
 
 /// Every selectable palette, in the order the settings control lists them.
 ///
@@ -267,9 +248,9 @@ impl TermPalette {
 /// overridden. There is no "reset to inherit" value to get wrong.
 ///
 /// Only the three tokens the shell actually paints with are emitted. The ANSI
-/// sixteen are xterm's business and no CSS rule reads them, so declaring them
-/// here would be twenty dead custom properties on the busiest element in the
-/// document.
+/// sixteen are the renderer's business and no CSS rule reads them, so
+/// declaring them here would be twenty dead custom properties on the busiest
+/// element in the document.
 #[must_use]
 pub fn css_tokens(palette: TermPalette) -> String {
     let Some(c) = palette.colours() else {
@@ -281,57 +262,6 @@ pub fn css_tokens(palette: TermPalette) -> String {
         fg = c.foreground,
         sel = c.selection,
     )
-}
-
-/// The xterm.js `theme` object literal, or `null` for the inherit case.
-///
-/// `null` rather than `{}` because the bridge has to tell "the operator wants
-/// the app theme" from "the push carried no theme field", and an empty object
-/// would silently mean neither. `bootstrap.js` reads the CSS palette when it
-/// sees `null`.
-#[must_use]
-pub fn js_theme(palette: TermPalette) -> String {
-    let Some(c) = palette.colours() else {
-        return "null".to_string();
-    };
-    let mut out = String::with_capacity(512);
-    out.push_str("{background:");
-    push_json_str(&mut out, c.background);
-    out.push_str(",foreground:");
-    push_json_str(&mut out, c.foreground);
-    out.push_str(",cursor:");
-    push_json_str(&mut out, c.cursor);
-    out.push_str(",cursorAccent:");
-    push_json_str(&mut out, c.background);
-    out.push_str(",selectionBackground:");
-    push_json_str(&mut out, c.selection);
-    for (field, value) in ANSI_FIELDS.iter().zip(c.ansi) {
-        out.push(',');
-        out.push_str(field);
-        out.push(':');
-        push_json_str(&mut out, value);
-    }
-    out.push('}');
-    out
-}
-
-/// Quote a colour for a JS literal.
-///
-/// The values are compile-time constants from the table above and none of them
-/// contains a quote or a backslash, but the escape is here anyway: this
-/// function's output is evaluated as script, and "the input happens to be safe
-/// today" is not a property a code path that reaches `eval` should rely on.
-fn push_json_str(out: &mut String, value: &str) {
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => out.push(' '),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 #[cfg(test)]
@@ -397,7 +327,7 @@ mod tests {
         assert_eq!(TermPalette::from_slug(""), TermPalette::Inherit);
     }
 
-    /// Inherit must emit nothing on either side.
+    /// Inherit must emit nothing.
     ///
     /// This is the entire opt-out mechanism. If `css_tokens` ever returned a
     /// literal dark colour for Inherit, light mode would ship a black terminal
@@ -405,7 +335,6 @@ mod tests {
     #[test]
     fn following_the_app_theme_overrides_nothing() {
         assert_eq!(css_tokens(TermPalette::Inherit), "");
-        assert_eq!(js_theme(TermPalette::Inherit), "null");
         assert_eq!(TermPalette::Inherit.colours(), None);
     }
 
@@ -458,61 +387,67 @@ mod tests {
     fn the_light_flag_agrees_with_the_background() {
         for p in ALL.into_iter().filter(|p| *p != TermPalette::Inherit) {
             let bg = p.colours().expect("named palettes have colours").background;
-            let hex = bg.trim_start_matches('#');
-            let n = u32::from_str_radix(hex, 16).expect("backgrounds are #rrggbb");
-            let (r, g, b) = ((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
-            // Rec. 601 luma, integer, against a mid-scale threshold. Precision
-            // is irrelevant here: every background in the table is either far
-            // above or far below the middle.
-            let luma = (299 * r + 587 * g + 114 * b) / 1000;
             assert_eq!(
                 p.is_light(),
-                luma > 127,
-                "{} has luma {luma} but is_light() says {}",
+                luma(bg) > 127,
+                "{} has luma {} but is_light() says {}",
                 p.slug(),
+                luma(bg),
                 p.is_light()
             );
         }
     }
 
-    /// The JS object must name the fields xterm.js reads.
+    /// Rec. 601 luma of an `#rrggbb` string, integer.
     ///
-    /// xterm ignores unknown keys silently, so a misspelt `brightMagenta`
-    /// costs one colour with no error anywhere. The names are checked against
-    /// the vendored library rather than against a second hand-kept list.
+    /// Precision is irrelevant here: every colour these tests compare is far
+    /// from the middle of the scale.
+    fn luma(hex: &str) -> u32 {
+        let n = u32::from_str_radix(hex.trim_start_matches('#'), 16)
+            .expect("palette colours are #rrggbb");
+        let (r, g, b) = ((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
+        (299 * r + 587 * g + 114 * b) / 1000
+    }
+
+    /// The sixteen slots must sit in SGR order.
+    ///
+    /// The renderer indexes `ansi` by colour number and reports nothing when
+    /// the row is rotated: every glyph gets a plausible colour and the whole
+    /// palette is wrong. A rotation is invisible on review of a twenty-entry
+    /// hex table, so the relationships that hold for every named palette are
+    /// checked, plus the endpoints of one table by value.
+    ///
+    /// Slot 8 is deliberately not required to be brighter than slot 0. In
+    /// Solarized's sixteen-colour definition slot 8 is base03, which is the
+    /// darkest tone in the table and darker than slot 0's base02. "Bright
+    /// black is brighter" is a convention of the other palettes, not a
+    /// property of the standard, and asserting it would pin a defect into
+    /// Solarized instead of catching one.
     #[test]
-    fn the_ansi_slots_are_named_in_the_standard_order() {
-        let xterm = include_str!("vendor/xterm.js");
-        for field in ANSI_FIELDS {
+    fn the_ansi_slots_are_in_the_standard_order() {
+        for p in ALL.into_iter().filter(|p| *p != TermPalette::Inherit) {
+            let c = p.colours().expect("named palettes have colours");
             assert!(
-                xterm.contains(field),
-                "vendored xterm.js never mentions {field}, so the theme key is wrong"
+                luma(c.ansi[0]) < luma(c.ansi[7]),
+                "{}: slot 0 must be black and slot 7 white",
+                p.slug()
+            );
+            assert!(
+                luma(c.ansi[7]) < luma(c.ansi[15]),
+                "{}: slot 15 must be a brighter white than slot 7",
+                p.slug()
+            );
+            let brightest = (0..16).max_by_key(|&i| luma(c.ansi[i])).expect("sixteen slots");
+            assert_eq!(
+                brightest,
+                15,
+                "{}: slot 15 must be the brightest of the sixteen, not slot {brightest}",
+                p.slug()
             );
         }
-        let theme = js_theme(TermPalette::Nord);
-        for field in ANSI_FIELDS {
-            assert!(
-                theme.contains(&format!("{field}:")),
-                "{theme} has no {field}"
-            );
-        }
-        // Order, not just presence: the sixteen slots are positional in the
-        // table and a rotated row would give every palette the wrong hues.
-        let mut at = 0;
-        for field in ANSI_FIELDS {
-            let found = theme[at..]
-                .find(&format!("{field}:"))
-                .unwrap_or_else(|| panic!("{field} out of order in {theme}"));
-            at += found + field.len();
-        }
-        assert!(
-            theme.contains(r##"black:"#3b4252""##),
-            "Nord slot 0 moved: {theme}"
-        );
-        assert!(
-            theme.contains(r##"brightWhite:"#eceff4""##),
-            "Nord slot 15 moved: {theme}"
-        );
+        let nord = TermPalette::Nord.colours().expect("Nord has colours");
+        assert_eq!(nord.ansi[0], "#3b4252", "Nord slot 0 moved");
+        assert_eq!(nord.ansi[15], "#eceff4", "Nord slot 15 moved");
     }
 
     /// The CSS fragment must be a valid declaration list, terminated.

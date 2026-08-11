@@ -1584,6 +1584,31 @@ impl WindowState {
         }
     }
 
+    /// The workspace this window actually draws.
+    ///
+    /// [`Self::workspace`] is a REMEMBERED id and the workspace set is a
+    /// LIVE one. They can disagree: a second window deletes a workspace, a
+    /// profile is restored beside a set that no longer has it, or the daemon
+    /// reloads its own document. Every read of the set below used to be
+    /// `get(self.workspace)` with an `is_some_and` or a `let else` around it,
+    /// and both of those resolve a missing workspace to "this window shows
+    /// nothing" — a sidebar with no rows in it while every session is still
+    /// running, under a sentence claiming they are all filed somewhere else.
+    ///
+    /// A dangling id therefore falls back to the first workspace, which is
+    /// exactly what [`vitrum_model::WorkspaceSet::workspace_of`] already does
+    /// for a SESSION filed into a workspace that is gone. One rule for both
+    /// halves: an id that no longer resolves means the default, never
+    /// invisibility. Nothing is written back, so a window is repointed for
+    /// real by `reconcile_workspace` and not as a side effect of drawing.
+    pub fn drawn_workspace(&self, daemon: &DaemonState) -> WorkspaceId {
+        if daemon.workspaces.contains(self.workspace) {
+            self.workspace
+        } else {
+            daemon.workspaces.first()
+        }
+    }
+
     /// Sessions this window can reach: filed into its workspace, and admitted
     /// by the workspace's band visibility.
     ///
@@ -1596,11 +1621,12 @@ impl WindowState {
         daemon: &'a DaemonState,
         clock: Clock,
     ) -> impl Iterator<Item = &'a SessionView> + use<'s, 'a> {
-        let ws = daemon.workspaces.get(self.workspace);
+        let here = self.drawn_workspace(daemon);
+        let ws = daemon.workspaces.get(here);
         let policy = daemon.policy();
         daemon.sessions.iter().filter(move |row| {
             ws.is_some_and(|ws| {
-                daemon.workspaces.workspace_of(&row.info) == self.workspace
+                daemon.workspaces.workspace_of(&row.info) == here
                     && ws.sections.shows(row.disposition(clock, policy))
             })
         })
@@ -1616,7 +1642,10 @@ impl WindowState {
     /// wake, which is the only useful question about a parked row; the drained
     /// band sorts by when the work ended.
     pub fn tree<'a>(&self, daemon: &'a DaemonState, clock: Clock) -> Vec<SidebarGroup<'a>> {
-        let Some(ws) = daemon.workspaces.get(self.workspace) else {
+        // Never `self.workspace` directly. A remembered id that no longer
+        // resolves is a window whose sidebar goes blank while every session
+        // is still running, which is the shape of the reported defect.
+        let Some(ws) = daemon.workspaces.get(self.drawn_workspace(daemon)) else {
             return Vec::new();
         };
         let query = self.filter.trim().to_lowercase();
@@ -2924,7 +2953,7 @@ impl Persisted {
             windows: Vec::new(),
         };
         for window in windows {
-            doc.put_window(window);
+            doc.put_window(window.index, WindowSnapshot::of(window));
         }
         doc
     }
@@ -2939,16 +2968,20 @@ impl Persisted {
     /// Replace one window's entry, growing the list if this window has never
     /// saved before.
     ///
-    /// Padding is a placeholder rather than a copy of `window`: a slot that
+    /// Padding is a placeholder rather than a copy of `snapshot`: a slot that
     /// belongs to a window which has not saved yet must not come back on the
     /// next launch wearing another window's tabs.
-    pub fn put_window(&mut self, window: &WindowState) {
+    ///
+    /// Takes the snapshot and the slot rather than a [`WindowState`], because
+    /// the coalescing writer holds its work across a wait and so cannot hold a
+    /// borrow of live state. Both the writer and [`Persisted::capture`] reach
+    /// the document through here, so the padding rule has one implementation.
+    pub fn put_window(&mut self, index: usize, snapshot: WindowSnapshot) {
         let first = self.workspaces.first();
-        while self.windows.len() < window.index {
+        while self.windows.len() < index {
             self.windows.push(WindowSnapshot::placeholder(first));
         }
-        let snapshot = WindowSnapshot::of(window);
-        match self.windows.get_mut(window.index) {
+        match self.windows.get_mut(index) {
             Some(slot) => *slot = snapshot,
             None => self.windows.push(snapshot),
         }
@@ -3027,6 +3060,13 @@ pub enum UiStateLoad {
     Loaded(Box<Persisted>),
     /// Present but not JSON, or not the right shape.
     Corrupt { detail: String },
+    /// Present, and written in a format this build no longer reads.
+    ///
+    /// Separate from [`UiStateLoad::Unsupported`] because the corrective
+    /// action is the opposite one. A file this build is too new for is
+    /// repaired by starting fresh; a file this build is too old for is
+    /// repaired by going back to the build that wrote it.
+    Stale { version: u32 },
     /// Present but written by a newer build.
     Unsupported { version: u32 },
     /// Present, and the read itself failed.
@@ -3046,21 +3086,73 @@ impl UiStateLoad {
             }
         }
     }
+
+    /// Whether the file was present and could not be used.
+    ///
+    /// The condition under which [`save_prefs`] archives rather than
+    /// overwrites. Named rather than matched at the call site so the archive
+    /// rule and the message rule cannot disagree about which states are a
+    /// refusal.
+    #[must_use]
+    pub const fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            UiStateLoad::Corrupt { .. }
+                | UiStateLoad::Stale { .. }
+                | UiStateLoad::Unsupported { .. }
+                | UiStateLoad::Unreadable { .. }
+        )
+    }
+
+    /// The short name used in the archive file's extension.
+    fn reason(&self) -> &'static str {
+        match self {
+            UiStateLoad::Missing => "missing",
+            UiStateLoad::Loaded(_) => "loaded",
+            UiStateLoad::Corrupt { .. } => "corrupt",
+            UiStateLoad::Stale { .. } => "stale",
+            UiStateLoad::Unsupported { .. } => "unsupported",
+            UiStateLoad::Unreadable { .. } => "unreadable",
+        }
+    }
 }
 
+/// Every message a refused file produces names what to do about it.
+///
+/// A version number and no instruction leaves the operator with a window full
+/// of defaults, a sentence they cannot act on, and a file they do not know is
+/// about to be archived. The action is part of the message and not a separate
+/// help page, because the message is the only place it will be read.
 impl fmt::Display for UiStateLoad {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UiStateLoad::Missing => f.write_str("no saved workspaces"),
             UiStateLoad::Loaded(_) => f.write_str("loaded"),
-            UiStateLoad::Corrupt { detail } => write!(f, "workspace file is corrupt: {detail}"),
+            UiStateLoad::Corrupt { detail } => write!(
+                f,
+                "{UI_STATE_FILE} is not a workspace file: {detail}. It will be kept as \
+                 {UI_STATE_FILE}.corrupt.bak and a fresh one written. Repair that copy and \
+                 rename it back to keep what was in it."
+            ),
+            UiStateLoad::Stale { version } => write!(
+                f,
+                "{UI_STATE_FILE} is format {version} and this build reads \
+                 {UI_STATE_VERSION}. It will be kept as {UI_STATE_FILE}.stale.bak and a \
+                 fresh one written. Run the release that wrote it to export your workspaces, \
+                 or edit that copy to format {UI_STATE_VERSION}."
+            ),
             UiStateLoad::Unsupported { version } => write!(
                 f,
-                "workspace file is version {version}, this build understands {UI_STATE_VERSION}"
+                "{UI_STATE_FILE} is format {version} and this build reads \
+                 {UI_STATE_VERSION}. It will be kept as {UI_STATE_FILE}.unsupported.bak and \
+                 a fresh one written. Install the newer vitrum that wrote it, or delete that \
+                 copy once you no longer want what is in it."
             ),
-            UiStateLoad::Unreadable { detail } => {
-                write!(f, "workspace file could not be read: {detail}")
-            }
+            UiStateLoad::Unreadable { detail } => write!(
+                f,
+                "{UI_STATE_FILE} could not be read: {detail}. Check the file's owner and \
+                 permissions. Nothing has been written over it."
+            ),
         }
     }
 }
@@ -3089,15 +3181,21 @@ pub fn parse_ui_state(text: &str) -> UiStateLoad {
             };
         }
     };
-    // Version first, so a newer file reports its version rather than a pile of
-    // unknown-field errors that say nothing useful.
+    // Version first, so a file from another format reports its version rather
+    // than a pile of unknown-field errors that say nothing useful, and so a
+    // newer file is never partially deserialised into this build's shape.
     match value.get("version").and_then(serde_json::Value::as_u64) {
         Some(v) if v == UI_STATE_VERSION as u64 => {}
         // Saturating, not truncating: `4294967297 as u32` is 1, so a file
         // claiming that version reported "version 1, this build understands 1"
         // and told the operator nothing.
-        Some(v) => {
+        Some(v) if v > UI_STATE_VERSION as u64 => {
             return UiStateLoad::Unsupported {
+                version: u32::try_from(v).unwrap_or(u32::MAX),
+            };
+        }
+        Some(v) => {
+            return UiStateLoad::Stale {
                 version: u32::try_from(v).unwrap_or(u32::MAX),
             };
         }
@@ -3112,7 +3210,7 @@ pub fn parse_ui_state(text: &str) -> UiStateLoad {
             doc.workspaces.normalize();
             // Repaired here rather than at the controls, because this is the
             // path a hand-edited file takes and the controls are not on it.
-            doc.settings.appearance.clamp();
+            doc.settings.clamp();
             UiStateLoad::Loaded(Box::new(doc))
         }
         Err(e) => UiStateLoad::Corrupt {
@@ -3228,19 +3326,200 @@ pub fn startup_prefs() -> &'static (Persisted, Option<String>) {
 /// writing the same thing.
 ///
 /// Returns the failure rather than logging it, because this file has no logger
-/// and the caller has both a `tracing` span and a flash strip.
-pub fn save_prefs(daemon: &DaemonState, window: &WindowState) -> Result<(), String> {
+/// and the caller has both a `tracing` span and a flash strip. On success it
+/// returns the file it had to archive, if it had to archive one.
+///
+/// # A file that could not be read is moved aside, not written over
+///
+/// The old behaviour was to write defaults over it. That is the operator's
+/// workspaces, folders, placements and every preference gone, with a sentence
+/// on screen at startup and nothing on disk afterwards, which is the exact
+/// shape of a product that reads as unstable. The refused file is renamed to
+/// `ui.json.<reason>.bak` and the path is returned so the caller can say
+/// where it went.
+pub fn save_prefs(daemon: &DaemonState, window: &WindowState) -> Result<Option<PathBuf>, String> {
+    write_prefs(&Pending::of(daemon, window))
+}
+
+/// One window's slice of the document, detached from the state it came from.
+///
+/// Detached because the coalescing writer holds it across a wait, and holding
+/// a borrow of the live state across a wait is not a thing a UI thread can do.
+/// The three cheap clones here are the whole cost: the session list, which is
+/// the large part of [`DaemonState`], is not persisted and is not copied.
+#[derive(Debug, Clone, PartialEq)]
+struct Pending {
+    settings: Settings,
+    workspaces: WorkspaceSet,
+    window: WindowSnapshot,
+    index: usize,
+}
+
+impl Pending {
+    fn of(daemon: &DaemonState, window: &WindowState) -> Pending {
+        Pending {
+            settings: daemon.settings.clone(),
+            workspaces: daemon.workspaces.clone(),
+            window: WindowSnapshot::of(window),
+            index: window.index,
+        }
+    }
+}
+
+/// Where a file that could not be read is moved to, or `None` when it was
+/// read.
+///
+/// A function rather than a line inside the writer, because the naming rule is
+/// what an operator follows to get their profile back and it is the one part
+/// of the archive that can be asserted without a config directory.
+#[must_use]
+pub fn archive_path(path: &Path, read: &UiStateLoad) -> Option<PathBuf> {
+    read.is_refusal()
+        .then(|| path.with_extension(format!("json.{}.bak", read.reason())))
+}
+
+/// Merge one window's slice into whatever is on disk and write the result.
+fn write_prefs(pending: &Pending) -> Result<Option<PathBuf>, String> {
     let path = ui_state_path().map_err(|e| e.to_string())?;
-    let mut doc = match load_ui_state(&path) {
+    let read = load_ui_state(&path);
+    let archived = match archive_path(&path, &read) {
+        Some(to) => {
+            std::fs::rename(&path, &to).map_err(|e| {
+                format!(
+                    "{} could not be read, and moving it to {} failed: {e}. Nothing was \
+                     written.",
+                    path.display(),
+                    to.display()
+                )
+            })?;
+            Some(to)
+        }
+        None => None,
+    };
+    let mut doc = match read {
         UiStateLoad::Loaded(doc) => *doc,
-        // A missing, corrupt or future-version file is not a reason to refuse
-        // to save: the operator's current layout is the better of the two.
         _ => Persisted::default(),
     };
-    doc.settings = daemon.settings.clone();
-    doc.workspaces = daemon.workspaces.clone();
-    doc.put_window(window);
-    save_ui_state(&path, &doc).map_err(|e| e.to_string())
+    doc.settings = pending.settings.clone();
+    doc.workspaces = pending.workspaces.clone();
+    doc.put_window(pending.index, pending.window.clone());
+    save_ui_state(&path, &doc).map_err(|e| e.to_string())?;
+    Ok(archived)
+}
+
+/// How long the writer waits for another change before it goes to disk.
+///
+/// Every control in the settings sheet writes the whole document, and one of
+/// them is a text field. At one write per character a daemon URL costs
+/// twenty-odd serialisations of the whole profile and twenty-odd renames on
+/// the thread the operator is typing on. This window collapses a burst into
+/// one write and leaves a single change costing one write, which is what it
+/// cost before.
+const WRITE_QUIET: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The thread that owns the file, and the change waiting to go into it.
+struct Writer {
+    pending: parking_lot::Mutex<Option<Pending>>,
+    wake: parking_lot::Condvar,
+    /// The last failure and the last archive, for a caller that wants to say
+    /// so. A background write has nowhere to return to.
+    report: parking_lot::Mutex<SaveReport>,
+}
+
+/// What the last write did, for a surface that wants to report it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SaveReport {
+    /// The last write that failed, and why.
+    pub error: Option<String>,
+    /// The last file that had to be moved aside, as a path.
+    pub archived: Option<String>,
+}
+
+static WRITER: LazyLock<std::sync::Arc<Writer>> = LazyLock::new(|| {
+    let writer = std::sync::Arc::new(Writer {
+        pending: parking_lot::Mutex::new(None),
+        wake: parking_lot::Condvar::new(),
+        report: parking_lot::Mutex::new(SaveReport::default()),
+    });
+    let owned = std::sync::Arc::clone(&writer);
+    // A named thread: this one blocks on a condvar for the life of the process
+    // and shows up in every stack dump and every profile taken of this client.
+    std::thread::Builder::new()
+        .name("vitrum-prefs".to_string())
+        .spawn(move || owned.run())
+        .expect("the profile writer thread starts");
+    writer
+});
+
+impl Writer {
+    /// Park until something is pending, let the burst finish, then write once.
+    fn run(&self) {
+        loop {
+            let mut queued = self.pending.lock();
+            while queued.is_none() {
+                self.wake.wait(&mut queued);
+            }
+            // Restart the quiet window every time another change lands, so a
+            // burst is one write however long the burst runs.
+            while !self.wake.wait_for(&mut queued, WRITE_QUIET).timed_out() {}
+            let Some(work) = queued.take() else { continue };
+            drop(queued);
+            self.record(write_prefs(&work));
+        }
+    }
+
+    fn record(&self, outcome: Result<Option<PathBuf>, String>) {
+        let mut report = self
+            .report
+            .lock();
+        match outcome {
+            Ok(None) => report.error = None,
+            Ok(Some(path)) => {
+                report.error = None;
+                report.archived = Some(path.display().to_string());
+            }
+            Err(detail) => report.error = Some(detail),
+        }
+    }
+}
+
+/// Write the profile, coalescing a burst of changes into one write.
+///
+/// For every path that writes on a keystroke. A single change still reaches
+/// disk inside [`WRITE_QUIET`]; a run of them costs one write instead of one
+/// per keystroke. Call [`flush_prefs`] before the process exits, or before
+/// anything that reads the file back.
+pub fn save_prefs_soon(daemon: &DaemonState, window: &WindowState) {
+    let writer = &*WRITER;
+    *writer
+        .pending
+        .lock() = Some(Pending::of(daemon, window));
+    writer.wake.notify_all();
+}
+
+/// Write anything [`save_prefs_soon`] is still holding, now.
+///
+/// Returns the file that had to be archived, if one did. `Ok(None)` also means
+/// there was nothing waiting, which is the common case and is not an error.
+pub fn flush_prefs() -> Result<Option<PathBuf>, String> {
+    let writer = &*WRITER;
+    let work = writer
+        .pending
+        .lock()
+        .take();
+    let Some(work) = work else { return Ok(None) };
+    let outcome = write_prefs(&work);
+    writer.record(outcome.clone());
+    outcome
+}
+
+/// What the last background write did.
+#[must_use]
+pub fn save_report() -> SaveReport {
+    WRITER
+        .report
+        .lock()
+        .clone()
 }
 
 /// Which gesture produced a click on a sidebar row.

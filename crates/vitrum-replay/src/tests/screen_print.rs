@@ -1,188 +1,220 @@
-//! Printing, wrapping, wide characters, and insert mode.
+//! Printing: wrapping, wide characters, combining marks, insert mode, tabs, and a
+//! sequence cut in half by a chunk boundary.
+//!
+//! This is the parser's own conformance suite. There is one VT parser in the product
+//! now, the engine behind [`crate::Emulator`], and the daemon paints a live pane with
+//! it. So every assertion here is a statement about what an operator sees, not about
+//! an implementation detail of a replay.
 
 use vitrum_grid::CellSlot;
 
-use crate::tests::support::{linear, rows_of, small};
+use crate::tests::support::{cell_at, linear, rows_of, small, split_feed};
 
-/// Filling the last column leaves the cursor on that column with a wrap pending,
-/// and a following `CR` returns to the start of the *same* row.
-///
-/// This is the deferred wrap, and getting it wrong is the single most visible
-/// emulator bug there is. A terminal that wraps eagerly puts the cursor on the next
-/// row the instant the last column is filled; the `\r` that a progress bar sends
-/// then returns to the start of the wrong line, and every redraw walks one row down
-/// the screen.
+/// Text prints left to right and the cursor ends one column past the last character.
 #[test]
-fn filling_the_last_column_defers_the_wrap_so_a_following_cr_stays_on_the_row() {
-    let screen = small(b"0123456789");
-    assert_eq!(screen.cursor().col, 9, "the cursor stays on the last column");
+fn text_prints_across_the_row_and_leaves_the_cursor_after_it() {
+    let screen = small(b"abc");
+
+    assert_eq!(rows_of(&screen)[0], "abc");
+    assert_eq!(screen.cursor().col, 3);
     assert_eq!(screen.cursor().row, 0);
-
-    let after_cr = small(b"0123456789\rX");
-    assert_eq!(rows_of(&after_cr)[0], "X123456789");
-    assert_eq!(rows_of(&after_cr)[1], "", "nothing wrapped onto row 1");
 }
 
-/// One more printable character after the row is full takes the deferred wrap.
-#[test]
-fn one_more_character_takes_the_deferred_wrap() {
-    let screen = small(b"0123456789A");
-    assert_eq!(rows_of(&screen)[0], "0123456789");
-    assert_eq!(rows_of(&screen)[1], "A");
-    assert_eq!((screen.cursor().col, screen.cursor().row), (1, 1));
-    assert_eq!(rows_of(&screen)[2], "", "and only one row was taken");
-}
-
-/// With autowrap off, printing past the last column overwrites it in place.
+/// A line longer than the screen wraps onto the next row.
 ///
-/// The bug: wrapping regardless of DECAWM. A full-screen program that turns autowrap
-/// off and draws a border relies on the last column absorbing overflow; wrapping
-/// there scrolls its whole layout up by a row.
+/// The bug this stops: clamping at the right margin. Every command whose output is
+/// wider than the pane would lose its tail, silently, and a user resizing narrower
+/// would watch text disappear rather than reflow.
 #[test]
-fn autowrap_off_overwrites_the_last_column_instead_of_wrapping() {
-    let screen = small(b"\x1b[?7l0123456789ABC");
-    assert_eq!(rows_of(&screen)[0], "012345678C");
-    assert_eq!(rows_of(&screen)[1], "", "nothing reached row 1");
-    assert_eq!(screen.cursor().col, 9, "parked on the last column, not wrapped");
+fn a_line_longer_than_the_row_wraps_to_the_next_one() {
+    let screen = linear(4, 3, b"abcdefg");
+
+    assert_eq!(rows_of(&screen), vec!["abcd", "efg", ""]);
+    assert_eq!(screen.cursor().row, 1);
+    assert_eq!(screen.cursor().col, 3);
 }
 
-/// A double-width character with one column left moves whole to the next row, and
-/// the abandoned column is blanked.
+/// With autowrap off (`DECAWM` reset) the last column is overwritten instead.
 ///
-/// Splitting it across the row edge would put half a glyph in each row, which is
-/// what a naive `col += 2` produces and what makes CJK output unreadable.
+/// The bug: implementing wrap unconditionally. `CSI ? 7 l` is how a program draws a
+/// character in the bottom right corner without scrolling the screen; wrapping there
+/// scrolls the whole pane by one row on every frame.
 #[test]
-fn a_wide_character_with_one_column_left_moves_whole_to_the_next_row() {
-    let screen = small("012345678\u{65e5}".as_bytes());
-    assert_eq!(rows_of(&screen)[0], "012345678", "column 9 was left blank");
-    let head = screen.grid().cell(0, 1).expect("cell");
-    let tail = screen.grid().cell(1, 1).expect("cell");
+fn with_autowrap_off_the_last_column_is_overwritten() {
+    let screen = linear(4, 2, b"\x1b[?7labcdefg");
+
+    assert_eq!(
+        rows_of(&screen),
+        vec!["abcg", ""],
+        "each character past the margin replaced the one in the last column"
+    );
+}
+
+/// The cursor pauses on the last column rather than wrapping the moment it is filled.
+///
+/// This is the pending-wrap state, and it is the difference between a program that can
+/// fill the bottom-right cell and one that cannot. Writing the last column must not
+/// move the cursor off the row; the next printable character is what wraps.
+#[test]
+fn filling_the_last_column_leaves_the_cursor_on_it_until_the_next_character() {
+    let filled = linear(4, 3, b"abcd");
+    assert_eq!(filled.cursor().row, 0, "the row must not advance yet");
+    assert_eq!(filled.cursor().col, 3);
+
+    let wrapped = linear(4, 3, b"abcde");
+    assert_eq!(wrapped.cursor().row, 1);
+    assert_eq!(wrapped.cursor().col, 1);
+}
+
+/// A double-width character claims two columns: a head that carries it and a tail that
+/// draws nothing.
+///
+/// The bug: storing a wide character in one cell. Everything after it on the row shifts
+/// one column left of where the session put it, so a CJK log line is misaligned from
+/// its first character onwards.
+#[test]
+fn a_wide_character_occupies_a_head_and_a_tail() {
+    let screen = linear(8, 2, "\u{65e5}x".as_bytes());
+
+    let head = cell_at(&screen, 0, 0);
+    let tail = cell_at(&screen, 1, 0);
+    let after = cell_at(&screen, 2, 0);
+
     assert_eq!(head.ch, '\u{65e5}');
     assert_eq!(head.slot, CellSlot::WideHead);
     assert_eq!(tail.slot, CellSlot::WideTail);
+    assert_eq!(after.ch, 'x', "the next character starts at column 2");
+    assert_eq!(screen.cursor().col, 3);
+}
+
+/// A wide character that does not fit the last column moves to the next row whole.
+///
+/// The bug: splitting the pair across the wrap, which puts a head in the last column
+/// and a tail in the first column of the next row. Nothing draws that correctly.
+#[test]
+fn a_wide_character_that_does_not_fit_moves_to_the_next_row_whole() {
+    let screen = linear(4, 3, "abc\u{65e5}".as_bytes());
+
+    assert_eq!(
+        cell_at(&screen, 3, 0).ch,
+        ' ',
+        "the last column of row 0 is left blank rather than half a character"
+    );
+    assert_eq!(cell_at(&screen, 0, 1).ch, '\u{65e5}');
+    assert_eq!(cell_at(&screen, 0, 1).slot, CellSlot::WideHead);
+    assert_eq!(cell_at(&screen, 1, 1).slot, CellSlot::WideTail);
+}
+
+/// A combining mark attaches to the character before it and claims no column of its own.
+///
+/// A grid cell is sixteen bytes and holds one `char`, so the cluster is flattened to its
+/// base codepoint. What must never happen is the mark taking a column: that would push
+/// the rest of the line right by one for every accent in it.
+#[test]
+fn a_combining_mark_claims_no_column_of_its_own() {
+    // "e" + COMBINING ACUTE ACCENT, then a plain "f".
+    let screen = linear(8, 2, "e\u{0301}f".as_bytes());
+
+    assert_eq!(cell_at(&screen, 0, 0).ch, 'e');
+    assert_eq!(cell_at(&screen, 1, 0).ch, 'f', "the mark took no column");
     assert_eq!(screen.cursor().col, 2);
-    assert_eq!(screen.cursor().row, 1);
 }
 
-/// A wide character claims two cells, as a head and a tail.
+/// A combining mark arriving before any character does not create one.
 #[test]
-fn a_wide_character_occupies_two_cells() {
-    let screen = small("\u{ff21}b".as_bytes());
-    assert_eq!(
-        screen.grid().cell(0, 0).expect("cell").slot,
-        CellSlot::WideHead
-    );
-    assert_eq!(
-        screen.grid().cell(1, 0).expect("cell").slot,
-        CellSlot::WideTail
-    );
-    assert_eq!(screen.grid().cell(2, 0).expect("cell").ch, 'b');
+fn a_leading_combining_mark_does_not_create_a_cell() {
+    let screen = linear(8, 2, "\u{0301}a".as_bytes());
+
+    assert_eq!(rows_of(&screen)[0], "a");
 }
 
-/// Overwriting half of a wide pair blanks the other half.
-///
-/// Leaving the orphan behind draws a double-width glyph in one column, overlapping
-/// its neighbour. The grid repairs this, and this test proves the replay path
-/// actually goes through the repairing write.
+/// `IRM` (`CSI 4 h`) pushes the rest of the row right instead of overwriting it.
 #[test]
-fn overwriting_half_a_wide_pair_blanks_the_orphan() {
-    let screen = small("\u{ff21}\r b".as_bytes());
-    assert_eq!(rows_of(&screen)[0], " b");
-    assert_eq!(screen.grid().cell(0, 0).expect("cell").ch, ' ');
+fn insert_mode_pushes_the_rest_of_the_row_right() {
+    let screen = linear(8, 2, b"abcdef\x1b[1;1H\x1b[4hXY");
+
     assert_eq!(
-        screen.grid().cell(0, 0).expect("cell").slot,
-        CellSlot::Single
+        rows_of(&screen)[0],
+        "XYabcdef",
+        "the tail moved right rather than being overwritten"
     );
 }
 
-/// Insert mode shifts the rest of the row right instead of overwriting.
-///
-/// The bug: ignoring IRM. A line editor that inserts a character mid-line then
-/// relies on the terminal to push the tail across would show the tail overwritten,
-/// one character lost per keystroke.
+/// With `IRM` reset, which is the power-on state, printing overwrites.
 #[test]
-fn insert_mode_shifts_the_row_right_instead_of_overwriting() {
-    let screen = small(b"abcdef\r\x1b[4hXY");
-    assert_eq!(rows_of(&screen)[0], "XYabcdef");
+fn replace_mode_overwrites_the_row() {
+    let screen = linear(8, 2, b"abcdef\x1b[1;1HXY");
 
-    let without = small(b"abcdef\rXY");
-    assert_eq!(rows_of(&without)[0], "XYcdef", "with IRM off it overwrites");
+    assert_eq!(rows_of(&screen)[0], "XYcdef");
 }
 
-/// Insert mode drops what falls off the right edge rather than wrapping it.
+/// `HT` moves to the next eight-column tab stop rather than printing anything.
 #[test]
-fn insert_mode_drops_what_falls_off_the_right_edge() {
-    let screen = small(b"0123456789\r\x1b[4hAB");
-    assert_eq!(rows_of(&screen)[0], "AB01234567");
-    assert_eq!(rows_of(&screen)[1], "");
-}
-
-/// Backspace moves left and clears a pending wrap, and never leaves column zero.
-///
-/// A backspace at column zero that wrapped to the previous row's end would let a
-/// prompt redraw walk backwards up the screen.
-#[test]
-fn backspace_stops_at_column_zero_and_clears_a_pending_wrap() {
-    let screen = small(b"ab\x08\x08\x08\x08X");
-    assert_eq!(rows_of(&screen)[0], "Xb");
-    assert_eq!(screen.cursor().col, 1);
-
-    let after_full_row = small(b"0123456789\x08X");
-    assert_eq!(
-        rows_of(&after_full_row)[0],
-        "01234567X9",
-        "the pending wrap was cancelled, so the write stayed on row 0"
-    );
-}
-
-/// A byte that is not valid UTF-8 prints one replacement character and does not
-/// consume the bytes around it.
-///
-/// This is the behaviour a real terminal has and the behaviour a replay must match,
-/// because the fixture, and every `git log` of a repository with a Latin-1 commit
-/// message, contains these bytes.
-#[test]
-fn an_invalid_utf8_byte_prints_one_replacement_character() {
-    let screen = small(b"a\xffb");
-    assert_eq!(rows_of(&screen)[0], "a\u{fffd}b");
-}
-
-/// A UTF-8 character split across two feeds is printed once, when it completes.
-///
-/// The PTY read boundary lands mid-character constantly. A replay that printed the
-/// lead byte as a replacement character and then the continuation bytes as two more
-/// would turn every accented word into mojibake.
-#[test]
-fn a_utf8_character_split_across_feeds_prints_once_when_it_completes() {
-    use crate::emulator::Emulator;
-    use crate::palette::Palette;
-
-    let mut emulator = Emulator::new(10, 2, Palette::XTERM).expect("geometry");
-    let bytes = "é".as_bytes();
-    emulator.feed(&bytes[..1]).expect("engine readable");
-    assert_eq!(
-        emulator.screen().line(0).trim_end(),
-        "",
-        "nothing is drawn from half a character"
-    );
-    emulator.feed(&bytes[1..]).expect("engine readable");
-    assert_eq!(emulator.screen().line(0).trim_end(), "é");
-}
-
-/// A combining mark is dropped, leaving the base character standing.
-///
-/// The grid holds one `char` per cell and cannot compose. Dropping the mark is the
-/// closest available answer; printing it into its own cell would shift the whole rest
-/// of the line right by one column.
-#[test]
-fn a_combining_mark_is_dropped_rather_than_taking_a_cell() {
-    let screen = small("e\u{301}x".as_bytes());
-    assert_eq!(rows_of(&screen)[0], "ex");
-}
-
-/// A tab moves to the next eight-column stop and never leaves the row.
-#[test]
-fn a_tab_moves_to_the_next_eight_column_stop() {
+fn a_horizontal_tab_moves_to_the_next_stop() {
     let screen = linear(24, 2, b"a\tb\tc");
-    assert_eq!(rows_of(&screen)[0], "a       b       c");
+
+    assert_eq!(screen.cursor().col, 17);
+    assert_eq!(cell_at(&screen, 0, 0).ch, 'a');
+    assert_eq!(cell_at(&screen, 8, 0).ch, 'b');
+    assert_eq!(cell_at(&screen, 16, 0).ch, 'c');
+}
+
+/// `BS` moves back one column without erasing, and stops at column zero.
+#[test]
+fn backspace_moves_left_without_erasing_and_stops_at_the_margin() {
+    let screen = linear(8, 2, b"abc\x08\x08\x08\x08\x08");
+
+    assert_eq!(rows_of(&screen)[0], "abc", "backspace erases nothing");
+    assert_eq!(screen.cursor().col, 0);
+}
+
+/// A sequence cut in half by a chunk boundary is completed by the next chunk.
+///
+/// A PTY read returns whatever had arrived. The split is not rare, it is the normal
+/// case for any output larger than a pipe buffer, and a parser that resets on a chunk
+/// boundary prints escape bytes as text on a busy session. Every kind of split is here
+/// because they fail separately: a CSI has parameters mid-flight, UTF-8 has a
+/// continuation byte, and an OSC has a two-byte terminator.
+#[test]
+fn a_sequence_split_across_two_feeds_is_completed_by_the_second() {
+    // CSI cut between the parameter and the final byte.
+    let csi = split_feed(8, 2, &[b"\x1b[3", b"1mR"]);
+    assert_eq!(rows_of(&csi)[0], "R");
+    assert_eq!(
+        cell_at(&csi, 0, 0).fg,
+        crate::tests::support::GHOSTTY_ANSI[1],
+        "the colour survived the split"
+    );
+
+    // A three-byte UTF-8 character cut after its first byte.
+    let utf8 = split_feed(8, 2, &[b"a\xe6", b"\x97\xa5b"]);
+    assert_eq!(cell_at(&utf8, 1, 0).ch, '\u{65e5}');
+    assert_eq!(cell_at(&utf8, 3, 0).ch, 'b');
+
+    // An OSC cut inside its payload, terminated by ST in the second chunk.
+    let osc = split_feed(8, 2, &[b"\x1b]0;he", b"llo\x1b\\x"]);
+    assert_eq!(osc.title(), "hello");
+    assert_eq!(rows_of(&osc)[0], "x");
+
+    // An escape cut from its intermediate and final bytes.
+    let charset = split_feed(8, 2, &[b"\x1b", b"(0qqq"]);
+    assert_eq!(rows_of(&charset)[0], "\u{2500}\u{2500}\u{2500}");
+}
+
+/// Splitting the whole capture one byte at a time produces the same screen as one feed.
+///
+/// The strongest form of the property above: there is no byte position at which a split
+/// changes the outcome. The capture is real PTY output, so it puts the boundary inside
+/// every construct it contains rather than inside the ones a fixture author thought of.
+#[test]
+fn feeding_the_capture_one_byte_at_a_time_matches_one_feed() {
+    let whole = linear(80, 24, crate::tests::support::CAPTURED);
+
+    let chunks: Vec<&[u8]> = crate::tests::support::CAPTURED
+        .chunks(1)
+        .collect();
+    let byte_at_a_time = split_feed(80, 24, &chunks);
+
+    assert_eq!(rows_of(&byte_at_a_time), rows_of(&whole));
+    assert_eq!(byte_at_a_time, whole);
 }

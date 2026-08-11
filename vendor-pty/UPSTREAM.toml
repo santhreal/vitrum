@@ -1,0 +1,45 @@
+# Where this fork came from and exactly how it differs.
+#
+# Same contract as vendor/UPSTREAM.toml: this file is the definition of the
+# fork, not a description of it. `tools/upstream/check.sh --fork vendor-pty`
+# downloads the pristine crate and fails if the real divergence is not the
+# divergence listed here, in either direction. A change made without recording
+# it fails, and a recorded divergence that has become dead fails too, which is
+# what tells you it can be dropped.
+#
+# This fork carried no manifest at all for its first releases. Nothing diffed
+# it, nothing asked whether upstream had published, and the only record of what
+# it changed was a paragraph in README.md that no machine reads.
+
+[upstream]
+crate = "portable-pty"
+version = "0.9.0"
+
+# Only `src/` is compared. `Cargo.toml` is rewritten for the rename,
+# `README.md` documents the fork, and `LICENSE.md` is upstream's MIT carried
+# explicitly.
+compare = "src"
+
+[[divergence]]
+file = "src/win/psuedocon.rs"
+reason = """
+The reason the fork exists. Upstream creates the pseudoconsole with
+`PSUEDOCONSOLE_INHERIT_CURSOR`, which makes conhost open every session by
+asking the terminal where the cursor is, with `ESC [ 6 n`, and withhold every
+later byte until something answers. The flag exists so a console launched from
+an existing console continues on the same line, and a terminal emulator can
+answer it because it owns a grid.
+
+Sessions here are created by a daemon that has no grid, often with no window
+attached at all, so there is nobody to answer from. Answering on the daemon's
+behalf was tried and does not close the hole: the report has to reach conhost
+before the child finishes, and for a child that writes once and exits there is
+no margin. The result was a share of Windows sessions, different ones each run,
+delivering the host preamble and then nothing, forever, with the child having
+run and exited successfully.
+
+Without the flag the query is never asked. The session starts at the origin,
+which is what a fresh session should do anyway, and there is no handshake to
+lose.
+"""
+upstreamable = true

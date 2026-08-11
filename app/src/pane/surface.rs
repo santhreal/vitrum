@@ -1,28 +1,31 @@
 //! The native GPU surface behind a pane, and the gdk half of key input.
 //!
 //! A `GtkDrawingArea` normally shares its toplevel's X window and has no
-//! drawable of its own. [`gdk_window_ensure_native`] gives it one, and that
+//! drawable of its own. `gdk_window_ensure_native` gives it one, and that
 //! window's XID is something `wgpu` can create a surface on. That is the whole
 //! mechanism: it is what lets a Vulkan swapchain live inside the same GTK
-//! toplevel as the WebKit view the shell is drawn with, with no offscreen
-//! copy and no compositing pass in between.
+//! toplevel as the shell, with no offscreen copy and no compositing pass in
+//! between.
 //!
-//! A throwaway prototype proved this sequence works and measured it before it
-//! was written here. What is here is the same sequence, with that prototype's
-//! benchmark harness, pty, argument parsing and side-by-side webview
-//! experiment left behind, and the prototype itself deleted.
+//! The surface owns the GPU and nothing else. The cell grid it paints belongs
+//! to [`super::session::PaneSession`], because the same grid is what the
+//! selection, the search overlay and the emulator all write into, and two
+//! copies of it would disagree for one frame every time either changed.
 //!
-//! X11 only, deliberately: see the module doc of [`super`] for what Wayland
-//! needs and why it is not attempted here.
+//! X11 only. [`Backend::detect`] says so in a diagnostic that names the
+//! remedy rather than leaving a blank widget behind.
 
 use std::ffi::c_void;
 
 use anyhow::{Context, Result, anyhow};
 use glib::translate::ToGlibPtr;
 use gtk::prelude::*;
-use vitrum_grid::{CellGrid, GridRenderer, RendererConfig, Style};
+use vitrum_grid::font::FontConfig;
+use vitrum_grid::{CellGrid, GridRenderer, RendererConfig};
 
+use super::geometry::PaneRect;
 use super::key::{Key, Mods, Named, encode};
+use super::theme::Present;
 
 // Functions that live in `libgdk-3` but have no gtk-rs binding.
 //
@@ -31,6 +34,95 @@ use super::key::{Key, Mods, Named, encode};
 unsafe extern "C" {
     fn gdk_x11_window_get_xid(window: *mut gdk::ffi::GdkWindow) -> core::ffi::c_ulong;
     fn gdk_x11_display_get_xdisplay(display: *mut gdk::ffi::GdkDisplay) -> *mut c_void;
+}
+
+/// Which GDK backend the process ended up on.
+///
+/// GDK picks this at startup from the session, and a pane that assumes X11
+/// under Wayland does not fail: it produces a widget that never paints, which
+/// is defect six on the operator's list wearing a different hat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Backend {
+    /// An X11 display. The XID path works.
+    X11,
+    /// A Wayland display. Named separately from any other backend because the
+    /// remedy is different and the operator can apply it.
+    Wayland,
+    /// Something else, named by its GDK type so a bug report can say which.
+    Other(String),
+}
+
+impl Backend {
+    /// Read the backend off a live display.
+    pub(crate) fn detect(display: &gdk::Display) -> Self {
+        Self::from_type_name(&display.type_().name())
+    }
+
+    /// The classification, split out so it is testable with no display.
+    pub(crate) fn from_type_name(name: &str) -> Self {
+        if name.contains("X11") {
+            Self::X11
+        } else if name.contains("Wayland") {
+            Self::Wayland
+        } else {
+            Self::Other(name.to_owned())
+        }
+    }
+
+    /// What to tell the operator when the pane cannot be created.
+    ///
+    /// Every branch names an action. A message that says only what failed
+    /// leaves someone staring at an empty rectangle, which is the failure mode
+    /// this whole check exists to replace.
+    pub(crate) fn unsupported(&self) -> Option<String> {
+        match self {
+            Self::X11 => None,
+            Self::Wayland => Some(
+                "the pane needs the X11 GDK backend and this session is Wayland. \
+                 Start vitrum with GDK_BACKEND=x11 to run it through XWayland. \
+                 A native Wayland pane needs the drawing area's surface exposed \
+                 as a wl_subsurface and that is not built."
+                    .to_owned(),
+            ),
+            Self::Other(name) => Some(format!(
+                "the pane needs the X11 GDK backend and this session reports {name}. \
+                 Start vitrum with GDK_BACKEND=x11."
+            )),
+        }
+    }
+}
+
+/// The wgpu mode a theme's present choice asks for.
+const fn wanted(present: Present) -> wgpu::PresentMode {
+    match present {
+        Present::Vsync => wgpu::PresentMode::Fifo,
+        Present::Newest => wgpu::PresentMode::Mailbox,
+        Present::Immediate => wgpu::PresentMode::Immediate,
+    }
+}
+
+/// Pick a present mode the adapter actually offers.
+///
+/// A configure with an unsupported mode is a panic inside wgpu, so an
+/// operator choosing the newest-frame mode on a driver without it would crash
+/// the window. Fifo is guaranteed by the specification everywhere, which is
+/// why it is the fallback and not a second guess.
+pub(crate) fn clamp_present(want: Present, offered: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    let want = wanted(want);
+    if offered.contains(&want) {
+        return want;
+    }
+    // Mailbox and Immediate are each other's nearest neighbour: both are the
+    // answer to "do not wait for the compositor".
+    let second = match want {
+        wgpu::PresentMode::Mailbox => wgpu::PresentMode::Immediate,
+        wgpu::PresentMode::Immediate => wgpu::PresentMode::Mailbox,
+        _ => wgpu::PresentMode::Fifo,
+    };
+    if offered.contains(&second) {
+        return second;
+    }
+    wgpu::PresentMode::Fifo
 }
 
 /// An X11 display connection wgpu can hold onto.
@@ -60,25 +152,43 @@ impl wgpu::rwh::HasDisplayHandle for XDisplay {
     }
 }
 
-/// A swapchain on a widget's own X window, plus the grid drawn into it.
+/// A swapchain on a widget's own X window.
 pub(crate) struct PaneSurface {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: GridRenderer,
-    grid: CellGrid,
+    /// Present modes this adapter offers on this surface, for clamping a
+    /// setting change without asking the adapter again.
+    offered: Vec<wgpu::PresentMode>,
     /// Pixel size of the drawable, which is not derivable from the grid: the
     /// last partial column and row are padding the renderer still has to clear.
     size: (u32, u32),
 }
 
 impl PaneSurface {
-    /// Take over `area`'s drawing and return a surface that presents to it.
+    /// Take over `area`'s drawing, present `grid` once, and return the surface.
     ///
     /// `area` must already be realized: the X window only exists after that,
     /// and there is no XID to present to before it does.
-    pub(crate) fn attach(area: &gtk::DrawingArea) -> Result<Self> {
+    ///
+    /// The first frame is painted here rather than left to the first tick.
+    /// A freshly created X window shows whatever was in that framebuffer,
+    /// which on this stack is black, and a pane that waits for its first
+    /// output before painting shows black until the child says something.
+    /// That is one of the two causes of a pane the operator sees as black.
+    ///
+    /// # Errors
+    ///
+    /// The backend is not X11, the widget has no window, no adapter can
+    /// present to it, or the first frame could not be drawn.
+    pub(crate) fn attach(
+        area: &gtk::DrawingArea,
+        font: FontConfig,
+        present: Present,
+        grid: &mut CellGrid,
+    ) -> Result<Self> {
         // GTK must not paint a background into this widget's window: the X11
         // window under it belongs to the GPU, and a themed background drawn on
         // every expose would race the swapchain and flicker.
@@ -87,17 +197,24 @@ impl PaneSurface {
         let gdk_window = area
             .window()
             .ok_or_else(|| anyhow!("pane widget has no GdkWindow; realize it before attaching"))?;
+        let display = gdk_window.display();
+        if let Some(why) = Backend::detect(&display).unsupported() {
+            return Err(anyhow!("{why}"));
+        }
         // Without this the widget shares the toplevel's X window and there is
         // no XID to present to. This is the whole trick behind a native pane
         // inside a GTK window.
         gdk_window.ensure_native();
 
+        let scale = area.scale_factor().max(1) as u32;
         let alloc = area.allocation();
-        let size = (alloc.width().max(1) as u32, alloc.height().max(1) as u32);
+        let size = (
+            (alloc.width().max(1) as u32) * scale,
+            (alloc.height().max(1) as u32) * scale,
+        );
 
         // SAFETY: both pointers come from live gtk-rs objects the widget holds.
         let (xid, xdisplay) = unsafe {
-            let display = gdk_window.display();
             (
                 gdk_x11_window_get_xid(gdk_window.to_glib_none().0),
                 gdk_x11_display_get_xdisplay(display.to_glib_none().0),
@@ -157,55 +274,65 @@ impl PaneSurface {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
-        // Fifo, not Immediate. The lab used Immediate to measure how fast the
-        // path can go; a pane in a desktop shell wants the frame the
-        // compositor is going to show and no tearing, and Fifo is the only
-        // present mode every driver guarantees.
+        let offered = caps.present_modes.clone();
+        let chosen = clamp_present(present, &offered);
+        if chosen != wanted(present) {
+            tracing::info!(
+                wanted = ?present,
+                using = ?chosen,
+                "the GPU does not offer the requested present mode"
+            );
+        }
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.0,
             height: size.1,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: chosen,
             desired_maximum_frame_latency: 2,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
         surface.configure(&device, &config);
 
-        let renderer = GridRenderer::new(
-            &device,
-            &RendererConfig {
-                format,
-                ..RendererConfig::default()
-            },
-        )
-        .map_err(|e| anyhow!("build the pane's glyph renderer: {e}"))?;
+        let renderer = GridRenderer::new(&device, &RendererConfig { format, font, ..RendererConfig::default() })
+            .map_err(|e| anyhow!("build the pane's glyph renderer: {e}"))?;
 
-        let (cols, rows) = renderer.grid_size_for(size.0, size.1);
-        let grid = CellGrid::new(cols.max(2), rows.max(2), Style::DEFAULT)
-            .map_err(|e| anyhow!("allocate the pane's cell grid: {e}"))?;
-
-        Ok(Self {
+        let mut this = Self {
             device,
             queue,
             surface,
             config,
             renderer,
-            grid,
+            offered,
             size,
-        })
+        };
+
+        let (cols, rows) = this.cells_for(size.0, size.1);
+        if (cols, rows) != (grid.cols(), grid.rows()) {
+            grid.resize(cols, rows)
+                .map_err(|e| anyhow!("size the pane's cell grid to {cols}x{rows}: {e}"))?;
+        }
+        grid.mark_all_damaged();
+        this.present(grid)
+            .context("paint the pane's first frame")?;
+        Ok(this)
     }
 
-    /// The grid the pane paints. Whatever owns the parser writes into this.
-    pub(crate) fn grid_mut(&mut self) -> &mut CellGrid {
-        &mut self.grid
-    }
-
-    /// Columns and rows currently allocated, which is what the pty's winsize
-    /// has to be told.
-    pub(crate) fn grid_size(&self) -> (u16, u16) {
-        (self.grid.cols(), self.grid.rows())
+    /// Columns and rows that fit a pixel size.
+    ///
+    /// Through [`super::geometry`], which is the only place in the pane that
+    /// divides a box into cells. The renderer's own division floors the same
+    /// way but floors to one, and a one-column grid is not a terminal: a
+    /// child told it has one column wraps every line into a vertical stripe.
+    pub(crate) fn cells_for(&self, width: u32, height: u32) -> (u16, u16) {
+        PaneRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+        .grid(self.cell_size())
     }
 
     /// One cell in pixels, for the winsize's pixel fields.
@@ -213,83 +340,126 @@ impl PaneSurface {
         self.renderer.cell_size()
     }
 
+    /// The drawable's pixel size.
+    pub(crate) const fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Change the present mode while the window is open.
+    ///
+    /// Returns the mode actually in force, which is the requested one unless
+    /// the adapter does not offer it.
+    pub(crate) fn set_present(&mut self, want: Present) -> wgpu::PresentMode {
+        let chosen = clamp_present(want, &self.offered);
+        if chosen == self.config.present_mode {
+            return chosen;
+        }
+        self.config.present_mode = chosen;
+        self.surface.configure(&self.device, &self.config);
+        // The swapchain images are new, so nothing the renderer believes is on
+        // screen is on screen.
+        self.renderer.invalidate();
+        chosen
+    }
+
+    /// Rebuild the glyph renderer for a new font or size.
+    ///
+    /// Returns the new cell count for the current pixel size, so the caller
+    /// resizes the emulator and the pty in the same breath.
+    ///
+    /// # Errors
+    ///
+    /// No usable face was found for the requested families.
+    pub(crate) fn set_font(&mut self, font: FontConfig) -> Result<(u16, u16)> {
+        let renderer = GridRenderer::new(
+            &self.device,
+            &RendererConfig {
+                format: self.config.format,
+                font,
+                ..RendererConfig::default()
+            },
+        )
+        .map_err(|e| anyhow!("rebuild the pane's glyph renderer: {e}"))?;
+        self.renderer = renderer;
+        Ok(self.cells_for(self.size.0, self.size.1))
+    }
+
     /// Follow the widget to a new pixel size.
     ///
-    /// Returns the new grid size when the cell count changed, so the caller
-    /// can resize the emulator and the pty in the same breath. A resize that
-    /// only changes the leftover padding returns `None` and costs a
-    /// reconfigure.
-    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Option<(u16, u16)> {
+    /// Returns the cell count for the new size, whether or not it changed, so
+    /// a caller never has to remember what it was.
+    pub(crate) fn resize(&mut self, width: u32, height: u32) -> (u16, u16) {
         let size = (width.max(1), height.max(1));
-        if size == self.size {
-            return None;
-        }
-        self.size = size;
-        self.config.width = size.0;
-        self.config.height = size.1;
-        self.surface.configure(&self.device, &self.config);
-
-        let (cols, rows) = self.renderer.grid_size_for(size.0, size.1);
-        let (cols, rows) = (cols.max(2), rows.max(2));
-        if (cols, rows) == self.grid_size() {
+        if size != self.size {
+            self.size = size;
+            self.config.width = size.0;
+            self.config.height = size.1;
+            self.surface.configure(&self.device, &self.config);
             // The swapchain is new, so the previous frame's contents are gone
             // and the renderer's idea of what is on screen is stale.
             self.renderer.invalidate();
-            self.grid.mark_all_damaged();
-            return None;
         }
-        if let Err(err) = self.grid.resize(cols, rows) {
-            tracing::error!("pane grid resize to {cols}x{rows} failed: {err}");
-            return None;
-        }
-        self.renderer.invalidate();
-        self.grid.mark_all_damaged();
-        Some((cols, rows))
+        self.cells_for(size.0, size.1)
     }
 
     /// Draw the grid, if anything changed, and present.
     ///
     /// Returns whether a frame was actually put on screen. A clean grid
     /// submits no GPU command at all, which is what makes an idle pane free.
-    pub(crate) fn present(&mut self) -> Result<bool> {
-        if !self.grid.is_dirty() {
+    ///
+    /// # Errors
+    ///
+    /// The swapchain could not produce an image twice running, or the renderer
+    /// failed.
+    pub(crate) fn present(&mut self, grid: &mut CellGrid) -> Result<bool> {
+        if !grid.is_dirty() {
             return Ok(false);
         }
+        match self.draw(grid) {
+            Ok(drawn) => Ok(drawn),
+            Err(first) => {
+                // An outdated or lost swapchain is the normal consequence of a
+                // resize the widget has not told us about yet. Reconfiguring
+                // and drawing again costs one frame; giving up costs the
+                // operator a pane that stops updating until they type.
+                self.surface.configure(&self.device, &self.config);
+                self.renderer.invalidate();
+                grid.mark_all_damaged();
+                self.draw(grid)
+                    .with_context(|| format!("after reconfiguring the pane's swapchain: {first}"))
+            }
+        }
+    }
 
+    /// One attempt at a frame.
+    fn draw(&mut self, grid: &mut CellGrid) -> Result<bool> {
         use wgpu::CurrentSurfaceTexture as Acquired;
         let frame = match self.surface.get_current_texture() {
             Acquired::Success(frame) | Acquired::Suboptimal(frame) => frame,
-            // Nothing to draw into this time. A full rebuild is queued so the
-            // recreated swapchain does not inherit a half-drawn frame's
-            // damage state, and the next write to the grid brings the pane
-            // back.
-            other => {
-                self.renderer.invalidate();
-                self.grid.mark_all_damaged();
-                return Err(anyhow!("pane swapchain unavailable: {other:?}"));
-            }
+            other => return Err(anyhow!("pane swapchain unavailable: {other:?}")),
         };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let stats = self
             .renderer
-            .render(&self.device, &self.queue, &mut self.grid, &view, self.size)
+            .render(&self.device, &self.queue, grid, &view, self.size)
             .map_err(|e| anyhow!("render the pane: {e}"))?;
         // Present either way: the texture was acquired, and dropping it
-        // unpresented wedges the swapchain.
+        // unpresented wedges the swapchain. Nothing waits on the GPU here, so
+        // the UI thread returns before the frame is scanned out.
         frame.present();
         Ok(stats.gpu_work)
     }
 }
 
-/// Translate a GTK key event into the bytes the child expects.
+/// Translate a GTK key event into the key and modifiers it names.
 ///
-/// Returns `None` for a keystroke that sends nothing: a bare modifier press,
+/// Returns `None` for a keystroke that means nothing: a bare modifier press,
 /// or a keyval with no character and no named sequence. That decision lives
 /// here rather than in [`super::key`] so the encoder never has to represent
 /// "no keystroke".
-pub(crate) fn encode_event(ev: &gdk::EventKey) -> Option<Vec<u8>> {
+pub(crate) fn decode_event(ev: &gdk::EventKey) -> Option<(Key, Mods)> {
     let state = ev.state();
     let mods = Mods {
         shift: state.contains(gdk::ModifierType::SHIFT_MASK),
@@ -299,8 +469,31 @@ pub(crate) fn encode_event(ev: &gdk::EventKey) -> Option<Vec<u8>> {
         alt: state.contains(gdk::ModifierType::MOD1_MASK),
         ctrl: state.contains(gdk::ModifierType::CONTROL_MASK),
     };
-    let key = classify(ev.keyval())?;
+    Some((classify(ev.keyval())?, mods))
+}
+
+/// The bytes a keystroke sends to the child.
+pub(crate) fn encode_event(ev: &gdk::EventKey) -> Option<Vec<u8>> {
+    let (key, mods) = decode_event(ev)?;
     Some(encode(key, mods))
+}
+
+/// The top-row digit the physical key carries, if it carries one.
+///
+/// The layout's name for Ctrl+Shift+1 is `!`, so a chord bound to a digit
+/// would never match the keystroke it is named after. Asking the keymap what
+/// the same hardware key produces with no modifiers is the only way to get
+/// the digit back, and it is asked once per press rather than kept in a
+/// table that would go stale when the layout changes.
+pub(crate) fn digit_of(ev: &gdk::EventKey) -> Option<char> {
+    let keymap = gdk::Keymap::for_display(&ev.window()?.display())?;
+    let (keyval, ..) = keymap.translate_keyboard_state(
+        ev.hardware_keycode().into(),
+        gdk::ModifierType::empty(),
+        ev.group().into(),
+    )?;
+    let ch = gdk::keys::Key::from(keyval).to_unicode()?;
+    ch.is_ascii_digit().then_some(ch)
 }
 
 /// A gdk keyval, as the encoder sees it.
@@ -344,4 +537,62 @@ fn classify(kv: gdk::keys::Key) -> Option<Key> {
         _ => return kv.to_unicode().map(Key::Char),
     };
     Some(Key::Named(named))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WHY: a pane on the wrong backend used to produce a widget that never
+    /// painted. Silence is the defect; the classification and the remedy text
+    /// are the fix, so both are pinned here.
+    ///
+    /// Names are the real GDK type names, which is what the check reads.
+    #[test]
+    fn a_backend_that_cannot_work_says_so_and_says_what_to_do() {
+        assert_eq!(Backend::from_type_name("GdkX11Display"), Backend::X11);
+        assert_eq!(Backend::from_type_name("GdkX11Display").unsupported(), None);
+
+        let wayland = Backend::from_type_name("GdkWaylandDisplay");
+        assert_eq!(wayland, Backend::Wayland);
+        let why = wayland.unsupported().expect("Wayland is not supported");
+        assert!(why.contains("GDK_BACKEND=x11"), "no remedy named: {why}");
+
+        let other = Backend::from_type_name("GdkBroadwayDisplay");
+        assert_eq!(other, Backend::Other("GdkBroadwayDisplay".to_owned()));
+        let why = other.unsupported().expect("Broadway is not supported");
+        assert!(why.contains("GdkBroadwayDisplay"), "backend unnamed: {why}");
+        assert!(why.contains("GDK_BACKEND=x11"), "no remedy named: {why}");
+    }
+
+    /// WHY: configuring a surface with a present mode the adapter does not
+    /// offer panics inside wgpu, so an operator picking one in Settings would
+    /// take the window down. Fifo is guaranteed everywhere and is the floor.
+    #[test]
+    fn a_present_mode_the_gpu_lacks_falls_back_to_one_it_has() {
+        use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+
+        // Everything offered: the request is honoured exactly.
+        for (want, expect) in [
+            (Present::Vsync, Fifo),
+            (Present::Immediate, Immediate),
+            (Present::Newest, Mailbox),
+        ] {
+            assert_eq!(clamp_present(want, &[Fifo, Immediate, Mailbox]), expect);
+        }
+
+        // Only Fifo, which is the minimum any driver may offer.
+        for want in [Present::Vsync, Present::Immediate, Present::Newest] {
+            assert_eq!(clamp_present(want, &[Fifo]), Fifo, "{want:?}");
+        }
+
+        // The two tear-free-but-unthrottled modes stand in for each other
+        // before either falls all the way back to waiting.
+        assert_eq!(clamp_present(Present::Newest, &[Fifo, Immediate]), Immediate);
+        assert_eq!(clamp_present(Present::Immediate, &[Fifo, Mailbox]), Mailbox);
+
+        // An adapter offering nothing recognised still returns something
+        // configurable rather than the caller's unsupported choice.
+        assert_eq!(clamp_present(Present::Newest, &[]), Fifo);
+    }
 }

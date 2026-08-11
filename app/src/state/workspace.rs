@@ -271,9 +271,14 @@ impl core::error::Error for WorkspaceError {}
 /// look at different workspaces, but they cannot disagree about which
 /// workspace a session is IN, because a session belongs to exactly one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Every field defaults. A profile written by an older build, or by hand,
+// names the fields it knows about and no others; without this, one absent
+// field refuses the whole document, the window comes up on defaults, and the
+// next save writes those defaults over the operator's filing. `normalize`
+// repairs whatever the defaults leave inconsistent.
+#[serde(rename_all = "camelCase", default)]
 pub struct WorkspaceSet {
-    /// Workspaces in display order. Never empty.
+    /// Workspaces in display order. Never empty after [`Self::normalize`].
     list: Vec<Workspace>,
     #[serde(with = "session_map", default)]
     home: BTreeMap<SessionKey, WorkspaceId>,

@@ -269,10 +269,14 @@ fn read_loop(
         while at + 16 <= n {
             let wd = i32::from_ne_bytes(buf[at..at + 4].try_into().unwrap_or([0; 4]));
             let mask = u32::from_ne_bytes(buf[at + 4..at + 8].try_into().unwrap_or([0; 4]));
+            // The kernel writes a length that is bounded by NAME_MAX, but this
+            // arithmetic runs on bytes read from a file descriptor and must not
+            // be the thing that panics if that ever stops being true. A
+            // saturating walk lands past the buffer, which ends the loop.
             let len = u32::from_ne_bytes(buf[at + 12..at + 16].try_into().unwrap_or([0; 4]))
                 as usize;
             let name_at = at + 16;
-            let name_end = (name_at + len).min(n);
+            let name_end = name_at.saturating_add(len).min(n);
             let name = buf
                 .get(name_at..name_end)
                 .map(|b| {
@@ -280,7 +284,7 @@ fn read_loop(
                     String::from_utf8_lossy(&b[..end]).into_owned()
                 })
                 .unwrap_or_default();
-            at = name_at + len;
+            at = name_at.saturating_add(len);
 
             // Q_OVERFLOW: the kernel dropped events. This is the one case
             // where the history genuinely has a hole, so it is reported

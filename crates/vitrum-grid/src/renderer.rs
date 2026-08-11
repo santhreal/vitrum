@@ -16,7 +16,7 @@
 //! rasterised once and cached in the atlas.
 
 use crate::atlas::{AtlasEntry, AtlasError, DEFAULT_ATLAS_DIM, GlyphAtlas, GlyphKey};
-use crate::cell::{Attrs, Cell, Rgba};
+use crate::cell::{Attrs, Cell, Cursor, Rgba};
 use crate::font::{CellMetrics, FontConfig, FontError, FontStack, FontStyle};
 use crate::grid::CellGrid;
 
@@ -24,6 +24,11 @@ use crate::grid::CellGrid;
 const SPAN_MASK: u32 = 0b11;
 /// Underline bit in [`CellInstance::flags`].
 const FLAG_UNDERLINE: u32 = 0b100;
+/// How far up [`CellInstance::flags`] the caret shape code sits.
+///
+/// Three bits, because [`CursorShape`](crate::cell::CursorShape) has four
+/// members and zero has to stay free to mean "no caret on this cell".
+const CURSOR_SHIFT: u32 = 3;
 
 /// Per-cell GPU instance. 32 bytes, no padding holes, so `bytemuck` can cast a
 /// slice of these straight into an upload with no copy.
@@ -42,15 +47,17 @@ pub(crate) struct CellInstance {
     pub fg: [u8; 4],
     /// Background after the reverse attribute has been applied.
     pub bg: [u8; 4],
-    /// Column span in bits 0-1, underline in bit 2.
+    /// Column span in bits 0-1, underline in bit 2, caret shape in bits 3-5.
     pub flags: u32,
-    /// Keeps the struct at a 32-byte stride with no implicit padding.
-    pub _pad: u32,
+    /// The caret's colour. Read only when the shape bits are non-zero, which
+    /// is why this replaces what used to be explicit padding rather than
+    /// growing the 32-byte stride.
+    pub cursor: [u8; 4],
 }
 
 impl CellInstance {
     /// Vertex attribute layout matching the fields above.
-    const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
         0 => Uint16x2,
         1 => Uint16x2,
         2 => Uint16x2,
@@ -58,6 +65,7 @@ impl CellInstance {
         4 => Unorm8x4,
         5 => Unorm8x4,
         6 => Uint32,
+        7 => Unorm8x4,
     ];
 
     const fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -69,11 +77,18 @@ impl CellInstance {
     }
 
     /// Build the instance for one cell, resolving its glyph through the atlas.
-    fn build(cell: Cell, col: u16, row: u16, entry: AtlasEntry) -> Self {
+    ///
+    /// `cursor` is the caret when it sits on this exact cell and `None`
+    /// otherwise. It is passed per cell rather than read from the grid so the
+    /// upload loop stays a straight walk over damage spans.
+    fn build(cell: Cell, col: u16, row: u16, entry: AtlasEntry, cursor: Option<Cursor>) -> Self {
         let (fg, bg) = cell.resolved_colors();
         let mut flags = u32::from(cell.slot.drawn_columns()) & SPAN_MASK;
         if cell.attrs.contains(Attrs::UNDERLINE) {
             flags |= FLAG_UNDERLINE;
+        }
+        if let Some(c) = cursor {
+            flags |= c.shape.code() << CURSOR_SHIFT;
         }
         Self {
             cell: [col, row],
@@ -83,7 +98,7 @@ impl CellInstance {
             fg: fg.to_bytes(),
             bg: bg.to_bytes(),
             flags,
-            _pad: 0,
+            cursor: cursor.map_or([0; 4], |c| c.color.to_bytes()),
         }
     }
 }
@@ -95,9 +110,11 @@ struct Globals {
     viewport_px: [f32; 2],
     cell_px: [f32; 2],
     underline: [f32; 2],
-    /// Keeps the block at 32 bytes so its size is a multiple of the 16-byte
-    /// uniform layout granularity on every backend.
-    _pad: [f32; 2],
+    /// Caret geometry: bar width, then the thickness of the underline and
+    /// hollow-block rules. Both in pixels, both derived from the cell size, so
+    /// the caret scales with the font instead of being a fixed number of
+    /// pixels that vanishes at 24 px and swallows the glyph at 8 px.
+    cursor_px: [f32; 2],
 }
 
 /// What one call to [`GridRenderer::render`] actually did.
@@ -605,10 +622,16 @@ impl GridRenderer {
                 run_start = flat;
             }
 
+            // Resolved once per span rather than once per cell: the caret is a
+            // single cell, so at most one column in this run can carry it.
+            let caret = grid.cursor().filter(|c| {
+                c.row == span.row && c.col >= span.start && c.col < span.end
+            });
             for col in span.columns() {
                 let cell = grid.cell(col, span.row).expect("valid cell index");
                 let entry = self.entry_for(queue, cell)?;
-                scratch.push(CellInstance::build(cell, col, span.row, entry));
+                let on_cell = caret.filter(|c| c.col == col);
+                scratch.push(CellInstance::build(cell, col, span.row, entry, on_cell));
             }
             run_end = flat + span.len();
             stats.cells_uploaded += span.len() as u32;
@@ -661,10 +684,19 @@ impl GridRenderer {
             viewport_px: [viewport.0 as f32, viewport.1 as f32],
             cell_px: [m.width as f32, m.height as f32],
             underline: [m.underline_y as f32, m.underline_thickness as f32],
-            _pad: [0.0, 0.0],
+            cursor_px: [caret_bar_px(m.width), m.underline_thickness as f32],
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
     }
+}
+
+/// Width of a bar caret, in pixels, for a cell `width` pixels wide.
+///
+/// A fraction of the cell rather than a constant, because a caret fixed at two
+/// pixels is a hairline at 24 px type and a third of the cell at 6 px. One
+/// pixel is the floor: a zero-width bar is a caret nobody can see.
+fn caret_bar_px(width: u32) -> f32 {
+    (width as f32 / 8.0).max(1.0)
 }
 
 fn to_wgpu_color(color: Rgba) -> wgpu::Color {

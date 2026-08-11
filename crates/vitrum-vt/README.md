@@ -1,89 +1,56 @@
 # vitrum-vt
 
-Ghostty's terminal engine, driving a [`vitrum-grid`](../vitrum-grid) cell grid.
-No window, no event loop, no renderer: bytes go in, a grid of cells comes out.
+The escape-sequence engine. Bytes from a PTY go in, a `vitrum_grid::CellGrid`
+comes out. No window, no event loop, no PTY, and no renderer.
+
+The state machine is libghostty's VT, the one shipped in the Ghostty terminal,
+linked through `libghostty-vt-sys` and wrapped here in a safe Rust surface.
+This crate is the only parser in the product. The daemon, the replay tool, the
+benchmark harness and the live pane all drive this implementation, so a
+replayed screen and a live one cannot disagree.
 
 ```rust
 use vitrum_grid::{CellGrid, Style};
 use vitrum_vt::{Vt, VtOptions};
 
-let mut vt = Vt::new(VtOptions { cols: 20, rows: 3, max_scrollback: 0 })?;
-let mut grid = CellGrid::new(20, 3, Style::DEFAULT)?;
+let mut vt = Vt::new(VtOptions { cols: 80, rows: 24, ..VtOptions::default() })?;
+let mut grid = CellGrid::new(80, 24, Style::DEFAULT)?;
 
-vt.feed(b"\x1b[1;32mgreen\x1b[0m\r\n");
+vt.feed(b"\x1b[1;32mready\x1b[0m");
 let stats = vt.sync(&mut grid)?;
-assert_eq!(grid.row_text(0).unwrap().trim_end(), "green");
+assert!(!stats.is_noop());
 
-// Nothing arrived since, so the next frame changes nothing.
+// Nothing was fed since, so the engine reports no dirty row and the sync
+// touches no cell.
 assert!(vt.sync(&mut grid)?.is_noop());
 ```
 
-## Why Ghostty
+`sync` is the damage contract. It reads only the rows the engine reports dirty
+and writes only the cells whose value differs, so an idle terminal returns
+`SyncStats::is_noop` and the host presents no frame. A frame is presented
+because something changed, never because a clock ticked.
 
-The client renders terminals with xterm.js inside a webview, which costs a
-JavaScript engine per session. Replacing it needs a VT implementation, and that
-is not a weekend of work: DEC modes, scroll regions, reflow on resize, OSC
-handling, grapheme clustering, and a decade of terminal quirks. `libghostty-vt`
-is that implementation, extracted from Ghostty and shipped as a C library.
+`Vt` is not `Send`. libghostty runs its callbacks on the thread that calls
+`feed`, so a session belongs to the thread that created it. One session per
+thread is the intended shape.
 
-It also brings capabilities the webview path never had: OSC 7 working
-directory, OSC 133 shell integration, semantic selection by word and by command
-output, and scrollback that reflows when the window resizes.
+What a host reads back:
 
-## Replies are not optional
+- `events()` for what the program announced: title, working directory,
+  clipboard, bell, and the hyperlinks in `linkage`.
+- `drain_pty_write()` for the bytes the program asked the terminal to send
+  back, such as a device attributes reply.
+- `cursor()` for position, shape, blink and visibility.
+- `mode()` for how to encode input. Bracketed paste, DECCKM and the six mouse
+  protocols each turn the same key, paste or click into different bytes.
 
-A VT stream contains questions. `Vt::drain_pty_write` returns the bytes the
-terminal owes the program, and a host that never drains them hangs anything
-that issues a device query, because the program is blocked reading an answer
-that never arrives.
+`COLORTERM` is a constant here rather than in whichever crate sets the
+environment, because this is the crate that either reproduces a 24-bit colour
+or does not. A test feeds every channel value through the engine and asserts
+the cell comes back exact, so weakening the renderer and weakening the string
+fail together.
 
-```rust
-let mut reply = Vec::new();
-vt.drain_pty_write(&mut reply);
-if !reply.is_empty() {
-    session.write(&reply); // back to the PTY
-}
-```
+Building requires Zig, which `libghostty-vt-sys` uses to compile the vendored
+sources. Set `LIBGHOSTTY_VT_SYS_OPTIMIZE` to pick the Zig optimisation mode.
 
-## How the engine is linked
-
-Two routes, chosen by feature, decided in one place (`build.rs`) and readable
-at runtime through `vitrum_vt::linkage`:
-
-| Route | Feature | Needs | Engine |
-| --- | --- | --- | --- |
-| `vendored` | default | Zig 0.15.2 on `PATH` | the pinned upstream commit |
-| `system` | `system` | an installed libghostty found by pkg-config | whatever the platform ships |
-
-`system` is available on Linux and macOS. Windows has no pkg-config convention,
-so it builds vendored and says so rather than offering a switch that silently
-does something else.
-
-A route that cannot be satisfied is a build error naming the missing piece and
-the command that installs it. It never falls back to the other route: a machine
-asked to link the platform's Ghostty must not quietly clone and compile a
-different one instead.
-
-`VITRUM_VT_LINKAGE=system|vendored` overrides the feature for one build.
-`GHOSTTY_SOURCE_DIR` points a vendored build at a local Ghostty checkout.
-
-```
-$ cargo run -q --example version   # or wherever the host prints it
-libghostty-vt 0.2.1 (vendored, zig, pinned upstream)
-```
-
-## Cost model
-
-One engine allocation per session plus its scrollback. `sync` reads only the
-rows the terminal reports as changed and writes through to the grid, which
-records damage only where a value differs, so an idle terminal reports
-`SyncStats::is_noop` and the renderer records no GPU work. Grapheme clusters are
-read into a stack buffer: nothing is allocated per frame, per row, or per cell.
-
-## Known limitation
-
-A grid cell is 16 bytes and holds one `char`, so a grapheme cluster is stored as
-its base codepoint. That is counted, not hidden: `SyncStats::graphemes_flattened`
-reports how many cells in the frame are showing an approximation.
-
-Part of [vitrum](https://github.com/santhreal/vitrum). MIT OR Apache-2.0.
+Part of [vitrum](https://github.com/santhreal/vitrum). MIT licensed.

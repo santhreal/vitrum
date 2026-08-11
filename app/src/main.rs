@@ -1,32 +1,33 @@
-//! The vitrum desktop client: sidebar, tab strip, and a real terminal pane.
+//! The vitrum desktop client: sidebar, workspace bar, and a native pane.
 //!
 //! Shape of the process:
 //!
-//! - Rust owns all UI state, in exactly one [`UiState`] signal, encodes every
-//!   control-plane message, and owns the session WebSocket: connect,
-//!   reconnect, sequence continuity, the backlog splice and the reassembly of
-//!   a character split across two frames all live in [`socket`].
-//! - JavaScript (`bootstrap.js`) owns the xterm.js instance and nothing else
-//!   that has a session id or a byte offset in it. PTY bytes reach it as an
-//!   `ArrayBuffer` over a wry asset route, already decoded and already in
-//!   order, so nothing on that path is base64 and nothing is re-parsed.
-//! - Scrollback lives on the server. This process holds one terminal grid and
-//!   nothing else, so its memory is flat whether the user runs one agent or
-//!   twenty.
+//! - Rust owns all UI state, in exactly one [`UiState`] signal per window,
+//!   encodes every control-plane message, and owns the session WebSocket:
+//!   connect, reconnect, sequence continuity, the backlog splice and the
+//!   reassembly of a character split across two frames all live in [`socket`].
+//! - The pane is a GTK drawing area with its own X window and a wgpu
+//!   swapchain on it. PTY bytes go from the socket task to libghostty's VT in
+//!   `vitrum-vt`, into a `vitrum-grid` cell grid, and onto that surface. They
+//!   are never copied into a document, never re-parsed, and never encoded.
+//! - Scrollback lives on the server. This process holds one grid per window
+//!   and nothing else, so its memory is flat whether the operator runs one
+//!   agent or twenty.
 //!
 //! Idle cost is a design constraint, not a nice-to-have. There is no timer, no
 //! polling loop and no animation anywhere in this program. Every wakeup at rest
-//! traces back to a socket message, a DOM event, or a keypress.
+//! traces back to a socket message, an input event, or a keypress.
 //!
 //! Two things schedule work, both one-shot and both bounded, and neither runs
 //! while the window is doing its job: a transient notice retires itself after
-//! [`NOTICE_MS`], and a window whose socket closed reconnects on the schedule
-//! in [`reconnect_delay_ms`]. A CONNECTED window has neither outstanding, which
-//! is what keeps the claim above true where it matters.
+//! the operator's configured life, and a window whose socket closed reconnects
+//! on the schedule in [`reconnect_delay_ms`]. A connected window has neither
+//! outstanding, which is what keeps the claim above true where it matters.
 
 mod actions;
 mod agent;
 mod badge;
+mod boot;
 mod chrome;
 mod cli;
 mod clock;
@@ -39,12 +40,11 @@ mod instance;
 mod keymap;
 mod keys;
 mod launch;
-// The GPU terminal pane, behind its own feature and X11 only. Nothing hosts it
-// yet, so it is dead code until the change that puts it on screen; the
-// allowance is on the module rather than the crate so it never hides an unused
-// item anywhere else.
-#[cfg(all(feature = "native-pane", target_os = "linux"))]
-#[allow(dead_code)]
+// The pane. Not behind a feature and not behind a target: its geometry,
+// selection, scrolling, search, palette and pacing are plain Rust that
+// compiles and is tested everywhere, and only the GTK host inside it is
+// Linux-only. Gating the module would take the pure logic and its tests off
+// every other platform to no purpose.
 mod pane;
 mod socket;
 mod splash;
@@ -58,30 +58,32 @@ mod ui;
 mod update;
 mod wire;
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use dioxus::document::Eval;
 use dioxus::prelude::*;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vitrum_dioxus_desktop::tao::dpi::{PhysicalPosition, PhysicalSize};
 use vitrum_dioxus_desktop::tao::event::{Event as WryEvent, WindowEvent};
 use vitrum_dioxus_desktop::tao::event_loop::EventLoopBuilder;
 use vitrum_dioxus_desktop::tao::monitor::MonitorHandle;
-use vitrum_dioxus_desktop::tao::window::{Window, WindowBuilder};
+use vitrum_dioxus_desktop::tao::window::{Window, WindowBuilder, WindowId};
 use vitrum_dioxus_desktop::{
-    Config, DesktopContext, WindowCloseBehaviour, use_asset_handler, use_wry_event_handler,
+    Config, DesktopContext, WindowCloseBehaviour, use_wry_event_handler,
 };
 use vitrum_fmt::TimeFormat;
+use vitrum_model::{Direction, Section};
 use vitrum_os::AppPaths;
 use vitrum_os::deeplink::DeepLink;
 use vitrum_os::single_instance::{self, Acquisition, Activation, InstanceGuard};
 // `WindowGeometry` because `crate::state::WindowState` is a different thing
 // entirely: this one is a rectangle on a desktop, that one is what a window is
 // showing. Importing both under one name is a bug waiting for a hurried edit.
-use vitrum_model::{Direction, Section};
 use vitrum_os::window_state::{self, Monitor, WindowState as WindowGeometry};
 use vitrum_proto::{ClientMsg, PROTOCOL_VERSION, ProjectId, SessionId};
 
@@ -97,49 +99,24 @@ use state::{
     SIDEBAR_MAX_PX, SIDEBAR_MIN_PX, UiState,
 };
 use sync::*;
-use wire::{BEFORE_SEQ_HEAD, BridgeCmd, BridgeEvent, ConnEvent, backfill_max_bytes};
-
-/// How long a transient notice stays on screen, in milliseconds.
-///
-/// Long enough to read a sentence and its shortcut without hurrying, short
-/// enough that it is gone before it becomes furniture. Errors ignore this
-/// entirely: they are not transient.
-const NOTICE_MS: u64 = 6_000;
-
-/// First reconnect delay, in milliseconds. Doubles per attempt.
-const RECONNECT_BASE_MS: u64 = 250;
-/// Ceiling on the reconnect delay. A machine asleep for a week must not spend
-/// the night dialling.
-const RECONNECT_MAX_MS: u64 = 30_000;
-/// How many times to try before the window goes back to saying "failed" and
-/// waiting for Retry. Roughly ten minutes of trying at the ceiling.
-const RECONNECT_ATTEMPTS: u32 = 25;
-
-/// The JS half. Sent through one long-lived `eval` that never returns.
-const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
-
-/// Vendored xterm.js and its WebGL addon, inlined into the document head as
-/// unparsed text. No CDN, no network at startup.
-const XTERM_JS: &str = include_str!("vendor/xterm.js");
-const XTERM_CSS: &str = include_str!("vendor/xterm.css");
-const ADDON_WEBGL_JS: &str = include_str!("vendor/addon-webgl.js");
+use wire::{BEFORE_SEQ_HEAD, ClientEvent, ConnEvent, backfill_max_bytes};
 
 /// Sidebar styling and the shared `--rg-*` design tokens.
 const SIDEBAR_CSS: &str = include_str!("../assets/sidebar.css");
 /// Settings sheet and workspace bar styling. Loaded after the sidebar so it
 /// can lean on the tokens that file declares.
 const SETTINGS_CSS: &str = include_str!("../assets/settings.css");
-/// Window frame, tab strip, and terminal pane styling.
+/// Window frame, workspace bar, and the box the pane is placed in.
 const APP_CSS: &str = include_str!("app.css");
 
 /// The design-system layer, loaded LAST so it overrides by cascade order
 /// rather than by specificity, and so no part needs `!important`.
 ///
-/// Each file is owned by exactly one author. Two agents editing one stylesheet
-/// is what produced the composition this layer exists to repair, so ownership
-/// is enforced by the file boundary and not by convention. The numeric prefix
-/// IS the cascade: a later part may override an earlier one, and each author
-/// wrote against that guarantee.
+/// Each file is owned by exactly one author. Two authors editing one
+/// stylesheet is what produced the composition this layer exists to repair,
+/// so ownership is enforced by the file boundary and not by convention. The
+/// numeric prefix IS the cascade: a later part may override an earlier one,
+/// and each author wrote against that guarantee.
 const PART_SPACING_CSS: &str = include_str!("../assets/parts/10-spacing.css");
 const PART_TYPE_CSS: &str = include_str!("../assets/parts/11-type.css");
 const PART_COLOR_CSS: &str = include_str!("../assets/parts/12-color.css");
@@ -155,80 +132,19 @@ const PART_SEARCH_CSS: &str = include_str!("../assets/parts/21-search.css");
 const PART_LAUNCHER_CSS: &str = include_str!("../assets/parts/22-launcher.css");
 const PART_BACKDROP_CSS: &str = include_str!("../assets/parts/23-backdrop.css");
 
-/// Startup timing, and the counters that keep it honest.
-///
-/// The timings are a TRACE, never an assertion. What a start costs depends on
-/// the disk, the compositor, the display server and whatever else the machine
-/// is doing, so a suite that asserted on milliseconds would fail on a loaded
-/// builder and teach everyone to rerun it. The counters beside them are
-/// properties of the code instead: how many times the profile is read off
-/// disk, how many times the mark is rasterised, how many times a keystroke
-/// makes the shell measure its own window. Those do not move under load, and
-/// they are what the guards in `tests` pin.
-///
-/// `VITRUM_BOOT_TRACE=1` turns the trace on. Off, every mark is one relaxed
-/// atomic load and nothing else.
-mod boot {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static ON: AtomicBool = AtomicBool::new(false);
-
-    /// Read the switch, once, while `main` is still the only thread.
-    ///
-    /// Reading it per mark would be a `getenv` on the startup path, which is
-    /// the thing being measured, and would race the prewarm thread against
-    /// any later environment write.
-    pub(crate) fn arm() {
-        ON.store(
-            std::env::var_os("VITRUM_BOOT_TRACE").is_some(),
-            Ordering::Relaxed,
-        );
-    }
-
-    /// Record that the process reached `phase`.
-    ///
-    /// Absolute microseconds since the epoch rather than a delta, so a
-    /// harness that stamped the clock before `exec` can subtract its own
-    /// zero and see the dynamic-link and toolkit-init cost this process
-    /// cannot observe from inside itself.
-    pub(crate) fn mark(phase: &str) {
-        if !ON.load(Ordering::Relaxed) {
-            return;
-        }
-        let us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_micros());
-        eprintln!("vitrum-boot {phase} {us}");
-    }
-
-    /// Record a counter's standing at the end of a run.
-    ///
-    /// The counters are what the suite asserts on, and this is what makes the
-    /// same numbers readable from a real session on a real machine: a trace
-    /// that ends with one profile read and one mark rasterised is the claim,
-    /// checked where it is made rather than only in a unit test.
-    pub(crate) fn tally(name: &str, n: usize) {
-        if !ON.load(Ordering::Relaxed) {
-            return;
-        }
-        eprintln!("vitrum-boot count.{name} {n}");
-    }
-}
-
 fn main() {
-    // First, so the trace covers the subscriber's own construction: the
-    // filter is parsed from the environment and the writer is built, and on a
-    // cold start that is not free.
+    // First, before anything else can take time: every later mark is a delta
+    // from this one, and a zero taken after the logging subscriber is built
+    // hides the subscriber.
     boot::arm();
-    boot::mark("main.enter");
+    boot::mark("process.start");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("VITRUM_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,vitrum=info")),
         )
         .init();
-    boot::mark("main.logging");
+    boot::mark("logging.ready");
 
     // WebKitGTK's MemoryPressureMonitor parks a thread reading
     // `/proc/self/cgroup` one byte at a time, 178 read syscalls a second, for
@@ -253,7 +169,6 @@ fn main() {
     // The daemon is not restarted. It keeps running the old code until the
     // operator restarts it, which ends every session it holds.
     update::apply_on_start();
-    boot::mark("main.update-swept");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -279,9 +194,7 @@ fn main() {
     // A command line this program cannot act on is a failure, and it exits
     // like one. `--help` and `--version` travel the same channel and are not:
     // `CliExit` carries which, and it is the only thing here that chooses a
-    // stream or a code. Before it did, every one of these went to stdout and
-    // the process returned normally, so `vitrum --bogus` was indistinguishable
-    // from a launch to anything reading the status.
+    // stream or a code.
     let opts = match Options::parse(args.iter().cloned()) {
         Ok(o) => o,
         Err(told) => std::process::exit(told.report()),
@@ -290,8 +203,8 @@ fn main() {
     // One process, N windows. A second launch is a request for another
     // window, not another copy of the program: it hands its intent to the
     // instance holding the lock and exits, and that instance opens the window.
-    // Twenty windows share one WebKit engine and one set of mapped pages;
-    // twenty processes would each pay for their own.
+    // Twenty windows share one engine and one set of mapped pages; twenty
+    // processes would each pay for their own.
     //
     // The guard is bound for the length of `main`. `launch` never returns, so
     // this is a statement of lifetime rather than a drop that will run.
@@ -308,40 +221,37 @@ fn main() {
             held => held,
         }
     };
-    boot::mark("main.instance");
+    boot::mark("instance.claimed");
 
     // A profile that has never had a launch store gets one, with a preset per
-    // agent vitrum knows. Before the prewarm below, which READS that store to
-    // build the first window's document: seeding after it would leave the
-    // first launcher of a new profile empty and only fill it on the second
-    // start.
+    // agent vitrum knows. Before the prewarm below, which READS that store:
+    // seeding after it would leave the first launcher of a new profile empty
+    // and only fill it on the second start.
     //
     // One `stat` on every other start, which is what "has this profile been
     // used" costs. The `PATH` walk behind the roster happens only when the
     // file is absent, so it is paid once in the life of a profile and never
     // on the path this program is measured on.
     launch::seed_launch_store_once();
-    boot::mark("main.seeded");
 
     // The document the first window is built around, assembled on a thread of
     // its own while this one brings up the toolkit.
     //
     // None of it needs a window, a display server or the event loop: it reads
-    // `ui.json` and the launch store off the profile, strips the comments out
-    // of 410 KB of stylesheet, folds the operator's rebindings into the keymap
-    // and copies 800 KB of vendored script into one string. All of that used
-    // to run between the monitor probe and the window, on the thread that
-    // could have been opening the window.
+    // the profile off disk, strips the comments out of the stylesheets and
+    // rasterises the mark. All of that used to run between the monitor probe
+    // and the window, on the thread that could have been opening the window.
     //
     // Meanwhile the main thread builds the event loop, which is where GTK,
     // GDK and the X or Wayland connection come up. The two do not touch: the
     // prewarm never calls a toolkit function, and the toolkit never reads the
     // profile. Wall clock becomes the longer of the two instead of their sum.
     //
-    // There is no handle to join. `document_head` and `window_icon` are both
-    // one-shot caches, so whichever thread arrives second waits on the cell
-    // and takes the finished value; if the prewarm somehow never ran, the main
-    // thread does the work itself and nothing is lost but the overlap.
+    // There is no handle to join. `document_head`, `window_icon` and the
+    // startup profile are all one-shot caches, so whichever thread arrives
+    // second waits on the cell and takes the finished value; if the prewarm
+    // somehow never ran, the main thread does the work itself and nothing is
+    // lost but the overlap.
     //
     // Safe with respect to the environment write above: that happens before
     // this thread exists, and nothing in the process writes the environment
@@ -349,10 +259,13 @@ fn main() {
     if let Err(e) = std::thread::Builder::new()
         .name("vitrum-prewarm".to_string())
         .spawn(move || {
-            boot::mark("prewarm.start");
-            document_head(opts);
+            // The profile first. Everything else on this thread is CPU over
+            // bytes already in memory, and this is the one disk read; putting
+            // it in front means the main thread never blocks on the file even
+            // if it reaches the window before the styles are done.
+            let _ = state::startup_prefs();
+            document_head();
             warm_window_icon();
-            boot::mark("prewarm.done");
         })
     {
         tracing::warn!("no prewarm thread, building the document inline: {e}");
@@ -369,7 +282,6 @@ fn main() {
         .primary_monitor()
         .or_else(|| monitors.first().cloned());
     seed_book(load_geometry(&monitor_rects(primary.as_ref(), &monitors)));
-    boot::mark("main.event-loop");
 
     let density = primary.as_ref().map(density_of);
     let scale = opts
@@ -395,17 +307,13 @@ fn main() {
     let state =
         remembered(ordinal).unwrap_or_else(|| fresh_geometry(primary.as_ref(), scale, ordinal));
     remember(ordinal, state);
-    boot::mark("main.geometry");
 
-    let config = window_config(opts, &state, scale, os_scale).with_event_loop(event_loop);
-    boot::mark("main.window-config");
+    let config = window_config(&state, scale, os_scale).with_event_loop(event_loop);
 
     let seed = WindowSeed {
         ordinal,
         link: activation.link(),
     };
-
-    boot::mark("main.launch");
 
     // `LaunchBuilder::desktop()` would go through the dioxus facade, which
     // resolves the registry renderer. This is the same call one level down,
@@ -433,10 +341,11 @@ fn decorate(window: WindowBuilder) -> WindowBuilder {
 /// content view extended under it.
 ///
 /// Dropping decorations on macOS takes the traffic lights with them, and
-/// reimplementing those in HTML gives you three circles that look almost right
-/// and do not respond to Mission Control, window tabbing, or a long press.
-/// Extending the content view instead keeps the real buttons where macOS puts
-/// them; [`ui::titlebar::MACOS_TRAFFIC_LIGHT_INSET`] reserves their space.
+/// reimplementing those in markup gives you three circles that look almost
+/// right and do not respond to Mission Control, window tabbing, or a long
+/// press. Extending the content view instead keeps the real buttons where
+/// macOS puts them; [`ui::titlebar::MACOS_TRAFFIC_LIGHT_INSET`] reserves
+/// their space.
 #[cfg(target_os = "macos")]
 fn decorate(window: WindowBuilder) -> WindowBuilder {
     use vitrum_dioxus_desktop::tao::platform::macos::WindowBuilderExtMacOS;
@@ -446,30 +355,93 @@ fn decorate(window: WindowBuilder) -> WindowBuilder {
         .with_fullsize_content_view(true)
 }
 
-/// Handle on both halves of the client's outside world.
+/// Where a window's own events wait for the component that will read them.
 ///
-/// `Eval` is `Copy` and `CopyValue` is `Copy`, so this stays a plain value that
-/// event handlers capture without cloning or reference counting.
+/// The pane widget is installed when the OS window is created, which is
+/// strictly before the shell mounts, so the closure that receives a keystroke
+/// exists before the signal that will act on it. Rather than make the pane
+/// wait, the channel is created with the window and the mounting component
+/// takes the receiving half out of here.
 ///
-/// Two transports, one handle, deliberately. The eval channel now carries only
-/// what the DOM alone can do; everything with a byte offset or a session id in
-/// it goes through [`socket::Net`]. Handlers should not have to know which,
-/// and a second handle threaded beside this one would be a second thing every
-/// call site could forget to pass.
+/// Keyed by window id because this process opens more than one window, and an
+/// unkeyed queue would let window two's keystrokes be read by window one.
+/// Thread-local because every one of these is created and consumed on the UI
+/// thread, so no lock is bought for a hazard that cannot arise.
+type WindowEvents = (UnboundedSender<ClientEvent>, Option<UnboundedReceiver<ClientEvent>>);
+
+thread_local! {
+    static WINDOW_EVENTS: RefCell<HashMap<WindowId, WindowEvents>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Give `window` a native pane and an event channel.
+///
+/// Called from the window's construction callback, so this runs before the
+/// document exists and before the shell mounts. The pane is up, parsing and
+/// holding a grid, for the whole interval the shell is still being built.
+fn install_pane(window: &Window) {
+    let id = window.id();
+    let (tx, rx) = unbounded_channel();
+    WINDOW_EVENTS.with(|map| map.borrow_mut().insert(id, (tx.clone(), Some(rx))));
+
+    // A borrowed slice, so a keystroke does not allocate on the way in. It
+    // becomes an owned frame exactly once, here, because that is what the
+    // socket will send.
+    let sink: pane::InputSink = Box::new(move |bytes: &[u8]| {
+        if tx.send(ClientEvent::Input { data: bytes.to_vec() }).is_err() {
+            tracing::debug!("pane input dropped: the window is closing");
+        }
+    });
+    if let Err(e) = pane::install(window, sink) {
+        // A window with no pane still shows the sidebar, the workspace bar and
+        // every sheet, and says so through the pane's own empty state.
+        // Refusing to open would take all of that away to report one of them.
+        tracing::error!("no native pane on this window: {e:#}");
+        WINDOW_EVENTS.with(|map| map.borrow_mut().remove(&id));
+    }
+}
+
+/// Take a window's event channel, once.
+fn window_events(id: WindowId) -> Option<WindowEvents> {
+    WINDOW_EVENTS.with(|map| {
+        let mut map = map.borrow_mut();
+        let slot = map.get_mut(&id)?;
+        Some((slot.0.clone(), slot.1.take()))
+    })
+}
+
+/// A window's event queue, for a caller outside the component tree.
+///
+/// The pane's key handler is the caller. It runs in a toolkit callback with
+/// no signals and no context, and this is the one thing it needs from the
+/// window: somewhere to put a chord it is not going to encode.
+pub(crate) fn window_sender(id: WindowId) -> Option<UnboundedSender<ClientEvent>> {
+    WINDOW_EVENTS.with(|map| Some(map.borrow().get(&id)?.0.clone()))
+}
+
+/// Forget a window's channel when the window goes away.
+fn drop_window_events(id: WindowId) {
+    WINDOW_EVENTS.with(|map| map.borrow_mut().remove(&id));
+}
+
+/// Handle on the client's outside world.
+///
+/// `CopyValue` is `Copy`, so this stays a plain value that event handlers
+/// capture without cloning or reference counting.
+///
+/// One handle, two directions. Everything with a session id or a byte offset
+/// in it goes to the daemon through [`socket::Net`]; everything the window
+/// itself observed goes back to the reducer through `ui`, which is the same
+/// queue the pane's keystrokes arrive on. Handlers should not have to know
+/// which, and a second handle threaded beside this one would be a second
+/// thing every call site could forget to pass.
 #[derive(Clone, Copy)]
 struct Bridge {
-    eval: Eval,
     net: CopyValue<socket::Net>,
+    ui: CopyValue<UnboundedSender<ClientEvent>>,
 }
 
 impl Bridge {
-    /// Ask the webview to do something only the DOM can do.
-    fn cmd(&self, c: BridgeCmd) {
-        if let Err(e) = self.eval.send(&c) {
-            tracing::error!("bridge command dropped: {e}");
-        }
-    }
-
     /// Encode and send a control-plane message to the daemon.
     fn msg(&self, m: &ClientMsg) {
         // `CopyValue` is `Copy`, and its write guard needs a mutable handle.
@@ -497,6 +469,16 @@ impl Bridge {
         self.net.peek().epoch()
     }
 
+    /// Give the socket the pane it feeds.
+    ///
+    /// Called once per window, at mount. Ops the socket produced before this
+    /// are held rather than dropped, so a session whose first bytes arrived
+    /// during startup paints them.
+    fn attach_pane(&self, sink: Rc<RefCell<dyn socket::PaneSink>>) {
+        let mut net = self.net;
+        net.write().attach_pane(sink);
+    }
+
     /// Point the pane at `session`, or clear it.
     fn focus(&self, session: Option<SessionId>) {
         let mut net = self.net;
@@ -519,16 +501,17 @@ impl Bridge {
         jump_seq: Option<u64>,
         keep_view: bool,
     ) {
+        boot::mark("scrollback.restored");
         let mut net = self.net;
         net.write().drive(move |stream, ops| {
             stream.backfill(session, from_seq, resume_seq, bytes, jump_seq, keep_view, ops);
         });
     }
 
-    /// One decoded data frame from the socket.
-    fn output(&self, session: SessionId, seq: u64, data: Vec<u8>) {
+    /// One data frame off the socket, still in the buffer it arrived in.
+    fn output(&self, frame: socket::Frame) {
         let mut net = self.net;
-        net.write().drive(move |stream, ops| stream.output(session, seq, data, ops));
+        net.write().drive(move |stream, ops| stream.output(frame, ops));
     }
 
     /// Fixture mode's substitute for a session: literal lines, no socket.
@@ -542,6 +525,112 @@ impl Bridge {
         let mut net = self.net;
         net.write().stream.take_notices()
     }
+
+    /// Report something the window observed to the reducer.
+    fn raise(&self, event: ClientEvent) {
+        if self.ui.peek().send(event).is_err() {
+            tracing::debug!("client event dropped: the window is closing");
+        }
+    }
+
+    /// Put `text` on the system clipboard, and say whether it landed.
+    ///
+    /// Reported rather than assumed: a copy that did not happen and a
+    /// "Copied" notice that says it did is a lie the operator only discovers
+    /// when they paste.
+    fn clipboard(&self, text: String) {
+        let ok = set_clipboard(&text);
+        self.raise(ClientEvent::Copied { ok, text });
+    }
+
+    /// Move keyboard focus to the element the shell registered under
+    /// `selector`.
+    ///
+    /// The argument is the element's id, with or without a leading `#`,
+    /// because that is what the shell's own markup calls it and translating
+    /// it at four call sites would be four places to get it wrong.
+    ///
+    /// A selector nothing registered focuses nothing and says so at debug
+    /// level. That is the correct behaviour rather than an omission: a
+    /// keystroke bound to a surface that is not on screen has nowhere to put
+    /// focus, and the alternative, throwing, would turn a harmless key press
+    /// into a crash the moment a panel is collapsed.
+    fn focus_ui(&self, selector: String) {
+        focus_by_id(selector.trim_start_matches('#'));
+    }
+}
+
+// Elements the shell has offered up for focus, by id.
+//
+// Why a registry and not a lookup: focusing an arbitrary element by selector
+// is a document query, and a document query is a thing this product does not
+// have any more. What it has instead is every element that can be focused
+// handing its own handle over when it mounts, so the set of focusable
+// surfaces is a list this program wrote rather than a string it hopes
+// resolves.
+//
+// Thread-local because handles are not `Send` and every one of them belongs
+// to the thread its window runs on.
+thread_local! {
+    static FOCUSABLE: RefCell<HashMap<String, Rc<MountedData>>> = RefCell::new(HashMap::new());
+}
+
+/// Offer this element up to [`Bridge::focus_ui`] under `id`.
+///
+/// Called from an `onmounted` handler with `event.data()`. Re-mounting the
+/// same id replaces the handle, which is what keeps a list whose rows come
+/// and go from accumulating handles to elements that are gone.
+pub(crate) fn register_focusable(id: impl Into<String>, node: Rc<MountedData>) {
+    FOCUSABLE.with(|map| map.borrow_mut().insert(id.into(), node));
+}
+
+/// Put keyboard focus on the element registered under `id`.
+///
+/// An element that has been unmounted since it registered cannot take focus,
+/// and its handle is dropped when that is discovered rather than kept around
+/// to fail again. That is also the only pruning the registry needs: nothing
+/// else can tell the difference between a row that is scrolled out of view
+/// and a row that no longer exists.
+fn focus_by_id(id: &str) {
+    let Some(node) = FOCUSABLE.with(|map| map.borrow().get(id).cloned()) else {
+        tracing::debug!("nothing registered as {id:?}, so focus stays where it is");
+        return;
+    };
+    let key = id.to_string();
+    spawn(async move {
+        if node.set_focus(true).await.is_err() {
+            FOCUSABLE.with(|map| map.borrow_mut().remove(&key));
+        }
+    });
+}
+
+/// Hand `text` to the desktop's clipboard.
+///
+/// GTK owns the selection for as long as this process lives, which is what
+/// the operator expects from an application window: the text stays pasteable
+/// until they copy something else. It does NOT survive the process, because
+/// X11 has no clipboard daemon of its own and a manager, if one is running,
+/// takes over at exit.
+#[cfg(target_os = "linux")]
+fn set_clipboard(text: &str) -> bool {
+    let Some(display) = gtk::gdk::Display::default() else {
+        tracing::warn!("no display, so nothing to copy to");
+        return false;
+    };
+    let clipboard = gtk::Clipboard::default(&display);
+    let Some(clipboard) = clipboard else {
+        tracing::warn!("this display offers no clipboard selection");
+        return false;
+    };
+    clipboard.set_text(text);
+    true
+}
+
+/// Platforms whose clipboard is not wired yet say so rather than claiming a
+/// copy that did not happen.
+#[cfg(not(target_os = "linux"))]
+fn set_clipboard(_text: &str) -> bool {
+    false
 }
 
 /// One reading of the wall clock, in the three forms the shell needs.
@@ -582,18 +671,17 @@ fn tick() -> Tick {
 fn App() -> Element {
     // A hook, so this is the FIRST render and not every render. Unqualified
     // it fired on every repaint and buried the startup trace in itself.
-    use_hook(|| boot::mark("app.mount"));
+    use_hook(|| boot::mark("shell.mounted"));
     let opts: Options = use_context();
     let seed: WindowSeed = use_context();
     let window = vitrum_dioxus_desktop::use_window();
 
     // Physical size, applied to the document as page zoom rather than as a
     // root font-size. Zoom is the stronger of the two because it scales every
-    // length the page has, including the pixel values still left in `app.css`,
-    // the xterm.js cell metrics, and one-pixel borders. A root font-size would
-    // scale the sidebar's type and leave the tab strip, the terminal grid and
-    // every rule at half size, which is a worse bug than the one it fixes
-    // because it looks deliberate.
+    // length the page has, including the pixel values still left in `app.css`
+    // and one-pixel borders. A root font-size would scale the sidebar's type
+    // and leave the workspace bar and every rule at half size, which is a
+    // worse bug than the one it fixes because it looks deliberate.
     //
     // Applied in the signal's initialiser so it lands before the first paint.
     let mut scale = use_signal({
@@ -605,6 +693,47 @@ fn App() -> Element {
         }
     });
 
+    // The client area as the display server sees it, and the display's own
+    // scale factor. Two values rather than one because they move
+    // independently: dragging an edge changes the size, dragging the window
+    // to another panel changes the factor, and the pane needs both to turn a
+    // CSS rectangle into device pixels.
+    //
+    // Signals rather than a read per render, because `inner_size` is a round
+    // trip to the display server and the shell renders on every keystroke.
+    // The window event handler below is the one place either can change.
+    let mut window_px = use_signal({
+        let window = window.clone();
+        move || {
+            let size = window.inner_size();
+            (size.width, size.height)
+        }
+    });
+    let mut os_scale = use_signal({
+        let window = window.clone();
+        move || window.scale_factor()
+    });
+
+    // Fold the chord table when the profile changes, not per key press.
+    use_hook(keys::watch_chords);
+
+    // Install the shell subscription before the daemon's first settings
+    // document arrives, so the theme the profile was restored with is tracked
+    // too. Installed later the shell only starts following from the first
+    // edit of the session, which looks like it working.
+    use_hook(ui::settings::watch_shell);
+
+    // Which surface the keyboard is on.
+    //
+    // A chord's scope is answered against this: bare arrows traverse the
+    // session list only once focus is actually in the list, and Escape
+    // belongs to the agent unless something is open over it. Published as
+    // context so the surfaces that can take focus report it themselves; a
+    // handler that tried to infer focus from the model would be guessing
+    // about something the toolkit already knows.
+    let shell_focus = use_signal(|| keys::Focus::Shell);
+    use_context_provider(|| shell_focus);
+
     let mut st = use_signal({
         let window = window.clone();
         move || {
@@ -615,7 +744,7 @@ fn App() -> Element {
             ui.window.index = seed.ordinal;
             // The sidebar's default is a fraction of the document, not a fixed
             // 256 px: a fixed default is a fifth of a 1280 px window and a
-            // sixteenth of a 3840 px one. A width the user dragged in a
+            // sixteenth of a 3840 px one. A width the operator dragged in a
             // previous run wins over both, and `set_sidebar_width_in` caps
             // either at `state::SIDEBAR_MAX_FRACTION` of the window so a
             // remembered width from a maximised 4K session does not swallow a
@@ -624,11 +753,8 @@ fn App() -> Element {
             // The measurement here is provisional and known to be. tao has
             // been asked for the window's size but the platform may not have
             // applied it yet, so `inner_size` can still report the toolkit's
-            // placeholder; measured on X11 with no window manager it reports
-            // under 700 CSS pixels for a window that is about to be 2560,
-            // and the fraction of that is below the legibility floor. The
-            // first `Resized` re-derives it, which is where the real number
-            // arrives.
+            // placeholder. The first `Resized` re-derives it, which is where
+            // the real number arrives.
             let css_width = css_viewport_width(&window, *scale.peek());
             let want = match remembered(seed.ordinal) {
                 Some(state) if state.sidebar_width > 0 => f64::from(state.sidebar_width),
@@ -646,8 +772,7 @@ fn App() -> Element {
     // theirs and resizing the window only ever clamps it. Without the flag the
     // two rules fight: either a dragged width is silently thrown away on the
     // next resize, or a window that was measured before the platform applied
-    // its geometry keeps a sidebar at the 224px floor forever, which is what
-    // it did.
+    // its geometry keeps a sidebar at the floor forever, which is what it did.
     let mut sidebar_pinned =
         use_signal(|| remembered(seed.ordinal).is_some_and(|state| state.sidebar_width > 0));
     // Session the server currently believes we are attached to. Kept separate
@@ -663,7 +788,7 @@ fn App() -> Element {
     // A session a `vitrum://session/N` handoff asked this window to open. Held
     // until the daemon confirms the session exists, because the link arrives
     // before the first snapshot does and acting on the first miss would drop
-    // the request the user actually made.
+    // the request the operator actually made.
     let pending_link = use_signal(|| match seed.link {
         Some(DeepLink::Session(id)) => Some(id),
         _ => None,
@@ -689,21 +814,13 @@ fn App() -> Element {
         if std::env::var_os("VITRUM_UPDATE_OFFER").is_none() {
             return None;
         }
-        let seeded = match update::quiet_check() {
+        match update::quiet_check() {
             Ok(status) => update::chrome_offer(&status, ""),
             Err(e) => {
                 tracing::warn!("forced update offer failed: {e:#}");
                 None
             }
-        };
-        tracing::info!(
-            "forced update offer seed: {}",
-            seeded
-                .as_ref()
-                .map(|a| a.version.to_string())
-                .unwrap_or_else(|| "none".into())
-        );
-        seeded
+        }
     });
 
     // What the sidebar's restart affordance reads. Seeded from disk so a build
@@ -715,38 +832,66 @@ fn App() -> Element {
         Err(_) => update::Standing::Current,
     });
 
-    // The socket, and the receiver its task talks to this window over. Built
-    // in a hook so the runtime handle captured inside `Net::new` is the UI
-    // thread's, which is where dioxus-desktop's multi-threaded runtime is in
-    // context.
-    // `Rc`, because `use_hook` hands back a clone of its state on every render
-    // and an `UnboundedReceiver` is not `Clone`. The `Option` is what makes
-    // taking it once safe.
-    let (bridge, socket_rx) = use_hook(|| {
-        let (net, rx) = socket::Net::new();
-        let bridge = Bridge {
-            eval: document::eval(BOOTSTRAP_JS),
-            net: CopyValue::new(net),
-        };
-        (bridge, std::rc::Rc::new(std::cell::RefCell::new(Some(rx))))
-    });
-
-    // The route the webview pulls pane bytes from.
+    // The socket, the pane, and the two receivers this window reads them over.
     //
-    // Registered before anything can focus a session, because the queue parks
-    // the webview's request rather than dropping it: bytes pushed before the
-    // first `fetch` arrives are held, not lost.
-    use_asset_handler(socket::PANE_ROUTE, {
-        let pane = bridge.net.peek().pane.clone();
-        move |_request, responder| pane.borrow_mut().serve(responder)
+    // Built in a hook so the runtime handle captured inside `Net::new` is the
+    // UI thread's, which is where dioxus-desktop's multi-threaded runtime is
+    // in context.
+    //
+    // `Rc<RefCell<Option<_>>>`, because `use_hook` hands back a clone of its
+    // state on every render and an `UnboundedReceiver` is not `Clone`. The
+    // `Option` is what makes taking it once safe.
+    let (bridge, socket_rx, pane_rx) = use_hook({
+        let window = window.clone();
+        move || {
+            let (net, socket_rx) = socket::Net::new();
+            // Installed with the OS window, so this is a lookup and not a
+            // construction: the pane has been parsing since before the shell
+            // existed. A window whose pane failed to install has no channel
+            // and gets an inert sender, which is what keeps every handler
+            // below free of an `Option`.
+            let (tx, pane_rx) = window_events(window.id()).unwrap_or_else(|| {
+                let (tx, rx) = unbounded_channel();
+                (tx, Some(rx))
+            });
+            let bridge = Bridge {
+                net: CopyValue::new(net),
+                ui: CopyValue::new(tx),
+            };
+            if let Some(host) = pane::PaneHost::for_window(window.id()) {
+                bridge.attach_pane(host.sink());
+                // The pane's only way back that is not bytes. A resize is a
+                // measurement the pane alone can make, a page-back is a
+                // scroll that reached the top of what has been painted, and a
+                // copy is a clipboard write that can be refused. All three
+                // are observations about this window, so they go on the same
+                // queue the keystrokes do.
+                host.on_report(Box::new(move |report| match report {
+                    pane::PaneReport::Resize { cols, rows } => {
+                        bridge.raise(ClientEvent::Resize { cols, rows });
+                    }
+                    pane::PaneReport::PageBack => bridge.raise(ClientEvent::PageBack),
+                    pane::PaneReport::Copied { ok, text } => {
+                        bridge.raise(ClientEvent::Copied { ok, text });
+                    }
+                }));
+            }
+            let socket_rx: Option<UnboundedReceiver<(u64, socket::SocketEvent)>> =
+                Some(socket_rx);
+            (
+                bridge,
+                Rc::new(RefCell::new(socket_rx)),
+                Rc::new(RefCell::new(pane_rx)),
+            )
+        }
     });
 
     // Everything the socket has to say, on the UI thread.
     //
-    // A second pump beside the eval one rather than a select over both. They
-    // are independent sources with independent lifetimes — the eval channel
-    // lives as long as the window and a socket is replaced on every reconnect
-    // — and joining them would make a dead socket able to stall DOM events.
+    // A second pump beside the pane's rather than a select over both. They
+    // are independent sources with independent lifetimes: the pane lives as
+    // long as the window and a socket is replaced on every reconnect, and
+    // joining them would make a dead socket able to stall a keystroke.
     use_future(move || {
         let taken = socket_rx.borrow_mut().take();
         async move {
@@ -758,8 +903,7 @@ fn App() -> Element {
             };
             while let Some((epoch, event)) = rx.recv().await {
                 // A superseded socket's dying words must not overwrite the
-                // live one's state. This is the Rust half of the handler
-                // detach `bootstrap.js` did before closing a socket.
+                // live one's state.
                 if epoch != bridge.epoch() {
                     continue;
                 }
@@ -779,8 +923,33 @@ fn App() -> Element {
         }
     });
 
-    // Everything the window itself has to say. There is no timer behind any of
-    // it: `Moved` arrives while the user drags, `Focused` when they switch
+    // Everything the window itself observed: a keystroke the pane captured, a
+    // chord, a resize, a page-back gesture, the result of a copy.
+    use_future(move || {
+        let taken = pane_rx.borrow_mut().take();
+        async move {
+            let Some(mut rx) = taken else {
+                return;
+            };
+            while let Some(event) = rx.recv().await {
+                on_client_event(
+                    event,
+                    bridge,
+                    st,
+                    attached,
+                    opts,
+                    pending_terminate,
+                    pending_open,
+                    reconnect,
+                );
+                claim_link(bridge, st, attached, pending_link, opts);
+                claim_launch(bridge, st, attached, pending_open, opts);
+            }
+        }
+    });
+
+    // Everything the window has to say. There is no timer behind any of it:
+    // `Moved` arrives while the operator drags, `Focused` when they switch
     // away, and nothing at all while the window sits still.
     use_wry_event_handler({
         let window = window.clone();
@@ -792,12 +961,6 @@ fn App() -> Element {
             // With twenty windows open that is twenty geometry round trips to
             // the display server for one drag, nineteen of them answering for
             // a window that did not move.
-            //
-            // It also narrows the window in which a handler can ask X about a
-            // drawable that is being destroyed. That is NOT known to fix the
-            // open BadDrawable crash on closing one window of several: the
-            // crash still reproduces with this guard in place, so do not read
-            // it as the cure.
             let WryEvent::WindowEvent {
                 window_id, event, ..
             } = event
@@ -821,13 +984,26 @@ fn App() -> Element {
                         window.set_zoom_level(next);
                         scale.set(next);
                     }
+                    // Written through a comparison, not unconditionally. A
+                    // drag delivers one of these per frame and a signal set
+                    // to the value it already holds still re-renders the
+                    // shell, which is the whole subtree, per frame, for a
+                    // window that did not change size.
+                    let size = window.inner_size();
+                    if (size.width, size.height) != *window_px.peek() {
+                        window_px.set((size.width, size.height));
+                    }
+                    let factor = window.scale_factor();
+                    if factor != *os_scale.peek() {
+                        os_scale.set(factor);
+                    }
                     // The sidebar is a fraction of the document until the
                     // operator says otherwise, so a resize re-derives it. This
                     // is also the ONLY place the first honest measurement of
                     // the window arrives: `inner_size` at construction can
                     // still be the toolkit's placeholder, and a fraction of
-                    // that lands on the 224px legibility floor and stays
-                    // there for the life of the window.
+                    // that lands on the legibility floor and stays there for
+                    // the life of the window.
                     //
                     // A width the operator chose is never re-derived, only
                     // clamped, which is what keeps a drag from being undone by
@@ -843,19 +1019,19 @@ fn App() -> Element {
                     }
                     remember(seed.ordinal, measure(&window, seed.ordinal));
                 }
-                // Focus loss and a close request are the two moments a user has
-                // finished moving a window. Writing on a pointer sample instead
-                // would be a filesystem write per frame of a drag.
+                // Focus loss and a close request are the two moments an
+                // operator has finished moving a window. Writing on a pointer
+                // sample instead would be a filesystem write per frame of a
+                // drag.
                 //
-                // `ui.json` is written here too, and that is not housekeeping.
-                // `sidebar_collapsed` and the whole tab strip live in
-                // `WindowSnapshot`, which `save_prefs` writes and `restore_window`
-                // reads, but no collapse toggle and no tab operation ever called
-                // `commit`. They survived only when some unrelated control
-                // committed afterwards and happened to carry them along. Collapse
-                // the sidebar, change nothing else, quit, and the collapse was
-                // lost. These are the same two moments geometry already uses, so
-                // the cost is one small write next to the one being made anyway.
+                // The profile is written here too, and that is not
+                // housekeeping. `sidebar_collapsed` and the whole strip live
+                // in the window snapshot, and no collapse toggle ever
+                // committed on its own: they survived only when some unrelated
+                // control committed afterwards and happened to carry them
+                // along. These are the same two moments geometry already uses,
+                // so the cost is one small write next to the one being made
+                // anyway.
                 WindowEvent::Focused(false) | WindowEvent::CloseRequested => {
                     remember(seed.ordinal, measure(&window, seed.ordinal));
                     save_geometry();
@@ -871,18 +1047,32 @@ fn App() -> Element {
     // state goes with it: a window torn down without a `CloseRequested`, which
     // is what happens when the process is asked to quit, would otherwise lose
     // its strip and its collapse.
-    use_drop(move || {
-        release_ordinal(seed.ordinal);
-        save_geometry();
-        save_window_state(st);
-        // The launcher entry is driven by a signal and has nothing to re-read,
-        // so a count left behind by the last window stays on the launcher
-        // after the process is gone and is wrong from that moment on.
-        if live_window_count() == 0 {
-            badge::clear();
+    use_drop({
+        let window = window.clone();
+        move || {
+            release_ordinal(seed.ordinal);
+            drop_window_events(window.id());
+            // The pane's registry is keyed by window id and window ids are
+            // reused, so a host left behind would be handed to the next
+            // window that happens to take the same id.
+            pane::PaneHost::forget(window.id());
+            save_geometry();
+            save_window_state(st);
+            // A settings write is coalesced on a quiet timer, so a change
+            // made in the last fraction of a second before a window goes
+            // away is still queued. Nothing will run that timer once the
+            // process is gone.
+            ui::settings::flush();
+            // The launcher entry is driven by a signal and has nothing to
+            // re-read, so a count left behind by the last window stays on the
+            // launcher after the process is gone and is wrong from that
+            // moment on.
+            if live_window_count() == 0 {
+                badge::clear();
+            }
+            boot::tally("prefs-loads", state::prefs_loads());
+            boot::tally("mark-rasterisations", mark_rasterisations());
         }
-        boot::tally("prefs-loads", state::prefs_loads());
-        boot::tally("mark-rasterisations", mark_rasterisations());
     });
 
     // Handoffs from later launches. Every window parks here; the queue hands
@@ -899,6 +1089,40 @@ fn App() -> Element {
                     open_window(&window, opts, activation.link());
                 }
             }
+        }
+    });
+
+    // A background profile write has nowhere to return a failure to, so it
+    // records the outcome and the shell reads it here. Without this a profile
+    // that cannot be written is lost in silence: the operator arranges a
+    // window, the write fails, and the arrangement is gone at the next launch
+    // with nothing on screen having said so.
+    //
+    // Polled rather than pushed, because the writer owns a thread that holds
+    // no window's state. Each outcome is said once: the report keeps the last
+    // one until another write replaces it, and re-raising it every interval
+    // would be a flash the operator cannot dismiss.
+    use_future(move || async move {
+        const WATCH: std::time::Duration = std::time::Duration::from_secs(2);
+        let mut seen = state::SaveReport::default();
+        loop {
+            tokio::time::sleep(WATCH).await;
+            let now = state::save_report();
+            if now == seen {
+                continue;
+            }
+            if now.error != seen.error
+                && let Some(why) = now.error.as_deref()
+            {
+                st.write().window.flash = Some(Flash::error(format!("Profile not saved: {why}")));
+            } else if now.archived != seen.archived
+                && let Some(path) = now.archived.as_deref()
+            {
+                st.write().window.flash = Some(Flash::notice(format!(
+                    "The profile could not be read and was moved to {path}"
+                )));
+            }
+            seen = now;
         }
     });
 
@@ -984,6 +1208,7 @@ fn App() -> Element {
                             handle.shutdown();
                             save_geometry();
                             save_window_state(st);
+                            ui::settings::flush();
                             window.close();
                         }
                     }
@@ -992,42 +1217,37 @@ fn App() -> Element {
         }
     });
 
-    // One long-lived reader. Not a poll: it parks on the channel until the
-    // bridge has something to say.
-    // Every window runs the settings script the sheet broadcasts, not just the
-    // window the sheet was open in. Subscribed here, at the top of the root
-    // component, so the subscription lasts exactly as long as this window.
-    ui::settings::use_live_settings();
-
     // The window, for the one measurement this future takes. Cloned rather
     // than captured by reference because the future outlives this render.
     let settle_window = window.clone();
     use_future(move || {
         let settle_window = settle_window.clone();
         async move {
-            boot::mark("app.restore");
-            // Preferences before anything else, so the first connection uses the
-            // daemon URL the user chose and the first paint uses their theme.
+            // Preferences before anything else, so the first connection uses
+            // the daemon URL the operator chose and the first paint uses their
+            // theme.
             //
-            // This runs after the sidebar width was seeded from window geometry,
-            // and deliberately overwrites it: the geometry file is the fallback for
-            // a window nobody has expressed a preference about, and `ui.json` is
-            // the preference. Two files can only disagree if one of them is not
-            // authoritative, so this decides which.
+            // This runs after the sidebar width was seeded from window
+            // geometry, and deliberately overwrites it: the geometry file is
+            // the fallback for a window nobody has expressed a preference
+            // about, and the profile is the preference. Two files can only
+            // disagree if one of them is not authoritative, so this decides
+            // which.
             //
-            // The SNAPSHOT, not a fresh read. The document head already parsed
-            // this file to inline the keymap, and the window was already created
-            // from its opacity setting; a third read here would be a third parse
-            // of a file nothing has written since, on the path to the first paint.
+            // The SNAPSHOT, not a fresh read. The prewarm thread already
+            // parsed this file, and the window was already created from its
+            // opacity setting; a second read here would be a second parse of a
+            // file nothing has written since, on the path to the first paint.
             let (prefs, why) = state::startup_prefs();
             {
                 let mut guard = st.write();
                 let w = &mut *guard;
                 prefs.restore_daemon(&mut w.daemon);
-                // Window N restores window N's strip. The slot is set here rather
-                // than left at its default, because a window is the only thing
-                // that knows which slot it is and every window defaulting to 0
-                // makes them fight over one entry and lose the rest.
+                // Window N restores window N's strip. The slot is set here
+                // rather than left at its default, because a window is the
+                // only thing that knows which slot it is and every window
+                // defaulting to 0 makes them fight over one entry and lose the
+                // rest.
                 w.window.index = seed.ordinal;
                 prefs.restore_window(&mut w.window);
             }
@@ -1043,10 +1263,17 @@ fn App() -> Element {
             if let Some(text) = problem {
                 st.write().window.flash = Some(Flash::error(text));
             }
-            // Pushes the restored text scale, terminal options and key bindings
-            // into the webview that just mounted.
-            ui::settings::apply_here(&st.peek().daemon.settings);
-            boot::mark("app.restored");
+            // The pane reads its font, palette, cursor and scrollback off the
+            // live bus rather than being pushed at. Published once here so a
+            // pane created before the profile was restored picks up the
+            // operator's values on its next frame.
+            state::live::publish(&st.peek().daemon.settings);
+            // The saved commands, for the same reason and in the same breath.
+            // The chord table is folded from both halves, so publishing one
+            // without the other leaves every preset shortcut dead until the
+            // operator happens to edit the list.
+            state::live::publish_presets(&launch::presets_saved());
+            boot::mark("settings.restored");
 
             // First run gets the walkthrough, an upgrade gets the release
             // notes, and a window that is neither gets neither. Only the first
@@ -1058,9 +1285,9 @@ fn App() -> Element {
             // daemon was asked to start, so a first launch paid the scan and
             // the connect in series. The sheet already treats an empty agent
             // list as a first-class state, and the daemon row updates live
-            // from `conn`, so the scan can fill in beside the connect rather
-            // than in front of it. Wall clock becomes max(scan, connect)
-            // instead of their sum.
+            // from the connection, so the scan can fill in beside the connect
+            // rather than in front of it. Wall clock becomes max(scan,
+            // connect) instead of their sum.
             let agent_fill = if seed.ordinal == 0 {
                 let onboarded = st.peek().daemon.settings.onboarded;
                 if !onboarded {
@@ -1089,13 +1316,14 @@ fn App() -> Element {
                     w.daemon.conn = ConnState::Fixture;
                     w.daemon.projects = fixture::projects();
                     w.daemon.sessions = fixture::sessions(now);
-                    // The same placement a live `Sessions` snapshot gets inside
-                    // `DaemonState::apply`. Without it the fixture has a different
-                    // state machine from the real thing: nothing is ever filed
-                    // into a workspace, `workspace_of` falls back to `intake`, and
-                    // every session follows the operator into whichever workspace
-                    // they just created. A demo mode that diverges from the real
-                    // path is worse than no demo mode.
+                    // The same placement a live `Sessions` snapshot gets
+                    // inside `DaemonState::apply`. Without it the fixture has
+                    // a different state machine from the real thing: nothing
+                    // is ever filed into a workspace, `workspace_of` falls
+                    // back to `intake`, and every session follows the operator
+                    // into whichever workspace they just created. A demo mode
+                    // that diverges from the real path is worse than no demo
+                    // mode.
                     let infos: Vec<vitrum_proto::SessionInfo> = w
                         .daemon
                         .sessions
@@ -1112,8 +1340,9 @@ fn App() -> Element {
                 fill_agents.await;
             } else {
                 // The Advanced tab may point somewhere other than the command
-                // line. `resolved_daemon_url` falls back to `--server` when the
-                // setting is blank, so the flag still wins on a fresh profile.
+                // line. `resolved_daemon_url` falls back to `--server` when
+                // the setting is blank, so the flag still wins on a fresh
+                // profile.
                 let url = st
                     .peek()
                     .daemon
@@ -1122,12 +1351,11 @@ fn App() -> Element {
                     .to_string();
                 // First-run agent detection shares this await so a PATH walk
                 // cannot push the first connect later than it has to.
-                boot::mark("app.dial");
+                boot::mark("daemon.dialled");
                 tokio::join!(
                     start_daemon_then_connect(bridge, st, &url, opts),
                     fill_agents
                 );
-                boot::mark("app.dialled");
             }
 
             // Re-derive the automatic sidebar width against the window's real
@@ -1136,31 +1364,21 @@ fn App() -> Element {
             // This is not belt-and-braces, it is the only thing that gets the
             // number right on a first launch. The signal's initialiser runs
             // before the window is mapped and `inner_size` there still reports
-            // the toolkit's placeholder: measured on this 3840x2160 panel it
-            // comes back under 700 CSS pixels, 22% of which is below the 224px
-            // legibility floor, so the sidebar clamped to the floor and stayed
-            // there for the life of the window however large the screen was.
-            // Neither the `Resized` handler nor a single re-measure after the
-            // connect covers it: a window created at its final size is never
-            // resized, and the connect can complete without ever yielding to
-            // the event loop.
+            // the toolkit's placeholder: measured on a 3840x2160 panel it
+            // comes back under 700 CSS pixels, and a fraction of that is below
+            // the legibility floor, so the sidebar clamped to the floor and
+            // stayed there for the life of the window however large the screen
+            // was. Neither the `Resized` handler nor a single re-measure after
+            // the connect covers it: a window created at its final size is
+            // never resized, and the connect can complete without ever
+            // yielding to the event loop.
             //
             // Doing it per message is affordable because control-plane
-            // messages are rare by design — the daemon sends none at all while
-            // sessions merely stream output — and it is one `inner_size` call
+            // messages are rare by design: the daemon sends none at all while
+            // sessions merely stream output, and it is one `inner_size` call
             // guarded by an equality check, so it writes the signal only when
             // the answer actually moved. A width the operator has chosen is
             // never touched.
-            //
-            // It is also affordable on the eval channel's OTHER traffic, which
-            // is one message per keystroke. That was measured rather than
-            // assumed, because it reads like a defect: `tao` answers
-            // `inner_size` and `scale_factor` from its own cached geometry and
-            // never asks the display server, timed at 3 ns for the pair over
-            // 10,000 calls on a headless X server. Splitting the events into
-            // ones that can have moved the window and ones that cannot was
-            // written, measured and dropped: it removed three nanoseconds from
-            // a path whose next step is a WebSocket write.
             let mut resettle = move || {
                 if *sidebar_pinned.peek() {
                     return;
@@ -1176,37 +1394,12 @@ fn App() -> Element {
                 }
             };
             resettle();
-
-            let mut eval = bridge.eval;
-            loop {
-                match eval.recv::<BridgeEvent>().await {
-                    Ok(ev) => {
-                        resettle();
-                        on_bridge_event(
-                            ev,
-                            bridge,
-                            st,
-                            attached,
-                            opts,
-                            pending_terminate,
-                            pending_open,
-                            reconnect,
-                        );
-                        claim_link(bridge, st, attached, pending_link, opts);
-                        claim_launch(bridge, st, attached, pending_open, opts);
-                    }
-                    Err(e) => {
-                        tracing::error!("bridge channel closed: {e}");
-                        break;
-                    }
-                }
-            }
         }
     });
 
-    // After first paint, then every [`update::CHECK_INTERVAL`]. A GitHub round
-    // trip must not lengthen the path to a usable window, and a fixture has no
-    // network story to tell.
+    // After first paint, then every [`update::CHECK_INTERVAL`]. A round trip
+    // to a release host must not lengthen the path to a usable window, and a
+    // fixture has no network story to tell.
     use_future(move || {
         let mut update_offer = update_offer;
         async move {
@@ -1239,14 +1432,7 @@ fn App() -> Element {
                 };
                 if let Some(status) = got {
                     let ignored = st.peek().daemon.settings.ignored_update.clone();
-                    let next = update::chrome_offer(&status, &ignored);
-                    tracing::debug!(
-                        "quiet update check: status={status:?} offer={}",
-                        next.as_ref()
-                            .map(|a| a.version.to_string())
-                            .unwrap_or_else(|| "none".into())
-                    );
-                    update_offer.set(next);
+                    update_offer.set(update::chrome_offer(&status, &ignored));
                 }
                 if forced {
                     return;
@@ -1285,16 +1471,16 @@ fn App() -> Element {
     let flash = st.read().window.flash.clone();
     // A notice retires itself; an error does not.
     //
-    // `Flash` had no expiry of any kind, so every confirmation the product
-    // ever raised stayed on screen until the operator clicked Dismiss. On a
-    // running window "Started bash in tmp. Ctrl+Shift+X stops it." was still
-    // occupying a full-width band above the terminal twenty-nine minutes
-    // later. A transient confirmation that never leaves is not a
-    // confirmation, it is permanent chrome that happens to be worded like
-    // news, and it is the loudest thing on an otherwise quiet screen.
+    // A transient confirmation that never leaves is not a confirmation, it is
+    // permanent chrome that happens to be worded like news, and it is the
+    // loudest thing on an otherwise quiet screen. On a running window
+    // "Started an agent." was still occupying a full-width band above the pane
+    // twenty-nine minutes later.
     //
     // Errors stay. They report something the operator has to act on, and a
     // failure that erases itself before it is read is worse than a banner.
+    // So does a notice whose configured life is zero, which is how an operator
+    // who reads slowly asks for one they dismiss themselves.
     //
     // A memo, so the effect runs when the FLASH changes rather than on every
     // daemon message, and the one-shot is scoped to the exact notice it was
@@ -1306,8 +1492,11 @@ fn App() -> Element {
         if mine.kind != state::FlashKind::Notice {
             return;
         }
+        let Some(life) = st.peek().daemon.settings.notices.flash_life_ms() else {
+            return;
+        };
         spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(NOTICE_MS)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(life)).await;
             if st.peek().window.flash.as_ref() == Some(&mine) {
                 st.write().window.flash = None;
             }
@@ -1321,7 +1510,7 @@ fn App() -> Element {
     // handler would take it on every pointer sample.
     let viewport_css = css_viewport_width(&window, *scale.read());
 
-    // Two consumers (a sidebar row and a tab), so it cannot be a single
+    // Two consumers (a sidebar row and a menu), so it cannot be a single
     // `FnMut` closure that the first `EventHandler` moves out of.
     let menu_from_sidebar = {
         let window = window.clone();
@@ -1330,26 +1519,115 @@ fn App() -> Element {
 
     // Theme, density and text scale are token overrides on the shell root, so
     // every one of them cascades into the sidebar and the dialogs from a
-    // single element. Without these three attributes the
-    // appearance settings render controls that change nothing.
+    // single element. Without these two attributes the appearance settings
+    // render controls that change nothing.
     let settings = st.read().daemon.settings.clone();
-    let update_version = update_offer()
-        .as_ref()
-        .map(|a| a.version.to_string());
+    let update_version = update_offer().as_ref().map(|a| a.version.to_string());
+    // The pane is a native widget stacked over the document, so the shell
+    // reserves its box and tells the host where that box landed. Nothing in
+    // the document paints inside it.
+    let place_pane = {
+        let window = window.clone();
+        move |frame: ui::terminal::PaneFrame| {
+            // The frame was computed against the window size the last render
+            // saw. A resize between that render and this placement leaves it
+            // describing a window that no longer exists, and a surface hanging
+            // over the edge is composited without being visible: that is an
+            // approval prompt whose last option is behind the window edge. The
+            // size is re-read here because the shell is the only holder of the
+            // window handle. A frame that no longer fits is dropped rather
+            // than placed, because the resize that invalidated it also queues
+            // the render that recomputes it.
+            let size = window.inner_size();
+            if frame.right() > i64::from(size.width) || frame.bottom() > i64::from(size.height) {
+                return;
+            }
+            // Copied field by field rather than through a conversion, so
+            // neither the shell's rectangle nor the pane's has to know the
+            // other type exists. Both are device pixels with the client
+            // area's origin, so there is nothing to convert.
+            pane::place(
+                &window,
+                pane::PaneRect {
+                    x: frame.x,
+                    y: frame.y,
+                    width: frame.width,
+                    height: frame.height,
+                },
+            );
+        }
+    };
 
     rsx! {
         div {
-            // Density is carried entirely by `root_style`'s custom properties.
-            // A `rg-density--*` modifier used to ride along here "for
-            // structural rules a custom property cannot express", and no such
-            // rule was ever written, so it was two class values in shipped
-            // markup that painted nothing and told nobody anything. The
-            // shell's own root was also the one place in the product an
-            // emitted class was never checked against a stylesheet, which is
-            // why it survived; main.rs is now in that guard's scan.
             class: "rg-app",
             "data-theme": ui::settings::theme_attr(&settings),
             style: ui::settings::root_style(&settings),
+            // The shell's whole keyboard, on one element.
+            //
+            // One handler rather than one per surface, because a chord's
+            // scope is what decides where it fires and the scope lives in the
+            // table. Handlers spread over the sidebar, the strip and the
+            // dialogs is how a chord ends up live in one of them and dead in
+            // the other two.
+            //
+            // `tabindex` is what makes the element eligible to hold focus at
+            // all, and -1 keeps it out of the tab order: it catches what
+            // nothing else claimed, and never becomes a tab stop of its own.
+            tabindex: "-1",
+            onkeydown: move |e: Event<KeyboardData>| {
+                let mods = e.modifiers();
+                let pressed = keymap::chord_from_event(
+                    &e.key().to_string(),
+                    &e.code().to_string(),
+                    mods.ctrl(),
+                    mods.alt(),
+                    mods.shift(),
+                );
+                let Some(found) = keys::claim_live(
+                    &pressed,
+                    shell_focus(),
+                    st.peek().window.layer.is_open(),
+                ) else {
+                    return;
+                };
+                // Claimed chords do not also reach the surface underneath.
+                // Ctrl+Shift+N opening a session and typing an N into the
+                // rename field it was pressed over is one keystroke doing two
+                // things, and the second is never wanted.
+                e.prevent_default();
+                e.stop_propagation();
+                match found {
+                    keys::Claim::Action(action) => keys::on_key(
+                        action,
+                        bridge,
+                        st,
+                        attached,
+                        opts,
+                        pending_terminate,
+                        pending_open,
+                    ),
+                    keys::Claim::Custom(chord) => keys::dispatch_custom(
+                        &chord,
+                        bridge,
+                        st,
+                        attached,
+                        opts,
+                        pending_terminate,
+                        pending_open,
+                    ),
+                }
+            },
+            // The document root's font size, which is the one lever that
+            // scales the shell and the pane together: every geometry and type
+            // token in both stylesheets is a `rem`, and `ui::terminal`
+            // derives its pixel sizes from the same percentage. `root_style`
+            // above is on `.rg-app`, a descendant of `html`, so it cannot
+            // move what `rem` resolves against. Here it re-renders with the
+            // settings signal, so the size follows the control rather than
+            // freezing after the first paint. A `style` element paints
+            // nothing and reserves no space.
+            style { {ui::settings::root_font_rule(&settings)} }
             ui::titlebar::TitleBar {
                 state: st,
                 // Built here rather than inside the titlebar so that file
@@ -1416,7 +1694,7 @@ fn App() -> Element {
                         // Selection is a pure pointer gesture and must be
                         // instant. Only a plain click opens the session; a
                         // modifier click builds a set to act on and must not
-                        // drag the terminal along with it.
+                        // drag the pane along with it.
                         st.write().click_row(id, click, tick.model);
                         if click == state::Click::Plain {
                             st.write().open(id, tick.now_ms);
@@ -1480,9 +1758,9 @@ fn App() -> Element {
                         st.write().window.set_sidebar_width_in(w + dx, viewport_css);
                         remember_sidebar(seed.ordinal, st.peek().window.sidebar_width);
                         // Two files hold this number and only one of them is
-                        // authoritative. `windows.json` is the fallback for a
-                        // window nobody has expressed a preference about;
-                        // `ui.json` is the preference, and it is what the
+                        // authoritative. The geometry file is the fallback for
+                        // a window nobody has expressed a preference about;
+                        // the profile is the preference, and it is what the
                         // startup future reads back over the geometry. Writing
                         // only the first meant every keyboard resize was
                         // silently discarded on the next launch.
@@ -1551,6 +1829,11 @@ fn App() -> Element {
 
                     ui::terminal::TerminalPane {
                         state: st,
+                        on_frame: place_pane,
+                        server: opts.server.to_string(),
+                        home: home.clone(),
+                        window_px: window_px(),
+                        scale: os_scale(),
                         on_new_session: move |()| open_new_session(st, None),
                         on_close_tab: move |id: SessionId| {
                             st.write().close_tab(id);
@@ -1583,8 +1866,7 @@ fn App() -> Element {
             }
 
             // Exactly one transient layer, never a stack. Escape has one
-            // meaning, focus has one home, and the bridge's `layerOnly` scope
-            // is a single DOM query for `.rg-layer`.
+            // meaning and focus has one home.
             match layer {
                 Layer::None => rsx! {},
                 Layer::Shortcuts => rsx! {
@@ -1653,7 +1935,14 @@ fn App() -> Element {
                             bridge.connect(url);
                             attached.set(None);
                         },
-                        on_dismiss: move |()| dismiss(st),
+                        // The sheet is the one surface whose whole purpose is
+                        // changing settings, so its close is the moment the
+                        // coalescing timer is most likely still holding a
+                        // write. Everything else can wait for the timer.
+                        on_dismiss: move |()| {
+                            ui::settings::flush();
+                            dismiss(st)
+                        },
                         update_offer,
                     }
                 },
@@ -1728,7 +2017,7 @@ fn App() -> Element {
             }
 
             // Exists only while the sidebar edge is being dragged, so there is
-            // no permanent mousemove listener sending an IPC message on every
+            // no permanent mousemove listener sending a message on every
             // pointer motion over the window.
             if dragging {
                 div {

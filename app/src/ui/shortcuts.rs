@@ -2,7 +2,7 @@
 //!
 //! Rendered from [`crate::ui::settings::effective_help_rows`], which is
 //! `keymap::CHORDS` folded with the operator's rebindings. That fold, and not
-//! the raw table, is also what the bridge matches keydown events against, so
+//! the raw table, is also what key dispatch matches a key press against, so
 //! the overlay and the live keyboard cannot disagree.
 //!
 //! # Why this stopped reading `CHORDS` directly
@@ -108,6 +108,20 @@ pub fn Shortcuts(props: ShortcutsProps) -> Element {
                             }
                         }
                     }
+                    // The pane's own chords, in their own section, after every
+                    // shell binding. They are not in `rows` and must not be:
+                    // `rows` is folded from the table dispatch matches, and an
+                    // entry there would be claimed by the shell before the
+                    // pane ever saw the key.
+                    div { class: "rg-keys__group", key: "{crate::keymap::PANE_SECTION_TITLE}",
+                        div { class: "rg-keys__heading", "{crate::keymap::PANE_SECTION_TITLE}" }
+                        for row in crate::keymap::PANE_CHORDS {
+                            div { class: "rg-keys__row", key: "{row.keys}",
+                                span { class: "rg-keys__chord", kbd { "{row.keys}" } }
+                                span { class: "rg-keys__what", "{row.what}" }
+                            }
+                        }
+                    }
                 }
 
                 if rebound {
@@ -136,6 +150,39 @@ mod tests {
     #[test]
     fn an_untouched_install_shows_the_documented_defaults() {
         assert_eq!(defaults(), crate::keymap::help_rows());
+    }
+
+    /// **The invariant the Terminal section exists for.** A chord the pane
+    /// consumes must not be claimed by the shell.
+    ///
+    /// The pane receives Ctrl+Shift+C, V and G only because dispatch finds no
+    /// match for them and passes them on. Adding any of the three to `CHORDS`
+    /// would take them away silently: the shell would claim the key, the pane
+    /// would never see it, and the overlay would still be documenting a copy
+    /// shortcut that no longer copies. Nothing about a new entry in that table
+    /// announces which pane behaviour it just broke, so the absence is
+    /// asserted here rather than trusted.
+    ///
+    /// Rebinding is included on purpose. An operator is free to move a shell
+    /// action onto Ctrl+Shift+C, and doing so genuinely does take copy away;
+    /// that is their decision and the settings surface reports the conflict.
+    /// What this forbids is the SHIPPED table doing it, where nobody chose it.
+    #[test]
+    fn the_shell_claims_none_of_the_chords_the_pane_documents() {
+        let table = crate::ui::settings::live_chords(&KeyboardPrefs::default(), &[]);
+        for pane in crate::keymap::PANE_CHORDS {
+            let claimed = table.iter().find(|chord| {
+                chord.rendered() == pane.keys
+                    && crate::keys::allows(chord.scope, crate::keys::Focus::Terminal, false)
+            });
+            assert!(
+                claimed.is_none(),
+                "{} is documented as a terminal chord and the shell claims it \
+                 for {:?}, so the pane never receives it",
+                pane.keys,
+                claimed.map(|c| c.action)
+            );
+        }
     }
 
     /// **The invariant this file exists for.** A rebound action must be
@@ -172,11 +219,11 @@ mod tests {
     }
 
     /// The chord in the overlay must be a chord that is genuinely in the table
-    /// the bridge matches on, for every row, rebound or not. This is the
+    /// key dispatch matches on, for every row, rebound or not. This is the
     /// end-to-end statement; the test above is its single interesting case.
     ///
-    /// Compared against the effective chord LIST rather than against the JSON,
-    /// because the JSON stores raw DOM key names (`arrowdown`) while the
+    /// Compared against the effective chord LIST rather than against rendered
+    /// text, because the table stores raw key names (`arrowdown`) while the
     /// overlay prints display names (`Down`). Reverse-mapping the display name
     /// back to a key would be a third copy of that table and would have made
     /// this test assert something subtly weaker than it claims.
@@ -186,7 +233,7 @@ mod tests {
     /// "Ctrl+Tab / Ctrl+PageDown" is one row for two chords, and a rebinding
     /// that moved the action would have left both advertised and neither live.
     #[test]
-    fn every_documented_chord_appears_in_the_live_bridge_table() {
+    fn every_documented_chord_appears_in_the_table_dispatch_matches() {
         let mut prefs = KeyboardPrefs::default();
         set_override(
             &mut prefs,
@@ -198,7 +245,7 @@ mod tests {
                 shift: true,
             },
         );
-        let live = crate::ui::settings::effective_chords(&prefs);
+        let live = crate::ui::settings::live_chords(&prefs, &[]);
         for row in effective_help_rows(&prefs) {
             // The positional slots are one row for nine chords written as a
             // range. They are excluded from rebinding for exactly that reason,
@@ -223,8 +270,11 @@ mod tests {
                 .any(|row| row.keys == "Ctrl+Alt+Shift+9")
         );
         assert!(
-            crate::ui::settings::keymap_json(&live).contains(r#""key":"9""#),
-            "the rebound chord never reached the bridge table"
+            live.iter().any(|chord| chord.action == KeyAction::NewSession
+                && chord.key == "9"
+                && chord.ctrl
+                && chord.alt),
+            "the rebound chord never reached the table dispatch matches"
         );
     }
 

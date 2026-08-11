@@ -1,8 +1,9 @@
 # libghostty-vt-sys, forked
 
 A fork of [`libghostty-vt-sys`](https://crates.io/crates/libghostty-vt-sys)
-0.2.1 carrying one change: the target and CPU passed to zig are pinned, on
-every target, instead of being detected from the machine running the build.
+0.2.1 carrying one change, in `build.rs`: the target and CPU passed to zig are
+pinned, on every target, instead of being detected from the machine running the
+build.
 
 `UPSTREAM.toml` is the definition of the divergence.
 `sh tools/upstream/check.sh --fork vendor-ghostty-vt-sys` downloads the

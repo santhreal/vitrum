@@ -18,8 +18,8 @@ struct Globals {
     cell_px: vec2<f32>,
     // Underline rule: top offset from the cell's top edge, then thickness.
     underline: vec2<f32>,
-    // Padding so the block is 32 bytes.
-    reserved: vec2<f32>,
+    // Caret geometry: bar width, then rule thickness. Both in pixels.
+    cursor_px: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -29,6 +29,14 @@ struct Globals {
 const SPAN_MASK: u32 = 3u;
 // Bit 2 asks for an underline rule across the whole cell.
 const FLAG_UNDERLINE: u32 = 4u;
+// Bits 3-5 hold the caret shape, 0 meaning no caret on this cell. The codes
+// are `vitrum_grid::cell::CursorShape`.
+const CURSOR_SHIFT: u32 = 3u;
+const CURSOR_MASK: u32 = 7u;
+const CURSOR_BLOCK: u32 = 1u;
+const CURSOR_HOLLOW: u32 = 2u;
+const CURSOR_BAR: u32 = 3u;
+const CURSOR_UNDERLINE: u32 = 4u;
 
 struct VertexInput {
     @builtin(vertex_index) vertex_index: u32,
@@ -39,6 +47,7 @@ struct VertexInput {
     @location(4) fg: vec4<f32>,
     @location(5) bg: vec4<f32>,
     @location(6) flags: u32,
+    @location(7) cursor: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -50,6 +59,7 @@ struct VertexOutput {
     @location(4) @interpolate(flat) glyph_wh: vec2<u32>,
     @location(5) @interpolate(flat) glyph_off: vec2<i32>,
     @location(6) @interpolate(flat) flags: u32,
+    @location(7) @interpolate(flat) cursor: vec4<f32>,
 };
 
 @vertex
@@ -81,6 +91,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     out.glyph_wh = input.glyph_wh;
     out.glyph_off = input.glyph_off;
     out.flags = input.flags;
+    out.cursor = input.cursor;
     return out;
 }
 
@@ -105,5 +116,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return mix(input.bg, input.fg, coverage);
+    let shape = (input.flags >> CURSOR_SHIFT) & CURSOR_MASK;
+
+    // A block caret is the one shape that replaces the cell rather than being
+    // drawn over it: the caret colour becomes the field and the cell's own
+    // background knocks the glyph out of it, which is what keeps the character
+    // under the caret readable.
+    if shape == CURSOR_BLOCK {
+        return mix(input.cursor, input.bg, coverage);
+    }
+
+    let painted = mix(input.bg, input.fg, coverage);
+    if shape == 0u {
+        return painted;
+    }
+
+    // The remaining shapes are rules laid over the cell as it already is.
+    // `local_px` spans the whole instance quad, so on a wide character's head
+    // the rules run across both of its columns. That is what a terminal does
+    // with a caret parked on a CJK glyph: the caret marks the character, not
+    // half of it.
+    let p = input.local_px;
+    let thickness = globals.cursor_px.y;
+    if shape == CURSOR_BAR {
+        if p.x < globals.cursor_px.x {
+            return input.cursor;
+        }
+    } else if shape == CURSOR_UNDERLINE {
+        if p.y >= globals.cell_px.y - thickness {
+            return input.cursor;
+        }
+    } else if shape == CURSOR_HOLLOW {
+        let inside_x = p.x >= thickness && p.x < globals.cell_px.x - thickness;
+        let inside_y = p.y >= thickness && p.y < globals.cell_px.y - thickness;
+        if !(inside_x && inside_y) {
+            return input.cursor;
+        }
+    }
+
+    return painted;
 }

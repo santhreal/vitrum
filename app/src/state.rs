@@ -1365,7 +1365,7 @@ pub struct WindowState {
     /// shift-click ranges from.
     pub selection: Selection,
     pub sidebar_width: f64,
-    /// Terminal geometry as last measured by the fit addon.
+    /// Terminal geometry as the bridge last measured the pane's box.
     pub cols: u16,
     pub rows: u16,
     /// Sidebar filter query. Empty means no filtering.
@@ -1399,6 +1399,20 @@ pub struct WindowState {
     /// issued from `reconcile` and from the two explicit gestures below, and a
     /// second request supersedes the first rather than queueing behind it.
     pub history_intent: HistoryIntent,
+    /// The page-back window whose refusal has already been explained.
+    ///
+    /// A page-back that cannot be granted, because the daemon holds nothing
+    /// older or because the pane is already at its byte ceiling, is a refusal
+    /// the operator cannot act on. The gesture that raised it is not a click:
+    /// it is arrival at the top of the buffer, which happens again on every
+    /// reflow, so raising the notice per attempt raised it forever.
+    ///
+    /// Recording the exact window that was refused is what makes the second
+    /// attempt silent and keeps a Dismiss dismissed, while still letting the
+    /// notice speak again once the answer could differ: any new scrollback,
+    /// any other session, any other span is a different `HistoryWindow` and
+    /// no longer matches.
+    pub history_refused: Option<HistoryWindow>,
 }
 
 impl Default for WindowState {
@@ -1426,6 +1440,7 @@ impl Default for WindowState {
             layer: Layer::None,
             history: HistoryWindow::default(),
             history_intent: HistoryIntent::default(),
+            history_refused: None,
         }
     }
 }

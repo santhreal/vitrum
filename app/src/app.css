@@ -513,7 +513,15 @@ body {
 
 /* One strip, two kinds. A copy confirmation and a spawn failure are both
  * "something happened that you did not see on screen"; giving them separate
- * rows would make the window grow a line for good news. */
+ * rows would make the window grow a line for good news.
+ *
+ * In flow, above the terminal, not over it. The strip does take a line from
+ * the pane and give it back, and that reflow was once enough to put the
+ * viewport at the top of the buffer and re-fire the page-back gesture the
+ * strip was reporting on. Taking it out of flow would stop the reflow and
+ * hide a row the pane is actively drawing into, with nothing saying so. The
+ * loop is cut where it belongs, in sync.rs: a refusal is stated once per
+ * painted history window rather than once per arrival at the top. */
 .rg-flash {
   display: flex;
   align-items: center;

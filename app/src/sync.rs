@@ -90,14 +90,20 @@ pub(crate) fn reconcile(
 /// The daemon already holds the bytes, so nothing has to be retained on the
 /// hot path to make this exact.
 ///
-/// It is affordable because it is a deliberate gesture. The bridge sends this
-/// once per arrival at the top of the buffer, never per wheel tick, and
+/// It is affordable because a granted page-back costs one request per arrival
+/// at the top of the buffer, never one per wheel tick, and
 /// [`wire::PAGE_CEILING_BYTES`] stops the window growing without bound.
+///
+/// A REFUSED page-back is the case that has to be counted separately. An
+/// arrival at the top is not a click: a grid that is reset and repainted
+/// arrives at the top again on its own, so a refusal that speaks every time
+/// it is asked never stops speaking. [`plan_page_back`] holds that rule.
 pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: SessionId) {
-    let (history, scrollback_lines, focused) = {
+    let (history, refused, scrollback_lines, focused) = {
         let r = st.peek();
         (
             r.window.history,
+            r.window.history_refused,
             r.daemon.settings.terminal.scrollback_lines,
             r.window.focused,
         )
@@ -108,30 +114,98 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
     if focused != Some(session) || history.session != Some(session) {
         return;
     }
-    if !history.more {
-        st.write().window.flash = Some(Flash::notice(
-            "That is the whole history the daemon still holds for this session.",
-        ));
-        return;
+    match plan_page_back(history, refused, scrollback_lines) {
+        // Already said, about this same window. Saying it again is the loop.
+        PageBackPlan::Silent => {}
+        PageBackPlan::Refuse(text) => record_refusal(&mut st.write().window, text),
+        PageBackPlan::Ask(max_bytes) => {
+            st.write().window.history_intent = state::HistoryIntent::PageBack;
+            bridge.msg(&ClientMsg::Scrollback {
+                session,
+                before_seq: BEFORE_SEQ_HEAD,
+                max_bytes,
+            });
+            // Only now, and never before the request went out. Arming on the
+            // gesture instead would leave the pane buffering live output
+            // forever for a request the plan declined to send.
+            bridge.arm_page_back();
+        }
     }
-    let Some(max_bytes) = wire::page_back_max_bytes(history.span, scrollback_lines) else {
-        st.write().window.flash = Some(Flash::notice(
-            "This pane is holding as much history as it will. Search across \
-             sessions to find older output.",
-        ));
-        return;
-    };
-    st.write().window.history_intent = state::HistoryIntent::PageBack;
-    bridge.msg(&ClientMsg::Scrollback {
-        session,
-        before_seq: BEFORE_SEQ_HEAD,
-        max_bytes,
-    });
-    // Only now, and never before the request went out. Arming on the gesture
-    // instead would leave the pane buffering live output forever for a
-    // request the two guards above declined to send.
-    bridge.arm_page_back();
 }
+
+/// Raised when the daemon has nothing older than what is already painted.
+pub(crate) const NO_OLDER_HISTORY: &str =
+    "That is the whole history the daemon still holds for this session.";
+
+/// Raised when the pane itself is at the byte ceiling, whatever the daemon has.
+pub(crate) const PANE_AT_CEILING: &str =
+    "This pane is holding as much history as it will. Search across sessions \
+     to find older output.";
+
+/// What a page-back gesture should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageBackPlan {
+    /// Refuse, and say nothing: this exact refusal has already been explained.
+    Silent,
+    /// Refuse, and explain it once.
+    Refuse(&'static str),
+    /// Ask the daemon for a window of this many bytes.
+    Ask(u32),
+}
+
+/// Decide a page-back without touching signals, the bridge or the socket.
+///
+/// Split out because the gesture is not a click. It is arrival at the top of
+/// the buffer, which the pane reaches again every time its grid is reset and
+/// repainted, and the notice strip itself used to cause exactly that. A
+/// refusal that re-raises on every arrival is a strip that flickers on and off
+/// under the operator with no way to make it stop, which is what shipped.
+///
+/// `refused` is the window the last refusal was about. While the painted
+/// window is unchanged the answer cannot have changed either, so the refusal
+/// stays silent; any new scrollback, any other session and any other span
+/// makes it a different [`state::HistoryWindow`] and the notice is allowed to
+/// speak once more.
+#[must_use]
+pub(crate) fn plan_page_back(
+    history: state::HistoryWindow,
+    refused: Option<state::HistoryWindow>,
+    scrollback_lines: u32,
+) -> PageBackPlan {
+    let once = |text| {
+        if refused == Some(history) {
+            PageBackPlan::Silent
+        } else {
+            PageBackPlan::Refuse(text)
+        }
+    };
+    if !history.more {
+        return once(NO_OLDER_HISTORY);
+    }
+    match wire::page_back_max_bytes(history.span, scrollback_lines) {
+        Some(max_bytes) => PageBackPlan::Ask(max_bytes),
+        None => once(PANE_AT_CEILING),
+    }
+}
+
+/// Put a refusal on screen, and remember that it has been put there.
+///
+/// The two halves are one step because separating them is the defect: a
+/// notice raised without the record is raised again on the next arrival at
+/// the top of the buffer, and a record written without the notice refuses in
+/// silence the first time, which is a gesture that does nothing.
+///
+/// Dismissing clears the flash and deliberately leaves the record. The
+/// operator has read the answer and said so; re-raising it on the next reflow
+/// would make Dismiss a button that does not work.
+pub(crate) fn record_refusal(window: &mut state::WindowState, text: &'static str) {
+    window.flash = Some(Flash::notice(text));
+    window.history_refused = Some(window.history);
+}
+
+/// A refusal the operator cannot act on is stated once, not once per reflow.
+#[cfg(test)]
+mod a_refusal_speaks_once;
 
 /// Open the session a `vitrum://session/N` handoff named, once the daemon has
 /// confirmed it exists.

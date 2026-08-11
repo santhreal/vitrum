@@ -42,6 +42,9 @@ PORT=${PORT:-7791}
 # Session id to open in the window, from `sessions.tsv`. Empty leaves the pane
 # on the empty state, which is what a shot of the sidebar alone wants.
 OPEN=${OPEN:-}
+# Extra profile settings for the run, as the inside of a JSON object. Empty
+# stages the shipped defaults, which is what the README's pictures show.
+SETTINGS=${SETTINGS:-}
 
 # project root -> branch. A worktree of the first, so one row carries a branch
 # that is not the project's own.
@@ -116,10 +119,15 @@ up() {
   # the two facts the product remembers about the operator are written before
   # the client starts: the sheet has been read, and so have the notes for the
   # version that is about to run.
+  #
+  # SETTINGS is anything else the run wants remembered, as the inside of a
+  # JSON object: `SETTINGS='"terminal":{"palette":"nord"}'` photographs the
+  # shell with the operator's own colours, which is the preference the pane
+  # and the chrome both read.
   VERSION=$("$VITRUM_BIN/vitrum" --version 2>/dev/null | awk '{print $NF}')
   mkdir -p "$STAGE/cfg/vitrum"
   cat > "$STAGE/cfg/vitrum/ui.json" <<JSON
-{"version":1,"settings":{"onboarded":true,"seenVersion":"$VERSION"}}
+{"version":1,"settings":{"onboarded":true,"seenVersion":"$VERSION"${SETTINGS:+,$SETTINGS}}}
 JSON
 
   export XDG_CONFIG_HOME=$STAGE/cfg XDG_STATE_HOME=$STAGE/state \
@@ -366,10 +374,21 @@ shots() {
   # visible at all. The claim comes out of the app's own log rather than out
   # of the picture: reading it off the status bar would need OCR, and a
   # measurement that agrees with itself proves nothing.
-  claimed=$(sed -n 's/.*pane resized to \([0-9]*x[0-9]*\).*/\1/p' "$STAGE/log/app.log" | tail -1)
-  [ -n "$claimed" ] || die "the app never logged a pane resize; is VITRUM_LOG=debug set?"
-  python3 "$HERE/measure.py" "$hero" "$claimed" \
-    || die "the pane's geometry is wrong in $hero"
+  # Returned, not `die`d: `all` takes the stack down after `shots` returns,
+  # and a process that exits here leaves an Xvfb, a daemon and a window
+  # holding the binary the next run wants to replace.
+  line=$(grep -o 'pane resized to [0-9]*x[0-9]* in [0-9]*x[0-9]*+[0-9-]*+[0-9-]*' \
+    "$STAGE/log/app.log" | tail -1)
+  if [ -z "$line" ]; then
+    echo "rig.sh: the app logged no pane resize; is VITRUM_LOG=debug set?" >&2
+    return 1
+  fi
+  claimed=${line#pane resized to }; claimed=${claimed%% *}
+  rect=${line##* }
+  if ! python3 "$HERE/measure.py" "$hero" "$claimed" "$rect"; then
+    echo "rig.sh: the pane's geometry is wrong in $hero" >&2
+    return 1
+  fi
 
   # 2. The launcher, over that same sidebar.
   chord ctrl+shift+n

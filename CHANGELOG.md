@@ -5,6 +5,8 @@ Before 1.0, a minor bump may break compatibility.
 
 ## Unreleased
 
+## v0.3.2 - 2026-08-11
+
 ### Changed
 
 - **A release carries Linux.** The terminal pane presents to an X11 window, so

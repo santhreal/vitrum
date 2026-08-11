@@ -20,10 +20,9 @@
 # words. So each case here stubs `OBJDUMP` and asserts the exit status and the
 # sentence, which is the whole contract the release workflow depends on.
 #
-# The case that matters most is `arm sve with a control instruction`. The fix
-# for the false positive was to require corroboration, and the way that fix
-# goes wrong is by swallowing real SVE too. That case carries the exact
-# instruction from the failure above and MUST still fail.
+# The case that matters most is `sme tile with a mnemonic`. The fix for the
+# false positive was to require corroboration, and the way that fix goes wrong
+# is by swallowing real SME too. That case MUST still fail.
 
 set -eu
 
@@ -84,24 +83,38 @@ run 'mach-o arm64 is disassembled' 0 '1 binaries clean' \
 '100000000: 	add	x0, x1, x2
 100000004: 	fmla	v0.4s, v1.4s, v2.4s'
 
-# The exact arm64 mac failure: one SVE-shaped operand, nothing establishing a
-# vector length. Not code.
-run 'lone sve operand is decoded data' 0 'decoded data, not code' \
+# The exact arm64 mac failure. SVE is dispatched from HWCAP by highway at every
+# pinned CPU, so it says nothing about the pin and the floor concedes it.
+run 'dispatched sve passes' 0 '1 binaries clean' \
     'mach-o arm64' \
-'100564700: 	fnmls	z7.h, p3/m, z27.h, z13.h
+'100564700: 	ptrue	p0.b, vl16
+100564704: 	fnmls	z7.h, p3/m, z27.h, z13.h'
+
+# A tile operand with no instruction that names one. Nothing can address ZA
+# without an SME mnemonic, so those four bytes were a literal pool.
+run 'lone tile operand is decoded data' 0 'decoded data, not code' \
+    'mach-o arm64' \
+'100564700: 	mov	za0.s[w12, 0], p0/m, z1.s
 100564704: 	add	x0, x1, x2'
 
-# THE ONE THAT MUST NOT REGRESS. Same instruction, now with a control
-# instruction establishing a predicate. That is a compiler emitting SVE.
-run 'sve with a control instruction fails' 1 'above the armv8.2-a floor' \
+# THE ONE THAT MUST NOT REGRESS. Same operand, now with a mnemonic that only
+# an SME compiler emits.
+run 'sme tile with a mnemonic fails' 1 'above the armv8.2-a with dispatched SVE floor' \
     'mach-o arm64' \
-'100000000: 	ptrue	p0.b, vl16
-100000004: 	fnmls	z7.h, p3/m, z27.h, z13.h'
+'100000000: 	smstart	za
+100000004: 	mov	za0.s[w12, 0], p0/m, z1.s'
 
-# SME streaming mode is self-evidencing too, with no z or p operand anywhere.
-run 'sme streaming mode fails' 1 'above the armv8.2-a floor' \
+# SME streaming mode is self-evidencing on its own, with no tile operand.
+run 'sme streaming mode fails' 1 'above the armv8.2-a with dispatched SVE floor' \
     'mach-o arm64' \
 '100000000: 	smstart	sm
+100000004: 	add	x0, x1, x2'
+
+# i8mm and bf16 are armv8.6 and never need streaming mode, so the mnemonic is
+# the whole evidence. A pin that stopped reaching a compiler shows up here.
+run 'bf16 mnemonic fails' 1 'above the armv8.2-a with dispatched SVE floor' \
+    'mach-o arm64' \
+'100000000: 	bfdot	v0.2s, v1.4h, v2.4h
 100000004: 	add	x0, x1, x2'
 
 # Corroboration is aarch64-only. AVX-512 has no equivalent of a vector length

@@ -21,18 +21,29 @@
 #
 # WHERE THE FLOOR IS, AND WHY IT IS NOT BASELINE
 #
-# The floor is AVX2 on x86-64 and armv8.2-a on aarch64, not the architecture
-# baseline, and the reason is measurable rather than a preference. Ghostty
-# vendors highway and simdutf; Rust pulls in memchr and its relatives. All of
-# them compile several kernels and pick one at run time from CPUID. Their
-# AVX2 code is present in every build and is never executed on a machine that
-# cannot run it.
+# The floor is AVX2 on x86-64, and armv8.2-a plus dispatched SVE on aarch64,
+# not the architecture baseline, and the reason is measurable rather than a
+# preference. Ghostty vendors highway and simdutf; Rust pulls in memchr and
+# its relatives. All of them compile several kernels and pick one at run time
+# from CPUID or HWCAP. That code is present in every build and is never
+# executed on a machine that cannot run it.
 #
-# The two builds prove the distinction. Pinned to `baseline` and unpinned, the
-# static library carries the same 3662 AVX2 instructions and differs only in
-# AVX-512: 0 against 5581. So AVX2 in these artifacts is dispatched. A gate set
-# at the true baseline would fire on every build ever made here, and a gate
-# that always fires is a gate somebody deletes.
+# The two x86 builds prove the distinction. Pinned to `baseline` and unpinned,
+# the static library carries the same 3662 AVX2 instructions and differs only
+# in AVX-512: 0 against 5581. So AVX2 in these artifacts is dispatched. A gate
+# set at the true baseline would fire on every build ever made here, and a
+# gate that always fires is a gate somebody deletes.
+#
+# aarch64 is the same finding one extension along. Highway compiles its SVE,
+# SVE2 and SVE_256 kernels whatever the CPU is pinned to, so a `-Dcpu=baseline`
+# cross build of libghostty-vt for aarch64 carries 68 SVE control instructions
+# and every one of them is inside a highway per-target namespace:
+# `ghostty::N_SVE::IndexOf`, `ghostty::N_SVE2::DecodeUTF8UntilControlSeqImpl`,
+# `ghostty::N_SVE_256::IndexOf`. SVE on this target is therefore dispatched in
+# exactly the sense AVX2 is, and a gate that fails on it fails every arm
+# release. What stays above the floor is what highway does not ship at
+# baseline: SME and its streaming mode, i8mm and bf16, and the armv8.8 memory
+# operations.
 #
 # WHAT THIS CONCEDES
 #
@@ -89,30 +100,34 @@ fi
 # The named ones are AVX-512-era instructions that can appear without a mask
 # or a 512-bit operand, and the scalar extensions that arrived alongside them.
 X86_ABOVE_FLOOR='%zmm|%k[0-7]|%tmm|	(vpternlog|vpconflict|vplzcnt|vpcompress|vpexpand|vscatter|vrange|vreduce|vfixupimm|vgetmant|vgetexp|vrcp14|vrsqrt14|vpmultishift|vpopcnt|vpshld|vpshrd|vpdpbusd|vpdpwssd|vcvtne2ps|vdpbf16ps|v4fmadd|v4fnmadd|vp4dpwssd|kmov|kand|kor|kxor|knot|kadd|kshift|kunpck|ktest|kortest)|	(sha512|sm3|sm4|aesenc256|aesdec256)|	(tile|tdp|tld|tst)[a-z]+|	(cldemote|serialize|senduipi|hreset|xsavec|xsaves)'
-# Above armv8.2-a on aarch64. The Apple cores in the mac runners are 8.4 and
-# newer, so the risk is the same one x86 has: a build reading the core it is
-# on and emitting SVE, SME or the matrix extensions.
+# Above armv8.2-a plus dispatched SVE on aarch64. The Apple cores in the mac
+# runners are 8.4 and newer, so the risk is the one x86 has: a build reading
+# the core it is on and emitting an extension the triple does not promise.
 #
-#   z0-z31 / p0-p15   SVE and SVE2 vector and predicate registers.
-#   ptrue, whilelo    SVE control instructions.
-#   smstart, rdsvl    SME streaming mode.
+#   smstart, rdsvl    SME and its streaming mode.
+#   za, zt0           SME tile and lookup-table registers.
 #   smmla, bfdot      i8mm and bf16, armv8.6.
+#   cpyf, setp        the armv8.8 memory operations.
+#
+# SVE is not here. Highway compiles its SVE kernels at every pinned CPU and
+# dispatches them from HWCAP, so their presence says nothing about the pin,
+# and a gate that fails on them fails every arm release. See the header.
 #
 # Split in two, because a disassembler decodes every four bytes of __text and
 # a literal pool is not code. A single `fnmls z7.h, p3/m, z27.h, z13.h` failed
 # the arm64 mac leg on a target whose CPUs have no SVE at all, so nothing could
-# have emitted it: those four bytes were data.
+# have emitted it: those four bytes were data. A misdecode lands on operand
+# shapes far more readily than on one of these mnemonics, so the mnemonics
+# count on their own and the operand shapes count only when a mnemonic
+# corroborates them.
 #
-# ARM_SVE_CONTROL is self-evidencing. A vector length is not known until run
-# time, so generated SVE has to establish one, and these are the only
-# instructions that do it. One of them means a compiler really did emit SVE.
-#
-# ARM_ABOVE_FLOOR is register operands and shared mnemonics, which is what
-# misdecoded data lands on. Those count only when a control instruction
-# corroborates them, the same shape as the x86 rule that above-floor code with
-# no CPUID anywhere has nothing dispatching it.
-ARM_SVE_CONTROL='	(ptrue|whilel[eot]|whileg[et]|rdvl|addvl|addpl|setffr|rdffr|smstart|smstop|rdsvl|addsvl|addspl)'
-ARM_ABOVE_FLOOR='[	,]z[0-9]+\.|[	,]p[0-9]+[/.]|	(smmla|usmmla|ummla|bfdot|bfmmla|bfcvt|bfmlal)|	(ld64b|st64b|cpyf|setp|mops)'
+# ARM_SELF_EVIDENT is the mnemonic half: entering streaming mode, reading a
+# streaming vector length, a matrix multiply, a bf16 conversion, a memory
+# operation. One of them means a compiler really did emit above the floor.
+ARM_SELF_EVIDENT='	(smstart|smstop|rdsvl|addsvl|addspl|smmla|usmmla|ummla|bfdot|bfmmla|bfcvt|bfmlal|ld64b|st64b|cpyf[a-z]*|setp[a-z]*)'
+# The operand half: SME tile and lookup-table registers, which name no
+# instruction of their own.
+ARM_ABOVE_FLOOR='[	,]za[0-9]*[.[]|[	,]zt0'
 
 status=0
 checked=0
@@ -146,8 +161,8 @@ for file in $files; do
 
     case "$fmt" in
         *x86-64*|*x86_64*)  pattern=$X86_ABOVE_FLOOR; floor='AVX2'; corroborate= ;;
-        *arm64*|*aarch64*)  pattern=$ARM_ABOVE_FLOOR; floor='armv8.2-a'
-                            corroborate=$ARM_SVE_CONTROL ;;
+        *arm64*|*aarch64*)  pattern=$ARM_ABOVE_FLOOR; floor='armv8.2-a with dispatched SVE'
+                            corroborate=$ARM_SELF_EVIDENT ;;
         *) die "unknown object format '$fmt' in $file; extend the floor table" ;;
     esac
 
@@ -163,15 +178,15 @@ for file in $files; do
     if [ -n "$corroborate" ]; then
         control=$(printf '%s\n' "$text" | grep -E -c "$corroborate" || true)
         if [ "$control" -eq 0 ] && [ "$hits" -gt 0 ]; then
-            # Operands with nothing establishing a vector length. Real SVE
-            # cannot run in this state, so these bytes were decoded, not
-            # emitted. Say so rather than passing in silence.
-            printf '  ok  %s: %s, %s SVE-shaped operands with no control instruction; decoded data, not code\n' \
+            # A tile operand with no instruction that names one. Nothing can
+            # address ZA without an SME mnemonic somewhere, so these bytes
+            # were decoded, not emitted. Say so rather than passing in silence.
+            printf '  ok  %s: %s, %s SME-shaped operands with no control instruction; decoded data, not code\n' \
                 "$(basename "$file")" "$fmt" "$hits"
             continue
         fi
         # A control instruction is above the floor too. Recount over the union
-        # rather than adding, because `ptrue p0.b` matches both patterns.
+        # rather than adding, because a mnemonic line can carry a tile operand.
         if [ "$control" -gt 0 ]; then
             pattern="$pattern|$corroborate"
             hits=$(printf '%s\n' "$text" | grep -E -c "$pattern" || true)

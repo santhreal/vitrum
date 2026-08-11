@@ -62,6 +62,26 @@
   background-image: none;
 }
 
+/* A button's box is the sheet's, not the theme's.
+ *
+ * The stock theme adds vertical padding and a 1px border to every button, on
+ * top of whatever `min-height` a rule here states. A control declared 32px
+ * tall is drawn 46px tall, which is why the sidebar's footer overflowed the
+ * bottom of the window and lost the bottom edge of its own controls, and why
+ * a glyph button that was never meant to have an outline wears one.
+ *
+ * Horizontal padding is left alone: the buttons that carry text and do not
+ * state their own inset get their breathing room from it, and a zero there
+ * would put a label against its edge. Vertical space is `min-height` and
+ * nothing else, so the height a rule declares is the height that is drawn.
+ */
+.rg-root button,
+.rg-root combobox button {
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+}
+
 /* ── Titlebar ────────────────────────────────────────────────────────────── */
 
 /* A reserved strip. The height is stated once and no state changes it, so the
@@ -265,6 +285,7 @@
 }
 
 .rg-sidebar__floor-hint {
+  margin-left: $space-2$;
   font-size: $text-11$;
   color: $fg-faint$;
 }
@@ -426,6 +447,28 @@
 
 .rg-session__slot {
   min-width: $slot-min$;
+}
+
+/* Every fact on a line after the first stands off the one before it.
+ *
+ * A GTK box has a spacing property and a stylesheet cannot set it, so the gap
+ * between two labels is a margin on the second one. Without it the row reads
+ * `crates/vitrum-coremain` and `6waiting`, which is not a tight layout, it is
+ * two values printed as one word.
+ *
+ * The gap is on the follower rather than split across both, so the line still
+ * starts flush with the mark above it and the last element still ends flush
+ * with the row's right inset. It does not stand down when the fact before it
+ * is empty: those elements hold their box precisely so the row does not move
+ * when git or the daemon answers, and a gap that appeared with the ink would
+ * put the reflow back. */
+.rg-session__line--tail .rg-session__worktree,
+.rg-session__line--tail .rg-session__branch,
+.rg-session__line--tail .rg-session__slot,
+.rg-session__line .rg-badge,
+.rg-attn-count__word,
+.rg-pill__aux {
+  margin-left: $space-2$;
 }
 
 /* Four late facts. Each is present and empty from the first frame, so the row
@@ -1404,7 +1447,11 @@
   border: none;
 }
 
+/* `in` and `run`, each to the left of the entry it names. The entry brings a
+ * focus ring the sheet does not draw, and with no gap the ring lands on the
+ * label's last letter. */
 .rg-launch__label {
+  margin-right: $space-2$;
   font-size: $text-11$;
   font-weight: $weight-medium$;
   color: $fg-faint$;
@@ -1463,7 +1510,10 @@
   color: $fg-subtle$;
 }
 
+/* Follows the branch on the same line, so it needs the gap that a GTK box's
+ * spacing would otherwise give it. Without one the row reads `mainvitrum`. */
 .rg-launch__place {
+  margin-left: $space-2$;
   font-family: $font-mono$;
   font-size: $text-11$;
   color: $fg-faint$;

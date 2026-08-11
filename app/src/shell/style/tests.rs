@@ -520,27 +520,44 @@ fn a_late_fact_keeps_its_box_while_it_is_empty() {
     for look in every_look() {
         let css = strip_comments(&stylesheet(&look));
         for (class, token) in RESERVED_SLOTS {
-            let filled = blocks(&css, class);
-            assert!(!filled.is_empty(), ".{class} has no rule");
-            let empty_class = format!("{class}--empty");
-            let empty = blocks(&css, &empty_class);
-            assert!(
-                !empty.is_empty(),
-                ".{class} has no empty state, so the element is absent until \
-                 the fact resolves and the row reflows when it does"
-            );
             let expected = tokens(&look)
                 .into_iter()
                 .find(|(n, _)| n == token)
                 .map(|(_, v)| v)
                 .unwrap_or_else(|| panic!("{token} is not a token"));
-            for (which, block) in [("filled", filled[0]), ("empty", empty[0])] {
-                assert_eq!(
-                    value(block, "min-height"),
-                    Some(expected.as_str()),
-                    ".{class} in its {which} state does not reserve {expected}"
+            let empty_class = format!("{class}--empty");
+            // Read every rule that names the class and take the height from
+            // the ones that state it, rather than from whichever rule happens
+            // to come first: a class can also appear in a rule that sets
+            // something else entirely, such as the gap between two facts on a
+            // line, and reading that one reports a missing box that is
+            // declared three rules further down. Every rule that does state a
+            // height must state the same one, so a second rule cannot
+            // contradict the first depending on which the toolkit applies
+            // last.
+            for (which, name) in [("filled", *class), ("empty", empty_class.as_str())] {
+                let all = blocks(&css, name);
+                assert!(
+                    !all.is_empty(),
+                    ".{name} has no rule, so the element is absent until the \
+                     fact resolves and the row reflows when it does"
                 );
+                let stated: Vec<&str> = all.iter().filter_map(|b| value(b, "min-height")).collect();
+                assert!(
+                    !stated.is_empty(),
+                    ".{name} states no height in any of its {} rules, so the \
+                     {which} state does not reserve {expected}",
+                    all.len()
+                );
+                for height in stated {
+                    assert_eq!(
+                        height, expected,
+                        ".{class} in its {which} state reserves {height}, not \
+                         {expected}"
+                    );
+                }
             }
+            let empty = blocks(&css, &empty_class);
             // The empty state may only take the ink away. Anything else it
             // changed would be a box that differs from the filled one.
             let allowed = ["min-height", "color"];

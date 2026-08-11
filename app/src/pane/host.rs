@@ -505,6 +505,14 @@ impl PaneHost {
         let mut inner = self.inner.borrow_mut();
         match attached {
             Ok(surface) => {
+                // The first frame is painted inside `attach`, so the tick
+                // below never sees it and the boot timeline would say the
+                // pane never appeared. The mark belongs where the pixels
+                // reached the screen.
+                if surface.has_presented() && !inner.first_paint {
+                    inner.first_paint = true;
+                    crate::boot::mark("pane.first-paint");
+                }
                 let cell = surface.cell_size();
                 let (cols, rows) = surface.cells_for(surface.size().0, surface.size().1);
                 if let Err(e) = inner.session.resize(cols, rows, cell) {

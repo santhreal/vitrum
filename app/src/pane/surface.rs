@@ -203,6 +203,12 @@ pub(crate) struct PaneSurface {
     /// Pixel size of the drawable, which is not derivable from the grid: the
     /// last partial column and row are padding the renderer still has to clear.
     size: (u32, u32),
+    /// Whether a frame has ever reached the screen from this surface.
+    ///
+    /// The first one is painted in [`PaneSurface::attach`] rather than on the
+    /// first tick, so the host cannot learn when the pane first appeared by
+    /// watching its own frame clock. This is what it reads instead.
+    presented: bool,
 }
 
 impl PaneSurface {
@@ -375,6 +381,7 @@ impl PaneSurface {
             renderer,
             offered,
             size,
+            presented: false,
         };
 
         let (cols, rows) = this.cells_for(size.0, size.1);
@@ -525,6 +532,11 @@ impl PaneSurface {
                     .with_context(|| format!("after reconfiguring the pane's swapchain: {first}"))
             }
         }
+    }
+
+    /// Whether this surface has put a frame on the screen.
+    pub(crate) const fn has_presented(&self) -> bool {
+        self.presented
     }
 
     /// Draw the grid into host memory instead of onto the screen.
@@ -683,6 +695,7 @@ impl PaneSurface {
         // frame is scanned out. The present is ordered behind the submit, so
         // the compositor never reads an image the queue is still writing.
         frame.present();
+        self.presented = true;
         Ok(true)
     }
 }

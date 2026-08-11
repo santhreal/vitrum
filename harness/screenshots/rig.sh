@@ -385,7 +385,7 @@ shots() {
   fi
   claimed=${line#pane resized to }; claimed=${claimed%% *}
   rect=${line##* }
-  if ! python3 "$HERE/measure.py" "$hero" "$claimed" "$rect"; then
+  if ! python3 "$HERE/geometry.py" "$hero" "$claimed" "$rect"; then
     echo "rig.sh: the pane's geometry is wrong in $hero" >&2
     return 1
   fi

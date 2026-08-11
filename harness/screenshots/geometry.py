@@ -9,7 +9,7 @@ the window is sized. The unit tests read the arithmetic; this reads the
 pixels, which is where the defect was reported: content anchored to the top
 with a dead band under it that the child never draws in.
 
-usage: measure.py <png> <cols>x<rows> <w>x<h>+<x>+<y>
+usage: geometry.py <png> <cols>x<rows> <w>x<h>+<x>+<y>
 
 Both numbers come out of the app's own log line, which prints the grid it
 handed the child and the rectangle it handed the swapchain. The rectangle is

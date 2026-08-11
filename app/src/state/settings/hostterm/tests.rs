@@ -344,16 +344,16 @@ fn the_config_directory_is_read_from_the_environment() {
     ]
     .into_iter()
     .collect();
-    let paths: Vec<String> = candidates(&env)
-        .into_iter()
-        .map(|c| c.path.display().to_string())
-        .collect();
+    let paths: Vec<PathBuf> = candidates(&env).into_iter().map(|c| c.path).collect();
+    // By component, not by prefix string: a separator is `\` on one of the
+    // platforms this suite runs on, and `starts_with` over the rendered text
+    // would be asserting the separator rather than the directory.
     assert!(
-        paths.iter().any(|p| p.starts_with("/src/cfg/")),
+        paths.iter().any(|p| p.starts_with("/src/cfg")),
         "{paths:?}"
     );
     assert!(
-        !paths.iter().any(|p| p.starts_with("/home/mk/.config/")),
+        !paths.iter().any(|p| p.starts_with("/home/mk/.config")),
         "{paths:?}"
     );
 }

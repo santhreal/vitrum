@@ -33,24 +33,35 @@ async fn input_reaches_the_child_and_its_reply_returns() {
 /// sequences with the echoed input, so the assertion is on the child's reply
 /// appearing exactly once rather than on the whole stream.
 ///
-/// Delayed expansion is on for the child itself. `cmd` expands `%L%` when it
-/// parses the whole `&&` line, which is before `set /p` has assigned it, so the
-/// reply has to be written `!L!` and `/V:ON` has to be in force. It used to get
-/// that from a nested `cmd /V:ON /C`, and that second process is what the test
-/// kept dying on: three hosted runs stopped with 78 or 85 bytes collected —
-/// the prompt, then on two of them the echo of the typed line — and nothing
-/// after it, while the raw pseudoconsole probe at the bottom of this file
-/// passed in the same run. Delivery was never the fault; the reply of a second
-/// `cmd` was. The outer shell carries `/V:ON` now, so there is one process, and
-/// what the test measures is the round trip rather than whether a two-core
-/// runner got around to scheduling a grandchild.
+/// The child is PowerShell rather than `cmd`, and that is the whole history of
+/// this test. `cmd` expands `%L%` when it parses the `&&` line, which is
+/// before `set /p` has assigned it, so the reply needs delayed expansion, and
+/// every way of getting it was a way of failing: a nested `cmd /V:ON /C` made
+/// the reply depend on a second process being scheduled on a two-core runner,
+/// and `/V:ON` on the outer shell left a run where the child read the line and
+/// exited without ever writing a reply. Five hosted failures, none of them
+/// about the product: `Write-Host`, `ReadLine`, `Write-Host` says exactly what
+/// the unix case says, in one process, with no expansion rules in it.
+///
+/// It also cannot exit early. `ReadLine` blocks until a line arrives, so the
+/// prompt is followed by a reader rather than by a race, and a session that
+/// has gone before the line is typed is a real failure rather than the
+/// fixture's.
 #[cfg(windows)]
 #[tokio::test]
 async fn input_reaches_the_child_and_its_reply_returns() {
     let mgr = SessionManager::new(64 * 1024);
-    let mut spec = shell_spec("set /p L=ask: && echo got=!L!");
-    // Ahead of `/C`, which takes the rest of the line as the command.
-    spec.args.insert(0, "/V:ON".to_string());
+    // Only for the surrounding fields: a temp cwd, a project id, a size. The
+    // command and its arguments are replaced outright.
+    let mut spec = shell_spec("");
+    spec.command = "powershell.exe".to_string();
+    spec.args = vec![
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        "Write-Host -NoNewline 'ask:'; $l = [Console]::In.ReadLine(); Write-Host \"got=$l\""
+            .to_string(),
+    ];
     let id = mgr.spawn(spec).expect("spawn");
     let mut c = collect(&mgr, id);
     // The prompt is what makes the ordering observable. Writing straight after
@@ -61,36 +72,38 @@ async fn input_reaches_the_child_and_its_reply_returns() {
     // The line is typed again if nothing comes back. A pseudoconsole shows the
     // prompt when the child WROTE it, which is not when the child began
     // reading, and on an arm64 runner the gap between those is wide enough to
-    // swallow a line: the failing run collected the prompt and then nothing at
-    // all for ninety seconds, with not even the console's echo of the typed
-    // text, so the bytes went into a console that was not yet listening.
+    // swallow a line: that run collected the prompt and then nothing at all
+    // for ninety seconds, with not even the console's echo of the typed text.
     //
     // Retyping is safe against the claim below because the child reads one
-    // line and then exits: a second line is never consumed, so `got=hello`
+    // line and then leaves: a second line is never consumed, so `got=hello`
     // cannot appear twice however many times it is sent. What this no longer
     // proves on Windows is that one write produces exactly one delivery; the
     // unix case above still does, byte for byte.
+    let answered = |b: &[u8]| b.windows(9).any(|w| w == b"got=hello");
     let mut typed = 0u32;
-    loop {
-        mgr.write(id, b"hello\r\n").expect("write");
-        typed += 1;
-        let answered = tokio::time::timeout(
-            Duration::from_secs(5),
-            c.until(|b| b.windows(9).any(|w| w == b"got=hello")),
-        )
-        .await
-        .is_ok();
-        if answered {
-            break;
-        }
+    while !answered(&c.bytes) {
         assert!(
             typed < 6,
             "the child never answered after {typed} typed lines: {:?}",
             String::from_utf8_lossy(&c.bytes)
         );
+        // An exited session refuses input. Once the reply has been read that
+        // is the child having finished, not a delivery failure, so the loop
+        // ends on the collected bytes rather than on the write.
+        if mgr.write(id, b"hello\r\n").is_err() {
+            break;
+        }
+        typed += 1;
+        let _ = tokio::time::timeout(Duration::from_secs(10), c.until(answered)).await;
     }
     let hits = c.bytes.windows(9).filter(|w| *w == b"got=hello").count();
-    assert_eq!(hits, 1, "the child must answer exactly once");
+    assert_eq!(
+        hits,
+        1,
+        "the child must answer exactly once; collected: {:?}",
+        String::from_utf8_lossy(&c.bytes)
+    );
 }
 
 /// Writes must reach the child in the order they were made.

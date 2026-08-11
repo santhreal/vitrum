@@ -7,6 +7,52 @@ Before 1.0, a minor bump may break compatibility.
 
 ### Fixed
 
+- **A sidebar row says where its agent is working when nothing else on it
+  does.** A row at its project's own directory drew no directory, on the
+  grounds that the project header above it already said so. The header carries
+  a project name, not a path, so that silence was only readable while the
+  branch beside it was speaking. An agent started outside a repository hit
+  both blanks at once: the client mints a project for the launch directory, so
+  the row sits at its root, and a directory that is not a checkout has no
+  branch, so the row's whole context line went out empty. It now draws its
+  directory, shortened against the home directory, in exactly that case. Rows
+  at a project root inside a repository are unchanged.
+- **A Codex row holds "Needs approval" for the whole approval prompt.** Codex
+  blinks the marker in its terminal title while a gate is up, alternating
+  `[ ! ] Action Required` and `[ . ] Action Required` about twice a second.
+  The title rule matched only the first of those, so every second title write
+  read as no declaration at all and the row fell back to the observed state,
+  `Ready`. The status alternated between the two for as long as the prompt
+  went unanswered, and `Ready` is the one answer the sidebar must never give
+  while an agent is waiting on an answer. The rule now reads the shape of the
+  banner rather than one frame of its animation, so any marker Codex draws
+  carries the same claim, and the claim still ends the moment Codex retitles.
+- **A page-back the daemon cannot grant is refused once.** "That is the whole
+  history the daemon still holds for this session." was raised every time the
+  pane arrived at the top of its buffer, and arriving at the top is not a
+  click: the strip took a line from the terminal, which refit the grid,
+  repainted it and put the viewport back at the top, so the notice caused the
+  gesture that raised it. The strip appeared, retired a few seconds later and
+  appeared again, with the grid reflowing each way, and Dismiss was undone
+  before it could be read. The refusal now records the painted history window
+  it was about and stays silent until that window changes, which any new
+  scrollback or any other session does. The pane ceiling refusal is counted
+  on the same terms.
+- **A full-screen agent reaches the bottom of the pane, not two rows past
+  it.** The grid was measured by xterm's fit addon, which reads
+  `getComputedStyle(container).height`. Under `box-sizing: border-box`, which
+  this window sets on every element, that is the border box with the padding
+  inside it, and the addon then subtracted the padding of the inner grid
+  element, which has none, rather than the container's. The pane's own 32px
+  per axis was therefore counted as space a cell could occupy, so the child
+  was told it had two rows and four columns the window frame covers: the last
+  option of an approval prompt was sliced in half by the bottom edge, and a
+  centred prompt was centred on a grid wider than the one on screen. The
+  measurement is the client's now, the addon is gone, and a row the edge cuts
+  in half is never counted. A pane whose first measurement was taken before
+  the font had been measured also stopped recording that attempt as a fit, so
+  it no longer sits at 80x24 for the life of the window with a dead band
+  underneath.
 - **The installer resolves the latest release when the GitHub API refuses.**
   Its anonymous rate limit is per address and is spent by everything behind
   that address, so on an office, a carrier NAT or a CI runner a working

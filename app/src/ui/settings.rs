@@ -556,8 +556,8 @@ pub const FONT_STACKS: &[(&str, &str)] = &[
 ///
 /// Owned here rather than by the settings struct because the number is a fact
 /// about xterm, not about the preference: below this the cell box rounds to
-/// zero width, the fit addon divides by it, and the pane goes blank with
-/// nothing logged anywhere.
+/// zero width, `paneGrid` has nothing to divide by and proposes no grid, and
+/// the pane goes blank with nothing logged anywhere.
 pub const TERM_FONT_MIN_PX: u16 = 8;
 /// Largest terminal font size the modal will set.
 pub const TERM_FONT_MAX_PX: u16 = 32;
@@ -2098,8 +2098,10 @@ fn SidebarPanel(props: PanelProps) -> Element {
         SwitchRow {
             label: "Show the working directory".to_string(),
             desc: "The part of a session's directory the project header does not already \
-                   say. Rows sitting at the project root show nothing. A session an agent \
-                   moved, or one in a worktree beside the project, shows where it is."
+                   say. A row at the project root shows nothing while its branch is \
+                   speaking, and shows its directory when there is no branch either. A \
+                   session an agent moved, or one in a worktree beside the project, \
+                   always shows where it is."
                 .to_string(),
             on: settings.show_place,
             onchange: move |on| edit(state, |s| s.show_place = on),

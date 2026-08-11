@@ -1179,20 +1179,30 @@ const PLACE_COLUMNS: usize = 18;
 
 /// What a row draws for its working directory, given the project it is under.
 ///
-/// The rule is that a row says only what its group header does not. A session
-/// sitting at the project root repeats the header exactly, so it draws
-/// nothing and the branch keeps the space.
+/// The rule is that a row says only what its group header does not, and only
+/// for as long as the rest of the line is still saying something. A session
+/// sitting at the project root repeats the header, so it yields the space to
+/// the branch.
 ///
-/// The case this exists for is the last arm. A git worktree lives beside its
-/// project rather than inside it, on another branch, and a row for one used
-/// to show a branch with no hint that the files were somewhere else. So does
-/// an agent that moved itself: sessions follow OSC 7, so a row's directory is
-/// where the agent is now, not where it was launched.
-fn place_label(cwd: &str, root: &str, home: &str) -> String {
+/// `has_branch` is what keeps the second half of that true. A group header
+/// carries a project NAME, not a path, so silence on a root row is readable
+/// only when the branch beside it is not also silent. A root row with neither
+/// drew an empty line and said nothing at all about where its agent was
+/// working, and the commonest shape of that is an agent started in a home
+/// directory that the client then minted a project for: the header reads as a
+/// username and the directory is not a repository, so both halves went blank
+/// together.
+///
+/// The `Outside` arm is the case the element was added for. A git worktree
+/// lives beside its project rather than inside it, on another branch, and a
+/// row for one used to show a branch with no hint that the files were
+/// somewhere else. So does an agent that moved itself: sessions follow OSC 7,
+/// so a row's directory is where the agent is now, not where it was launched.
+fn place_label(cwd: &str, root: &str, home: &str, has_branch: bool) -> String {
     match path::under(cwd, root) {
-        Place::At => String::new(),
+        Place::At if has_branch => String::new(),
+        Place::At | Place::Outside => path::shorten_home_relative(cwd, home, PLACE_COLUMNS),
         Place::Under(rest) => path::shorten(rest, PLACE_COLUMNS),
-        Place::Outside => path::shorten_home_relative(cwd, home, PLACE_COLUMNS),
     }
 }
 
@@ -1500,12 +1510,13 @@ fn SessionRow(props: SessionRowProps) -> Element {
     } else {
         ""
     };
-    // The working directory, drawn only where it says something the group
-    // header above does not. An agent can move its session after launch by
-    // reporting OSC 7, and the daemon follows it, so this is the live
-    // directory and not the one the session was started in.
+    // The working directory, drawn wherever it says something the group
+    // header above does not, and on a root row whose branch is also empty,
+    // where the alternative is a blank line. An agent can move its session
+    // after launch by reporting OSC 7, and the daemon follows it, so this is
+    // the live directory and not the one the session was started in.
     let place = if props.fields.place {
-        place_label(&info.cwd, &props.root, &props.home)
+        place_label(&info.cwd, &props.root, &props.home, !branch.is_empty())
     } else {
         String::new()
     };

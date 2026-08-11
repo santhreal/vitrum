@@ -1752,25 +1752,64 @@ fn without_comments(css: &str) -> String {
     out
 }
 
-/// A row at its project's own directory draws no path.
+/// A row at its project's own directory, on a branch, draws no path.
 ///
-/// The group header directly above the row already says it. This is the
-/// common row, and the whole reason the element can be on by default: the
-/// list does not change at all for anyone whose sessions sit at their project
-/// roots.
+/// The group header directly above the row already stands for it, and the
+/// branch beside it is carrying the line. This is the common row, and the
+/// whole reason the element can be on by default: the list does not change at
+/// all for anyone whose sessions sit at their project roots inside a
+/// repository.
 #[test]
-fn a_row_at_the_project_root_draws_no_working_directory() {
-    assert_eq!(place_label("/src/vitrum", "/src/vitrum", "/home/mk"), "");
+fn a_row_at_the_project_root_on_a_branch_draws_no_working_directory() {
+    assert_eq!(
+        place_label("/src/vitrum", "/src/vitrum", "/home/mk", true),
+        ""
+    );
+}
+
+/// A row at the project root with no branch draws its directory anyway.
+///
+/// WHY: the header carries a project NAME, not a path, so the silence that
+/// arm was designed around is only readable while the branch beside it is
+/// speaking. An agent started in a home directory hits both blanks at once —
+/// the client mints a project for the launch directory, so the row is at its
+/// root, and a home directory is not a repository, so there is no branch —
+/// and the row went out with an empty context line saying nothing about where
+/// its agent was working.
+///
+/// What this does NOT catch: whether the header is a useful label, or whether
+/// a home directory should have become a project at all.
+#[test]
+fn a_row_at_the_project_root_with_no_branch_still_says_where_it_is() {
+    assert_eq!(
+        place_label("/home/mk", "/home/mk", "/home/mk", false),
+        "~",
+        "an agent in a home directory the client made a project of must still \
+         say it is there"
+    );
+    assert_eq!(
+        place_label("/src/notes", "/src/notes", "/home/mk", false),
+        "/src/notes",
+        "a project root outside any repository must still name itself"
+    );
 }
 
 /// A row inside the project draws only the part below the root.
 #[test]
 fn a_row_inside_the_project_draws_the_remainder() {
     assert_eq!(
-        place_label("/src/vitrum/crates/vitrum-fmt", "/src/vitrum", "/home/mk"),
+        place_label(
+            "/src/vitrum/crates/vitrum-fmt",
+            "/src/vitrum",
+            "/home/mk",
+            true
+        ),
         "crates/vitrum-fmt"
     );
-    assert_eq!(place_label("/src/vitrum/app", "/src/vitrum", "/home/mk"), "app");
+    assert_eq!(
+        place_label("/src/vitrum/app", "/src/vitrum", "/home/mk", true),
+        "app"
+    );
 }
 
 /// A worktree beside the project draws the whole path, shortened against
@@ -1782,7 +1821,7 @@ fn a_row_inside_the_project_draws_the_remainder() {
 #[test]
 fn a_worktree_beside_the_project_draws_its_own_path() {
     assert_eq!(
-        place_label("/home/mk/worktrees/topic", "/src/vitrum", "/home/mk"),
+        place_label("/home/mk/worktrees/topic", "/src/vitrum", "/home/mk", true),
         "~/worktrees/topic"
     );
 }
@@ -1797,6 +1836,7 @@ fn a_long_remainder_keeps_its_leaf() {
         "/src/vitrum/crates/vitrum-core/src/session",
         "/src/vitrum",
         "/home/mk",
+        true,
     );
     assert!(
         label.ends_with("session"),
@@ -1811,8 +1851,15 @@ fn a_long_remainder_keeps_its_leaf() {
 /// A session in the Unfiled bucket, which has no root, draws its own path.
 ///
 /// There is no header above it saying where it is, so the row is the only
-/// place the directory can appear.
+/// place the directory can appear, whether or not it is in a repository.
 #[test]
 fn an_unfiled_row_draws_its_own_path() {
-    assert_eq!(place_label("/home/mk/scratch", "", "/home/mk"), "~/scratch");
+    assert_eq!(
+        place_label("/home/mk/scratch", "", "/home/mk", true),
+        "~/scratch"
+    );
+    assert_eq!(
+        place_label("/home/mk/scratch", "", "/home/mk", false),
+        "~/scratch"
+    );
 }

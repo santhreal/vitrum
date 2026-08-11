@@ -939,12 +939,14 @@ fn a_node_agents_trust_prompt_reads_as_working_and_claims_nothing_else() {
 /// switch persisted and changed nothing. A directory resolved correctly by
 /// `place_label` and never emitted would fail in exactly that way.
 ///
-/// The three arms are the whole rule. A row at the project root emits an
-/// EMPTY element, because the group header above it already says that path
-/// and `.rg-session__place:empty` collapses the box; a row below the root
-/// emits the remainder; a row outside the project entirely — a worktree, or a
-/// session an agent moved with OSC 7 — emits its own home-shortened path,
-/// which is the case where the group header is actively misleading.
+/// The four arms are the whole rule. A row at the project root that is on a
+/// branch emits an EMPTY element, because the group header above it stands
+/// for that path and `.rg-session__place:empty` collapses the box; the SAME
+/// row with no branch emits its directory, because otherwise the whole
+/// context line goes blank; a row below the root emits the remainder; a row
+/// outside the project entirely — a worktree, or a session an agent moved
+/// with OSC 7 — emits its own home-shortened path, which is the case where
+/// the group header is actively misleading.
 ///
 /// The switch is asserted in both directions, because a control that
 /// round-trips to disk and changes no markup is the defect above.
@@ -954,7 +956,7 @@ fn a_node_agents_trust_prompt_reads_as_working_and_claims_nothing_else() {
 #[test]
 fn the_rows_working_directory_reaches_the_markup() {
     let at_root = render_under(
-        row(1).cwd("/src/vitrum").build(),
+        row(1).cwd("/src/vitrum").branch(Some("main")).build(),
         Section::Active,
         all_fields(),
         "/src/vitrum",
@@ -962,7 +964,20 @@ fn the_rows_working_directory_reaches_the_markup() {
     assert_eq!(
         element_text(&at_root, "rg-session__place"),
         Some(""),
-        "a row at the project root must emit the element and leave it empty"
+        "a row at the project root with a branch must emit the element and \
+         leave it empty"
+    );
+
+    let at_root_no_branch = render_under(
+        row(1).cwd("/src/vitrum").branch(None).build(),
+        Section::Active,
+        all_fields(),
+        "/src/vitrum",
+    );
+    assert_eq!(
+        element_text(&at_root_no_branch, "rg-session__place"),
+        Some("/src/vitrum"),
+        "a root row outside a repository must not leave its context line blank"
     );
 
     let below = render_under(

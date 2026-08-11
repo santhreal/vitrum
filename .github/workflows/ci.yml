@@ -72,6 +72,8 @@ env:
   # a reason behind instead of the same guess.
   SCCACHE_IDLE_TIMEOUT: "0"
   SCCACHE_ERROR_LOG: /tmp/sccache-ci.log
+  # The server writes nothing to that file without a level to write at.
+  SCCACHE_LOG: warn
 
 jobs:
   test:

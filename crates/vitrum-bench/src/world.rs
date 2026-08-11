@@ -41,19 +41,24 @@
 //! 8. **Close propagation** — one window closes everything; every other
 //!    window stops believing it exists.
 
-
 use std::time::{Duration, Instant};
+
 use anyhow::{Context, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use vitrum_proto::SessionId;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use vitrum_proto::{ClientMsg, SessionId};
 
 use crate::client::{Client, Incoming};
 use crate::report::Report;
-use crate::stats::Latencies;
+use crate::stats::{Dist, Latencies};
 
 const OP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a connection must receive nothing before it counts as converged.
 const QUIET: Duration = Duration::from_millis(300);
+/// How long one keystroke may wait for its own bytes to come back before the
+/// run says the daemon stopped answering rather than recording a slow sample.
+const ECHO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One window's geometry; `n` in `0..windows`.
 ///
@@ -129,6 +134,17 @@ pub struct WorldSpec {
     pub ssh_host: Option<String>,
     /// How long a phase may wait for the broadcast bus to go quiet.
     pub settle: Duration,
+    /// Keystrokes timed in each condition.
+    ///
+    /// The interesting figure is a tail, and a tail needs samples: a hundred
+    /// round trips have no p99 worth printing.
+    pub keystroke_samples: usize,
+    /// Sessions streaming into the focused window while its keystrokes are
+    /// timed. Seven is a working operator's other tabs.
+    pub stream_sessions: usize,
+    /// Lines each of those produces. Enough to outlast the measurement rather
+    /// than a count anyone reads.
+    pub stream_lines: usize,
 }
 
 impl Default for WorldSpec {
@@ -141,6 +157,9 @@ impl Default for WorldSpec {
             lines_per_burst: 400,
             ssh_host: None,
             settle: Duration::from_secs(2),
+            keystroke_samples: 400,
+            stream_sessions: 7,
+            stream_lines: 200_000,
         }
     }
 }
@@ -410,6 +429,102 @@ pub async fn run(spec: &WorldSpec) -> anyhow::Result<Report> {
         spec.windows, expected_geom.0, expected_geom.1
     ));
 
+    // -----------------------------------------------------------------------
+    // The number the operator feels: one keystroke in the focused window,
+    // measured quiet, then measured again with the rest of the world running.
+    //
+    // Averages are not the answer here. A window that is usually fast and
+    // occasionally waits 80 ms for a keystroke is a window that feels broken,
+    // and only the tail of the distribution says so.
+    // -----------------------------------------------------------------------
+    let focused = 0usize;
+    // Measured before anything is typed: the floor does not depend on the
+    // daemon, and taking it first keeps it out of the streaming window where
+    // it would be measuring the load instead of the platform.
+    let platform_floor = floor(&spec.server, spec.keystroke_samples.min(2000), 64).await?;
+
+    let (typed, _) = conns[focused]
+        .create_session("world-typing", &riddle_script(), 120, 40, OP_TIMEOUT)
+        .await
+        .context("creating the focused window's typing session")?;
+    conns[focused].attach(typed, 120, 40, OP_TIMEOUT).await?;
+    let mut measured: Vec<SessionId> = vec![typed];
+    let mut keystrokes_out = Vec::new();
+
+    let (ns, foreign) = keystrokes(&mut conns[focused], typed, spec.keystroke_samples).await?;
+    keystrokes_out.push(row("quiet", ns, &platform_floor, foreign, 0)?);
+
+    // The other tabs. Created from the other windows, because that is where an
+    // operator's other work lives, and attached here, because the focused
+    // window is showing them too and its socket carries their bytes.
+    for k in 0..spec.stream_sessions {
+        let owner = 1 + (k % (spec.windows - 1));
+        let (id, _) = conns[owner]
+            .create_session(
+                &format!("world-stream-{k}"),
+                &burst_script(spec.stream_lines),
+                120,
+                40,
+                OP_TIMEOUT,
+            )
+            .await
+            .with_context(|| format!("creating streaming session {k}"))?;
+        conns[focused].attach(id, 120, 40, OP_TIMEOUT).await?;
+        measured.push(id);
+    }
+    let (ns, foreign) = keystrokes(&mut conns[focused], typed, spec.keystroke_samples).await?;
+    if spec.stream_sessions > 0 && foreign == 0 {
+        report.failures.push(
+            "no other session's output crossed the focused socket while its keystrokes were \
+             timed, so the loaded figure was measured on an idle daemon"
+                .to_string(),
+        );
+    }
+    keystrokes_out.push(row(
+        "loaded",
+        ns,
+        &platform_floor,
+        foreign,
+        spec.stream_sessions,
+    )?);
+
+    // The same keystroke, through a session that lives on another machine.
+    // What ssh adds is the difference between this row and the loaded one, and
+    // it is a difference rather than a claim about the network.
+    if let Some(host) = &spec.ssh_host {
+        let (id, _) = conns[focused]
+            .create_session(
+                "world-ssh-typing",
+                &format!("exec /usr/bin/ssh -tt {} /bin/cat", sh_quote(host)),
+                120,
+                40,
+                OP_TIMEOUT,
+            )
+            .await
+            .with_context(|| format!("creating an ssh session to {host}"))?;
+        conns[focused].attach(id, 120, 40, OP_TIMEOUT).await?;
+        measured.push(id);
+        match keystrokes(&mut conns[focused], id, spec.keystroke_samples).await {
+            Ok((ns, foreign)) => keystrokes_out.push(row(
+                "ssh",
+                ns,
+                &platform_floor,
+                foreign,
+                spec.stream_sessions,
+            )?),
+            // An unreachable or unauthenticated host is the operator's
+            // environment, not a defect in the daemon. It is recorded as a
+            // condition that produced no figure rather than failing the run.
+            Err(e) => report.checks_passed.push(format!(
+                "no ssh keystroke figure: the session to {host} never echoed ({e:#})"
+            )),
+        }
+    }
+
+    for id in &measured {
+        conns[focused].close_session(*id, OP_TIMEOUT).await?;
+    }
+
     // ssh tunnel report: how much the remote sessions produced, in bytes.
     // Not a failure — the operator's host may be unreachable or
     // unauthenticated — and not a claimed "delivered" either, because ssh
@@ -478,5 +593,254 @@ pub async fn run(spec: &WorldSpec) -> anyhow::Result<Report> {
             report.latencies.push((name.to_string(), s));
         }
     }
+    // The keystroke figures are the point of the run, and a caller reading
+    // JSON should not have to reconstruct what ssh cost: the difference the
+    // conditions were measured to answer is stated, not left as an exercise.
+    let p50_of = |c: &str| -> Option<u64> {
+        keystrokes_out
+            .iter()
+            .find(|k| k.condition == c)
+            .map(|k| k.raw_ns.p50)
+    };
+    let load_added = match (p50_of("quiet"), p50_of("loaded")) {
+        (Some(q), Some(l)) => Some(l.saturating_sub(q)),
+        _ => None,
+    };
+    let ssh_added = match (p50_of("loaded"), p50_of("ssh")) {
+        (Some(l), Some(s)) => Some(s.saturating_sub(l)),
+        _ => None,
+    };
+    report.extra = json!({
+        "keystrokes": keystrokes_out,
+        "floor": platform_floor,
+        "load_added_p50_ns": load_added,
+        "ssh_added_p50_ns": ssh_added,
+    });
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// What the focused window feels while the rest of the world runs
+// ---------------------------------------------------------------------------
+
+/// One condition's keystroke distribution.
+///
+/// Both the raw figure and the figure with the platform floor taken off, and a
+/// flag saying whether it was taken off at all, because subtracting a locally
+/// measured floor from a run against a daemon on another machine would invent
+/// a number.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Keystroke {
+    /// `quiet`, `loaded`, or `ssh`.
+    pub condition: String,
+    /// Round trips, in nanoseconds: the byte leaving the socket to the same
+    /// byte arriving back on it.
+    pub raw_ns: Dist,
+    /// The same distribution with [`Floor::total_ns`] subtracted, or `None`
+    /// when the floor does not apply to this server.
+    pub net_ns: Option<Dist>,
+    /// Output frames for other sessions that crossed this socket while the
+    /// samples were being taken. This is what "under load" is worth: a zero
+    /// here means the background sessions were not actually streaming.
+    pub foreign_frames: u64,
+    /// Sessions streaming into this window while the samples were taken.
+    pub streaming_sessions: usize,
+}
+
+/// What the platform charges for the same round trip with no vitrum in it.
+///
+/// Two components, both measured on the machine running the harness, in the
+/// same run as the figures they qualify:
+///
+/// - a pseudoterminal echo, which is the kernel line discipline turning a
+///   written byte around. Every keystroke crosses it.
+/// - a loopback TCP round trip of the same payload, which is the kernel and
+///   the scheduler moving a small frame between two processes. Every keystroke
+///   crosses one of those in each direction, and both directions are on the
+///   one socket, so one round trip is the whole of it.
+///
+/// Their sum is the floor. It is not an estimate of the daemon's cost and it
+/// is not subtracted from anything unless the daemon is on this machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Floor {
+    pub pty_echo_ns: Dist,
+    pub loopback_ns: Dist,
+    /// The two medians added.
+    pub total_ns: u64,
+    /// Whether it was subtracted from the keystroke figures.
+    pub subtracted: bool,
+    /// Why, in one line, so a reader of the JSON does not have to infer it.
+    pub note: String,
+}
+
+/// Whether `server` names a daemon on this machine.
+///
+/// Only then does a locally measured floor describe the same hops the
+/// keystroke crossed.
+pub fn server_is_local(server: &str) -> bool {
+    let after_scheme = server.split_once("://").map_or(server, |(_, rest)| rest);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// Every sample with `floor` taken off, saturating at zero.
+///
+/// Saturating rather than signed: a sample below the floor means the two
+/// measurements disagreed by less than their own noise, and a negative latency
+/// in a report is worse than a zero.
+pub(crate) fn subtract(samples: &[u64], floor: u64) -> anyhow::Result<Dist> {
+    Dist::of(samples.iter().map(|s| s.saturating_sub(floor)).collect())
+}
+
+/// Time `samples` keystrokes on `session`, counting everything else that
+/// crossed the socket meanwhile.
+///
+/// Each sample writes a token nothing else can produce and waits for that
+/// token to come back, so a measurement cannot be satisfied by another
+/// session's output arriving at the right moment. The echo may be split across
+/// frames, so the search is over the bytes accumulated for this session rather
+/// than over one frame.
+async fn keystrokes(
+    conn: &mut Client,
+    session: SessionId,
+    samples: usize,
+) -> anyhow::Result<(Vec<u64>, u64)> {
+    let mut out = Vec::with_capacity(samples);
+    let mut foreign = 0u64;
+    let mut pending: Vec<u8> = Vec::with_capacity(4096);
+    for i in 0..samples {
+        let token = format!("vk{i:07}");
+        pending.clear();
+        let start = Instant::now();
+        conn.send(&ClientMsg::Input {
+            session,
+            data: format!("{token}\n").into_bytes(),
+        })
+        .await?;
+        let deadline = start + ECHO_TIMEOUT;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                bail!(
+                    "keystroke {i} on session {} was never echoed within {ECHO_TIMEOUT:?}",
+                    session.0
+                );
+            }
+            match conn.next(left).await? {
+                Some(Incoming::Output(o)) if o.session == session => {
+                    pending.extend_from_slice(&o.bytes);
+                    if pending
+                        .windows(token.len())
+                        .any(|w| w == token.as_bytes())
+                    {
+                        out.push(start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
+                        break;
+                    }
+                }
+                Some(Incoming::Output(_)) => foreign += 1,
+                Some(Incoming::Control(_)) => {}
+                None => continue,
+            }
+        }
+    }
+    Ok((out, foreign))
+}
+
+/// A loopback TCP round trip of `payload` bytes, `samples` times.
+///
+/// A real listener and a real connection over 127.0.0.1, because the question
+/// is what the kernel and the scheduler charge to move a small frame between
+/// two endpoints, and an in-process channel would answer a different one.
+async fn loopback(samples: usize, payload: usize) -> anyhow::Result<Vec<u64>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("binding a loopback listener for the floor measurement")?;
+    let addr = listener.local_addr()?;
+    let echo = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await?;
+        sock.set_nodelay(true)?;
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let n = sock.read(&mut buf).await?;
+            if n == 0 {
+                return Ok::<(), std::io::Error>(());
+            }
+            sock.write_all(&buf[..n]).await?;
+        }
+    });
+
+    let mut sock = tokio::net::TcpStream::connect(addr)
+        .await
+        .context("connecting to the loopback listener")?;
+    sock.set_nodelay(true)?;
+    let msg = vec![b'k'; payload.max(1)];
+    let mut buf = vec![0u8; msg.len()];
+    let mut out = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let start = Instant::now();
+        sock.write_all(&msg).await?;
+        let mut got = 0;
+        while got < msg.len() {
+            let n = sock.read(&mut buf[got..]).await?;
+            if n == 0 {
+                bail!("the loopback echo closed mid-measurement");
+            }
+            got += n;
+        }
+        out.push(start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
+    }
+    drop(sock);
+    // The echo task ends when the connection closes; joining it keeps a
+    // measurement from leaving a task behind for the next one to be charged.
+    let _ = echo.await;
+    Ok(out)
+}
+
+/// The floor for this run.
+async fn floor(server: &str, samples: usize, payload: usize) -> anyhow::Result<Floor> {
+    let pty = crate::latency::pty_echo(samples)?;
+    let loop_ns = Dist::of(loopback(samples, payload).await?)?;
+    let local = server_is_local(server);
+    Ok(Floor {
+        total_ns: pty.p50 + loop_ns.p50,
+        pty_echo_ns: pty,
+        loopback_ns: loop_ns,
+        subtracted: local,
+        note: if local {
+            "the daemon is on this machine, so the locally measured floor is the floor these \
+             keystrokes crossed and it is subtracted"
+                .to_string()
+        } else {
+            format!(
+                "the daemon at {server} is not on this machine, so the local floor describes \
+                 different hops and is reported without being subtracted"
+            )
+        },
+    })
+}
+
+/// One measured condition, with the floor taken off when it applies.
+fn row(
+    condition: &str,
+    ns: Vec<u64>,
+    floor: &Floor,
+    foreign: u64,
+    streaming: usize,
+) -> anyhow::Result<Keystroke> {
+    let net_ns = if floor.subtracted {
+        Some(subtract(&ns, floor.total_ns)?)
+    } else {
+        None
+    };
+    Ok(Keystroke {
+        condition: condition.to_string(),
+        raw_ns: Dist::of(ns)?,
+        net_ns,
+        foreign_frames: foreign,
+        streaming_sessions: streaming,
+    })
 }

@@ -19,6 +19,8 @@ use crate::atlas::{AtlasEntry, AtlasError, DEFAULT_ATLAS_DIM, GlyphAtlas, GlyphK
 use crate::cell::{Attrs, Cell, Cursor, Rgba};
 use crate::font::{CellMetrics, FontConfig, FontError, FontStack, FontStyle};
 use crate::grid::CellGrid;
+#[cfg(feature = "probe")]
+use crate::probe::{self, Phase};
 
 /// Column-span bits in [`CellInstance::flags`].
 const SPAN_MASK: u32 = 0b11;
@@ -556,6 +558,10 @@ impl GridRenderer {
         stats.full_rebuild = full_rebuild;
 
         let instances = grid.len() as u32;
+        // Opened after the skip and upload paths so a frame that records no
+        // GPU command opens no span either.
+        #[cfg(feature = "probe")]
+        let submit_span = probe::span(Phase::Submit);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("vitrum-grid.frame"),
         });
@@ -583,6 +589,8 @@ impl GridRenderer {
             pass.draw(0..4, 0..instances);
         }
         queue.submit([encoder.finish()]);
+        #[cfg(feature = "probe")]
+        drop(submit_span);
 
         grid.clear_damage();
         stats.instances_drawn = instances;
@@ -625,6 +633,8 @@ impl GridRenderer {
         for span in grid.damage() {
             let flat = span.row as usize * cols + span.start as usize;
             if !scratch.is_empty() && flat != run_end {
+                #[cfg(feature = "probe")]
+                let _upload = probe::span(Phase::Upload);
                 queue.write_buffer(
                     &self.instances,
                     run_start as u64 * stride,
@@ -637,6 +647,11 @@ impl GridRenderer {
                 run_start = flat;
             }
 
+            // Building this span's instances, glyph lookups included. Opened
+            // after the buffer write above so the two never overlap and a
+            // phase total is never charged twice.
+            #[cfg(feature = "probe")]
+            let _damage = probe::span(Phase::Damage);
             // Resolved once per span rather than once per cell: the caret is a
             // single cell, so at most one column in this run can carry it.
             let caret = grid.cursor().filter(|c| {
@@ -653,6 +668,8 @@ impl GridRenderer {
         }
 
         if !scratch.is_empty() {
+            #[cfg(feature = "probe")]
+            let _upload = probe::span(Phase::Upload);
             queue.write_buffer(
                 &self.instances,
                 run_start as u64 * stride,

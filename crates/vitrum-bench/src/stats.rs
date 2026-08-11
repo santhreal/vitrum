@@ -106,3 +106,49 @@ impl Throughput {
         }
     }
 }
+
+/// A measured distribution, in whatever unit the caller recorded.
+///
+/// Separate from [`LatencySummary`] because that type names its unit in every
+/// field and a frame phase is measured in nanoseconds, not microseconds. One
+/// percentile rule serves both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dist {
+    pub count: usize,
+    pub min: u64,
+    pub p50: u64,
+    pub p95: u64,
+    pub p99: u64,
+    pub max: u64,
+    pub mean: u64,
+}
+
+impl Dist {
+    /// Nearest-rank percentiles, so every reported figure is a sample that was
+    /// actually taken rather than an interpolation between two that were.
+    ///
+    /// # Errors
+    ///
+    /// An empty set has no distribution. Reporting zeros for one would publish
+    /// "instant" for a measurement that never ran.
+    pub fn of(mut samples: Vec<u64>) -> anyhow::Result<Self> {
+        if samples.is_empty() {
+            anyhow::bail!("no samples");
+        }
+        samples.sort_unstable();
+        let pick = |q: f64| -> u64 {
+            let rank = (q * samples.len() as f64).ceil().max(1.0) as usize;
+            samples[rank.min(samples.len()) - 1]
+        };
+        let total: u128 = samples.iter().map(|&v| u128::from(v)).sum();
+        Ok(Dist {
+            count: samples.len(),
+            min: samples[0],
+            p50: pick(0.50),
+            p95: pick(0.95),
+            p99: pick(0.99),
+            max: samples[samples.len() - 1],
+            mean: (total / samples.len() as u128) as u64,
+        })
+    }
+}

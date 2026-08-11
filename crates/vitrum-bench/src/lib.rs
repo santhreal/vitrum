@@ -30,6 +30,8 @@
 //! where the daemon's crate is not wanted.
 
 pub mod client;
+pub mod divergence;
+pub mod frame;
 pub mod fuzz;
 pub mod latency;
 pub mod load;

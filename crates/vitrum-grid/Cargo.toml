@@ -11,6 +11,13 @@ rust-version = "1.85"
 keywords = ["terminal", "wgpu", "renderer", "glyph-atlas", "gpu"]
 categories = ["rendering", "gui", "graphics"]
 
+[features]
+# Compile the frame-phase instrumentation points in `renderer` and the
+# `probe` switch they read. Off by default: a shipped renderer carries no
+# probe instruction, and `vitrum-bench frame` measures a build with this on
+# against one with it off rather than asserting the difference is nothing.
+probe = []
+
 [dependencies]
 # The default backend set, spelled out so that dropping one is a visible edit
 # rather than a feature flag nobody reads.

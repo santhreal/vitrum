@@ -107,6 +107,7 @@
 //! - [`mod@renderer`]: the pipeline, the instance layout, and the frame.
 //! - [`mod@gpu`]: device acquisition for callers that do not already have one.
 //! - [`mod@headless`]: an offscreen target with pixel readback.
+//! - [`mod@probe`]: off-by-default attribution of a frame to its phases.
 
 #![deny(missing_docs)]
 
@@ -116,6 +117,7 @@ pub mod font;
 pub mod gpu;
 pub mod grid;
 pub mod headless;
+pub mod probe;
 pub mod renderer;
 
 #[cfg(test)]

@@ -157,6 +157,8 @@ impl Vt {
     /// Callbacks fire during this call, so pending events are complete by the
     /// time it returns.
     pub fn feed(&mut self, data: &[u8]) {
+        #[cfg(feature = "probe")]
+        let _parse = vitrum_grid::probe::span(vitrum_grid::probe::Phase::Parse);
         self.term.vt_write(data);
     }
 
@@ -351,6 +353,8 @@ impl Vt {
     /// [`VtError::Grid`] when the terminal size is one the grid refuses.
     pub fn sync(&mut self, grid: &mut CellGrid) -> Result<SyncStats, VtError> {
         let mut stats = SyncStats::default();
+        #[cfg(feature = "probe")]
+        let _store = vitrum_grid::probe::span(vitrum_grid::probe::Phase::Store);
 
         let snapshot = self.render.update(&self.term)?;
         let dirty = snapshot.dirty()?;

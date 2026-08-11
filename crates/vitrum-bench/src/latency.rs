@@ -50,6 +50,7 @@ use vitrum_proto::{Attention, ProjectId, SessionId, SessionInfo, SessionStatus};
 use vitrum_vt::{ScrollViewport, Vt, VtOptions};
 
 use crate::report::Report;
+use crate::stats::Dist;
 
 /// Grid the signals are measured at, in cells. A full-height agent TUI on a
 /// laptop-sized window; measuring at 240x80 would flatter the per-cell figures
@@ -296,47 +297,6 @@ pub fn bounds() -> Result<Vec<(Signal, Bound)>, Vec<Signal>> {
     if missing.is_empty() { Ok(ok) } else { Err(missing) }
 }
 
-/// A measured distribution, in the signal's own unit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Dist {
-    pub count: usize,
-    pub min: u64,
-    pub p50: u64,
-    pub p95: u64,
-    pub p99: u64,
-    pub max: u64,
-    pub mean: u64,
-}
-
-impl Dist {
-    /// Nearest-rank percentiles, so every reported figure is a sample that was
-    /// actually taken rather than an interpolation between two that were.
-    ///
-    /// # Errors
-    ///
-    /// An empty set has no distribution. Reporting zeros for one would publish
-    /// "instant" for a measurement that never ran.
-    pub fn of(mut samples: Vec<u64>) -> anyhow::Result<Self> {
-        if samples.is_empty() {
-            bail!("no samples");
-        }
-        samples.sort_unstable();
-        let pick = |q: f64| -> u64 {
-            let rank = (q * samples.len() as f64).ceil().max(1.0) as usize;
-            samples[rank.min(samples.len()) - 1]
-        };
-        let total: u128 = samples.iter().map(|&v| u128::from(v)).sum();
-        Ok(Dist {
-            count: samples.len(),
-            min: samples[0],
-            p50: pick(0.50),
-            p95: pick(0.95),
-            p99: pick(0.99),
-            max: samples[samples.len() - 1],
-            mean: (total / samples.len() as u128) as u64,
-        })
-    }
-}
 
 /// One signal's result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -740,6 +700,34 @@ impl Drop for Pty {
             libc::close(self.master);
         }
     }
+}
+
+/// The kernel's own echo, with nothing of this product in it.
+///
+/// A byte written to the master comes back from the master because the line
+/// discipline echoed it. That turnaround is under every keystroke measurement
+/// in this crate, local or through the daemon, and it belongs to the platform.
+/// [`crate::world`] reports it as half of the floor it subtracts.
+pub(crate) fn pty_echo(samples: usize) -> anyhow::Result<Dist> {
+    let pty = Pty::open()?;
+    let mut buf = [0u8; 256];
+    // One turnaround before timing: the first read of a fresh pty pays for the
+    // buffers the kernel allocates on it.
+    pty.write(pty.master, b"w")?;
+    let _ = pty.read_master(&mut buf, Duration::from_secs(2))?;
+    pty.drain(pty.slave);
+    pty.drain(pty.master);
+
+    let mut out = Vec::with_capacity(samples);
+    for i in 0..samples {
+        let ch = b'a' + (i % 26) as u8;
+        let start = Instant::now();
+        pty.write(pty.master, &[ch])?;
+        let _ = pty.read_master(&mut buf, Duration::from_secs(2))?;
+        out.push(start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
+        pty.drain(pty.slave);
+    }
+    Dist::of(out)
 }
 
 // ---------------------------------------------------------------------------

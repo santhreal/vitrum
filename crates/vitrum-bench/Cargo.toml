@@ -15,6 +15,11 @@ publish = false
 # a host that has no reason to compile the daemon.
 default = ["daemon"]
 daemon = ["dep:vitrum-core"]
+# Compile the frame-phase instrumentation into the renderer and the VT engine,
+# so `frame` can run its `off` and `on` arms. Off by default, which is what
+# makes the `absent` arm a real control: `harness/frame.sh` builds this binary
+# both ways and compares them.
+probe = ["vitrum-grid/probe", "vitrum-vt/probe"]
 
 [dependencies]
 vitrum-core = { workspace = true, optional = true }

@@ -38,3 +38,6 @@ vendored = []
 # Ghostty install). No Zig toolchain, and the engine tracks whatever the system
 # ships, so the host is responsible for the ABI matching.
 system = ["libghostty-vt/link-dynamic", "dep:libghostty-vt-sys", "libghostty-vt-sys/pkg-config"]
+# Compile the frame-phase instrumentation points in `feed` and `sync`, and the
+# matching ones in the renderer. Off by default; see `vitrum_grid::probe`.
+probe = ["vitrum-grid/probe"]

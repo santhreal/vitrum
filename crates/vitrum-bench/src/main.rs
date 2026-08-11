@@ -14,7 +14,7 @@ use anyhow::{Context, bail};
 use vitrum_bench::report::Report;
 #[cfg(feature = "daemon")]
 use vitrum_bench::pipeline;
-use vitrum_bench::{fuzz, latency, load, probe, profile, race, world};
+use vitrum_bench::{divergence, frame, fuzz, latency, load, probe, profile, race, world};
 
 /// Allocations on the output path are part of what `pipeline` reports, and an
 /// allocator cannot be swapped in per workload. Counting is two relaxed adds
@@ -39,8 +39,13 @@ Usage:
   vitrum-bench latency [--samples N] [--spawns N] [--panes N] [--sessions N]
                        [--gate] [--software]
   vitrum-bench probe   [--cases N] [--seed N] [--threads N]
+  vitrum-bench frame   [--frames N] [--rounds N] [--cols N] [--rows N] [--seed N]
+                       [--software]
+  vitrum-bench divergence [--cases N] [--schedules N] [--threads N] [--seed N]
+                       [--corpus DIR]
   vitrum-bench world   [--server URL] [--windows N] [--sessions N] [--widest N]
                        [--burst-lines N] [--ssh-host HOST] [--settle SECS]
+                       [--keystrokes N] [--streams N] [--stream-lines N]
   vitrum-bench profile --pid PID [--duration SECS] [--interval SECS]
   vitrum-bench emit    --bytes N | --idle SECS
 
@@ -61,6 +66,18 @@ cause and the pixels that answer it, ending on the GPU's fence. It needs a GPU
 and no display, takes no --server, and re-executes this binary as
 `latency-child`. With --gate it exits non-zero when a signal crosses the bound
 recorded for it in `vitrum_bench::latency::bound`.
+
+`frame` runs the render path in this process and attributes each frame to
+parse, store, damage, upload and submit. The attribution only exists in a
+binary built with `--features probe`; without it the run measures the same
+frames with no probe compiled in, which is the control the zero-cost claim is
+judged against. `harness/frame.sh` builds both and compares them.
+
+`divergence` fuzzes the parser and the grid two ways: one input fed whole
+against the same input fed in pieces, and one input fed under many thread
+interleavings against the screen it produces alone. Anything it finds is
+minimised and committed to crates/vitrum-bench/artifacts/ as a replayable
+file, and the artefacts already there are replayed at the start of every run.
 
 Every run writes report.json and report.md into <out>/<workload>-<timestamp>/.
 Exit status is 1 when the run found a failure, so it can gate CI.
@@ -206,6 +223,31 @@ fn run() -> anyhow::Result<bool> {
             };
             probe::run(&spec)?
         }
+        "frame" => {
+            let spec = frame::FrameSpec {
+                frames: flags.usize_or("--frames", 500)?,
+                rounds: flags.usize_or("--rounds", 5)?,
+                cols: flags.usize_or("--cols", 120)? as u16,
+                rows: flags.usize_or("--rows", 40)? as u16,
+                seed: flags.u64_or("--seed", 1)?,
+                software: flags.flag("--software"),
+            };
+            let report = frame::run(&spec)?;
+            println!("{}", frame::table(&report));
+            report
+        }
+        "divergence" => {
+            let spec = divergence::DivergenceSpec {
+                cases: flags.usize_or("--cases", 20_000)?,
+                schedules: flags.usize_or("--schedules", 2_000)?,
+                threads: flags.usize_or("--threads", 4)?,
+                seed: flags.u64_or("--seed", 1)?,
+                corpus: flags
+                    .path("--corpus")?
+                    .unwrap_or_else(|| PathBuf::from(divergence::CORPUS_DIR)),
+            };
+            divergence::run(&spec)?
+        }
         "world" => {
             let spec = world::WorldSpec {
                 server,
@@ -215,6 +257,9 @@ fn run() -> anyhow::Result<bool> {
                 lines_per_burst: flags.usize_or("--burst-lines", 400)?,
                 ssh_host: flags.string("--ssh-host"),
                 settle: flags.secs_or("--settle", 2.0)?,
+                keystroke_samples: flags.usize_or("--keystrokes", 400)?,
+                stream_sessions: flags.usize_or("--streams", 7)?,
+                stream_lines: flags.usize_or("--stream-lines", 200_000)?,
             };
             runtime.block_on(profiled(profile_pid, interval, sampler_limit, world::run(&spec)))?
         }

@@ -261,3 +261,255 @@ fn a_quoted_remote_command_reaches_the_shell_unchanged() {
         );
     }
 }
+
+// --- the frame probe --------------------------------------------------------
+//
+// WHY: these close the class "a frame phase stops being attributed". A phase
+// added to the enum without a place in `Phase::ALL` would index past the
+// accumulator, and a phase in `ALL` with no call site would report as free.
+// The first is caught here; the second is caught by `frame::run`, which fails
+// the run when a phase records nothing. What neither catches is a phase whose
+// span brackets the wrong region — that is a judgement, and the run's
+// sum-against-the-frame check is the only thing that constrains it.
+
+/// Every phase indexes a distinct slot inside the accumulator, and no phase
+/// indexes past it.
+///
+/// The variant space is read from `Phase::ALL` rather than listed here, so a
+/// new phase that is not added to `ALL` fails this instead of silently
+/// overrunning the array at run time.
+#[test]
+fn every_frame_phase_owns_one_slot_in_the_accumulator() {
+    use vitrum_grid::probe::Phase;
+
+    let mut seen = vec![false; Phase::ALL.len()];
+    for phase in Phase::ALL {
+        let mut frame = vitrum_grid::probe::Frame::default();
+        assert_eq!(frame.nanos(phase), 0);
+        assert_eq!(frame.calls(phase), 0);
+        // Distinctness through the accessor, because the index is private and
+        // the accessor is what the report reads.
+        frame = record(phase);
+        let hits: Vec<&'static str> = Phase::ALL
+            .iter()
+            .filter(|p| frame.calls(**p) > 0)
+            .map(|p| p.name())
+            .collect();
+        assert_eq!(
+            hits,
+            vec![phase.name()],
+            "{} shares a slot with another phase",
+            phase.name()
+        );
+        let slot = Phase::ALL.iter().position(|p| *p == phase).expect("in ALL");
+        assert!(!seen[slot], "{} appears twice in ALL", phase.name());
+        seen[slot] = true;
+    }
+    assert!(seen.into_iter().all(|s| s), "a slot in ALL is unreachable");
+}
+
+/// One span of `phase`, recorded and taken. Serialised by the probe's own
+/// process-wide switch, so these tests cannot interleave with each other.
+fn record(phase: vitrum_grid::probe::Phase) -> vitrum_grid::probe::Frame {
+    use vitrum_grid::probe;
+    let _guard = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    probe::reset();
+    probe::set_enabled(true);
+    {
+        let _span = probe::span(phase);
+    }
+    probe::set_enabled(false);
+    probe::take()
+}
+
+static PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The switch is what "off by default" means at run time: a span taken while
+/// it is off must record nothing at all, or an idle frame would be charged for
+/// a measurement nobody asked for.
+#[test]
+fn a_span_taken_with_the_probe_off_records_nothing() {
+    use vitrum_grid::probe::{self, Phase};
+
+    let _guard = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    probe::set_enabled(false);
+    probe::reset();
+    {
+        let _span = probe::span(Phase::Parse);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        probe::take().is_empty(),
+        "the probe recorded a span while it was switched off"
+    );
+}
+
+/// A build runs either the control arm or the two probe arms, never a mixture.
+/// The comparator joins rounds by arm name and would pair an arm with itself if
+/// one binary could produce both.
+#[test]
+fn a_build_offers_the_control_arm_or_the_probe_arms_but_not_both() {
+    use crate::frame::Arm;
+
+    let arms = Arm::compiled();
+    assert!(!arms.is_empty());
+    let control = arms.contains(&Arm::Absent);
+    let probed = arms.contains(&Arm::Off) || arms.contains(&Arm::On);
+    assert!(control ^ probed, "a build offered {arms:?}");
+    if probed {
+        assert!(
+            arms.contains(&Arm::Off) && arms.contains(&Arm::On),
+            "the zero-cost comparison needs both switch positions from one build"
+        );
+    }
+}
+
+// --- divergence -------------------------------------------------------------
+//
+// WHY: a fuzzer that cannot fail turns every clean run into a claim nobody
+// checked. These gate the detector itself, and the corpus that records what it
+// has found.
+
+/// The comparison really does fail on a screen that is different.
+///
+/// One byte apart is the smallest difference that matters, and the whole value
+/// of a clean `divergence` run rests on this: without it, "twenty thousand
+/// inputs agreed" and "the comparison always returns None" are the same
+/// report.
+#[test]
+fn the_differential_detector_fails_on_a_screen_that_really_differs() {
+    let a = b"hello world";
+    let b = b"hellp world";
+    let how = crate::divergence::differential(a, b, &[4])
+        .expect("both paths run")
+        .expect("a one-byte difference is a different screen");
+    assert!(how.contains("cell"), "{how}");
+
+    assert!(
+        crate::divergence::differential(a, a, &[4])
+            .expect("both paths run")
+            .is_none(),
+        "the same bytes fed two ways produced two screens"
+    );
+}
+
+/// A split falling inside a multi-byte character must not change the screen.
+/// This is the case the whole chunking axis exists for, pinned as a case rather
+/// than left to the seed.
+#[test]
+fn a_split_inside_a_character_does_not_change_the_screen() {
+    let text = "日本語 ── 🙂".as_bytes();
+    for at in 1..text.len() {
+        assert!(
+            crate::divergence::chunking(text, &[at])
+                .expect("both paths run")
+                .is_none(),
+            "splitting at byte {at} changed the screen"
+        );
+    }
+}
+
+/// Threads driving their own sessions produce the screens they produce alone,
+/// under an interleaving and free-running alike.
+#[test]
+fn concurrent_sessions_produce_the_screens_they_produce_alone() {
+    let work: Vec<Vec<Vec<u8>>> = vec![
+        vec![b"\x1b[31mred\r\n".to_vec(), b"more\r\n".to_vec()],
+        vec![b"\x1b[1mbold".to_vec(), b"\x1b[0m tail\r\n".to_vec()],
+    ];
+    let steps = vec![1, 0, 1, 0];
+    assert!(
+        crate::divergence::concurrent(&work, Some(&steps))
+            .expect("the scheduled run completes")
+            .is_none()
+    );
+    assert!(
+        crate::divergence::concurrent(&work, None)
+            .expect("the free run completes")
+            .is_none()
+    );
+}
+
+/// Every committed artefact replays to the status recorded for it.
+///
+/// Both directions are checked. An `open` artefact that stops reproducing means
+/// the defect was fixed and nobody updated the record; a `fixed` artefact that
+/// reproduces means the fix was undone. Either way the corpus is stale, and a
+/// stale corpus is the same as no corpus.
+#[test]
+fn every_committed_artefact_replays_to_its_recorded_status() {
+    use crate::divergence::{Status, corpus};
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts");
+    for (path, artifact) in corpus(&dir).expect("the committed corpus parses") {
+        let name = path.display();
+        match (artifact.status(), artifact.replay().expect("replaying")) {
+            (Status::Open, Some(_)) | (Status::Fixed, None) => {}
+            (Status::Open, None) => {
+                panic!("{name} is recorded as open but no longer reproduces; record the fix")
+            }
+            (Status::Fixed, Some(how)) => {
+                panic!("{name} is recorded as fixed but diverged again: {how}")
+            }
+        }
+    }
+}
+
+/// An artefact survives the round trip through the file it is committed as, and
+/// names itself the same way twice.
+#[test]
+fn an_artefact_round_trips_through_its_file_and_keeps_its_name() {
+    use crate::divergence::{Artifact, Status};
+
+    let artifact = Artifact::Chunking {
+        status: Status::Fixed,
+        note: "cell (0, 0) differed".to_string(),
+        input_hex: "1b5b306d61".to_string(),
+        splits: vec![2],
+    };
+    let text = serde_json::to_string(&artifact).expect("serialising");
+    let back: Artifact = serde_json::from_str(&text).expect("parsing");
+    assert_eq!(back, artifact);
+    assert_eq!(back.file_name(), artifact.file_name());
+    assert!(artifact.file_name().starts_with("chunking-"));
+}
+
+// --- the world's floor ------------------------------------------------------
+
+/// Whether the floor is subtracted depends on this classification, so a URL
+/// read wrongly publishes a figure with someone else's hops taken out of it.
+#[test]
+fn only_a_daemon_on_this_machine_has_the_locally_measured_floor() {
+    use crate::world::server_is_local;
+
+    for local in [
+        "ws://127.0.0.1:7777/ws",
+        "ws://localhost:7777/ws",
+        "ws://127.0.0.1/ws",
+        "ws://127.0.1.9:7777/ws",
+        "ws://[::1]:7777/ws",
+    ] {
+        assert!(server_is_local(local), "{local} is on this machine");
+    }
+    for remote in [
+        "ws://198.51.100.7:7777/ws",
+        "ws://rig.example:7777/ws",
+        "wss://vitrum.example/ws",
+        "ws://127x0.example:7777/ws",
+        "ws://[fd00::1]:7777/ws",
+    ] {
+        assert!(!server_is_local(remote), "{remote} is not on this machine");
+    }
+}
+
+/// Subtracting the floor keeps every sample and never produces a negative
+/// latency. A sample below the floor means the two measurements disagreed by
+/// less than their own noise, which is a zero, not a number below zero read
+/// back as an enormous unsigned one.
+#[test]
+fn subtracting_the_floor_saturates_and_keeps_every_sample() {
+    let net = crate::world::subtract(&[10_000, 5_000, 100], 5_000).expect("three samples");
+    assert_eq!(net.count, 3);
+    assert_eq!(net.min, 0, "a sample under the floor is zero, not underflow");
+    assert_eq!(net.max, 5_000);
+}

@@ -183,10 +183,10 @@ from the wall clock stamped immediately before `exec`.
 
 | Mark | 0.3.1, webview shell | GTK 3 shell |
 | --- | --- | --- |
-| `window.created` | 71.5 | 51.0 |
-| `frame.realized` | not marked | 73.7 |
-| `shell.mounted` | 223.4, and 711.9 to 713.4 | 337.3 |
-| `pane.first-paint` | never arrived | 353.2 |
+| `window.created` | 71.5 | 56.3 |
+| `frame.realized` | not marked | 82.1 |
+| `shell.mounted` | 223.4, and 711.9 to 713.4 | 82.6 |
+| `pane.first-paint` | never arrived | 340.6 |
 
 The old figures are two modes, not one number. Time to a mounted shell was
 bimodal from the same binary on the same display with the same profile: three
@@ -194,22 +194,25 @@ of five runs landed at 216.5, 223.4 and 228.1 ms, and two at 711.9 and
 713.4 ms. A median over five runs of that distribution is whichever mode won
 three times, so both are printed above.
 
-The GTK figures are one mode. The five runs land at 333.8, 335.1, 337.3, 339.8
-and 348.0 ms, and the 348.0 is the first run of the batch, before the loader
-has the shared libraries in page cache. The spread is 14 ms, so the median is
-a figure rather than a coin toss.
+The GTK figures are one mode. The five runs mount the shell at 71.3, 77.7,
+82.6, 83.0 and 87.0 ms, a spread of 16 ms, so the median is a figure rather
+than a coin toss.
 
-That is 20 ms off the window and 375 ms off the worst case, against 114 ms
-added to the best case. The window is created earlier because nothing has to
-start a web engine before it, and the shell mounts later because the whole
-widget tree is built and styled before the frame is shown rather than after.
-A run that used to be over seven tenths of a second no longer exists.
+That is 15 ms off the window, 141 ms off the old best case and 631 ms off the
+old worst case. The window is created earlier because nothing has to start a
+web engine before it, and the shell mounts a frame after the window because
+the widget tree is built and styled before the frame is shown rather than
+after. A run that used to be over seven tenths of a second no longer exists.
 
 `pane.first-paint` is new here, and not because the mark was added: the old
 build never reached it under Xvfb at all, because its terminal was a
 JavaScript emulator inside a compositor that stalls on a display with no
-direct rendering. The pane now paints its first frame 16 ms after the shell
-mounts on a host with no GPU available to the process.
+direct rendering. The pane's first frame is painted when its X window is
+realized, not on the first tick after it, so the 258 ms between the shell and
+the pane is the GPU handshake: instance, adapter, device, swapchain
+configuration and the glyph pipeline, on a host whose only adapter is llvmpipe
+under Xvfb with no direct rendering. The shell is on screen and usable for all
+of it.
 
 A different number from the same subject: the pane's own first frame is
 192.5 ms at the median on the measurement host, measured as process creation

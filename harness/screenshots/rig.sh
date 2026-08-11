@@ -104,6 +104,24 @@ up() {
   make_tree
   make_bin
 
+  # A profile that has been used before.
+  #
+  # The stage is wiped for every run, and a wiped profile is a first run: the
+  # onboarding sheet opens over the window, takes the keyboard, and every
+  # chord and click the capture sends afterwards goes to it. Three pictures of
+  # the same welcome sheet is what that produces.
+  #
+  # It is also the wrong picture. The README shows a machine with eight agents
+  # on it, and nobody with eight agents running is on their first launch. So
+  # the two facts the product remembers about the operator are written before
+  # the client starts: the sheet has been read, and so have the notes for the
+  # version that is about to run.
+  VERSION=$("$VITRUM_BIN/vitrum" --version 2>/dev/null | awk '{print $NF}')
+  mkdir -p "$STAGE/cfg/vitrum"
+  cat > "$STAGE/cfg/vitrum/ui.json" <<JSON
+{"version":1,"settings":{"onboarded":true,"seenVersion":"$VERSION"}}
+JSON
+
   export XDG_CONFIG_HOME=$STAGE/cfg XDG_STATE_HOME=$STAGE/state \
          XDG_DATA_HOME=$STAGE/data XDG_CACHE_HOME=$STAGE/cache \
          XDG_RUNTIME_DIR=$STAGE/run
@@ -224,7 +242,7 @@ down() {
 # which is what holds when the window is resized. The button sits at the foot
 # of the sidebar, beside the collapse arrow, so x is measured from the left
 # and y from the bottom.
-GEAR=${GEAR:-282,-23}
+GEAR=${GEAR:-196,-25}
 APPEARANCE_AT=${APPEARANCE_AT:-}
 # ImageMagick geometry applied to every capture, e.g. 1600x760+0+0 to drop the
 # empty bottom of a tall window. Empty keeps the whole frame.
@@ -308,12 +326,24 @@ shot() {
   echo "$OUT/$name.png"
 }
 
+# Send a chord to the window.
+#
+# To the FOCUSED window, not to a window id. `xdotool key --window` forges a
+# KeyPress and sends it with XSendEvent, and GTK reads the send_event flag and
+# ignores it: a synthetic key is how a screen recorder replays somebody else's
+# session. Focus first and let XTEST drive the real keyboard, which is a press
+# the toolkit cannot tell from a finger.
+chord() {
+  DISPLAY=":$DNUM" xdotool windowactivate --sync "$WIN" 2>/dev/null
+  DISPLAY=":$DNUM" xdotool key --clearmodifiers "$1"
+}
+
 shots() {
   DNUM=$1
   WIN=$(cat "$STAGE/run/window" 2>/dev/null) || die "no window; run 'up' first"
   [ -n "$WIN" ] || die "no window; run 'up' first"
   read -r TW TH < "$STAGE/run/size" || die "no size; run 'up' first"
-  DISPLAY=":$DNUM" xdotool windowactivate "$WIN" 2>/dev/null
+  DISPLAY=":$DNUM" xdotool windowactivate --sync "$WIN" 2>/dev/null
   place
   g=$(geometry)
   wh=${g%%+*}; rest=${g#*+}
@@ -325,10 +355,10 @@ shots() {
   shot hero-sidebar-five-states
 
   # 2. The launcher, over that same sidebar.
-  DISPLAY=":$DNUM" xdotool key --window "$WIN" --clearmodifiers ctrl+shift+n
+  chord ctrl+shift+n
   sleep 3
   shot launcher
-  DISPLAY=":$DNUM" xdotool key --window "$WIN" --clearmodifiers Escape
+  chord Escape
   sleep 2
 
   # 3. Settings, on Appearance, over that same sidebar. The pointer is driven
@@ -345,7 +375,7 @@ shots() {
     sleep 2
   fi
   shot settings-appearance
-  DISPLAY=":$DNUM" xdotool key --window "$WIN" --clearmodifiers Escape
+  chord Escape
 }
 
 all() {

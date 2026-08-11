@@ -20,6 +20,7 @@
 //! never draws a CJK codepoint never pays for the CJK font.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, Once};
 
 use crate::cell::{Attrs, CharWidth, char_width};
 
@@ -321,6 +322,59 @@ impl core::fmt::Debug for FontStack {
     }
 }
 
+/// A font stack built ahead of the caller that needs it, with the
+/// configuration it was built for.
+///
+/// Building a stack scans every font directory on the machine and then parses
+/// four faces out of the family it picked. That is tens of milliseconds, it
+/// needs no window and no GPU, and on a cold start it sits between the
+/// operator opening the program and the pane's first glyph. So it is done on
+/// its own thread as soon as the configuration is known, and
+/// [`FontStack::system`] collects the result instead of repeating it.
+///
+/// The configuration is stored beside the stack rather than assumed: a stack
+/// built for 16 px is the wrong stack for a window at 200% scale, and handing
+/// it over would make the pane's glyphs the wrong size. A mismatch is simply
+/// a miss, and a miss costs exactly what there was before the prewarm.
+static PREWARMED: Mutex<Option<(FontConfig, FontStack)>> = Mutex::new(None);
+
+/// Start building a stack for `config` on a worker thread.
+///
+/// Idempotent by way of [`Once`]: the first call wins and a later one does
+/// nothing, because a second speculative stack costs a face parse to answer a
+/// question the first one already answered. A caller that reaches
+/// [`FontStack::system`] before the thread finishes builds its own rather than
+/// waiting, so this can only make a start faster and can never make one hang.
+pub fn prewarm_font_stack(config: FontConfig) {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(move || {
+        std::thread::Builder::new()
+            .name("vitrum-fonts".into())
+            .spawn(move || {
+                let mut db = fontdb::Database::new();
+                db.load_system_fonts();
+                if let Ok(stack) = FontStack::from_database(db, &config)
+                    && let Ok(mut slot) = PREWARMED.lock()
+                {
+                    *slot = Some((config, stack));
+                }
+            })
+            .ok();
+    });
+}
+
+/// Whether two configurations would build the same stack.
+///
+/// `FontConfig` holds an `f32`, so this is a comparison and not a `PartialEq`
+/// derive: sizes are compared by bit pattern, which is exactly the question
+/// being asked. Two configurations that differ only in a rounding error are
+/// different stacks and should be, because the metrics they produce differ.
+fn same_config(a: &FontConfig, b: &FontConfig) -> bool {
+    a.size_px.to_bits() == b.size_px.to_bits()
+        && a.max_fallback_faces == b.max_fallback_faces
+        && a.families == b.families
+}
+
 impl FontStack {
     /// Discover a monospace family in the system font database and build the
     /// four style slots from it.
@@ -333,6 +387,16 @@ impl FontStack {
     /// readable as TrueType or OpenType.
     pub fn system(config: &FontConfig) -> Result<Self, FontError> {
         check_size(config.size_px)?;
+        // Whoever asks for the configuration the prewarm was told to build
+        // collects it. Anyone else, including a second window, builds their
+        // own, which is what this function did before there was a prewarm.
+        let hit = PREWARMED.lock().ok().and_then(|mut slot| {
+            let matches = slot.as_ref().is_some_and(|(had, _)| same_config(had, config));
+            matches.then(|| slot.take().map(|(_, stack)| stack)).flatten()
+        });
+        if let Some(stack) = hit {
+            return Ok(stack);
+        }
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
         Self::from_database(db, config)

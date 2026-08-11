@@ -129,7 +129,7 @@ pub use cell::{
 };
 pub use font::{
     CellMetrics, Coverage, DEFAULT_FAMILIES, FallbackEntry, FontConfig, FontError, FontStack,
-    FontStyle, MAX_SIZE_PX, RasterGlyph, fallback_chain,
+    FontStyle, MAX_SIZE_PX, RasterGlyph, fallback_chain, prewarm_font_stack,
 };
 pub use gpu::{AdapterClass, GpuContext, GpuError};
 pub use grid::{

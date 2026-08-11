@@ -263,12 +263,33 @@ impl PaneHost {
         let im = gtk::IMMulticontext::new();
 
         // Realize: the X window exists from here, and so can a swapchain.
+        //
+        // Building it here, inline, is what a realize handler is for and it is
+        // wrong. `realize` runs inside `show_all`, so the instance, the
+        // adapter, the device, the swapchain and the shader pipeline all get
+        // between the operator and the first frame: the whole window waits on
+        // a GPU handshake to draw a sidebar that does not use one. The work is
+        // therefore queued at `DEFAULT_IDLE`, which is below GDK's redraw
+        // priority, so the frame the window already has goes out first and the
+        // pane attaches against a window that is on screen.
+        //
+        // Until it attaches the pane draws its own background through
+        // `draw_fallback`, which is the same thing it shows when a GPU is
+        // missing, so there is no black rectangle in between.
         {
             let this = self.clone();
             let im = im.clone();
             area.connect_realize(move |area| {
                 im.set_client_window(area.window().as_ref());
-                this.realize(area);
+                let this = this.clone();
+                let area = area.clone();
+                glib::idle_add_local_once(move || {
+                    // The window can be gone, or a second realize can have
+                    // already attached one. Either way there is nothing to do.
+                    if area.is_realized() && this.inner.borrow().surface.is_none() {
+                        this.realize(&area);
+                    }
+                });
             });
         }
 

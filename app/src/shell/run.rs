@@ -246,6 +246,23 @@ pub(crate) fn launch(opts: Options, link: Option<DeepLink>) -> ! {
         let _span = boot::span("monitors.probe");
         monitors()
     };
+
+    // The pane's font stack: a font-directory scan and four face parses, tens
+    // of milliseconds, needing no window and no GPU. It is built here on its
+    // own thread, for the configuration the pane will ask for, so that by the
+    // time the window is on screen and the pane attaches, the answer is
+    // already sitting in the slot. The toolkit scale is the primary monitor's,
+    // which is the scale the widget reports on every machine with one display
+    // and the overwhelmingly common case; a window that lands somewhere else
+    // misses and pays what it paid before.
+    {
+        let _span = boot::span("fonts.prewarm");
+        let scale = primary
+            .as_ref()
+            .map_or(1.0, |m| f64::from(m.scale_factor().max(1)));
+        let theme = crate::pane::theme_from(&crate::state::live::pane_settings());
+        vitrum_grid::prewarm_font_stack(theme.font_config(scale));
+    }
     {
         let _span = boot::span("geometry.load");
         seed_book(load_geometry(&monitor_rects(primary.as_ref(), &all)));

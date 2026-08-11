@@ -133,7 +133,7 @@ jobs:
             if [ "$GITHUB_EVENT_NAME" = push ] &&
                git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then
               changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" |
-                grep -E '^(app/|crates/|vendor/|vendor-pty/|vendor-ghostty-vt-sys/|packaging/|tools/release/|\.github/actions/|\.github/workflows/release\.yml$|Cargo\.(toml|lock)$)' || true)
+                grep -E '^(app/|crates/|vendor-pty/|vendor-ghostty-vt-sys/|packaging/|tools/release/|\.github/actions/|\.github/workflows/release\.yml$|Cargo\.(toml|lock)$)' || true)
               if [ -z "$changed" ]; then
                 build=false
                 echo "no crate, app or packaging change since $BEFORE; skipping"
@@ -223,9 +223,9 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: system webview
+      - name: system dependencies
         if: runner.os == 'Linux'
-        run: ./.github/system-webview.sh
+        run: ./.github/system-deps.sh
 
       # `vitrum-vt` builds the Ghostty engine from source. Every release target
       # needs the toolchain, not just Linux.
@@ -683,32 +683,46 @@ jobs:
         if: env.CHANNEL == 'stable'
         run: gh release edit "$TAG" --draft=false --prerelease=false --latest
 
-      # Both channels end here, asking the release the same question an
-      # installer will.
-      - name: what an installer now sees
+      # Both channels end here, asking the release the questions an installer
+      # asks: is it published, is it the release `/releases/latest` resolves
+      # to, does it hold one archive per published target, and are those
+      # archives the bytes its own `SHA256SUMS` names. The last of those is
+      # the one nothing above answers: `sha256sum -c` two steps up compares a
+      # file with the archives it was written from, which cannot disagree.
+      # This downloads the published assets and compares them.
+      #
+      # It is also where a field that does not exist stopped being the check.
+      # `isLatest` is not a field `gh release view` has, so a step that asked
+      # for it exited 1 listing the fields that do, after every leg of the
+      # matrix had built. The endpoint is asked instead, because unlike a
+      # field it cannot be right while the endpoint is wrong.
+      - name: the release is one a machine can install
+        run: ./tools/release/published.sh "$TAG"
+
+      # And then install it. Every check above reads the release; this one
+      # runs the shipped installer against it exactly as a person would, on
+      # the one target this runner is, and starts both binaries. A release
+      # that verifies and does not install is a release nobody can use, and
+      # until this step nothing between a build and a user's machine had run
+      # `install.sh` against a real published release on either channel.
+      #
+      # `--no-deps` with the webview installed by the same script the build
+      # jobs use: the package-manager path is what `install.yml` proves, on
+      # four distributions rather than on this one.
+      - name: the release installs from nothing
         run: |
-          gh release view "$TAG" --json tagName,isDraft,isPrerelease
-          gh release view "$TAG" --json assets --jq '.assets[].name'
-
-          # `isLatest` is not a field `gh release view` has, so this step had
-          # never run to completion: it exited 1 listing the fields that do
-          # exist, and it did that after every leg of the matrix had built.
-          #
-          # What it meant to ask is what `/releases/latest` resolves to, which
-          # is the endpoint both installers use when no version is given. Ask
-          # the endpoint. It is the same question an installer asks, and unlike
-          # a field it cannot be right while the endpoint is wrong.
-          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
-            --jq .tag_name 2>/dev/null || echo none)
-          echo "releases/latest resolves to: $latest"
-
-          # A stable must be the answer. A nightly must never be, or `vitrum
-          # update` walks a stable installation onto a prerelease.
-          if [ "$CHANNEL" = stable ] && [ "$latest" != "$TAG" ]; then
-            echo "published stable $TAG but /releases/latest is $latest" >&2
-            exit 1
+          ./.github/system-deps.sh
+          if [ "$CHANNEL" = stable ]; then
+            sh install.sh "$VERSION" --no-integrate --no-deps \
+              --install-dir="$RUNNER_TEMP/release-install"
+          else
+            sh install.sh --channel=nightly --no-integrate --no-deps \
+              --install-dir="$RUNNER_TEMP/release-install"
           fi
-          if [ "$CHANNEL" = nightly ] && [ "$latest" = "$TAG" ]; then
-            echo "nightly $TAG became /releases/latest; it must not" >&2
-            exit 1
-          fi
+          got=$("$RUNNER_TEMP/release-install/vitrum" --version)
+          echo "$got"
+          case "$got" in
+            *"$VERSION"*) ;;
+            *) echo "::error::published $VERSION and the installed binary reports: $got"; exit 1 ;;
+          esac
+          "$RUNNER_TEMP/release-install/vitrum-server" --version

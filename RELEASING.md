@@ -13,18 +13,35 @@ start it.
 Run the `cut` workflow and give it the version:
 
 ```sh
-gh workflow run cut.yml -f version=x.y.z
+make cut VERSION=x.y.z
 ```
 
-It checks out `main`, refuses a commit `ci` or `platforms` has not passed,
-rehearses the whole cut in a throwaway clone, runs `tools/release/cut.sh`,
-pushes `main` and the tag, and asks `.github/workflows/release.yml` to build
-and publish that tag. Every refusal below still applies: the script is the one
-in this repository, run unmodified.
+That is `gh workflow run cut.yml -f version=x.y.z` followed by `gh run watch
+--exit-status`, so the command fails when the cut fails and there is nothing to
+watch for by eye.
 
-It asks for the publish by name because a tag pushed with the workflow token
+The workflow checks out `main`, refuses a commit `ci` or `platforms` has not
+passed, refuses an empty `CARGO_REGISTRY_TOKEN`, rehearses the whole cut in a
+throwaway clone, runs `tools/release/cut.sh`, pushes `main` and the tag
+atomically, and then drives the rest of the release itself:
+
+1. asks `release.yml` to build and publish the tag, and `publish.yml` to
+   publish the crates;
+2. waits for each of those runs with `tools/release/await-run.sh`, which
+   refuses a dispatch that started no run as well as a run that failed;
+3. verifies the published release with `tools/release/published.sh`;
+4. installs that release on the runner with `install.sh` and runs
+   `vitrum --version`.
+
+Every refusal below still applies: the script is the one in this repository,
+run unmodified.
+
+It asks for both publishes by name because a tag pushed with the workflow token
 starts no workflow. That is the same dispatch input a failed publish is
-re-run with, not a second way to release.
+re-run with, not a second way to release. `platforms.yml` is the one workflow
+a tag push would start that the cut does not ask for: the cut already refused
+a commit `platforms` had not passed, and the release commit adds version
+literals and a changelog heading to that same tree.
 
 ## From a checkout
 
@@ -54,6 +71,10 @@ run the same two things yourself:
 make gate            # release build and test of every crate, warnings fatal
 make release-check   # every version literal and target triple agrees
 ```
+
+Set `CARGO_REGISTRY_TOKEN` in the repository secrets. The cut refuses an empty
+one before it makes the tag, because a release whose crates never reached
+crates.io is the failure this gate exists for.
 
 Then launch it and use it. Start two sessions, switch between them, save a
 preset, bind a key, fire it. The suite does not open a window, and no workflow
@@ -140,6 +161,23 @@ installs half of itself.
 The source tarball GitHub generates for the tag is separate and automatic; it
 is what the README's `curl` line fetches for people building from source.
 
+## Publishing to crates.io
+
+`.github/workflows/publish.yml` publishes the workspace in dependency order.
+That order lives in `tools/release/crates.sh`, which also checks it against
+`cargo metadata`, so a new publishable crate fails the pipeline rather than
+being skipped in silence.
+
+The job refuses an empty or unauthorised registry token before it packages
+anything, publishes each crate with its exit status unmasked, waits for the
+sparse index to carry each one rather than sleeping, and ends by requiring
+every crate to be on the index at the version this tag names. A crate already
+published at that version is a skip, so the job is safe to re-run:
+
+```sh
+gh workflow run publish.yml -f tag=v1.2.3
+```
+
 ## The CPU floor
 
 A published binary must run on every machine its triple claims. That is not
@@ -197,8 +235,14 @@ always, and `vitrum --version` says which nightly a binary is:
 tools/release/versions.sh nightly
 ```
 
-To install one, name the tag. To leave the channel, install a stable version;
-`docs/install.md` covers pinning.
+To install one, name the channel:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh -s -- --channel=nightly
+```
+
+To leave the channel, install a stable version; `docs/install.md` covers
+pinning.
 
 ## Verifying without publishing
 
@@ -212,6 +256,22 @@ writes `SHA256SUMS` the way the publish job writes it, serves both over
 download base repointed. Then it corrupts one byte and removes the
 `SHA256SUMS` entry and requires the installer to refuse both, so the digest
 check is exercised rather than assumed.
+
+## Verifying a published release
+
+```sh
+make released TAG=v1.2.3
+```
+
+`tools/release/published.sh` asks GitHub what the release actually holds: that
+it exists and is not a draft, that it is prerelease exactly when it is the
+nightly and is `/releases/latest` exactly when it is a stable, that it carries
+one archive per published target and a `SHA256SUMS` and nothing else, that
+every asset names one version and that version is the tag's, and that every
+asset downloads and matches its digest.
+
+`TAG` defaults to the newest stable release. The cut runs this itself; run it
+by hand to check a release that was published before the cut did.
 
 ## After publishing
 

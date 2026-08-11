@@ -35,7 +35,7 @@ sorted() { LC_ALL=C sort -u; }
 # Every triple the file names, whatever syntax it names it in.
 #
 # A triple that follows a `/` is a multiarch library directory, not a target:
-# `/usr/lib/x86_64-linux-gnu` is where a Debian derivative keeps the WebKit
+# `/usr/lib/x86_64-linux-gnu` is where a Debian derivative keeps the GTK
 # this installer probes for, and reading it as a published target failed this
 # check on a file that named the right set.
 found_in() {

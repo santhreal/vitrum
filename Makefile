@@ -7,8 +7,9 @@
 CARGO ?= cargo
 RUSTFLAGS_STRICT := -D warnings
 
-.PHONY: help build test clippy fast gate measure package release \
-	release-dry-run release-check verify-artifacts check-isa check-abi clean
+.PHONY: help build test clippy fast gate measure package release cut \
+	release-dry-run release-check verify-artifacts check-isa check-abi \
+	released clean
 
 help:
 	@echo 'build              release build of every crate, warnings fatal'
@@ -25,6 +26,10 @@ help:
 	@echo 'release-check      every version literal and target triple agrees'
 	@echo 'release-dry-run    rehearse a cut in a scratch clone; VERSION=x.y.z'
 	@echo 'release            cut it here: bump, changelog, commit, tag; VERSION=x.y.z'
+	@echo 'cut                cut it on GitHub and follow it to a published,'
+	@echo '                   installed release; VERSION=x.y.z'
+	@echo 'released           ask a published release the questions an installer'
+	@echo '                   asks; TAG=v1.2.3, or TAG=nightly'
 	@echo 'clean              cargo clean'
 
 build:
@@ -87,6 +92,20 @@ release:
 	@$(need-version)
 	@tools/release/cut.sh '$(VERSION)'
 
+# The whole release, from one command, with nobody watching for a red job.
+#
+# `gh workflow run` returns as soon as GitHub accepts the dispatch, so this
+# follows the run it started and exits with it. The cut workflow does the same
+# for the two runs it starts, so what this waits for is the whole chain:
+# green checks, a rehearsal, the commit, the tag, five archives, a published
+# release, that release installed on a runner that had nothing, and thirteen
+# crates on crates.io.
+cut:
+	@$(need-version)
+	@gh workflow run cut.yml -f version='$(VERSION)'
+	@sleep 5
+	@gh run watch "$$(gh run list --workflow=cut.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+
 release-dry-run:
 	@$(need-version)
 	@tools/release/dry-run.sh '$(VERSION)'
@@ -109,6 +128,12 @@ check-abi:
 
 verify-artifacts:
 	./tools/release/verify-artifacts.sh
+
+# What a published release holds, asked the way an installer asks. Given no
+# tag it asks about the newest stable.
+TAG ?=
+released:
+	./tools/release/published.sh '$(if $(TAG),$(TAG),$(shell gh release view --json tagName --jq .tagName 2>/dev/null))'
 
 clean:
 	$(CARGO) clean

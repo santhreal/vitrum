@@ -894,31 +894,33 @@ mod tests {
             })
             .count();
 
-        let workflow = include_str!("../../../.github/workflows/publish.yml");
-        let lists: Vec<Vec<&str>> = workflow
-            .split("for c in ")
-            .skip(1)
-            .map(|rest| {
-                rest.split_once("; do")
-                    .expect("each loop closes")
-                    .0
-                    .split_whitespace()
-                    .filter(|w| *w != "\\")
-                    .collect()
-            })
+        // The publish order is owned by tools/release/crates.sh, not by the
+        // workflow, because a hardcoded list in YAML is a crate that is never
+        // published and never noticed. Read the order from the script and
+        // require it to be exactly the publishable membership.
+        let script = include_str!("../../../tools/release/crates.sh");
+        let order: Vec<&str> = script
+            .split_once("ORDER='")
+            .expect("crates.sh declares ORDER")
+            .1
+            .split_once('\'')
+            .expect("ORDER closes")
+            .0
+            .lines()
+            .filter(|l| !l.trim().is_empty())
             .collect();
-
-        assert_eq!(lists.len(), 2, "publish.yml no longer has a dry run and a publish");
         assert_eq!(
-            lists[0], lists[1],
-            "the dry run packages a different set of crates from the publish step"
-        );
-        assert_eq!(
-            lists[0].len(),
+            order.len(),
             members,
-            "the workspace has {members} members and publish.yml names {}: {:?}",
-            lists[0].len(),
-            lists[0]
+            "the workspace has {members} publishable members and crates.sh names {}: {order:?}",
+            order.len()
+        );
+
+        let workflow = include_str!("../../../.github/workflows/publish.yml");
+        assert!(
+            workflow.contains("crates.sh"),
+            "publish.yml must take its crate list from tools/release/crates.sh, \
+             or a crate added to the workspace is silently never published"
         );
     }
 

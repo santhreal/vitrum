@@ -169,6 +169,36 @@ jobs:
             exit 1
           }
 
+      # The nightly channel on Windows, which nothing had ever downloaded: the
+      # channel was reachable only through `vitrum update`, and `install.ps1`
+      # built its URL from a `v<x.y.z>` tag that a nightly does not have.
+      - name: the nightly channel installs over the stable
+        shell: pwsh
+        run: |
+          .\install.ps1 -Channel nightly
+          $got = & "$env:LOCALAPPDATA\vitrum\bin\vitrum.exe" --version
+          Write-Output $got
+          if ($got -notmatch '-nightly\.') {
+            Write-Output "-Channel nightly installed: $got"
+            exit 1
+          }
+
+      # A nightly and a version name two different builds, and asking for both
+      # is a refusal rather than a silent choice between them.
+      - name: naming a version and the nightly channel is refused
+        shell: pwsh
+        run: |
+          $out = & pwsh -NoProfile -File .\install.ps1 -Channel nightly -Version 0.1.0 2>&1 | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output 'a version and -Channel nightly installed something'
+            exit 1
+          }
+          if ($out -notmatch 'name two different builds') {
+            Write-Output 'refused for the wrong reason'
+            exit 1
+          }
+
       - name: uninstall
         shell: pwsh
         run: |
@@ -269,3 +299,97 @@ jobs:
 
       - name: uninstall
         run: sh install.sh --uninstall
+
+  # Both channels, installed by the installer, and each one moved onto the
+  # other over the top of an existing install.
+  #
+  # The nightly channel had no install path at all: `install.sh` resolved
+  # `v<x.y.z>` tags and a nightly lives under a moving `nightly` tag, so the
+  # only way onto it was to install a stable first and then run `vitrum update
+  # --channel nightly`. A channel that can only be reached from another
+  # channel is not a channel a new machine can install, and the release notes
+  # said to install one by naming the tag, which nothing could do.
+  #
+  # Reinstalling over an existing install is the other path nothing ran. Every
+  # container leg above starts from a machine with nothing on it, and the
+  # binaries are replaced by rename rather than written in place, so an
+  # install over a running or previous copy is a different code path from the
+  # first one.
+  channels:
+    name: both channels, over each other
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The webview, so a binary that installs can also start. The installer
+      # would install it through the distribution's package manager, which is
+      # what the container legs above prove; this job is about channels.
+      - name: system dependencies
+        run: ./.github/system-deps.sh
+
+      - name: the nightly channel installs onto a machine with nothing
+        run: |
+          sh install.sh --channel=nightly --no-integrate --no-deps
+          got=$("$HOME/.local/bin/vitrum" --version)
+          echo "$got"
+          case "$got" in
+            *-nightly.*) ;;
+            *) echo "--channel=nightly installed: $got" >&2; exit 1 ;;
+          esac
+          "$HOME/.local/bin/vitrum-server" --version
+
+      # Twice in a row. The second install replaces binaries that are already
+      # there, which is the path an operator takes to move a machine forward
+      # and the one no job ran.
+      - name: the nightly channel installs over itself
+        run: |
+          sh install.sh --channel=nightly --no-integrate --no-deps
+          "$HOME/.local/bin/vitrum" --version
+
+      # Leaving the channel, which `docs/install.md` tells people to do by
+      # installing a stable build over the nightly.
+      - name: a stable release installs over a nightly
+        run: |
+          sh install.sh --no-integrate --no-deps
+          got=$("$HOME/.local/bin/vitrum" --version)
+          echo "$got"
+          case "$got" in
+            *-nightly.*) echo "installing a stable left a nightly: $got" >&2; exit 1 ;;
+          esac
+          "$HOME/.local/bin/vitrum-server" --version
+
+      # And back onto it, so the move is proved in both directions rather than
+      # in the one this job happened to start in.
+      - name: the nightly channel installs over a stable
+        run: |
+          sh install.sh --channel=nightly --no-integrate --no-deps
+          got=$("$HOME/.local/bin/vitrum" --version)
+          case "$got" in
+            *-nightly.*) ;;
+            *) echo "--channel=nightly over a stable installed: $got" >&2; exit 1 ;;
+          esac
+
+      # A nightly and a version name two different builds, and asking for both
+      # must be a refusal rather than a silent choice between them.
+      - name: naming a version and the nightly channel is refused
+        run: |
+          if out=$(sh install.sh 0.1.0 --channel=nightly 2>&1); then
+            echo "a version and --channel=nightly installed something: $out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          printf '%s' "$out" | grep -q 'name two different builds' ||
+            { echo "refused for the wrong reason" >&2; exit 1; }
+
+      - name: uninstall
+        run: |
+          sh install.sh --uninstall
+          if [ -e "$HOME/.local/bin/vitrum" ]; then
+            echo "uninstall left the binary behind" >&2
+            exit 1
+          fi

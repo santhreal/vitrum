@@ -17,15 +17,35 @@ name: cut
 # that exists here or on the remote, and an empty `## Unreleased` section all
 # still stop the cut before it writes anything.
 #
-# Two things a person did are done by steps instead. They had run the gate and
-# looked at the checks, which is `tools/release/ci-green.sh`; and they had
-# rehearsed with `make release-dry-run`, which is the step below it.
+# Three things a person did are done by steps instead. They had run the gate
+# and looked at the checks, which is `tools/release/ci-green.sh`; they had
+# rehearsed with `make release-dry-run`, which is the step below it; and they
+# had come back an hour later to see whether a release appeared, which is the
+# last third of this file.
 #
 # The push is made with the workflow token, and GitHub deliberately starts no
-# workflow for such a push. So the tag alone would publish nothing, and the
-# last step asks `release.yml` to run against it through the dispatch input
-# that already exists for re-running a failed publish. That is the same entry
-# point, not a second one.
+# workflow for such a push. A tag push by hand starts three — `release.yml`,
+# `publish.yml` and `platforms.yml` — and a tag push from here starts none, so
+# each one that a cut still owes is asked for by name. That is the same
+# dispatch input each of them already has for re-running a failed publish, not
+# a second entry point.
+#
+# `platforms.yml` is the one a cut does not ask for, and the reason is
+# recorded rather than assumed: `ci-green.sh` above has already required it
+# green on the commit being cut, and the release commit adds version literals
+# and a changelog section to that commit and nothing a compiler reads.
+#
+# ## Why a dispatch is not the end of a cut
+#
+# `gh workflow run` exits 0 when GitHub accepts the request, and this step
+# once read `gh workflow list release.yml`, which also exits 0, prints the
+# workflow, and starts nothing. Every cut after that pushed a tag, reported
+# green, and published a release page with no archives on it. So the dispatch
+# is not what the cut waits for. A run of that workflow, at this commit,
+# concluding successfully is, and then the release itself is asked whether it
+# holds what an installer will ask for and installed on this runner with the
+# shipped installer. A cut is finished when a machine that had nothing can run
+# the version it names.
 on:
   workflow_dispatch:
     inputs:
@@ -57,9 +77,11 @@ jobs:
   cut:
     name: cut a release
     runs-on: ubuntu-latest
-    # Nothing here compiles the workspace. The time is a clone, a handful of
-    # `cargo update` calls inside the rehearsal, and the API.
-    timeout-minutes: 25
+    # Nothing here compiles the workspace, but it waits for the release matrix
+    # and for the crates.io publish, because a cut that ends before those do
+    # is a cut somebody has to come back to. The two together are budgeted at
+    # an hour and a half; past that something is stuck and the cut says so.
+    timeout-minutes: 150
     steps:
       # `main` explicitly, and the whole history with its tags: a cut is made
       # from main whichever ref the dispatch names, and `cut.sh` refuses a tag
@@ -81,6 +103,20 @@ jobs:
         run: |
           git config user.name 'santhreal'
           git config user.email '64453045+santhreal@users.noreply.github.com'
+
+      # The one thing that cannot be fixed after the tag exists. A crates.io
+      # token nobody set publishes no crates, and six releases went green
+      # without one. Asked before the rehearsal, because the cheapest refusal
+      # is the one that happens before any work.
+      - name: the crates.io token exists
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::the CARGO_REGISTRY_TOKEN repository secret is empty. A cut publishes thirteen crates to crates.io and every one of them would be refused, so the cut is refused first. Set the secret from a crates.io API token, or the release is a GitHub release only."
+            exit 1
+          fi
+          echo "a registry token is set"
 
       - name: main is green at the commit being cut
         env:
@@ -107,17 +143,80 @@ jobs:
       - name: cut
         run: ./tools/release/cut.sh "$VERSION"
 
-      # The command `cut.sh` prints, run rather than copied.
+      # The command `cut.sh` prints, run rather than copied, and atomically.
+      # Two refspecs in one push are not atomic by default: a `main` that
+      # someone else moved under this run is rejected while the tag lands
+      # anyway, leaving a release tag on a commit that is not on the branch.
       - name: publish the commit and the tag
-        run: git push origin main tag "v$VERSION"
+        run: git push --atomic origin main tag "v$VERSION"
 
-      # A tag pushed by this token starts nothing, so the publish is asked for
-      # by name. `release.yml` takes an existing tag as an input and builds
-      # exactly what a tag push would have built.
-      - name: build and publish the release
+      # Everything below reads this. `git push` has happened, so the commit
+      # that every dispatched run is matched against is fixed from here on.
+      - name: what was pushed
+        run: |
+          echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SINCE=$(date -u +%s)" >> "$GITHUB_ENV"
+
+      # A tag pushed by this token starts nothing, so each workflow the tag
+      # owes is asked for by name. Both are started before either is waited
+      # for: they share no runner and no artifact, and a cut that ran them one
+      # after the other would cost the sum of two matrices.
+      - name: ask for the release and the crates
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run release.yml --ref main -f tag="v$VERSION"
-          echo "publishing v$VERSION:" \
-            "${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml"
+          gh workflow run publish.yml --ref main -f tag="v$VERSION" -f dry_run=false
+
+      # `gh workflow run` succeeding is not a build starting. These wait for a
+      # run of each workflow to exist at this commit and to conclude, and fail
+      # naming the workflow when no run ever appears, which is what the
+      # dispatch that published an empty release did.
+      - name: the release build finishes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/release/await-run.sh release.yml "$SHA" "$SINCE" 5400
+
+      # The release, asked the questions an installer asks: published rather
+      # than draft, the answer `/releases/latest` gives, one archive per
+      # published target, and every archive matching the SHA256SUMS beside it.
+      # This is the step the v0.1.0 tag would have failed on, and it fails on
+      # it today.
+      - name: the release is one a machine can install
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/release/published.sh "v$VERSION"
+
+      # And then install it, with the file the README tells people to pipe
+      # into a shell. Everything above this line is the pipeline asking itself
+      # questions; this is the answer a person gets. The runner is
+      # x86_64 Linux, so it proves one target of five, and `install.yml`
+      # proves the rest on their own machines.
+      - name: the release installs from nothing
+        run: |
+          ./.github/system-deps.sh
+          sh install.sh "$VERSION" --no-integrate --no-deps \
+            --install-dir="$RUNNER_TEMP/cut-install"
+          got=$("$RUNNER_TEMP/cut-install/vitrum" --version)
+          echo "$got"
+          case "$got" in
+            *"$VERSION"*) ;;
+            *) echo "::error::installed v$VERSION and the binary reports: $got"; exit 1 ;;
+          esac
+          "$RUNNER_TEMP/cut-install/vitrum-server" --version
+
+      # Last, because a crate that failed to publish is a release that is
+      # still installable, and the binary release is what a user waits for.
+      # It still fails the cut: a green cut that published none of thirteen
+      # crates is the report this pipeline spent six releases making.
+      - name: the crates finish publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/release/await-run.sh publish.yml "$SHA" "$SINCE" 5400
+
+      - name: what was published
+        run: |
+          echo "### v$VERSION is published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${{ github.server_url }}/${{ github.repository }}/releases/tag/v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- installed on this runner from install.sh and reported v$VERSION" >> "$GITHUB_STEP_SUMMARY"

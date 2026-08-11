@@ -85,7 +85,6 @@ CXXABI_FLOOR=1.3.11
 #   The webview and its toolkit, which `install.sh` refuses to install without
 #   and `docs/install.md` names per distribution. These are the product's one
 #   real system dependency.
-#     libwebkit2gtk-4.1.so.0 libjavascriptcoregtk-4.1.so.0 libsoup-3.0.so.0
 #     libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0 libcairo.so.2
 #     libcairo-gobject.so.2 libpango-1.0.so.0 libpangocairo-1.0.so.0
 #     libharfbuzz.so.0 libatk-1.0.so.0 libgio-2.0.so.0 libgobject-2.0.so.0
@@ -108,9 +107,6 @@ librt.so.1
 libutil.so.1
 libgcc_s.so.1
 libstdc++.so.6
-libwebkit2gtk-4.1.so.0
-libjavascriptcoregtk-4.1.so.0
-libsoup-3.0.so.0
 libgtk-3.so.0
 libgdk-3.so.0
 libgdk_pixbuf-2.0.so.0

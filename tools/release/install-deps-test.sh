@@ -5,7 +5,7 @@
 #
 # WHY THIS EXISTS
 #
-# install.sh installs the WebKit runtime itself rather than naming a package
+# install.sh installs the GTK runtime itself rather than naming a package
 # manager command and stopping. Before it runs anything it decides four
 # things: whether this distribution has a package manager it knows, whether
 # the missing soname has a package here, whether it is root or can become
@@ -46,8 +46,8 @@ cases=0
 # carry it in. Read out of install.sh rather than typed here, so a rename in
 # the table this test is about cannot leave the test passing against a name
 # nothing uses.
-soname=libwebkit2gtk-4.1.so.0
-pkg=$(sed -n 's/.*libwebkit2gtk-4\.1\.so\.0) printf '\''\(libwebkit2gtk[^'\'']*\)'\''.*/\1/p' \
+soname=libgtk-3.so.0
+pkg=$(sed -n 's/.*libgtk-3\.so\.0) printf '\''\(libgtk-3[^'\'']*\)'\''.*/\1/p' \
     "$script" | head -1)
 [ -n "$pkg" ] || {
     echo "install-deps-test: install.sh no longer names a Debian package for $soname" >&2
@@ -186,7 +186,7 @@ silent_on() {
     fi
 }
 
-# THE ONE THIS CHANGE EXISTS FOR. A fresh Ubuntu container: root, no webkit,
+# THE ONE THIS CHANGE EXISTS FOR. A fresh Ubuntu container: root, no GTK,
 # apt, and no tty on stdin. It installs the package itself, without sudo
 # because there is nothing to become, and gets past the gate.
 r_case=root-apt
@@ -223,7 +223,7 @@ sb=$(sandbox "$r_case")
 stub_id "$sb" 1000
 stub_apt "$sb" 0 "$root"
 run 'not root, no sudo' 1
-says 'not root, no sudo' 'vitrum needs a WebKit runtime and this installer cannot install one'
+says 'not root, no sudo' 'vitrum needs a GTK runtime and this installer cannot install one'
 says 'not root, no sudo' 'This is not root and there is no sudo on this machine'
 says 'not root, no sudo' "sudo apt install $pkg"
 silent_on 'not root, no sudo' 'apt-get'
@@ -237,7 +237,7 @@ sb=$(sandbox "$r_case")
 stub_id "$sb" 0
 stub_apt "$sb" 0 "$root"
 run 'package unknown' 1
-says 'package unknown' 'vitrum needs a WebKit runtime and this installer cannot install one'
+says 'package unknown' 'vitrum needs a GTK runtime and this installer cannot install one'
 says 'package unknown' 'No package on this distribution is known to provide it.'
 silent_on 'package unknown' 'apt-get'
 
@@ -250,7 +250,7 @@ stub_id "$sb" 0
 stub_apt "$sb" 0 "$root"
 run '--no-deps refuses with the manual command' 1 --no-deps
 says '--no-deps refuses with the manual command' \
-    'vitrum needs a WebKit runtime and this machine has none'
+    'vitrum needs a GTK runtime and this machine has none'
 says '--no-deps refuses with the manual command' "sudo apt install $pkg"
 silent_on '--no-deps refuses with the manual command' 'apt-get'
 

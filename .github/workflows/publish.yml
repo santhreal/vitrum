@@ -17,11 +17,42 @@ name: publish
 # `--no-verify` is deliberately NOT used. A crate that does not build from its
 # own packaged tarball is broken for everyone who installs it, and that is
 # exactly the failure this job exists to catch before a user does.
+#
+# ## What reported success and published nothing
+#
+# Six tags ran this job, all six went green, and crates.io has never carried a
+# single one of these crates. The loop read
+# `if cargo publish -p "$c" 2>&1 | tee /tmp/out; then echo "published $c"`,
+# and a `run:` block with no `shell:` key is `bash -e`, without `pipefail`. So
+# the status the `if` tested was `tee`'s, which is 0 for every input it can
+# write. Every crate failed — the first with `please provide a non-empty
+# token`, the rest with `no matching package named ...` because the crate
+# before it was not up there — and every failure was reported as a publish.
+#
+# Three things below are the answer, and each of them is a step rather than a
+# convention:
+#
+#  - the status of `cargo publish` is the status of the step, so a failure is
+#    a failure;
+#  - the registry token is required before anything is packaged, because the
+#    one thing that cannot be fixed by trying harder is a credential nobody
+#    set, and finding that out after thirteen `cargo package` runs is finding
+#    it out at the end;
+#  - the index is asked afterwards whether each crate is really there, so the
+#    job's verdict is what a user can install rather than what a command
+#    printed.
 on:
   push:
     tags: ["v*"]
+  # A tag pushed by the cut workflow's token starts no workflow, by GitHub's
+  # own rule against a run triggering a run, so the cut asks for this by name
+  # with the tag it just pushed. That is the same entry point a failed publish
+  # is re-run with, not a second one.
   workflow_dispatch:
     inputs:
+      tag:
+        description: an existing v* tag to publish; empty for the current ref
+        required: false
       dry_run:
         description: package and verify without uploading
         type: boolean
@@ -32,6 +63,13 @@ on:
 # credential handed to every dependency the build downloads.
 permissions:
   contents: read
+
+# One publish at a time, and never cancelled. A cancelled run is a run that
+# stopped between two crates, which leaves the registry holding half a release
+# and the next crate in the order unresolvable.
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,11 +83,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The tag the cut just pushed, when there is one. A dispatch with no
+          # tag publishes whatever ref it was started against, which is how a
+          # dry run is taken on a branch.
+          ref: ${{ inputs.tag || github.ref }}
       - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: system webview
-        run: ./.github/system-webview.sh
+      - name: system dependencies
+        run: ./.github/system-deps.sh
 
       # `vitrum-vt` builds the Ghostty engine from source when it is packaged.
       - name: zig toolchain
@@ -74,42 +117,128 @@ jobs:
           echo "ZIG_LOCAL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
 
       # A tag whose version does not match the workspace would publish the old
-      # version under a new tag and there is no way to take it back.
+      # version under a new tag and there is no way to take it back. A dispatch
+      # that names a tag is held to the same rule as a tag push; a dispatch
+      # with no tag is a dry run on a branch and has no tag to disagree with.
       - name: the tag must match the workspace version
-        if: github.event_name == 'push'
+        env:
+          TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
         run: |
+          [ -n "$TAG" ] || { echo "no tag: publishing the ref as it stands"; exit 0; }
           declared=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          tag="${GITHUB_REF_NAME#v}"
-          test "$declared" = "$tag" || {
-            echo "tag $tag against workspace version $declared"; exit 1; }
+          test "$declared" = "${TAG#v}" || {
+            echo "::error::tag $TAG against workspace version $declared"; exit 1; }
+          echo "$TAG carries the workspace version $declared"
 
-      - name: dry run
-        if: inputs.dry_run
-        run: |
-          for c in vitrum-dioxus-desktop vitrum-portable-pty vitrum-proto \
-                   vitrum-fmt vitrum-search vitrum-grid vitrum-vt vitrum-model \
-                   vitrum-os vitrum-core vitrum-server vitrum-replay vitrum; do
-            cargo package -p "$c" --allow-dirty
-          done
+      # Every crate the workspace can publish is in the order, and every crate
+      # in the order is one the workspace still has. A crate added to
+      # `crates/` and to nothing else would otherwise never be published, and
+      # this job would go green having published the other thirteen.
+      - name: the publish order is every crate
+        run: ./tools/release/crates.sh check
 
-      - name: publish
+      # The one failure no amount of retrying fixes, asked before thirteen
+      # `cargo package` runs rather than after the first upload. Six releases
+      # went green on an empty token: the first crate failed with `please
+      # provide a non-empty token` and every crate after it failed to resolve
+      # the one before, and the job reported all thirteen as published.
+      - name: the registry token exists
         if: ${{ !inputs.dry_run }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          for c in vitrum-dioxus-desktop vitrum-portable-pty vitrum-proto \
-                   vitrum-fmt vitrum-search vitrum-grid vitrum-vt vitrum-model \
-                   vitrum-os vitrum-core vitrum-server vitrum-replay vitrum; do
-            # Already at this version: a re-run after a partial failure must
-            # finish the list rather than stop on the crates that succeeded.
-            if cargo publish -p "$c" 2>&1 | tee /tmp/out; then
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::the CARGO_REGISTRY_TOKEN repository secret is empty, so every crate would be refused by crates.io and this release would publish none of them. Set it from a crates.io API token with publish-update and publish-new scope for these crates."
+            exit 1
+          fi
+          echo "a registry token is set"
+
+      - name: dry run
+        if: inputs.dry_run
+        run: |
+          for c in $(./tools/release/crates.sh list); do
+            cargo package -p "$c" --allow-dirty
+          done
+
+      # `shell: bash` rather than the default, because the default is
+      # `bash -e` without `pipefail` and every pipeline in this step decides
+      # whether a release published. That is not a stylistic difference: it is
+      # the difference between this job's six green runs and the crates.io
+      # account they never wrote to.
+      - name: publish
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          for c in $(./tools/release/crates.sh list); do
+            # The status of `cargo publish`, taken from `cargo publish`. The
+            # log is kept for the one message that is not a failure, and the
+            # `if` reads the command rather than the tee that copied it.
+            if cargo publish -p "$c" >"$RUNNER_TEMP/out" 2>&1; then
+              cat "$RUNNER_TEMP/out"
               echo "published $c"
-            elif grep -q "already exists" /tmp/out; then
+            elif grep -q "already exists" "$RUNNER_TEMP/out"; then
+              # A re-run after a partial failure must finish the list rather
+              # than stop on the crates that succeeded the first time.
               echo "$c is already at this version"
             else
+              cat "$RUNNER_TEMP/out" >&2
+              echo "::error::cargo publish -p $c failed; the crates after it in the order depend on it and cannot resolve"
               exit 1
             fi
-            # The index is eventually consistent; the next crate resolves this
-            # one from it.
-            sleep 30
+            # The index is eventually consistent and the next crate resolves
+            # this one out of it. Asked rather than slept through, so a slow
+            # index costs what it costs and a fast one costs nothing. Bounded
+            # at two minutes: past that the next crate fails to resolve and
+            # says so, which is a better answer than a runner held all day.
+            for _ in $(seq 24); do
+              if cargo search "$c" --limit 1 2>/dev/null | grep -q "^$c = "; then
+                break
+              fi
+              sleep 5
+            done
           done
+          echo "$version" > "$RUNNER_TEMP/version"
+
+      # What the loop above printed is what cargo said. This is what a user
+      # gets, asked of the index rather than of the command that wrote to it.
+      # A crate that is not here did not publish, whatever the log said.
+      - name: every crate is on crates.io at this version
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          version=$(cat "$RUNNER_TEMP/version")
+          missing=()
+          for c in $(./tools/release/crates.sh list); do
+            # The sparse index, which is the file cargo itself resolves from.
+            # `crates.io/api` rate-limits and returns prose on a bad day; the
+            # index returns one JSON object per published version or a 404.
+            case "${#c}" in
+              1) path="1/$c" ;;
+              2) path="2/$c" ;;
+              3) path="3/${c:0:1}/$c" ;;
+              *) path="${c:0:2}/${c:2:2}/$c" ;;
+            esac
+            body=$(curl -fsSL "https://index.crates.io/$path" 2>/dev/null || true)
+            want=$version
+            # The two vendored forks carry the upstream version they forked,
+            # not the workspace one, so they are checked for existence at the
+            # version their own manifest declares.
+            case "$c" in
+              vitrum-dioxus-desktop | vitrum-portable-pty)
+                want=$(cargo metadata --no-deps --format-version 1 |
+                  python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='$c'))")
+                ;;
+            esac
+            if printf '%s' "$body" | grep -q "\"vers\":\"$want\""; then
+              echo "ok       $c $want"
+            else
+              missing+=("$c $want")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            printf '::error::these crates are not on crates.io at the version this release published: %s\n' "${missing[*]}"
+            exit 1
+          fi

@@ -670,6 +670,33 @@ fetch_api() {
     fi
 }
 
+latest_tag_by_redirect() {
+    # Prints the latest version, without the API.
+    #
+    # `https://github.com/<repo>/releases/latest` redirects to the tag it
+    # resolves to, and that redirect is served by the website rather than by
+    # `api.github.com`. The two have separate anonymous rate limits, and the
+    # API's is per address: on a shared address — a CI runner, an office, a
+    # carrier NAT — it is spent by everybody behind it, and this installer's
+    # one request arrives as HTTP 403 with a working network. That is the
+    # whole failure this exists for, and the answer it needs is one string.
+    if [ "$FETCH" = "curl" ]; then
+        url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' --retry 3 \
+            --connect-timeout 30 "https://github.com/$REPO/releases/latest" 2>/dev/null) ||
+            return 1
+    else
+        url=$(wget -q -S --spider --max-redirect=5 --tries=3 --connect-timeout=30 \
+            "https://github.com/$REPO/releases/latest" 2>&1 |
+            sed -n 's/^ *Location: *\([^ ]*\).*/\1/p' | tail -1) || return 1
+    fi
+    case "$url" in
+        */releases/tag/*) ;;
+        *) return 1 ;;
+    esac
+    tag=${url##*/tag/}
+    printf '%s' "${tag#v}"
+}
+
 # ============================================================
 # platform
 # ============================================================
@@ -1201,14 +1228,20 @@ if [ -n "$BASE_URL" ]; then
 elif [ -z "$VERSION" ]; then
     say "Resolving the latest release of $REPO."
     latest=$(fetch_api "https://api.github.com/repos/$REPO/releases/latest") || latest=""
-    [ -n "$latest" ] || die_net "could not reach the GitHub releases API" \
-        "Check your network, or pass an explicit version:" \
-        "  sh install.sh 0.1.0" \
-        "Published versions are listed at https://github.com/$REPO/releases"
     VERSION=$(printf '%s\n' "$latest" |
         sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
-    [ -n "$VERSION" ] || die "the releases API returned no tag_name" \
-        "Pass an explicit version: sh install.sh 0.1.0" \
+    # The API is asked first because it answers with the release, and second
+    # because a token makes it reliable. When it does not answer — a spent
+    # anonymous rate limit on a shared address is the common case, and it
+    # arrives as 403 on a network that is working — the website's own
+    # redirect gives the same version and is not the resource that ran out.
+    if [ -z "$VERSION" ]; then
+        VERSION=$(latest_tag_by_redirect) || VERSION=""
+    fi
+    [ -n "$VERSION" ] || die_net "could not resolve the latest release" \
+        "Neither the releases API nor the redirect on the releases page" \
+        "answered. Check your network, or pass an explicit version:" \
+        "  sh install.sh 0.1.0" \
         "Published versions are listed at https://github.com/$REPO/releases"
 fi
 

@@ -557,22 +557,37 @@ if ($Version) {
     )
 } else {
     Say "Resolving the latest release of $Repo."
+    $Version = $null
     try {
         $release = Invoke-GitHubApi -Uri "https://api.github.com/repos/$Repo/releases/latest"
+        if ($release.tag_name) { $Version = ([string]$release.tag_name).TrimStart('v') }
     } catch {
-        FailNet "could not reach the GitHub releases API: $($_.Exception.Message)" @(
-            'Check your network, or pass an explicit version:',
+        Say "  the releases API did not answer: $($_.Exception.Message)"
+    }
+    # The website's redirect, when the API did not answer. Its anonymous rate
+    # limit is per address and is spent by everything behind that address, so
+    # on a shared one — a CI runner, an office, a carrier NAT — a working
+    # network still gets HTTP 403 here. `releases/latest` on github.com
+    # redirects to the tag it resolves to and is not the resource that ran
+    # out, and the tag is the whole answer this needs.
+    if (-not $Version) {
+        try {
+            $head = Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" `
+                -UseBasicParsing -MaximumRedirection 5 -Method Head
+            $url = $head.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+            if ($url -match '/releases/tag/v?(.+)$') { $Version = $Matches[1] }
+        } catch {
+            Say "  the releases page did not answer either: $($_.Exception.Message)"
+        }
+    }
+    if (-not $Version) {
+        FailNet 'could not resolve the latest release' @(
+            'Neither the releases API nor the redirect on the releases page',
+            'answered. Check your network, or pass an explicit version:',
             '  .\install.ps1 -Version 0.1.0',
             "Published versions are listed at https://github.com/$Repo/releases"
         )
     }
-    if (-not $release.tag_name) {
-        Fail 'the releases API returned no tag_name' @(
-            '  .\install.ps1 -Version 0.1.0',
-            "Published versions are listed at https://github.com/$Repo/releases"
-        )
-    }
-    $Version = ([string]$release.tag_name).TrimStart('v')
 }
 
 $Archive = "vitrum-$Version-$Target.tar.gz"

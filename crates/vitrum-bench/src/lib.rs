@@ -33,6 +33,14 @@ pub mod client;
 pub mod divergence;
 pub mod frame;
 pub mod fuzz;
+// Every signal it measures runs through a pseudoterminal, a `poll` on that
+// pty's descriptors and `getrusage`, into a pane that exists on X11 only.
+// Windows has none of those, and the crate did not compile there at all until
+// the module was split in two: the real one, and one that says so.
+#[cfg(unix)]
+pub mod latency;
+#[cfg(not(unix))]
+#[path = "latency_unsupported.rs"]
 pub mod latency;
 pub mod load;
 #[cfg(feature = "daemon")]

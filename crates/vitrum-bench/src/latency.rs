@@ -587,7 +587,11 @@ impl Pty {
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &raw const size,
+                // Apple's libc declares this parameter `*mut winsize` and
+                // glibc declares it `*const`. A `*mut` narrows to `*const`
+                // implicitly, so the mutable pointer is the one that compiles
+                // on both.
+                &raw mut size,
             )
         };
         if rc != 0 {

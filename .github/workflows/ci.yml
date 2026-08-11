@@ -448,6 +448,12 @@ jobs:
   # this workspace gates on; `target_os` and `unix` are identical across the
   # two, and those are what the code actually asks about. The real MSVC build
   # still runs in `platforms.yml` before a release.
+  #
+  # The client crate is excluded for the same reason `macos-check` names one
+  # crate: it links GTK through pkg-config, pkg-config refuses to answer a
+  # cross build, and `glib-sys` fails here for a reason that says nothing
+  # about the change. `platforms.yml` builds that crate on a real Windows
+  # runner with a real toolkit.
   windows-check:
     name: windows compiles
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -485,7 +491,7 @@ jobs:
       # `--tests` is the whole point: the gated code that breaks Windows lives
       # in the test modules, so a check without it passes a workspace whose
       # test build does not compile.
-      - run: cargo check --release --workspace --tests --target x86_64-pc-windows-gnu --locked
+      - run: cargo check --release --workspace --exclude vitrum --tests --target x86_64-pc-windows-gnu --locked
         env:
           CC_x86_64_pc_windows_gnu: ${{ github.workspace }}/.github/zig-cc-windows
 

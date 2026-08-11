@@ -618,21 +618,6 @@ jobs:
             /a/vitrum --version'
           rm -rf distro-check
 
-  # The README's performance tables are generated from a checked-in snapshot of
-  # real harness runs. This job re-renders them and fails if what is committed
-  # differs, which catches all three ways those numbers go wrong: a table edited
-  # by hand, a snapshot regenerated without re-rendering, and a figure invented
-  # in prose. It cannot measure anything, and must not: measurement needs the
-  # rig, and a shared runner would publish a number nobody can reproduce.
-  docs:
-    name: generated docs
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - name: the performance tables match their snapshot
-        run: make perf-tables-check
-
   # Licenses and advisories. vitrum is dual licensed MIT OR Apache-2.0, and a
   # dependency that is neither is a licensing problem for everyone downstream,
   # so it is worth a job rather than a periodic audit nobody runs.

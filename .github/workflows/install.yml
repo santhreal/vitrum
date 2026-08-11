@@ -241,17 +241,30 @@ jobs:
           esac
 
       # The nightly channel publishes every day and, until this step, nothing
-      # ever downloaded one of its archives. A nightly is a prerelease of the
-      # next patch, so it sorts above the stable this machine is now on and
-      # `update` will move to it; the version string is the only place the
-      # channel is observable, which is why it is what gets asserted.
-      - name: the nightly channel serves an archive that installs
+      # ever downloaded one of its archives. `install.sh` cannot reach the
+      # channel — it resolves `v<x.y.z>` tags and a nightly lives under a
+      # moving `nightly` tag — so `update` is the only way in.
+      #
+      # Both answers are a pass, and which one arrives is a fact about the
+      # calendar rather than about the build. A nightly is a prerelease of the
+      # NEXT patch, so it outranks the stable it follows on every day except
+      # the one a stable is cut on: from the cut until the next nightly runs,
+      # `0.3.1-nightly.*` is older than the `0.3.1` now installed and the
+      # channel correctly says there is nothing newer. Demanding a download
+      # there would fail this job on exactly the days a release was made.
+      - name: the nightly channel answers, and serves an archive when it has one
         run: |
-          "$HOME/.local/bin/vitrum" update --channel nightly
-          got=$("$HOME/.local/bin/vitrum" --version)
-          case "$got" in
-            *-nightly.*) ;;
-            *) echo "asked for a nightly and the next start reported: $got" >&2; exit 1 ;;
+          out=$("$HOME/.local/bin/vitrum" update --channel nightly 2>&1)
+          printf '%s\n' "$out"
+          case "$out" in
+            *"newest nightly release"*)
+              echo "the last stable is newer than the last nightly build" ;;
+            *)
+              got=$("$HOME/.local/bin/vitrum" --version)
+              case "$got" in
+                *-nightly.*) ;;
+                *) echo "staged a nightly and the next start reported: $got" >&2; exit 1 ;;
+              esac ;;
           esac
 
       - name: uninstall

@@ -12,6 +12,7 @@
 //! - [`render_pixels`]: headless renders with exact pixel assertions.
 //! - [`render_cursor`]: the caret shapes, composited over the cell beneath.
 //! - [`render_cost`]: upload counts, the zero-work idle path, and frame timing.
+//! - [`render_veil`]: dimming the whole pane from inside its own renderer.
 
 mod atlas_packing;
 mod cell_semantics;
@@ -24,4 +25,5 @@ mod instance_layout;
 mod render_cost;
 mod render_cursor;
 mod render_pixels;
+mod render_veil;
 mod support;

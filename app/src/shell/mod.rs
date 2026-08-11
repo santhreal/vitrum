@@ -401,6 +401,23 @@ impl Shell {
         self.take_presented();
         self.inner.frame.show_dialog(&dialog.root());
         *self.inner.dialog.borrow_mut() = Some(dialog);
+        self.dim_pane(true);
+    }
+
+    /// Dim the pane behind a sheet, or undim it.
+    ///
+    /// The scrim dims every widget it covers except one. The pane draws into a
+    /// native child window of the toplevel, and a translucent widget over a
+    /// native window is a second window whose background paints opaque: the
+    /// scrim turned the terminal into a black rectangle instead of dimming it.
+    /// So the pane is told, and dims itself in its own renderer.
+    ///
+    /// Paired with the scrim and not with the layer, because the scrim is what
+    /// dims: a popover menu has none and must not dim anything.
+    fn dim_pane(&self, dimmed: bool) {
+        if let Some(pane) = crate::pane::PaneHost::for_window(self.inner.ident.ordinal) {
+            pane.set_dimmed(dimmed);
+        }
     }
 
     /// Present `dialog` at a point in the frame.
@@ -448,6 +465,7 @@ impl Shell {
         let open = self.inner.dialog.borrow_mut().take();
         self.inner.frame.clear_dialog();
         self.inner.frame.clear_popover();
+        self.dim_pane(false);
         open
     }
 

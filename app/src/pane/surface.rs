@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use glib::translate::ToGlibPtr;
 use gtk::prelude::*;
 use vitrum_grid::font::FontConfig;
-use vitrum_grid::{CellGrid, FontStack, GridRenderer, RendererConfig};
+use vitrum_grid::{CellGrid, FontStack, GridRenderer, RendererConfig, Rgba};
 
 use super::geometry::PaneRect;
 use super::key::{Key, Mods, Named, encode};
@@ -473,6 +473,17 @@ impl PaneSurface {
     /// agent to write something.
     pub(crate) fn forget_what_is_on_screen(&mut self) {
         self.renderer.invalidate();
+    }
+
+    /// Dim everything this surface draws, or stop dimming it.
+    ///
+    /// A modal sheet dims what is behind it. The pane cannot be dimmed from
+    /// behind a toolkit scrim: it draws into a native child window of the
+    /// shell's, and a translucent widget laid over that is a window of its
+    /// own, which paints its background opaque and turns the terminal into a
+    /// black rectangle. So the sheet tells the pane, and the pane dims itself.
+    pub(crate) fn set_veil(&mut self, color: Rgba, strength: f32) {
+        self.renderer.set_veil(color, strength);
     }
 
     /// Draw the grid, if anything changed, and present.

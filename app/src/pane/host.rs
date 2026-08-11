@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use gtk::prelude::*;
+use vitrum_grid::Rgba;
 
 use crate::WindowId;
 
@@ -103,6 +104,20 @@ pub(crate) struct PaneHost {
     inner: Rc<RefCell<Inner>>,
 }
 
+/// The colour a dimmed pane is dimmed towards.
+///
+/// Black rather than the sheet's own backdrop: the pane is behind the sheet,
+/// and a tint would recolour the operator's terminal palette while a dialog is
+/// open, which reads as the theme changing rather than as focus moving.
+pub(crate) const VEIL_COLOR: Rgba = Rgba::rgb(0, 0, 0);
+
+/// How far a pane is dimmed while a sheet is over it.
+///
+/// Enough that the sheet is unmistakably in front, not so much that the
+/// transcript underneath stops being readable: an operator answering an
+/// approval prompt is reading the pane through the dialog.
+pub(crate) const VEIL_STRENGTH: f32 = 0.55;
+
 /// Everything one pane owns.
 struct Inner {
     /// The window this pane lives in, for the chord table's benefit.
@@ -132,6 +147,12 @@ struct Inner {
     autoscroll: Option<glib::SourceId>,
     /// Whether the first frame has been reported to the boot timeline.
     first_paint: bool,
+    /// How much the pane is dimmed, from 0 to 1.
+    ///
+    /// Held here and not only in the renderer because a sheet can be open
+    /// before there is a swapchain: the window shows, a dialog opens, and the
+    /// GPU handshake finishes afterwards. The surface is told when it arrives.
+    veil: f32,
 }
 
 /// A pointer drag the pane owns.
@@ -210,6 +231,7 @@ pub(crate) fn install_in(
             thumb: None,
             autoscroll: None,
             first_paint: false,
+            veil: 0.0,
         })),
     };
 
@@ -250,6 +272,32 @@ impl PaneHost {
     pub(crate) fn set_theme(&self, theme: PaneTheme) {
         let mut inner = self.inner.borrow_mut();
         inner.apply_theme(theme);
+    }
+
+    /// Dim the pane behind a sheet, or undim it when the sheet closes.
+    ///
+    /// The shell calls this on every layer change. A toolkit scrim cannot do
+    /// the job: the pane owns a native child window, a translucent sibling
+    /// over it is another window whose background paints opaque, and the
+    /// result is a black rectangle where the transcript was. The pane dims
+    /// itself instead, in the renderer that owns its pixels.
+    ///
+    /// Draws immediately rather than waiting for the next tick, because the
+    /// grid has not changed and nothing else is going to ask.
+    pub(crate) fn set_dimmed(&self, dimmed: bool) {
+        let strength = if dimmed { VEIL_STRENGTH } else { 0.0 };
+        let mut inner = self.inner.borrow_mut();
+        if inner.veil == strength {
+            return;
+        }
+        inner.veil = strength;
+        if let Some(surface) = inner.surface.as_mut() {
+            surface.set_veil(VEIL_COLOR, strength);
+            // The grid did not change, so nothing else will ask for a frame.
+            inner.pacer.mark();
+        }
+        // With no swapchain yet there is nothing to tell: `realize` reads the
+        // field when it builds one.
     }
 
     /// What the frame clock has been doing, and what its frames cost.
@@ -446,12 +494,15 @@ impl PaneHost {
 
         let mut inner = self.inner.borrow_mut();
         match attached {
-            Ok(surface) => {
+            Ok(mut surface) => {
                 let cell = surface.cell_size();
                 let (cols, rows) = surface.cells_for(surface.size().0, surface.size().1);
                 if let Err(e) = inner.session.resize(cols, rows, cell) {
                     tracing::error!("the pane's terminal refused {cols}x{rows}: {e}");
                 }
+                // A sheet opened before the GPU handshake finished is still
+                // open now, and its dimming is the pane's to draw.
+                surface.set_veil(VEIL_COLOR, inner.veil);
                 inner.surface = Some(surface);
                 inner.fault = None;
                 inner.pacer.mark();

@@ -29,10 +29,10 @@ with an NVIDIA card on a real WM-managed display:
   sharing **one** `WebKitWebProcess`.
 - **0.0292 %** of one core, over 240 seconds, with twenty windows open.
 
-`perfhost` is an i9-13900K with a different core count, a different clock and
-a heterogeneous core layout, running headless with no compositor, no window
-manager and no display attached to either of its GPUs. It is a different
-baseline in every axis those two numbers depend on.
+The rig these figures were re-run against is an i9-13900K with a different core
+count, a different clock and a heterogeneous core layout, running headless with
+no compositor, no window manager and no display attached to either of its
+GPUs. It is a different baseline in every axis those two numbers depend on.
 
 So:
 
@@ -42,8 +42,8 @@ So:
 - A remote number is **not** comparable to a desktop-baseline figure, and must
   not be written into `docs/performance.md` beside one, until somebody
   re-establishes a baseline on that host by running the same scenarios on a
-  build already known good. Until that exists, quote remote results as "on
-  perfhost, N windows, this build against that build", never as "the memory
+  build already known good. Until that exists, quote remote results as "on the
+  rig, N windows, this build against that build", never as "the memory
   target".
 - If you do establish a baseline there, write the host, the CPU, the WebKitGTK
   version and the session workload next to it. A number whose conditions are
@@ -78,16 +78,15 @@ harness that can report a binary you did not mean to test.
 
 ## The measurement host
 
-The default is `perfhost`, with `labhost` as the fallback. Each is tried
-first under its `~/.ssh/config` alias, which routes over Tailscale, and then at
-its LAN address. That second attempt is not redundancy for its own sake:
-Tailscale SSH on this tailnet is in check mode, so the alias can accept the
-connection and then wait for a browser login until it times out. The LAN
-address reaches the ordinary `sshd` and authenticates with your key. Whichever
-answers first is cached in `harness/out/.endpoint`, so you pay the search once.
+There is no built-in host list, and nothing in this repository names a machine.
+Set `HARNESS_ENDPOINTS` to the ssh destinations to try, in order, or
+`HARNESS_ENDPOINT` to a single one. `run.sh` refuses to run with neither set.
 
-Set `HARNESS_ENDPOINT` to skip the search entirely, or `HARNESS_ENDPOINTS` to
-change the list.
+List an alias and a direct address for the same host as two entries. An alias
+that routes over a VPN can accept the connection and then wait for an
+interactive login until it times out; the direct address reaches the ordinary
+`sshd` and authenticates with your key. Whichever answers first is cached in
+`harness/out/.endpoint`, so you pay the search once.
 
 ### What is on it, and what it still needs
 
@@ -97,20 +96,23 @@ Run the probe first. It reports and installs nothing:
 harness/run.sh probe
 ```
 
-As of this writing, `perfhost` is an Ubuntu 24.04.3 box with an i9-13900K, 64
-GB of RAM and an idle load average of about zero. It already has GTK 3, libsoup
-3, `libxdo`, Mesa, `Xvfb`, `xdotool`, ImageMagick, `python3`, `rsync`, `flock`
-and `setsid`. It is missing exactly two packages, and the probe exits 4 until
-they are installed:
+Two host profiles are recorded below because which host you pick changes what
+has to be installed, and it is not the answer you would guess. Read them as
+worked examples of what the probe reports, not as a list of machines to use.
+
+The first is an Ubuntu 24.04.3 box with an i9-13900K, 64 GB of RAM and an idle
+load average of about zero. It already has GTK 3, libsoup 3, `libxdo`, Mesa,
+`Xvfb`, `xdotool`, ImageMagick, `python3`, `rsync`, `flock` and `setsid`. It is
+missing exactly two packages, and the probe exits 4 until they are installed:
 
 ```
 sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0
 ```
 
 Those are the engine the client renders through. Ubuntu 24.04 offers
-`2.52.3-0ubuntu0.24.04.1`, which is the same version this project's desktop has,
-so the two boxes agree on the one dependency whose version changes both the
-rendering and the memory figure.
+`2.52.3-0ubuntu0.24.04.1`, which is the same version the development desktop
+has, so the two boxes agree on the one dependency whose version changes both
+the rendering and the memory figure.
 
 You do not have to remember to probe first. `memory`, `idle-cpu` and
 `screenshot` each run the same check before they start anything, and refuse
@@ -118,7 +120,7 @@ with the install command and exit 4 rather than bringing up a display and a
 daemon for a binary that cannot load.
 
 There is a second, optional list. Every font in the UI stack currently falls
-back to DejaVu on that box, so text metrics there will not match the desktop
+back to DejaVu on that box, so text metrics there will not match a desktop
 until you install the faces the stack actually names:
 
 ```
@@ -128,13 +130,10 @@ sudo apt-get install -y fonts-ubuntu fonts-cantarell fonts-noto-core fonts-jetbr
 You need those before any geometry or screenshot claim from the remote means
 anything. You do not need them for memory or idle CPU.
 
-### The fallback, labhost
+### The second profile
 
-Probed as well, because which host you pick changes what has to be installed
-and it is not the answer you would guess.
-
-`labhost` is Ubuntu 24.04.2 on an i7-11700K, 16 threads, 32 GB, headless.
-It has an RTX 3080 Ti whose driver and library versions do not match, so
+The second is Ubuntu 24.04.2 on an i7-11700K, 16 threads, 32 GB, headless. It
+has an RTX 3080 Ti whose driver and library versions do not match, so
 `nvidia-smi` fails; that is reported and does not matter to anything this
 harness measures. It **already has** `libwebkit2gtk-4.1-0` and
 `libjavascriptcoregtk-4.1-0` at `2.52.3-0ubuntu0.24.04.1`, the same version as
@@ -145,15 +144,14 @@ sudo apt-get update && sudo apt-get install -y libxdo3 xdotool imagemagick
 sudo apt-get install -y fonts-cantarell
 ```
 
-So the two hosts need opposite things: `perfhost` has the tools and needs the
-engine, `labhost` has the engine and needs the tools. Either way it is one
-`apt-get` line, and `probe` prints the right one for whichever host answered.
+So the two need opposite things: the first has the tools and needs the engine,
+the second has the engine and needs the tools. Either way it is one `apt-get`
+line, and `probe` prints the right one for whichever host answered.
 
-Treat `labhost` as a **third** baseline, not as a spare copy of the second.
-It has half the threads and half the memory of `perfhost` and a different CPU
-generation again, so a number from one is no more comparable to a number from
-the other than either is to the desktop. Pick one host and stay on it for a
-before-and-after pair.
+Treat a second host as a **third** baseline, not as a spare copy of the first.
+Half the threads, half the memory and a different CPU generation mean a number
+from one is no more comparable to a number from the other than either is to a
+desktop. Pick one host and stay on it for a before-and-after pair.
 
 ## Reproducing the memory number
 
@@ -237,7 +235,7 @@ because the box was busy and a number which moved because the code changed are
 indistinguishable once written down, and the habit of assuming the first is how
 a real regression gets waved through. Ruling it out costs one line, so the line
 is always printed. For scale, the development desktop sat at load 13 to 28
-while this was being built and `perfhost` sat at 0.04, which is most of the
+while this was being built and the rig sat at 0.04, which is most of the
 argument for measuring there rather than here.
 
 ## Comparing against T3 Code
@@ -357,7 +355,7 @@ regression is a change between two runs on the same host. It is not the gap
 between a run here and a desktop-baseline figure.
 
 - **Idle CPU is a percentage of a different core.** The desktop is a Ryzen 9
-  9950X; `perfhost` is an i9-13900K with a different clock, different boost
+  9950X; the rig is an i9-13900K with a different clock, different boost
   behaviour and a heterogeneous core layout, so a timer's cost in ticks is not
   the same quantity. The 0.055% budget is a desktop budget.
 - **GPU-dependent behaviour is not represented.** The measurement host has an
@@ -387,7 +385,7 @@ between a run here and a desktop-baseline figure.
   target. The daemon spawns the PTY child, so it qualifies, which is why this
   works at all.
 
-  Measured, not predicted: shipping the vitrum-core test binary to `perfhost`
+  Measured, not predicted: shipping the vitrum-core test binary to the rig
   and running it fails 13 of 196 tests, all in `hint_session` and
   `waiting_probe`, the first with `left: None, right: Some(true)`. The same
   binary passes 196 of 196 here. `None` is the UNKNOWN value, so the product is
@@ -405,9 +403,9 @@ between a run here and a desktop-baseline figure.
   sleep 5 & pid=$!; read -r line < /proc/$pid/syscall && echo OK || echo DENIED
   ```
 
-  Run three ways, that gives: this desktop scope 1, OK. `perfhost` scope 2,
-  DENIED. `labhost` scope 1, OK. So the two candidate hosts differ on this
-  and `labhost` does not have the problem at all, which is one more reason
+  Run three ways, that gives: this desktop scope 1, OK. One candidate host
+  scope 2, DENIED. The other scope 1, OK. So two candidate hosts differ on
+  this and only one has the problem, which is one more reason
   to prefer it. `probe` reports the sysctl and says what it means. Match the
   desktop with `sudo sysctl -w kernel.yama.ptrace_scope=1` before believing any
   status-pill or sidebar-state claim from a remote capture.
@@ -436,8 +434,8 @@ the TCP connection, prints "Tailscale SSH requires an additional check" with a
 login URL, and then sits there. `ConnectTimeout` does not cover it, because the
 connection succeeded; it is the session that never starts. Every reachability
 probe in `run.sh` is wrapped in `timeout 12` from the outside for that reason.
-The LAN address bypasses it entirely, and the usernames are not your local one:
-`perfhost@` and `labhost@`, from `~/.ssh/config`.
+The direct address bypasses it entirely, and the login name is the one the
+alias carries rather than your local one. Take it from `~/.ssh/config`.
 
 **`set -e` with `pipefail` turns a broken GPU driver into a truncated report.**
 `nvidia-smi` on a host whose driver and library versions disagree prints its
@@ -473,13 +471,13 @@ parses the geometry and compares it to `DECOY_GEOMETRY` exactly. The general
 form of the lesson: a containment test on a value that has a well-defined
 equality is a bug waiting for a size nobody tried.
 
-**The development desktop may already have a daemon on the default port.**
-Observed on this one: a `vitrum-server --port 7737` owned by the user,
-launched from a GNOME Terminal, up for hours, with its binary since rebuilt
-over. That is theirs and nobody should go near it. It is recorded here because
-it is a fact about the machine rather than about any run, and because it is the
-concrete case the rig's refusal exists for: a measurement taken against a
-daemon the run did not start is a measurement of somebody else's sessions.
+**A development desktop may already have a daemon on the default port.**
+Seen in practice: a `vitrum-server --port 7737` owned by the login account,
+started from a terminal emulator, up for hours, with its binary since rebuilt
+over. That one is somebody's and nobody should go near it. It is recorded here
+because it is a fact about a desktop rather than about any run, and because it
+is the concrete case the rig's refusal exists for: a measurement taken against
+a daemon the run did not start is a measurement of somebody else's sessions.
 `start_daemon` reports the port as in use and stops. Nothing here ever kills a
 process it did not start, and a process you cannot account for is somebody
 else's by default; the cost of being wrong about that is asymmetric.
@@ -572,8 +570,8 @@ fetched. Set `HARNESS_KEEP_REMOTE=1` to keep it.
 
 ## What has been exercised, and what has not
 
-Verified against `perfhost`, and the probe additionally against
-`labhost`:
+Verified against one candidate host, and the probe additionally against a
+second:
 
 - Endpoint search, the Tailscale timeout, the LAN fallback, and the cache.
 - Staging, the glibc comparison, and `--exclude=bin/` on the script sync, so a
@@ -703,7 +701,7 @@ rather than folded in with the proved ones, because "the check is correct" and
 
 Not verified, and for one reason: neither host has the full set yet, and
 installing packages on them was explicitly out of scope for this change.
-`perfhost` lacks the engine, `labhost` lacks the tooling. So the parts of
+One lacks the engine, the other lacks the tooling. So the parts of
 `screenshot`, `memory` and `idle-cpu` that begin at "a window maps" have not
 been run anywhere. That is the window resolution and the pid-matching half of
 the decoy rejection, the deep-link handoff for windows two onward, the capture

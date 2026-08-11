@@ -22,8 +22,9 @@
 # the other is what makes it safe to wipe the remote state between runs.
 #
 # environment:
-#   HARNESS_ENDPOINT     one ssh destination, skipping the fallback search
-#   HARNESS_ENDPOINTS    the ordered list to search, space separated
+#   HARNESS_ENDPOINT     one ssh destination, skipping the search
+#   HARNESS_ENDPOINTS    the ordered list to search, space separated. Required
+#                        unless HARNESS_ENDPOINT is set; there is no default
 #   HARNESS_BIN_DIR      directory holding vitrum and vitrum-server
 #   HARNESS_SCREEN       virtual screen size, default 1920x1080
 #   HARNESS_SETTLE       seconds to let the app settle before measuring, default 45
@@ -52,13 +53,16 @@ HARNESS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname -- "$HARNESS_DIR")"
 OUT_ROOT="$HARNESS_DIR/out"
 
-# perf-host first because it is the bigger and quieter of the two, labhost
-# second. Each name appears twice: once as the ~/.ssh/config alias, which goes
-# over Tailscale, and once as the LAN address. Tailscale SSH on this tailnet is
-# in check mode, so the alias can demand a browser login and then time out;
-# the LAN address reaches the ordinary sshd and authenticates with the key.
+# There is no built-in host list. A measurement host is a property of whoever
+# is measuring, not of this repository, so the destinations are supplied by the
+# caller and nothing here names a machine.
+#
+# List each destination in the order to try it. An ssh alias and a direct
+# address for the same host are two entries: an alias that routes over a VPN
+# can accept the connection and then block on an interactive login, and the
+# direct address reaches the ordinary sshd and authenticates with the key.
 # Whichever answers first is cached in harness/out/.endpoint.
-: "${HARNESS_ENDPOINTS:=perfhost perfhost@192.0.2.10 labhost labhost@192.0.2.11}"
+: "${HARNESS_ENDPOINTS:=}"
 
 SSH_CTL="/tmp/vitrum-harness-ssh-%C"
 SSH_OPTS=(
@@ -105,6 +109,7 @@ pick_endpoint() {
     fi
     echo "harness: cached endpoint $ep no longer answers, searching again" >&2
   fi
+  [ -n "${HARNESS_ENDPOINTS// /}" ] || die "set HARNESS_ENDPOINTS to the ssh destinations to try, or HARNESS_ENDPOINT to one of them"
   for ep in $HARNESS_ENDPOINTS; do
     echo "harness: trying $ep" >&2
     if endpoint_answers "$ep"; then

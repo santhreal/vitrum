@@ -628,7 +628,8 @@ cmd_probe() {
   else
     echo "  /dev/dri absent, so no direct rendering device"
   fi
-  # `|| true` is load-bearing. On labhost nvidia-smi exits non-zero with
+  # `|| true` is load-bearing. On a host whose driver and library versions
+  # disagree, nvidia-smi exits non-zero with
   # "Failed to initialize NVML: Driver/library version mismatch", and under
   # `set -e -o pipefail` that aborted the whole probe halfway through the
   # graphics section, before the verdict. A broken GPU driver is something the
@@ -706,11 +707,12 @@ cmd_probe() {
   # fails, the probe correctly returns None, and every session's waiting state
   # is UNKNOWN rather than wrong.
   #
-  # Measured: this is the difference between the development desktop, which is
-  # 1, and perfhost, which is 2. It makes 13 vitrum-core tests fail there that
-  # pass here, and it would make a screenshot taken there show no
-  # operator-waiting state at all. That is not a regression in the product, it
-  # is the host refusing to answer, and the two look identical in a capture.
+  # Measured: this is the difference between a development desktop, which is
+  # 1, and a hardened measurement host, which is 2. It makes 13 vitrum-core
+  # tests fail there that pass here, and it would make a screenshot taken
+  # there show no operator-waiting state at all. That is not a regression in
+  # the product, it is the host refusing to answer, and the two look identical
+  # in a capture.
   scope="$(sysctl -n kernel.yama.ptrace_scope 2>/dev/null || echo unavailable)"
   echo "  kernel.yama.ptrace_scope $scope"
   case "$scope" in

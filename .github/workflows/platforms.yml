@@ -120,13 +120,13 @@ jobs:
       # must not cancel the other.
       fail-fast: false
       matrix:
-        # Windows on ARM is here before it is published. Nothing in the tree
-        # has ever been compiled for `aarch64-pc-windows-msvc`: the terminal
-        # engine is built from Zig source, the pty layer is vendored C, and
-        # the toolkit is a different runtime build, so whether that target
-        # builds at all is a question with no answer yet. It gets one on every
-        # push, and a release leg follows only once these are green.
-        os: [macos-latest, windows-latest, windows-11-arm, ubuntu-24.04-arm]
+        # Windows on ARM was here before it was published, to answer whether
+        # `aarch64-pc-windows-msvc` builds at all. It has an answer now, and
+        # the answer is no: the client is a GTK 3 program, the only GTK 3
+        # build for MSVC is gvsbuild's, and gvsbuild publishes x64 only. The
+        # leg came back red on every run for a missing toolkit rather than for
+        # anything in the tree, so it is out until a GTK 3 arm64 stack exists.
+        os: [macos-latest, windows-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v7
 
@@ -141,11 +141,11 @@ jobs:
         with:
           shared-key: ${{ matrix.os }}-${{ env.QUICK == 'true' && 'quick' || 'full' }}
 
-      # ARM Linux is Linux: it links the same system toolkit, and the image
-      # does not ship it.
-      - name: system dependencies
-        if: runner.os == 'Linux'
-        run: ./.github/system-deps.sh
+      # Every leg links GTK 3 and no runner image ships it. The action names
+      # the three answers; the client stopped building on macOS and Windows
+      # the day the pane was rewritten native, because until then only Linux
+      # linked a toolkit at all.
+      - uses: ./.github/actions/gtk
 
       # The terminal engine is built from Ghostty source by `vitrum-vt`, whose
       # default `vendored` route needs Zig. The version is the one Ghostty

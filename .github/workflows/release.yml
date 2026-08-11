@@ -223,9 +223,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: system dependencies
-        if: runner.os == 'Linux'
-        run: ./.github/system-deps.sh
+      # Every archive links GTK 3, and no runner image ships it.
+      - uses: ./.github/actions/gtk
 
       # `vitrum-vt` builds the Ghostty engine from source. Every release target
       # needs the toolchain, not just Linux.

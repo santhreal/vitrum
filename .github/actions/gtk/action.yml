@@ -1,0 +1,119 @@
+name: gtk runtime
+description: >
+  Install the GTK 3 development stack this runner needs to build the client.
+
+# WHY THIS EXISTS
+#
+# The client is a GTK 3 program on every platform it builds for, and no runner
+# image ships GTK. Until the pane was rewritten native, only Linux linked a
+# toolkit: macOS and Windows built a webview client that needed nothing
+# installed. After the cutover both images stopped building at all, macOS in
+# `atk-sys` and Windows in `glib-sys`, because `pkg-config` finds nothing there
+# and the whole gtk-rs stack is `-sys` crates over pkg-config.
+#
+# So the three answers are named once, here, rather than three times across
+# `platforms.yml` and `release.yml`:
+#
+#   Linux   the distribution's own development packages
+#   macOS   Homebrew's `gtk+3`, which pulls atk, pango, cairo and gdk-pixbuf
+#   Windows the gvsbuild binary stack, which is the only GTK 3 build for MSVC
+#
+# Windows arm64 has no answer. gvsbuild publishes x64 only, there is no other
+# MSVC GTK 3 build, and building the stack from source on a runner is an hour
+# before cargo starts. A leg on that architecture stops here with a sentence
+# saying so rather than failing later inside a build script.
+
+inputs:
+  version:
+    description: the gvsbuild release to use on Windows
+    required: false
+    default: "2026.8.0"
+  sha256:
+    description: digest of the Windows bundle named by `version`
+    required: false
+    default: 9be43d9029749062d2637070c856e73f8a1327a72259d08326b38155c139ecdc
+
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: ./.github/system-deps.sh
+
+    # `gtk+3` is the whole stack: atk, pango, cairo, gdk-pixbuf and glib arrive
+    # with it, and every one of them is a pkg-config module a `-sys` crate
+    # looks for. Homebrew is already on the image and already has pkg-config.
+    #
+    # Retried for the same reason apt is: a formula that fails to download is
+    # the most common way a run goes red for a reason unrelated to the change.
+    - if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if pkg-config --exists gtk+-3.0; then
+          echo "gtk+-3.0 $(pkg-config --modversion gtk+-3.0) already present"
+          exit 0
+        fi
+        for attempt in 1 2 3; do
+          if brew install gtk+3; then
+            pkg-config --modversion gtk+-3.0
+            exit 0
+          fi
+          echo "brew failed on attempt ${attempt}" >&2
+          sleep $((attempt * 15))
+        done
+        echo "::error::gtk+3 could not be installed after three attempts"
+        exit 1
+
+    # A binary stack, not a build. gvsbuild publishes one zip per release with
+    # the libraries, the import libraries, the headers, the pkg-config modules
+    # and pkgconf itself, all built with MSVC against the same runtime the
+    # crate links. It is pinned by version AND by digest: an asset replaced
+    # under a tag it already published would otherwise change what a release
+    # binary links against with nothing recorded.
+    #
+    # The three variables are what the `-sys` build scripts read. PATH carries
+    # `bin` because that is where pkgconf lives and where the DLLs a test
+    # binary loads live; nothing here puts those DLLs into an archive.
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+            Write-Output "::error::GTK 3 for MSVC is published for x64 only, and this runner is $env:PROCESSOR_ARCHITECTURE. gvsbuild has no arm64 bundle, so the client cannot be built here."
+            exit 1
+        }
+        $version = '${{ inputs.version }}'
+        $want = '${{ inputs.sha256 }}'
+        $zip = Join-Path $env:RUNNER_TEMP "gtk3-$version.zip"
+        $root = 'C:\gtk'
+        $url = "https://github.com/wingtk/gvsbuild/releases/download/$version/GTK3_Gvsbuild_${version}_x64.zip"
+        Write-Output "downloading $url"
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+                break
+            } catch {
+                Write-Output "download failed on attempt ${attempt}: $_"
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Seconds ($attempt * 15)
+            }
+        }
+        $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+        if ($got -ne $want) {
+            Write-Output "::error::GTK3_Gvsbuild_${version}_x64.zip is $got, and this workflow pins $want"
+            exit 1
+        }
+        Expand-Archive -Path $zip -DestinationPath $root -Force
+        $pc = Join-Path $root 'lib\pkgconfig\gtk+-3.0.pc'
+        if (-not (Test-Path $pc)) {
+            Write-Output "::error::the bundle carries no $pc"
+            exit 1
+        }
+        "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        @(
+            "PKG_CONFIG_PATH=$root\lib\pkgconfig",
+            "LIB=$root\lib;$env:LIB",
+            "INCLUDE=$root\include;$env:INCLUDE"
+        ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        & "$root\bin\pkgconf.exe" --modversion gtk+-3.0

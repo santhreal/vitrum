@@ -1,9 +1,9 @@
 # vitrum-portable-pty
 
-A fork of [`portable-pty`](https://crates.io/crates/portable-pty) 0.9.0 with one
-divergence.
+A fork of [`portable-pty`](https://crates.io/crates/portable-pty) 0.9.0 with two
+divergences.
 
-## The divergence
+## The divergences
 
 `src/win/psuedocon.rs` creates the pseudoconsole without
 `PSUEDOCONSOLE_INHERIT_CURSOR`.
@@ -24,6 +24,10 @@ and exited successfully.
 Without the flag the query is never asked. The session starts at the origin, which
 is what a fresh session should do anyway, and there is no handshake to lose.
 
+`src/lib.rs` deletes one line, `#[cfg(unix)] use libc;`. The crate names `libc`
+in paths rather than through that import, so on the edition this workspace
+builds it is an unused import, and every build here runs with `-D warnings`.
+
 `UPSTREAM.toml` is the authoritative copy of that list.
 `sh tools/upstream/check.sh --fork vendor-pty` downloads the pristine crate and
 fails if the real divergence is not the declared one, or if upstream has
@@ -37,9 +41,9 @@ upstream and shipped the hang, so the fork is a real, named dependency instead.
 
 ## When this goes away
 
-When `portable-pty` lets a caller choose the pseudoconsole flags. The rest of the
-crate is upstream and is not modified, so tracking a new release means copying
-`src/` and reapplying four bytes.
+When `portable-pty` lets a caller choose the pseudoconsole flags, and builds
+without an unused import. Nothing else in the crate is modified, so tracking a
+new release means copying `src/` and reapplying two hunks.
 
 ## Absorbing a new release
 

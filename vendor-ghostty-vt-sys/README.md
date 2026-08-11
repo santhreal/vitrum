@@ -1,11 +1,14 @@
 # libghostty-vt-sys, forked
 
 A fork of [`libghostty-vt-sys`](https://crates.io/crates/libghostty-vt-sys)
-0.2.1 carrying one change, in `build.rs`: the target and CPU passed to zig are
+0.2.1 carrying two changes. In `build.rs`, the target and CPU passed to zig are
 pinned, on every target, instead of being detected from the machine running the
-build.
+build. In `src/bindings.rs`, the bindings are regenerated with
+`generate_comments(false)`, so the C header's prose is not carried into a file
+published from this repository. That prose names another terminal on nearly
+every item. The items, their types and their values are unchanged.
 
-`UPSTREAM.toml` is the definition of the divergence.
+`UPSTREAM.toml` is the definition of the divergences.
 `sh tools/upstream/check.sh --fork vendor-ghostty-vt-sys` downloads the
 pristine crate and fails if the real divergence is not the declared one, or if
 upstream has released a newer version.

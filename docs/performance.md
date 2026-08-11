@@ -177,10 +177,14 @@ stack and a glyph atlas, so panes share one renderer per window and pay
 
 Not improved, and not this renderer's to improve.
 
-Cold start to a mounted shell is 710.5 ms at the median, against 706.0 ms for
-0.3.1. The window itself is created at 66.5 ms. The 640 ms between those two
-points is the shell's own view coming up, which is still a webview and was not
-touched. No startup improvement is claimed.
+Cold start is not one number. Time to a mounted shell is bimodal from the same
+binary on the same display with the same profile: three of five runs land near
+223 ms and two near 712 ms. The window itself is created at 71.5 ms. Everything
+after that is the shell's own view coming up, which is still a webview and was
+not touched, and which mode a run takes is the webview's to decide. A median
+over five runs of a bimodal distribution is whichever mode won three times, so
+both modes are reported and no single figure is claimed. No startup improvement
+is claimed either.
 
 The pane's own first frame is 192.5 ms at the median on the measurement host,
 measured as process creation to an awaited fence with a grid full of content.

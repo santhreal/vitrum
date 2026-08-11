@@ -62,6 +62,16 @@ env:
   # A warning is a failure. The crate ships with none and the only way it stays
   # that way is a machine refusing the push that adds one.
   RUSTFLAGS: -D warnings
+  # The self-hosted runner compiles through sccache, whose server exits after
+  # ten idle minutes by default. A run spends longer than that in the Zig
+  # engine build with no rustc call in it, and the next crate then meets a
+  # server that is gone: `failed to execute compile ... failed to fill whole
+  # buffer`, which fails the job with no defect in the tree. Zero disables the
+  # idle exit. The log path is set with it because the shutdown was inferred
+  # from the timing rather than observed, and a second occurrence should leave
+  # a reason behind instead of the same guess.
+  SCCACHE_IDLE_TIMEOUT: "0"
+  SCCACHE_ERROR_LOG: /tmp/sccache-ci.log
 
 jobs:
   test:

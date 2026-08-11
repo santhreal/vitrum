@@ -20,11 +20,14 @@
 //!   several-hundred-kilobyte string build between the window appearing and
 //!   its first frame, which is time the operator spends looking at an empty
 //!   rectangle.
-//! - `window.created` before `shell.mounted` and before `pane.first-paint`.
-//!   The pane is installed with the OS window, so it is parsing and holding a
-//!   grid for the whole interval the shell is still being built. A pane
-//!   installed at mount instead would start that clock hundreds of
-//!   milliseconds later and drop the bytes that arrived in between.
+//! - `window.created` before `shell.mounted`. The pane is installed with the
+//!   OS window, so it is parsing and holding a grid for the whole interval the
+//!   shell is still being built. A pane installed at mount instead would start
+//!   that clock hundreds of milliseconds later and drop the bytes that arrived
+//!   in between.
+//! - `shell.mounted` before `pane.first-paint`. The pane's GPU handshake is
+//!   not allowed in front of the window's first frame. Reversing them is what
+//!   made a start take four times as long as the window needed.
 //!
 //! A mark that arrives before its prerequisite is recorded as a violation
 //! rather than a panic. A launch is not improved by refusing to start; the
@@ -68,8 +71,15 @@ pub(crate) const PHASES: [(&str, Option<&str>); 11] = [
     ("settings.restored", Some("shell.mounted")),
     // The daemon has been asked for a connection.
     ("daemon.dialled", Some("settings.restored")),
-    // The pane put its first frame on screen.
-    ("pane.first-paint", Some("window.created")),
+    // The pane put its first frame on screen. After the shell is mounted, not
+    // merely after the window exists: building a swapchain means an instance,
+    // an adapter, a device, a surface configuration and a shader pipeline, and
+    // done inside the realize handler all of that lands between `show_all` and
+    // the window's first frame. The pane attaches from an idle below GDK's
+    // redraw priority instead, so the chrome is on screen first and this mark
+    // cannot precede `shell.mounted` without the handshake having moved back
+    // in front of it.
+    ("pane.first-paint", Some("shell.mounted")),
     // History for the focused session reached the pane.
     ("scrollback.restored", Some("daemon.dialled")),
 ];

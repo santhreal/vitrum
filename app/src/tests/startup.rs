@@ -134,31 +134,58 @@ fn a_window_is_not_created_before_its_stylesheets_are_built() {
     );
 }
 
-/// The pane is installed with the window, not when the shell mounts it.
+/// The pane paints after the shell is mounted, and neither one waits on a
+/// frame that was never realized.
 ///
-/// A pane that waits for its mount starts parsing output hundreds of
-/// milliseconds late and drops everything that arrived in between. The pane
-/// therefore hangs off `window.created` directly. The shell hangs off
-/// `frame.realized`, which hangs off `window.created` in turn: the native
-/// widget tree has to exist before anything can be mounted into it, and that
-/// is one more link in the same chain rather than a second thing to wait for.
-/// Neither branch waits on the other.
+/// Two separate things used to be conflated under "the pane must not wait".
+///
+/// The pane is INSTALLED with the window, at `window.created`, and that is
+/// what stops it dropping output: from that point it holds a grid and parses
+/// every byte the socket hands it, whether or not anything is on screen. That
+/// has not changed and is not what this phase measures.
+///
+/// The pane PAINTS later, and deliberately after `shell.mounted`. Its first
+/// frame needs a GPU instance, an adapter, a device, a configured swapchain
+/// and a compiled pipeline, which on a cold start is most of a quarter of a
+/// second. Done in the realize handler, all of it landed inside `show_all`,
+/// so the whole window — sidebar, titlebar, bar, none of which use a GPU —
+/// waited on it, and the operator saw nothing at all until it finished. The
+/// handshake now runs from an idle below the toolkit's redraw priority, so
+/// this mark cannot arrive before `shell.mounted` unless it has been put back
+/// in front of the first frame.
 #[test]
-fn the_shell_and_the_pane_both_wait_on_the_window_and_not_on_each_other() {
+fn the_pane_paints_after_the_window_it_paints_into_is_on_screen() {
     assert!(
         boot::out_of_order(&["window.created", "frame.realized", "shell.mounted"]).is_empty(),
         "the shell's own chain was rejected by the guard that enforces it"
     );
     assert!(
-        boot::out_of_order(&["window.created", "pane.first-paint"]).is_empty(),
-        "the pane is required to wait for the shell to mount, which is the \
-         ordering this build exists to remove"
+        boot::out_of_order(&[
+            "window.created",
+            "frame.realized",
+            "shell.mounted",
+            "pane.first-paint",
+        ])
+        .is_empty(),
+        "the documented order was rejected by the guard that enforces it"
+    );
+    let early = boot::out_of_order(&["window.created", "frame.realized", "pane.first-paint"]);
+    assert_eq!(
+        early.len(),
+        1,
+        "a pane that painted before the shell mounted was accepted, which is \
+         the GPU handshake back in front of the window's first frame"
+    );
+    assert!(
+        early[0].contains("shell.mounted"),
+        "the violation does not name the phase that was skipped: {}",
+        early[0]
     );
     for phase in ["frame.realized", "pane.first-paint"] {
         assert_eq!(
             boot::out_of_order(&[phase]).len(),
             1,
-            "{phase} was accepted before the window it is painted on existed"
+            "{phase} was accepted before anything it depends on existed"
         );
     }
     assert_eq!(

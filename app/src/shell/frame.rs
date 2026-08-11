@@ -122,14 +122,33 @@ impl Frame {
         let panebar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content.pack_start(&panebar, false, false, 0);
 
+        // Input only, and deliberately.
+        //
+        // An event box with a window of its own is a native X window, and a
+        // native window does not composite with the one beside it: the pane's
+        // swapchain window is a sibling, so a translucent fill painted here
+        // reached the server as an opaque rectangle and the terminal went
+        // black whenever a sheet opened. Without a window the box still takes
+        // the clicks that dismiss the sheet, and the dimming moves to a
+        // windowless child that paints into the toplevel's own surface: over
+        // the chrome that is a translucent wash, and over the pane it is
+        // simply behind the swapchain and invisible. The pane dims itself,
+        // through `PaneHost::set_dimmed`.
         let scrim = gtk::EventBox::new();
-        scrim.style_context().add_class("rg-scrim");
+        scrim.set_visible_window(false);
         scrim.set_no_show_all(true);
+        let wash = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        wash.style_context().add_class("rg-scrim");
+        scrim.add(&wash);
         let dialog_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
         dialog_slot.style_context().add_class("rg-dialog-slot");
         dialog_slot.set_halign(gtk::Align::Center);
         dialog_slot.set_valign(gtk::Align::Center);
-        scrim.add(&dialog_slot);
+        wash.pack_start(&dialog_slot, true, true, 0);
+        // Shown now, while its parent is not: `show_dialog` shows the scrim
+        // and the slot, and `no_show_all` on the scrim means a later
+        // `show_all` never reaches this one.
+        wash.show();
         overlay.add_overlay(&scrim);
         overlay.set_overlay_pass_through(&scrim, false);
 

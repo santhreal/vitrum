@@ -20,13 +20,6 @@ struct Globals {
     underline: vec2<f32>,
     // Caret geometry: bar width, then rule thickness. Both in pixels.
     cursor_px: vec2<f32>,
-    // WGSL aligns a vec4 to 16 bytes and the four vec2 above come to 32, so
-    // the veil starts at 48. The pad is that gap, spelled out, because the
-    // host writes this struct byte for byte.
-    _pad: vec4<f32>,
-    // Laid over every pixel: `rgb` is the colour, `a` is how much of it.
-    // Zero alpha is the ordinary case and costs one mix per fragment.
-    veil: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -102,18 +95,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return out;
 }
 
-// The colour a pixel ends up, once the veil is applied.
-//
-// Every return from the fragment stage goes through here. A pane cannot be
-// dimmed from outside: its window is a native child of the toolkit's, and a
-// sibling drawn over it with a translucent fill is a separate X window that
-// paints its background opaque, so a scrim over a dialog turned the whole
-// terminal black instead of dimming it. The pane therefore dims itself, in
-// the one place that owns its pixels.
-fn veiled(color: vec4<f32>) -> vec4<f32> {
-    return vec4<f32>(mix(color.rgb, globals.veil.rgb, globals.veil.a), color.a);
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Interpolation samples at pixel centres, so flooring gives the integer
@@ -142,12 +123,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // background knocks the glyph out of it, which is what keeps the character
     // under the caret readable.
     if shape == CURSOR_BLOCK {
-        return veiled(mix(input.cursor, input.bg, coverage));
+        return mix(input.cursor, input.bg, coverage);
     }
 
     let painted = mix(input.bg, input.fg, coverage);
     if shape == 0u {
-        return veiled(painted);
+        return painted;
     }
 
     // The remaining shapes are rules laid over the cell as it already is.
@@ -159,19 +140,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let thickness = globals.cursor_px.y;
     if shape == CURSOR_BAR {
         if p.x < globals.cursor_px.x {
-            return veiled(input.cursor);
+            return input.cursor;
         }
     } else if shape == CURSOR_UNDERLINE {
         if p.y >= globals.cell_px.y - thickness {
-            return veiled(input.cursor);
+            return input.cursor;
         }
     } else if shape == CURSOR_HOLLOW {
         let inside_x = p.x >= thickness && p.x < globals.cell_px.x - thickness;
         let inside_y = p.y >= thickness && p.y < globals.cell_px.y - thickness;
         if !(inside_x && inside_y) {
-            return veiled(input.cursor);
+            return input.cursor;
         }
     }
 
-    return veiled(painted);
+    return painted;
 }

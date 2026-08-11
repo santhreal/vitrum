@@ -108,7 +108,7 @@ impl CellInstance {
 /// Uniform block shared by every instance.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct Globals {
+struct Globals {
     viewport_px: [f32; 2],
     cell_px: [f32; 2],
     underline: [f32; 2],
@@ -117,16 +117,6 @@ pub(crate) struct Globals {
     /// the caret scales with the font instead of being a fixed number of
     /// pixels that vanishes at 24 px and swallows the glyph at 8 px.
     cursor_px: [f32; 2],
-    /// Four floats of padding. The veil is a `vec4` and WGSL aligns one to 16
-    /// bytes, so it starts at offset 48 and not at the 40 a packed layout
-    /// would give it. Named rather than implicit so the layout is readable
-    /// beside the shader's own struct, and so `size_of` is the 64 the pipeline
-    /// layout's `min_binding_size` asks for.
-    _pad: [f32; 4],
-    /// The colour laid over every pixel this renderer draws, and how much of
-    /// it: `rgb` as unit floats, `a` from 0 for untouched to 1 for the veil
-    /// alone. See [`GridRenderer::set_veil`].
-    veil: [f32; 4],
 }
 
 /// What one call to [`GridRenderer::render`] actually did.
@@ -256,9 +246,6 @@ pub struct GridRenderer {
     scratch: Vec<CellInstance>,
     format: wgpu::TextureFormat,
     last: Option<FrameKey>,
-    /// `rgb` then strength, in the shader's own units. See
-    /// [`GridRenderer::set_veil`].
-    veil: [f32; 4],
 }
 
 impl core::fmt::Debug for GridRenderer {
@@ -415,7 +402,6 @@ impl GridRenderer {
             scratch: Vec::new(),
             format: config.format,
             last: None,
-            veil: [0.0; 4],
         }
     }
 
@@ -505,44 +491,6 @@ impl GridRenderer {
         self.last.is_none()
     }
 
-    /// Lay `color` over every pixel this renderer draws, at `strength`.
-    ///
-    /// `strength` is clamped to `0.0..=1.0`, and a NaN lands on zero: the mix
-    /// is `c + (v - c) * a`, so a strength past one or below zero pushes the
-    /// picture past the veil instead of towards it, and a NaN makes every
-    /// pixel undefined. Zero is the ordinary case and
-    /// paints exactly what the grid says. This is how a pane behind a modal
-    /// sheet is dimmed: a toolkit scrim cannot do it, because the pane draws
-    /// into a native child window and a translucent sibling drawn over it is
-    /// another X window whose fill is opaque, which turns the terminal into a
-    /// black rectangle instead of a dimmed one.
-    ///
-    /// The next frame is a full redraw, because the veil changes every pixel
-    /// and no cell changed to say so.
-    pub fn set_veil(&mut self, color: Rgba, strength: f32) {
-        let veil = [
-            f32::from(color.r) / 255.0,
-            f32::from(color.g) / 255.0,
-            f32::from(color.b) / 255.0,
-            if strength.is_nan() {
-                0.0
-            } else {
-                strength.clamp(0.0, 1.0)
-            },
-        ];
-        if veil == self.veil {
-            return;
-        }
-        self.veil = veil;
-        self.invalidate();
-    }
-
-    /// How much of the veil is being applied, from 0 to 1.
-    #[must_use]
-    pub const fn veil_strength(&self) -> f32 {
-        self.veil[3]
-    }
-
     /// Draw `grid` into `target`.
     ///
     /// Returns without recording any GPU command when the grid has no damage
@@ -618,9 +566,7 @@ impl GridRenderer {
             label: Some("vitrum-grid.frame"),
         });
         {
-            // The clear fills every pixel no instance covers, so it takes the
-            // veil on the host side: the fragment stage never runs there.
-            let clear = veil_over(grid.default_style().bg, self.veil);
+            let clear = grid.default_style().bg;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("vitrum-grid.cells"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -628,7 +574,7 @@ impl GridRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
+                        load: wgpu::LoadOp::Clear(to_wgpu_color(clear)),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -771,8 +717,6 @@ impl GridRenderer {
             cell_px: [m.width as f32, m.height as f32],
             underline: [m.underline_y as f32, m.underline_thickness as f32],
             cursor_px: [caret_bar_px(m.width), m.underline_thickness as f32],
-            _pad: [0.0; 4],
-            veil: self.veil,
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
     }
@@ -787,21 +731,11 @@ fn caret_bar_px(width: u32) -> f32 {
     (width as f32 / 8.0).max(1.0)
 }
 
-/// The clear colour, with the veil already mixed in.
-///
-/// The same `mix` the shader does, on the one colour the shader never sees.
-/// Leaving it out would dim every glyph and every cell background while the
-/// gaps between them stayed bright, which is worse than not dimming at all.
-pub(crate) fn veil_over(color: Rgba, veil: [f32; 4]) -> wgpu::Color {
-    let a = f64::from(veil[3]);
-    let mix = |c: u8, v: f32| {
-        let c = f64::from(c) / 255.0;
-        c + (f64::from(v) - c) * a
-    };
+fn to_wgpu_color(color: Rgba) -> wgpu::Color {
     wgpu::Color {
-        r: mix(color.r, veil[0]),
-        g: mix(color.g, veil[1]),
-        b: mix(color.b, veil[2]),
+        r: f64::from(color.r) / 255.0,
+        g: f64::from(color.g) / 255.0,
+        b: f64::from(color.b) / 255.0,
         a: f64::from(color.a) / 255.0,
     }
 }

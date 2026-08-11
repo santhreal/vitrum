@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use glib::translate::ToGlibPtr;
 use gtk::prelude::*;
 use vitrum_grid::font::FontConfig;
-use vitrum_grid::{CellGrid, FontStack, GridRenderer, RendererConfig, Rgba};
+use vitrum_grid::{CellGrid, FontStack, GridRenderer, RendererConfig};
 
 use super::geometry::PaneRect;
 use super::key::{Key, Mods, Named, encode};
@@ -176,6 +176,19 @@ impl wgpu::rwh::HasDisplayHandle for XDisplay {
         // open for the life of the process.
         Ok(unsafe { wgpu::rwh::DisplayHandle::borrow_raw(wgpu::rwh::RawDisplayHandle::Xlib(raw)) })
     }
+}
+
+/// One frame of the pane, in host memory.
+///
+/// Tightly packed rows in the swapchain's byte order. See
+/// [`PaneSurface::still`] for why the pane ever draws anywhere but the screen.
+pub(crate) struct Still {
+    /// Width in device pixels.
+    pub(crate) width: u32,
+    /// Height in device pixels.
+    pub(crate) height: u32,
+    /// `width * height * 4` bytes, no row padding.
+    pub(crate) pixels: Vec<u8>,
 }
 
 /// A swapchain on a widget's own X window.
@@ -475,17 +488,6 @@ impl PaneSurface {
         self.renderer.invalidate();
     }
 
-    /// Dim everything this surface draws, or stop dimming it.
-    ///
-    /// A modal sheet dims what is behind it. The pane cannot be dimmed from
-    /// behind a toolkit scrim: it draws into a native child window of the
-    /// shell's, and a translucent widget laid over that is a window of its
-    /// own, which paints its background opaque and turns the terminal into a
-    /// black rectangle. So the sheet tells the pane, and the pane dims itself.
-    pub(crate) fn set_veil(&mut self, color: Rgba, strength: f32) {
-        self.renderer.set_veil(color, strength);
-    }
-
     /// Draw the grid, if anything changed, and present.
     ///
     /// Returns whether a frame was actually put on screen. A clean grid over a
@@ -524,6 +526,118 @@ impl PaneSurface {
                     .with_context(|| format!("after reconfiguring the pane's swapchain: {first}"))
             }
         }
+    }
+
+    /// Draw the grid into host memory instead of onto the screen.
+    ///
+    /// Returns the frame as tightly packed rows in the swapchain's own byte
+    /// order, which on every X11 adapter this runs on is BGRA and therefore
+    /// what a cairo image surface reads without a swizzle.
+    ///
+    /// This exists because two things cannot own one rectangle of screen. The
+    /// pane presents to a native child window; the toolkit paints the rest of
+    /// the window over that same area with `IncludeInferiors`, which is how
+    /// client-side widgets are drawn over a native child at all. Neither is
+    /// wrong and neither can be told to stop, so whichever draws last owns the
+    /// pixels: a modal sheet drawn over the pane erases the terminal, and a
+    /// present after it erases the sheet. While a sheet is up the pane
+    /// therefore stops presenting and hands the toolkit a picture to draw, so
+    /// one compositor owns the whole window and the sheet, the wash and the
+    /// transcript stack in the order they are written.
+    ///
+    /// # Errors
+    ///
+    /// The renderer failed, or the readback buffer could not be mapped.
+    pub(crate) fn still(&mut self, grid: &mut CellGrid) -> Result<Still> {
+        let (width, height) = self.size;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vitrum.pane-still"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // The renderer's pipeline is built for the swapchain's format, so
+            // the offscreen target has to be that format too or the render
+            // pass fails validation.
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Every cell, because this frame goes to a buffer that holds no
+        // previous one for a damage diff to build on.
+        grid.mark_all_damaged();
+        self.renderer.invalidate();
+        self.renderer
+            .render(&self.device, &self.queue, grid, &view, self.size)
+            .map_err(|e| anyhow!("render the pane into a still: {e}"))?;
+
+        let unpadded = width * 4;
+        let stride = unpadded.div_ceil(256) * 256;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vitrum.pane-still-readback"),
+            size: u64::from(stride) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("vitrum.pane-still-copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| anyhow!("wait for the pane's still: {e}"))?;
+        rx.recv()
+            .map_err(|_| anyhow!("the pane's still was never mapped"))?
+            .map_err(|e| anyhow!("map the pane's still: {e}"))?;
+
+        let mapped = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((unpadded * height) as usize);
+        for row in 0..height as usize {
+            let at = row * stride as usize;
+            pixels.extend_from_slice(&mapped[at..at + unpadded as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+
+        Ok(Still {
+            width,
+            height,
+            pixels,
+        })
     }
 
     /// One attempt at a frame.

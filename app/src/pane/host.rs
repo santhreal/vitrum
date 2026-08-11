@@ -36,7 +36,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use gtk::prelude::*;
-use vitrum_grid::Rgba;
 
 use crate::WindowId;
 
@@ -104,19 +103,13 @@ pub(crate) struct PaneHost {
     inner: Rc<RefCell<Inner>>,
 }
 
-/// The colour a dimmed pane is dimmed towards.
+/// The shortest gap between two stills while a sheet is up.
 ///
-/// Black rather than the sheet's own backdrop: the pane is behind the sheet,
-/// and a tint would recolour the operator's terminal palette while a dialog is
-/// open, which reads as the theme changing rather than as focus moving.
-pub(crate) const VEIL_COLOR: Rgba = Rgba::rgb(0, 0, 0);
-
-/// How far a pane is dimmed while a sheet is over it.
-///
-/// Enough that the sheet is unmistakably in front, not so much that the
-/// transcript underneath stops being readable: an operator answering an
-/// approval prompt is reading the pane through the dialog.
-pub(crate) const VEIL_STRENGTH: f32 = 0.55;
+/// The pane behind a modal sheet is context, not the thing being read, and
+/// every still is a full render plus a readback that blocks the main loop.
+/// Ten a second keeps a running agent visibly running without charging the
+/// sheet the operator is actually using.
+const STILL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Everything one pane owns.
 struct Inner {
@@ -147,12 +140,21 @@ struct Inner {
     autoscroll: Option<glib::SourceId>,
     /// Whether the first frame has been reported to the boot timeline.
     first_paint: bool,
-    /// How much the pane is dimmed, from 0 to 1.
+    /// The picture the toolkit draws while a sheet covers the pane, and the
+    /// clock that limits how often it is retaken.
     ///
-    /// Held here and not only in the renderer because a sheet can be open
-    /// before there is a swapchain: the window shows, a dialog opens, and the
-    /// GPU handshake finishes afterwards. The surface is told when it arrives.
-    veil: f32,
+    /// `Some` means the pane has stopped presenting. See
+    /// [`super::surface::PaneSurface::still`].
+    frozen: Option<Frozen>,
+}
+
+/// What the pane shows while it is not presenting.
+struct Frozen {
+    /// The last still, ready for cairo to blit. `None` only if the render
+    /// failed, and then the widget paints its background rather than nothing.
+    image: Option<gtk::cairo::ImageSurface>,
+    /// When that still was taken.
+    at: Instant,
 }
 
 /// A pointer drag the pane owns.
@@ -231,7 +233,7 @@ pub(crate) fn install_in(
             thumb: None,
             autoscroll: None,
             first_paint: false,
-            veil: 0.0,
+            frozen: None,
         })),
     };
 
@@ -274,30 +276,38 @@ impl PaneHost {
         inner.apply_theme(theme);
     }
 
-    /// Dim the pane behind a sheet, or undim it when the sheet closes.
+    /// Stop presenting and hand the toolkit a picture, or start again.
     ///
-    /// The shell calls this on every layer change. A toolkit scrim cannot do
-    /// the job: the pane owns a native child window, a translucent sibling
-    /// over it is another window whose background paints opaque, and the
-    /// result is a black rectangle where the transcript was. The pane dims
-    /// itself instead, in the renderer that owns its pixels.
+    /// Called by the shell whenever a modal surface goes up or comes down.
     ///
-    /// Draws immediately rather than waiting for the next tick, because the
-    /// grid has not changed and nothing else is going to ask.
+    /// Two things cannot own one rectangle of screen. The pane presents to a
+    /// native child window; the toolkit draws the rest of the window over that
+    /// area with `IncludeInferiors`, which is what lets a widget be drawn over
+    /// a native child at all. Whichever draws last owns the pixels, so a sheet
+    /// over the pane erased the terminal and a present after the sheet would
+    /// erase the sheet. There is no dimming to be done from outside and none
+    /// to be done from inside either: while a sheet is up the pane stops
+    /// presenting, hands over a still, and the toolkit composites the wash and
+    /// the sheet over it in one pass.
     pub(crate) fn set_dimmed(&self, dimmed: bool) {
-        let strength = if dimmed { VEIL_STRENGTH } else { 0.0 };
         let mut inner = self.inner.borrow_mut();
-        if inner.veil == strength {
+        if dimmed == inner.frozen.is_some() {
             return;
         }
-        inner.veil = strength;
-        if let Some(surface) = inner.surface.as_mut() {
-            surface.set_veil(VEIL_COLOR, strength);
-            // The grid did not change, so nothing else will ask for a frame.
-            inner.pacer.mark();
+        if dimmed {
+            inner.freeze();
+        } else {
+            inner.frozen = None;
+            if let Some(surface) = inner.surface.as_mut() {
+                // The still is what is on screen, not a frame this renderer
+                // drew, so the next present has to be a full one.
+                surface.forget_what_is_on_screen();
+                inner.pacer.mark();
+            }
         }
-        // With no swapchain yet there is nothing to tell: `realize` reads the
-        // field when it builds one.
+        let area = inner.area.clone();
+        drop(inner);
+        area.queue_draw();
     }
 
     /// What the frame clock has been doing, and what its frames cost.
@@ -494,18 +504,22 @@ impl PaneHost {
 
         let mut inner = self.inner.borrow_mut();
         match attached {
-            Ok(mut surface) => {
+            Ok(surface) => {
                 let cell = surface.cell_size();
                 let (cols, rows) = surface.cells_for(surface.size().0, surface.size().1);
                 if let Err(e) = inner.session.resize(cols, rows, cell) {
                     tracing::error!("the pane's terminal refused {cols}x{rows}: {e}");
                 }
-                // A sheet opened before the GPU handshake finished is still
-                // open now, and its dimming is the pane's to draw.
-                surface.set_veil(VEIL_COLOR, inner.veil);
                 inner.surface = Some(surface);
                 inner.fault = None;
-                inner.pacer.mark();
+                if inner.frozen.is_some() {
+                    // A sheet went up before the GPU handshake finished, so
+                    // this pane has never presented and must not start now:
+                    // the toolkit owns these pixels until the sheet closes.
+                    inner.freeze();
+                } else {
+                    inner.pacer.mark();
+                }
                 drop(inner);
                 self.report(PaneReport::Resize { cols, rows });
             }
@@ -538,8 +552,38 @@ impl PaneHost {
     fn draw_fallback(&self, area: &gtk::DrawingArea, cr: &gtk::cairo::Context) -> glib::Propagation {
         let (fault, bg) = {
             let mut inner = self.inner.borrow_mut();
+            // Frozen: the toolkit is drawing the pane, so the still goes into
+            // this cairo context and the wash and the sheet land on top of it
+            // in the same pass.
+            if let Some(frozen) = inner.frozen.as_ref() {
+                if let Some(image) = frozen.image.as_ref() {
+                    let scale = f64::from(area.scale_factor().max(1));
+                    let _ = cr.save();
+                    // The still is in device pixels and the context is in
+                    // logical ones.
+                    cr.scale(1.0 / scale, 1.0 / scale);
+                    let _ = cr.set_source_surface(image, 0.0, 0.0);
+                    let _ = cr.paint();
+                    let _ = cr.restore();
+                    return glib::Propagation::Stop;
+                }
+                let bg = inner.session.theme().background_with_opacity();
+                drop(inner);
+                let f = |v: u8| f64::from(v) / 255.0;
+                cr.set_source_rgba(f(bg.r), f(bg.g), f(bg.b), f(bg.a));
+                let _ = cr.paint();
+                return glib::Propagation::Stop;
+            }
             if let Some(surface) = inner.surface.as_mut() {
                 surface.forget_what_is_on_screen();
+                // And ask for the frame that redraws it. Invalidating alone
+                // only says the last frame is gone; the pacer is what
+                // schedules a new one, and nothing else is going to mark it
+                // when the grid has not changed. Without this an exposure
+                // over a still session — a sheet opening, a window uncovered
+                // on a server with no backing store — leaves the pane empty
+                // until the agent happens to write a byte.
+                inner.pacer.mark();
                 return glib::Propagation::Stop;
             }
             (
@@ -1200,12 +1244,86 @@ impl Inner {
         self.drain_replies();
         self.viewport_moved(reports);
 
+        if self.frozen.is_some() {
+            // Not presenting. The picture the toolkit is drawing is only
+            // retaken when it is stale enough to be worth the readback, and
+            // the widget is asked to redraw only when there is a new one.
+            return Ok(self.refreeze());
+        }
+
         let Some(surface) = self.surface.as_mut() else {
             return Ok(false);
         };
         surface
             .present(self.session.grid_mut())
             .context("present the pane")
+    }
+
+    /// Take the first still and stop presenting.
+    fn freeze(&mut self) {
+        let image = self.take_still();
+        self.frozen = Some(Frozen {
+            image,
+            at: Instant::now(),
+        });
+    }
+
+    /// Retake the still if the grid moved on and enough time has passed.
+    ///
+    /// Returns whether there is something new to draw.
+    fn refreeze(&mut self) -> bool {
+        let Some(frozen) = self.frozen.as_ref() else {
+            return false;
+        };
+        if !self.session.grid().is_dirty() || frozen.at.elapsed() < STILL_INTERVAL {
+            return false;
+        }
+        let image = self.take_still();
+        self.frozen = Some(Frozen {
+            image,
+            at: Instant::now(),
+        });
+        self.area.queue_draw();
+        true
+    }
+
+    /// Render the grid into an image surface cairo can blit.
+    ///
+    /// `None` when there is no swapchain to render with, or the render or the
+    /// readback failed. The widget then paints its background, which is the
+    /// same thing it does before the first frame.
+    fn take_still(&mut self) -> Option<gtk::cairo::ImageSurface> {
+        let Inner {
+            session, surface, ..
+        } = self;
+        let still = match surface.as_mut()?.still(session.grid_mut()) {
+            Ok(still) => still,
+            Err(e) => {
+                tracing::warn!("no still for the pane behind the sheet: {e:#}");
+                return None;
+            }
+        };
+        let stride = gtk::cairo::Format::Rgb24
+            .stride_for_width(still.width)
+            .ok()?;
+        let mut data = vec![0u8; stride as usize * still.height as usize];
+        let row = still.width as usize * 4;
+        for y in 0..still.height as usize {
+            let from = y * row;
+            let to = y * stride as usize;
+            data[to..to + row].copy_from_slice(&still.pixels[from..from + row]);
+        }
+        // `Rgb24` is one 32-bit word per pixel holding BGRx in host order,
+        // which is the byte order the swapchain already writes on this
+        // platform, so the rows go across without a swizzle.
+        gtk::cairo::ImageSurface::create_for_data(
+            data,
+            gtk::cairo::Format::Rgb24,
+            still.width as i32,
+            still.height as i32,
+            stride,
+        )
+        .ok()
     }
 
     /// Hand the child every answer the emulator owes it.

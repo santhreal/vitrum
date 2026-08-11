@@ -427,6 +427,28 @@ fn reconcile(t: &mut Tracked, live: &[(SessionId, PathBuf, u32)]) {
     }
 }
 
+/// What the report says on a host with no watcher compiled in.
+///
+/// Not `cfg`-gated, so the sentence a macOS or Windows operator reads is
+/// reviewable and testable from any host. It names the kernel interface the
+/// watcher would have to be written against, because "no file watcher for this
+/// platform" told a reader neither what is missing nor what to do with the
+/// answer they are holding.
+#[cfg(any(not(target_os = "linux"), test))]
+pub(crate) fn no_watcher_note(os: &str) -> String {
+    let interface = match os {
+        "macos" => "FSEvents",
+        "windows" => "ReadDirectoryChangesW",
+        _ => "a native file-change interface",
+    };
+    format!(
+        "Overlap detection is not implemented on {os}: it needs {interface}, and this build has \
+         only the Linux inotify watcher. No change is seen at all, so an empty collision list \
+         here means nothing was looked at rather than nothing happened. Treat every session in a \
+         shared checkout as unwatched."
+    )
+}
+
 #[cfg(target_os = "linux")]
 mod platform;
 
@@ -445,10 +467,7 @@ mod platform {
         _publish: Publish,
     ) -> Watcher {
         let mut tracked = Tracked::default();
-        tracked.degrade(
-            "This build has no file watcher for this platform, so no change is seen."
-                .to_string(),
-        );
+        tracked.degrade(super::no_watcher_note(std::env::consts::OS));
         let state = Arc::new(Mutex::new(tracked));
         Watcher {
             running: Arc::new(AtomicBool::new(false)),

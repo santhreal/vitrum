@@ -52,7 +52,10 @@ pub mod tray;
 pub mod window_state;
 
 pub use badge::WindowHandle;
-pub use capability::{CapabilityReport, Feature, Support, Unavailable, UnavailableKind};
+pub use capability::{
+    CapabilityReport, Feature, PlatformSupport, Support, Unavailable, UnavailableKind,
+    platform_support,
+};
 pub use paths::{AppPaths, PathEnv, PathError, Platform};
 
 #[cfg(test)]
@@ -106,18 +109,10 @@ pub fn probe(window: Option<WindowHandle>) -> CapabilityReport {
 }
 
 /// Whether this build can register itself as the `vitrum://` handler.
+///
+/// Read from the recorded per-platform decision rather than from a `cfg` here,
+/// so the answer for a platform this box is not is reviewable and testable from
+/// this box.
 fn deeplink_support() -> Support {
-    #[cfg(target_os = "macos")]
-    {
-        Support::Missing(Unavailable::not_implemented(
-            "macOS resolves URL schemes from CFBundleURLTypes in the app bundle's Info.plist at \
-             install time; there is no runtime registration. Use \
-             deeplink::plan_registration(Platform::MacOs, ..) to get the fragment and the \
-             lsregister step.",
-        ))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Support::Available
-    }
+    capability::platform_support(Feature::DeepLinks, Platform::current()).to_support()
 }

@@ -18,13 +18,16 @@
 //! what makes ConPTY on Windows work without a terminal multiplexer anywhere in
 //! the product.
 
+mod command_path;
 mod error;
+mod hostpath;
 mod probe;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod scan;
 mod scrollback;
 mod session;
+mod terminfo;
 
 pub use error::SessionError;
 pub use scrollback::Scrollback;

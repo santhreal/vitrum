@@ -13,6 +13,8 @@
 
 use core::fmt;
 
+use crate::paths::Platform;
+
 /// Why an integration is not usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnavailableKind {
@@ -203,6 +205,76 @@ impl fmt::Display for Feature {
         // `pad`, not `write_str`: a report column uses `{:<16}` and
         // `write_str` silently discards the width.
         f.pad(self.as_str())
+    }
+}
+
+/// What a build for one platform can do with one feature, before the running
+/// machine is consulted at all.
+///
+/// [`Support`] answers "can this machine do it right now"; this answers "does a
+/// backend for it exist on that platform at all". The two are different
+/// questions and only the second can be answered for a platform you are not
+/// running on, which is what makes the Windows and macOS arms reviewable from a
+/// Linux box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformSupport {
+    /// A backend is compiled in for this platform.
+    Implemented,
+    /// No backend exists. The detail names the missing capability and the
+    /// corrective action, and is what [`crate::probe`] reports verbatim.
+    Unimplemented(&'static str),
+}
+
+impl PlatformSupport {
+    /// True when a backend exists.
+    pub const fn is_implemented(self) -> bool {
+        matches!(self, Self::Implemented)
+    }
+
+    /// The recorded reason, when there is no backend.
+    pub const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Implemented => None,
+            Self::Unimplemented(detail) => Some(detail),
+        }
+    }
+
+    /// The same answer as a [`Support`], for a caller building a report.
+    pub fn to_support(self) -> Support {
+        match self {
+            Self::Implemented => Support::Available,
+            Self::Unimplemented(detail) => Support::Missing(Unavailable::not_implemented(detail)),
+        }
+    }
+}
+
+/// The recorded decision for every feature on every platform.
+///
+/// One exhaustive match, no wildcard arm. Adding a [`Feature`] or a
+/// [`Platform`] fails to compile until a decision is written here, which is the
+/// only mechanism that stops a platform arm shipping with nobody having looked
+/// at it.
+#[must_use]
+pub const fn platform_support(feature: Feature, platform: Platform) -> PlatformSupport {
+    use Feature as F;
+    use Platform as P;
+    use PlatformSupport::{Implemented, Unimplemented};
+
+    match (feature, platform) {
+        (F::Notifications, P::Linux | P::MacOs | P::Windows) => Implemented,
+        (F::Badge, P::Linux | P::MacOs | P::Windows) => Implemented,
+        (F::Tray, P::Linux | P::MacOs | P::Windows) => Implemented,
+        (F::SingleInstance, P::Linux | P::MacOs | P::Windows) => Implemented,
+        (F::Theme, P::Linux | P::MacOs | P::Windows) => Implemented,
+        (F::WindowState, P::Linux | P::MacOs | P::Windows) => Implemented,
+        (F::DeepLinks, P::Linux | P::Windows) => Implemented,
+        (F::DeepLinks, P::MacOs) => Unimplemented(
+            "macOS resolves URL schemes from CFBundleURLTypes in the app bundle's Info.plist at \
+             install time; there is no runtime registration. Use \
+             deeplink::plan_registration(Platform::MacOs, ..) to get the fragment and the \
+             lsregister step.",
+        ),
+        (F::Paths, P::Linux | P::MacOs | P::Windows) => Implemented,
     }
 }
 

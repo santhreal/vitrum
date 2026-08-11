@@ -1,8 +1,10 @@
 //! Capability reporting: the promise that nothing here lies about working.
 
 use crate::capability::{
-    CapabilityReport, Feature, Support, Unavailable, UnavailableKind,
+    CapabilityReport, Feature, PlatformSupport, Support, Unavailable, UnavailableKind,
+    platform_support,
 };
+use crate::paths::Platform;
 
 /// The two failure classes must be distinguishable.
 ///
@@ -192,4 +194,78 @@ fn the_badge_probe_respects_the_missing_window_handle() {
     // On Linux and macOS the answer depends on the live desktop, so the only
     // universal claim is that a negative answer explains itself, which the
     // previous test asserts.
+}
+
+/// Every feature on every platform has a recorded decision, and every refusal
+/// says what is missing and what to do about it.
+///
+/// The matrix is walked at run time from `Feature::ALL` and `Platform::ALL`
+/// rather than written out here. `Platform::ALL` is generated with the enum and
+/// the table behind `platform_support` is an exhaustive match with no wildcard,
+/// so adding a platform or a feature fails to build until a decision exists,
+/// and this test then fails until that decision is a usable sentence.
+///
+/// What it does not catch: a decision that is recorded and wrong. Only the
+/// live probe on that platform can catch that.
+#[test]
+fn every_platform_and_feature_pair_has_an_actionable_decision() {
+    let mut refusals = 0;
+    for platform in Platform::ALL {
+        for feature in Feature::ALL {
+            let decision = platform_support(feature, *platform);
+            let Some(detail) = decision.reason() else {
+                assert!(decision.is_implemented(), "{feature} on {platform}: neither answer");
+                continue;
+            };
+            refusals += 1;
+            assert!(
+                detail.len() > 40,
+                "{feature} on {platform}: refusal is too short to act on: {detail}"
+            );
+            assert!(
+                detail.contains("Use ") || detail.contains("Install ") || detail.contains("install"),
+                "{feature} on {platform}: refusal names no corrective action: {detail}"
+            );
+            assert_eq!(
+                decision.to_support().reason().map(|u| u.kind),
+                Some(UnavailableKind::NotImplementedOnPlatform),
+                "{feature} on {platform}: a missing backend is permanent, not transient"
+            );
+        }
+    }
+    assert!(refusals > 0, "the matrix records no refusal at all, so nothing was proven");
+}
+
+/// A recorded refusal must reach the operator through `probe`, not be swallowed
+/// by a backend that reports success it did not achieve.
+///
+/// The live probe is the only place the two halves meet: the table says a
+/// platform has no backend, and the report for a build on that platform has to
+/// say the same thing with the same words.
+#[test]
+fn a_recorded_refusal_is_what_the_live_probe_reports() {
+    let here = Platform::current();
+    let report = crate::probe(None);
+    for feature in Feature::ALL {
+        let PlatformSupport::Unimplemented(detail) = platform_support(feature, here) else {
+            continue;
+        };
+        let support = report.get(feature).unwrap_or_else(|| panic!("{feature} was not probed"));
+        let reason = support
+            .reason()
+            .unwrap_or_else(|| panic!("{feature} has no backend here but the probe says it works"));
+        assert_eq!(reason.detail, detail, "{feature}: the probe invented its own reason");
+    }
+}
+
+/// Platform tokens are stable and unique, because they key the decision matrix
+/// and appear in every report an operator pastes.
+#[test]
+fn platform_tokens_are_stable_and_unique() {
+    let tokens: Vec<&str> = Platform::ALL.iter().map(|p| p.as_str()).collect();
+    assert_eq!(tokens, vec!["linux", "macos", "windows"]);
+    let mut sorted = tokens.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), tokens.len(), "two platforms share a token");
 }

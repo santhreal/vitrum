@@ -187,6 +187,15 @@ async fn run() -> Result<(), StartupError> {
         .map_err(StartupError::Serving)
 }
 
+/// What the daemon logs when it is asked to stop.
+///
+/// One sentence for every cause on every platform, because the operator
+/// reading a log after a surprise shutdown needs to know which of the several
+/// things that can end a daemon actually did.
+fn stopping_line(cause: &str) -> String {
+    format!("{cause}: stopping, and ending every session this daemon holds")
+}
+
 /// Resolves when the operating system asks this daemon to stop.
 ///
 /// `SIGTERM` because that is what `systemctl stop`, `systemctl restart` and a
@@ -221,18 +230,91 @@ async fn shutdown_signal() {
         _ = term.recv() => "SIGTERM",
         _ = int.recv() => "SIGINT",
     };
-    tracing::info!("{which}: stopping, and ending every session this daemon holds");
+    tracing::info!("{}", stopping_line(which));
 }
 
-#[cfg(not(unix))]
+/// Resolves on any console control event Windows can send this process.
+///
+/// Ctrl-C alone was handled, and it is the one an operator sends least often.
+/// Closing the console window sends `CTRL_CLOSE_EVENT`, logging out sends
+/// `CTRL_LOGOFF_EVENT`, and a restart sends `CTRL_SHUTDOWN_EVENT`; none of
+/// those is a Ctrl-C, and each one used to kill the daemon outright. A
+/// pseudoconsole child is not the daemon's process-tree descendant on Windows,
+/// so every hosted agent survived that, unreachable and unowned, until the
+/// user found it in Task Manager.
+///
+/// Windows gives a handler a few seconds for close, logoff and shutdown before
+/// terminating the process anyway, which is why the daemon spends them ending
+/// sessions rather than on anything else.
+#[cfg(windows)]
 async fn shutdown_signal() {
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => tracing::info!("Ctrl-C: stopping, and ending every session this daemon holds"),
-        Err(e) => {
-            tracing::warn!(error = %e, "cannot listen for Ctrl-C");
-            std::future::pending().await
-        }
+    use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
+
+    /// Install one listener, or report it and never resolve on that cause.
+    ///
+    /// A single unavailable event must not take the other four with it: losing
+    /// Ctrl-C is an inconvenience, and losing `CTRL_SHUTDOWN_EVENT` because of
+    /// it means every session leaks on every reboot.
+    macro_rules! listener {
+        ($make:expr, $name:literal) => {
+            match $make {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot listen for {}", $name);
+                    None
+                }
+            }
+        };
     }
+
+    let mut c = listener!(ctrl_c(), "Ctrl-C");
+    let mut brk = listener!(ctrl_break(), "Ctrl-Break");
+    let mut close = listener!(ctrl_close(), "a console close");
+    let mut logoff = listener!(ctrl_logoff(), "a logoff");
+    let mut shutdown = listener!(ctrl_shutdown(), "a shutdown");
+
+    if c.is_none() && brk.is_none() && close.is_none() && logoff.is_none() && shutdown.is_none() {
+        tracing::warn!("no console control event can be observed; sessions will end with the process");
+        return std::future::pending().await;
+    }
+
+    macro_rules! wait {
+        ($opt:expr) => {
+            async {
+                match $opt.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            }
+        };
+    }
+
+    let which = tokio::select! {
+        () = wait!(c) => "Ctrl-C",
+        () = wait!(brk) => "Ctrl-Break",
+        () = wait!(close) => "console close",
+        () = wait!(logoff) => "logoff",
+        () = wait!(shutdown) => "shutdown",
+    };
+    tracing::info!("{}", stopping_line(which));
+}
+
+/// Nothing here can be asked to stop, so the daemon runs until it is killed.
+///
+/// Reported once at startup rather than left to be discovered: a platform with
+/// no shutdown notification ends every session by having its process torn out
+/// from under it, and an operator should know that before it happens rather
+/// than after finding orphaned agents.
+#[cfg(not(any(unix, windows)))]
+async fn shutdown_signal() {
+    tracing::warn!(
+        host = std::env::consts::OS,
+        "no shutdown notification is implemented for this platform; sessions will be killed with \
+         the daemon rather than ended, so stop it from inside the application instead"
+    );
+    std::future::pending().await
 }
 
 /// What `--help` prints.
@@ -587,5 +669,79 @@ mod tests {
         for e in [flag, value, unknown] {
             assert!(e.to_string().contains("vitrum-server [--port"), "{e}");
         }
+    }
+
+    /// Every reason the daemon stops is reported by name, and every report says
+    /// what happened to the sessions.
+    ///
+    /// An operator reading a log after a surprise shutdown has to be able to
+    /// tell a `systemctl restart` from a console window someone closed, and a
+    /// deliberate stop from a kill.
+    #[test]
+    fn every_stop_cause_is_named_and_says_what_happened_to_the_sessions() {
+        let causes = ["SIGTERM", "SIGINT", "Ctrl-C", "Ctrl-Break", "console close", "logoff", "shutdown"];
+        let mut lines: Vec<String> = Vec::new();
+        for cause in causes {
+            let line = stopping_line(cause);
+            assert!(line.starts_with(cause), "the cause does not lead: {line}");
+            assert!(
+                line.contains("ending every session this daemon holds"),
+                "the line does not say what happened to the sessions: {line}"
+            );
+            lines.push(line);
+        }
+        lines.sort();
+        let before = lines.len();
+        lines.dedup();
+        assert_eq!(lines.len(), before, "two causes produce the same line");
+    }
+
+    /// Every console control listener the Windows arm installs is also waited
+    /// on.
+    ///
+    /// The import list is the variant space and is read from the source at run
+    /// time, so adding `ctrl_logoff` to the imports and forgetting its arm
+    /// fails here rather than on a user's machine at the next reboot.
+    ///
+    /// Only Ctrl-C used to be handled at all. Closing the console window sends
+    /// `CTRL_CLOSE_EVENT`, which killed the daemon outright; a pseudoconsole
+    /// child is not the daemon's process-tree descendant on Windows, so every
+    /// hosted agent survived unowned.
+    ///
+    /// What this cannot show is that the events arrive. Only a Windows host
+    /// can, and the arm compiling for `x86_64-pc-windows-msvc` is the rest of
+    /// the proof.
+    #[test]
+    fn every_console_control_listener_is_waited_on() {
+        let src = include_str!("main.rs");
+        let arm = src
+            .split("#[cfg(windows)]\nasync fn shutdown_signal()")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("main.rs has a Windows shutdown arm");
+        let imports = arm
+            .split("use tokio::signal::windows::{")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("the Windows arm imports its listeners as a braced list");
+        let listeners: Vec<&str> =
+            imports.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+
+        assert!(
+            listeners.len() >= 5,
+            "Windows delivers five console control events; only these are installed: {listeners:?}"
+        );
+        for listener in &listeners {
+            assert!(
+                arm.contains(&format!("{listener}()")),
+                "{listener} is imported and never installed"
+            );
+        }
+        assert_eq!(
+            arm.matches("wait!(").count(),
+            listeners.len(),
+            "the number of awaited listeners does not match the number installed; \
+             one of {listeners:?} can fire without stopping the daemon"
+        );
     }
 }

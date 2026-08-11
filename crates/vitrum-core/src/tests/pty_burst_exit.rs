@@ -73,12 +73,11 @@ async fn a_burst_followed_by_an_immediate_exit_is_published_whole() {
 /// Every line a child wrote before exiting must still be there on Windows.
 ///
 /// WHY: a Windows pseudoconsole does not close the read side while the session
-/// holds its master, so the reader cannot reach end of stream and
-/// `READER_REPORTS_EOF` is false there. The coalescer instead ends the stream
-/// after one `FLUSH_WINDOW` of quiet following the exit. That is a stopwatch,
-/// and the standing assumption was that it truncates a burst: any gap between
-/// chunks longer than the window would end the stream while output was still
-/// arriving.
+/// holds its master, so the reader cannot reach end of stream there. A separate
+/// reaper thread ends the stream after one `FLUSH_WINDOW` of quiet following
+/// the exit. That is a stopwatch, and the standing assumption was that it
+/// truncates a burst: any gap between chunks longer than the window would end
+/// the stream while output was still arriving.
 ///
 /// IT DOES NOT, at these sizes. This passes on windows-latest, which is the
 /// first time the assumption was ever measured rather than reasoned about, so

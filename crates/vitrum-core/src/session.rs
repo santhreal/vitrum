@@ -47,10 +47,12 @@ use tokio::time::Instant;
 use vitrum_model::{AgentKind, HintDeclaration};
 use vitrum_proto::{ProjectId, SessionId, SessionInfo, SessionStatus};
 
+use crate::command_path;
 use crate::error::SessionError;
 use crate::probe;
 use crate::scan::OutputScan;
 use crate::scrollback::Scrollback;
+use crate::terminfo;
 
 /// One block the reader carves consecutive reads out of.
 ///
@@ -118,16 +120,6 @@ pub(crate) const BATCH_READS: usize = 64;
 /// interrupted mid-stream and short enough that a turn ending feels answered.
 pub(crate) const SETTLE_WINDOW: Duration = Duration::from_millis(150);
 
-/// Whether the reader thread can observe end of stream by itself.
-///
-/// On Unix the last descriptor on the terminal closing gives the reader a zero
-/// length read, which is the honest end of a session's output and is what makes
-/// "a terminal status implies every byte is published" a guarantee rather than
-/// a hope. A Windows pseudoconsole keeps the read side open while this process
-/// holds the master, so the reader never returns zero and the stream is instead
-/// ended one [`FLUSH_WINDOW`] after the child is reaped.
-pub(crate) const READER_REPORTS_EOF: bool = !cfg!(windows);
-
 /// How long a closed session's child is given to be reaped before the group is
 /// killed outright, and again before the exit code is given up on.
 ///
@@ -181,9 +173,6 @@ pub(crate) const DEFAULT_TERM_ENV: &[(&str, &str)] = &[
     ("TERM", "vte-256color"),
     ("COLORTERM", vitrum_vt::COLORTERM),
 ];
-
-/// Package that ships [`DEFAULT_TERM_ENV`]'s terminfo entry, for the warning.
-const TERMINFO_PACKAGE: &str = "ncurses-term";
 
 /// Everything needed to start one session.
 #[derive(Debug, Clone)]
@@ -952,7 +941,7 @@ impl SessionManager {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| anyhow!("a session needs a Tokio runtime to coalesce its output; \
                                   call spawn from inside one"))?;
-        resolvable(&spec.command)?;
+        resolvable(&spec.command, &spec.cwd)?;
 
         let cols = spec.cols.max(1);
         let rows = spec.rows.max(1);
@@ -1074,34 +1063,46 @@ impl SessionManager {
         let (read_tx, read_rx) = mpsc::channel::<BytesMut>(READ_QUEUE);
         let (exit_tx, exit_rx) = oneshot::channel::<ExitStatus>();
 
+        // Who reaps the child and ends the stream differs by platform, and it
+        // has to be a `cfg` rather than a runtime branch because both arms own
+        // the child and the exit channel.
+        //
+        // On unix the reader reaches end of stream when the last descriptor for
+        // the slave closes, so it reaps the child itself: end of stream first,
+        // THEN the exit code, because a client that stops streaming on `Exited`
+        // must not lose the child's last words, which are usually the error
+        // message explaining the exit.
+        //
+        // On Windows nothing closes the read side while this process holds the
+        // pseudoconsole master, so the reader never returns. A second thread
+        // waits on the child and ends the stream one flush window after the
+        // exit.
+        //
+        // Written as one thread with a runtime `if`, both closures captured
+        // `child` and `exit_tx` and the Windows build did not compile at all.
+        #[cfg(not(windows))]
         std::thread::Builder::new()
             .name(format!("vitrum-pty-read-{}", id.0))
             .spawn({
                 let counts = Arc::clone(&counts);
-                let eof = Arc::clone(&eof);
                 move || {
                     read_loop(reader, read_tx, &counts);
-                    if READER_REPORTS_EOF {
-                        // End of stream first, THEN the exit code: a client
-                        // that stops streaming on `Exited` must not lose the
-                        // child's last words, which are usually the error
-                        // message explaining the exit.
-                        let status = child.wait().ok();
-                        let _ = exit_tx.send(status.unwrap_or_else(|| ExitStatus::with_exit_code(1)));
-                    } else {
-                        // The reader cannot get here on a pseudoconsole; the
-                        // reaper below owns the exit there.
-                        let _ = exit_tx;
-                    }
-                    let _ = eof;
+                    let status = child.wait().ok();
+                    let _ = exit_tx.send(status.unwrap_or_else(|| ExitStatus::with_exit_code(1)));
                 }
             })
             .map_err(|e| anyhow!("could not start the pty reader thread: {e}"))?;
 
         #[cfg(windows)]
-        if !READER_REPORTS_EOF {
-            // Nothing will close the read side while this process holds the
-            // master, so the stream is ended one window after the exit.
+        {
+            std::thread::Builder::new()
+                .name(format!("vitrum-pty-read-{}", id.0))
+                .spawn({
+                    let counts = Arc::clone(&counts);
+                    move || read_loop(reader, read_tx, &counts)
+                })
+                .map_err(|e| anyhow!("could not start the pty reader thread: {e}"))?;
+
             std::thread::Builder::new()
                 .name(format!("vitrum-pty-reap-{}", id.0))
                 .spawn({
@@ -1425,37 +1426,15 @@ fn basename(command: &str) -> &str {
 
 /// Refuse a command the daemon cannot find before a pty is created for it.
 ///
-/// The underlying pty error is `No viable candidates found in PATH` followed by
-/// every entry of PATH, over a kilobyte of text that does not answer the only
-/// question the operator has.
-#[cfg(unix)]
-fn resolvable(command: &str) -> Result<(), SessionError> {
-    if command.contains('/') {
-        return if Path::new(command).is_file() {
-            Ok(())
-        } else {
-            Err(SessionError::NotOnPath {
-                command: command.to_string(),
-            })
-        };
-    }
-    let found = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(command).is_file()))
-        .unwrap_or(false);
-    if found {
-        Ok(())
-    } else {
-        Err(SessionError::NotOnPath {
-            command: command.to_string(),
-        })
-    }
-}
-
-/// Windows resolution has `PATHEXT` and per-directory rules that only the
-/// spawner knows, so the refusal comes from the spawn and names the command.
-#[cfg(not(unix))]
-fn resolvable(_command: &str) -> Result<(), SessionError> {
-    Ok(())
+/// The rules and the search both come from [`crate::command_path`], which
+/// implements Windows resolution as well as POSIX resolution and is exercised
+/// for both on every host. `cwd` is the directory the session will start in,
+/// because that is what a relative command name is resolved against.
+fn resolvable(command: &str, cwd: &Path) -> Result<(), SessionError> {
+    let rules = command_path::SpawnRules::host();
+    let exists = |p: &Path| p.is_file();
+    let search = command_path::Search::for_host(rules, cwd, &exists);
+    command_path::resolve(rules, command, &search)
 }
 
 /// Warn once if the host cannot describe the terminal children are told they
@@ -1465,51 +1444,33 @@ fn resolvable(_command: &str) -> Result<(), SessionError> {
 /// differently depending on which machine the daemon runs on would be worse
 /// than one constant claim. A child on a host without the entry falls back to
 /// its own handling of an unknown `TERM`.
+///
+/// The search order and the fix are per-host and come from [`crate::terminfo`].
 fn warn_once_about_terminfo() {
     static CHECKED: std::sync::Once = std::sync::Once::new();
     CHECKED.call_once(|| {
         let Some((_, name)) = DEFAULT_TERM_ENV.iter().find(|(k, _)| *k == "TERM") else {
             return;
         };
-        if terminfo_has(name) {
-            return;
+        let env = terminfo::TermEnv::from_process();
+        let exists = |p: &Path| p.exists();
+        match terminfo::check(std::env::consts::OS, name, &env, &exists) {
+            terminfo::TerminfoCheck::Present => {}
+            terminfo::TerminfoCheck::Absent { advice } => tracing::warn!(
+                term = name,
+                "no terminfo entry for the terminal type sessions are told they have; {advice}"
+            ),
+            terminfo::TerminfoCheck::Unguided { host } => tracing::warn!(
+                term = name,
+                host = %host,
+                guided = %terminfo::guided_hosts().collect::<Vec<_>>().join(", "),
+                "no terminfo entry for the terminal type sessions are told they have, and vitrum \
+                 has no guidance for this host; install the entry the way this platform expects, \
+                 or full-screen programs will fall back to their built-in handling of an unknown \
+                 TERM"
+            ),
         }
-        tracing::warn!(
-            term = name,
-            package = TERMINFO_PACKAGE,
-            "no terminfo entry for the terminal type sessions are told they have; \
-             install {TERMINFO_PACKAGE} or full-screen programs will fall back to \
-             their built-in handling of an unknown TERM"
-        );
     });
-}
-
-/// Whether a terminfo entry named `name` exists in any database this host
-/// searches. Mirrors ncurses' own search order.
-fn terminfo_has(name: &str) -> bool {
-    let Some(initial) = name.chars().next() else {
-        return false;
-    };
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = std::env::var_os("TERMINFO") {
-        roots.push(PathBuf::from(dir));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join(".terminfo"));
-    }
-    if let Some(dirs) = std::env::var_os("TERMINFO_DIRS") {
-        roots.extend(std::env::split_paths(&dirs).filter(|p| !p.as_os_str().is_empty()));
-    }
-    roots.push(PathBuf::from("/etc/terminfo"));
-    roots.push(PathBuf::from("/lib/terminfo"));
-    roots.push(PathBuf::from("/usr/share/terminfo"));
-
-    // Two layouts: a directory per initial letter, and the hashed form some
-    // distributions build with.
-    let hashed = format!("{:x}", initial as u32);
-    roots.iter().any(|root| {
-        root.join(initial.to_string()).join(name).exists() || root.join(&hashed).join(name).exists()
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,7 +1683,7 @@ mod windows_job {
 /// a scheduling outcome, which makes every ratio a property of the machine.
 /// Here the reads are queued before anything polls the channel, so the bounds
 /// are exact.
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 pub(crate) struct Coalescer {
     pump: tokio::sync::Mutex<Option<Pump>>,
     tx: Option<mpsc::Sender<BytesMut>>,
@@ -1734,7 +1695,7 @@ pub(crate) struct Coalescer {
     _master: Box<dyn MasterPty + Send>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 impl Coalescer {
     pub(crate) fn new() -> anyhow::Result<Self> {
         let pair = portable_pty::native_pty_system().openpty(PtySize {

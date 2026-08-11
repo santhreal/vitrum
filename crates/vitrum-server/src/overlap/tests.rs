@@ -468,3 +468,53 @@ fn a_directory_created_after_the_last_sync_gets_watched() {
     service.set_watching(false, &live, &publish, NOW);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A host with no watcher says so, names what is missing, and says what the
+/// empty answer means.
+///
+/// The note used to read "This build has no file watcher for this platform, so
+/// no change is seen." A macOS operator reading that learned neither which
+/// interface is absent nor that the empty collision list in front of them is
+/// not evidence. Written as a pure function of the host token so both
+/// non-Linux sentences are proven here rather than only in CI.
+#[test]
+fn a_host_with_no_watcher_names_the_interface_and_the_consequence() {
+    for (os, interface) in [("macos", "FSEvents"), ("windows", "ReadDirectoryChangesW")] {
+        let note = super::no_watcher_note(os);
+        assert!(note.contains(os), "{os}: the note does not name the platform: {note}");
+        assert!(note.contains(interface), "{os}: the note does not name what is missing: {note}");
+        assert!(
+            note.contains("nothing was looked at rather than nothing happened"),
+            "{os}: the note lets an empty list read as a clean bill of health: {note}"
+        );
+    }
+}
+
+/// Two hosts get two sentences.
+///
+/// One constant string would satisfy every assertion above while telling a
+/// Windows operator to look for FSEvents.
+#[test]
+fn the_no_watcher_note_is_per_host() {
+    assert_ne!(super::no_watcher_note("macos"), super::no_watcher_note("windows"));
+    let unknown = super::no_watcher_note("freebsd");
+    assert!(unknown.contains("freebsd"), "an unknown host is not named: {unknown}");
+    assert!(
+        !unknown.contains("FSEvents") && !unknown.contains("ReadDirectoryChangesW"),
+        "an unknown host was told to look for another platform's interface: {unknown}"
+    );
+}
+
+/// Exactly one degradation is recorded on a host with no watcher, and it is
+/// that note.
+///
+/// Proves the stub reports rather than returning a clean empty state: a
+/// `Tracked` with no sessions and no degradation is indistinguishable from a
+/// working watcher that has seen nothing.
+#[test]
+fn the_missing_watcher_is_recorded_as_a_degradation() {
+    let mut tracked = Tracked::default();
+    tracked.degrade(super::no_watcher_note("windows"));
+    assert_eq!(tracked.degraded, vec![super::no_watcher_note("windows")]);
+    assert!(tracked.collisions(NOW).is_empty());
+}

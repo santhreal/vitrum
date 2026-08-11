@@ -28,20 +28,49 @@ use std::path::{Path, PathBuf};
 
 use crate::branding::{APP_NAME, BUNDLE_ID, ORG_NAME};
 
-/// Which platform's directory convention to apply.
+/// Define [`Platform`] and every table that must cover it from one list.
 ///
-/// Explicit rather than implied by `cfg!` so the resolution logic for all three
-/// platforms is reachable, and therefore testable, from any one of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Platform {
+/// `ALL` and `as_str` are generated. A hand-written `ALL` goes stale the moment
+/// a platform is added, and a stale enumeration is indistinguishable from no
+/// enumeration: the tests that iterate it keep passing while the new platform
+/// has no recorded decision anywhere.
+macro_rules! platforms {
+    ($( $(#[$attr:meta])* $variant:ident => $token:literal ),+ $(,)?) => {
+        /// Which platform's directory convention to apply.
+        ///
+        /// Explicit rather than implied by `cfg!` so the resolution logic for all
+        /// three platforms is reachable, and therefore testable, from any one of
+        /// them.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum Platform {
+            $( $(#[$attr])* $variant, )+
+        }
+
+        impl Platform {
+            /// Every platform this product claims to run on, in report order.
+            ///
+            /// Generated with the enum, so a new platform is in it by
+            /// construction and every table iterating it is forced to answer for
+            /// the new member.
+            pub const ALL: &'static [Platform] = &[ $( Platform::$variant ),+ ];
+
+            /// Stable machine token, used in reports and tests.
+            pub const fn as_str(self) -> &'static str {
+                match self { $( Self::$variant => $token, )+ }
+            }
+        }
+    };
+}
+
+platforms! {
     /// XDG base directories, also applied to the other desktop Unixes.
-    Linux,
+    Linux => "linux",
     /// `~/Library/Application Support`, `~/Library/Caches` and friends, keyed
     /// by bundle identifier rather than by application name.
-    MacOs,
+    MacOs => "macos",
     /// `%APPDATA%` and `%LOCALAPPDATA%`, keyed by organisation then
     /// application, as the Windows convention expects.
-    Windows,
+    Windows => "windows",
 }
 
 impl Platform {
@@ -61,15 +90,6 @@ impl Platform {
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             Self::Linux
-        }
-    }
-
-    /// Stable machine token, used in reports and tests.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Linux => "linux",
-            Self::MacOs => "macos",
-            Self::Windows => "windows",
         }
     }
 }

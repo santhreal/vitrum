@@ -195,7 +195,7 @@ jobs:
   # job proves an upgrade nobody performs. Index 1 of the published stable
   # releases is whatever "the version before this one" currently means.
   update:
-    name: update from the previous release
+    name: upgrade path
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -238,6 +238,20 @@ jobs:
           case "$got" in
             *"$latest"*) ;;
             *) echo "staged $latest and the next start reported: $got" >&2; exit 1 ;;
+          esac
+
+      # The nightly channel publishes every day and, until this step, nothing
+      # ever downloaded one of its archives. A nightly is a prerelease of the
+      # next patch, so it sorts above the stable this machine is now on and
+      # `update` will move to it; the version string is the only place the
+      # channel is observable, which is why it is what gets asserted.
+      - name: the nightly channel serves an archive that installs
+        run: |
+          "$HOME/.local/bin/vitrum" update --channel nightly
+          got=$("$HOME/.local/bin/vitrum" --version)
+          case "$got" in
+            *-nightly.*) ;;
+            *) echo "asked for a nightly and the next start reported: $got" >&2; exit 1 ;;
           esac
 
       - name: uninstall

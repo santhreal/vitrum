@@ -24,7 +24,7 @@
 //! records the cell it replaced rather than a flag.
 
 use vitrum_grid::CellGrid;
-use vitrum_grid::cell::{Cell, Cursor, Rgba, Style};
+use vitrum_grid::cell::{Cell, CellSlot, Cursor, Rgba, Style};
 use vitrum_vt::{CursorShape as VtCursorShape, Mode, ScrollViewport, SyncStats, Vt, VtError, VtOptions};
 
 use super::find::{Find, RowHit};
@@ -620,8 +620,17 @@ impl PaneSession {
     // -----------------------------------------------------------------------
 
     /// Put every cell the pane recoloured back to what the emulator had.
+    ///
+    /// Last recorded is restored first. Two overlays can cover one cell: a
+    /// selection over a search hit, or the find bar over the scrollbar thumb in
+    /// the bottom-right corner. Each records the value it displaced, so the
+    /// second one records the first one's colour, and restoring in the order
+    /// they were recorded puts the emulator's cell back and then paints the
+    /// intermediate colour over it again. The cell then keeps a highlight after
+    /// everything that asked for it is gone, and nothing repaints it because
+    /// nothing thinks it changed.
     fn lift_overlay(&mut self) {
-        for (col, row, cell) in self.overlay.drain(..) {
+        while let Some((col, row, cell)) = self.overlay.pop() {
             let _ = self.grid.set_cell(col, row, cell);
         }
     }
@@ -794,10 +803,18 @@ impl PaneSession {
     ///
     /// `underline` marks a composition, which is the one thing painted here
     /// that the operator has not committed yet.
+    ///
+    /// The painted cell is a single-column one whatever the cell held before.
+    /// A double-width character occupies two cells, the head draws both columns
+    /// and the tail draws none, so a bar or a thumb that wrote its character
+    /// into a tail and kept the slot would draw nothing at all: a gap in the
+    /// find bar, or a thumb that disappears on every row whose last column is
+    /// the right half of a wide glyph.
     fn paint_char(&mut self, col: u16, row: u16, ch: char, bg: Rgba, fg: Rgba, underline: bool) {
         let Some(was) = self.grid.cell(col, row) else {
             return;
         };
+        self.detach_half_pair(col, row, was);
         let painted = Cell {
             ch,
             fg,
@@ -807,13 +824,40 @@ impl PaneSession {
             } else {
                 was.attrs
             },
-            ..was
+            slot: CellSlot::Single,
         };
         if painted == was {
             return;
         }
         if self.grid.set_cell(col, row, painted).is_ok() {
             self.overlay.push((col, row, was));
+        }
+    }
+
+    /// Blank the other half of the wide pair `(col, row)` is part of, recording
+    /// it in the overlay so lifting puts the whole pair back.
+    ///
+    /// Recorded before the cell that displaced it, because the overlay is
+    /// restored last first: the pair's two halves then go back in the order
+    /// that leaves both of them holding the emulator's own cells.
+    fn detach_half_pair(&mut self, col: u16, row: u16, was: Cell) {
+        let other = match was.slot {
+            CellSlot::WideHead => Some(col + 1).filter(|c| *c < self.grid.cols()),
+            CellSlot::WideTail => col.checked_sub(1),
+            CellSlot::Single => None,
+        };
+        let Some(other) = other else {
+            return;
+        };
+        let Some(had) = self.grid.cell(other, row) else {
+            return;
+        };
+        let blank = Cell::blank(had.style());
+        if blank == had {
+            return;
+        }
+        if self.grid.set_cell(other, row, blank).is_ok() {
+            self.overlay.push((other, row, had));
         }
     }
 }
@@ -1436,5 +1480,423 @@ mod tests {
 
         assert!(s.select_clear());
         assert!(!s.select_clear(), "clearing twice reported a second change");
+    }
+
+    /// WHY: the overlay is a stack of whole-cell substitutions, and two of them
+    /// can land on the same cell: a selection over a search hit, or the find
+    /// bar over the scrollbar thumb on the bottom-right cell. Restoring them in
+    /// the order they were recorded puts the first one back and then the second
+    /// one back over it, so the cell keeps the highlight after everything that
+    /// asked for it is gone. That is a coloured cell nothing on screen explains
+    /// and nothing will repaint.
+    ///
+    /// The invariant: after every overlay is dropped, every cell holds exactly
+    /// what the emulator put there.
+    #[test]
+    fn overlapping_overlays_leave_no_colour_behind() {
+        let mut s = session();
+        feed_sync(&mut s, b"\x1b[Habcabc");
+
+        let clean: Vec<Cell> = (0..s.grid().cols())
+            .map(|col| s.grid().cell(col, 0).expect("row zero is on screen"))
+            .collect();
+
+        let top = s.viewport().top_row();
+        s.find_type("abc").expect("a literal find compiles");
+        s.select_start(Point { row: top, col: 0 }, SelectMode::Character);
+        s.select_drag(Point { row: top, col: 6 });
+        assert!(
+            (0..6).any(|col| s.grid().cell(col, 0).unwrap() != clean[col as usize]),
+            "neither overlay painted, so the ordering is not under test"
+        );
+
+        s.select_clear();
+        s.find_clear();
+
+        for col in 0..s.grid().cols() {
+            assert_eq!(
+                s.grid().cell(col, 0).unwrap(),
+                clean[col as usize],
+                "column {col} kept an overlay colour after every overlay was dropped"
+            );
+        }
+    }
+
+    /// WHY: an overlay writes a whole cell, and a cell can be half of a
+    /// double-width character. The tail of a pair draws nothing, because the
+    /// head's quad already covers both columns, so an overlay that writes a
+    /// character into a tail and leaves the slot alone produces a hole: a find
+    /// bar with a gap in it, or a scrollbar thumb that vanishes on every row
+    /// whose last column is the tail of a wide glyph.
+    ///
+    /// The invariant: a cell an overlay wrote draws itself, and the pair it
+    /// broke does not survive as an orphaned half.
+    #[test]
+    fn an_overlay_over_a_wide_pair_draws_what_it_wrote() {
+        use vitrum_grid::cell::CellSlot;
+
+        let mut s = session();
+        // A pair whose tail is the last column, which is where the thumb goes.
+        let cols = s.grid().cols();
+        feed_sync(&mut s, format!("\x1b[1;{}H\u{3042}", cols - 1).as_bytes());
+        assert_eq!(
+            s.grid().cell(cols - 2, 0).unwrap().slot,
+            CellSlot::WideHead,
+            "the emulator did not lay a wide pair at the right edge"
+        );
+
+        s.find_open();
+        s.find_type("nothing-matches-this").ok();
+
+        let last_row = s.grid().rows() - 1;
+        // A pair on the find bar's own row, so the bar has to write over it.
+        feed_sync(&mut s, format!("\x1b[{};1H\u{3042}\u{3044}", last_row + 1).as_bytes());
+
+        for col in 0..cols {
+            let cell = s.grid().cell(col, last_row).expect("the bar row is on screen");
+            assert_eq!(
+                cell.slot,
+                CellSlot::Single,
+                "the find bar left column {col} as {:?}, which draws nothing",
+                cell.slot
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The artefact suite
+    // -----------------------------------------------------------------------
+
+    /// One thing an operator or a child program does to a live session.
+    ///
+    /// Every variant goes through the same public entry point the pane's widget
+    /// calls, so a scenario is a recording of real use rather than a poke at
+    /// internal state.
+    #[derive(Clone, Copy, Debug)]
+    enum Act {
+        /// Bytes from the child.
+        Feed(&'static str),
+        /// Wheel or key paging, in rows, positive being back into history.
+        Scroll(i64),
+        /// Jump to the live edge, which is what typing does.
+        ToBottom,
+        /// Press at a cell, relative to the top row on screen.
+        SelectStart { row: usize, col: u16, mode: SelectMode },
+        /// Drag to a cell, relative to the top row on screen.
+        SelectDrag { row: usize, col: u16 },
+        /// Release the selection.
+        SelectClear,
+        /// Type into the find bar.
+        FindType(&'static str),
+        /// Close the find bar.
+        FindClear,
+        /// Follow the widget to a new cell count.
+        Resize { cols: u16, rows: u16 },
+        /// Text an input method has not committed.
+        Preedit(&'static str),
+    }
+
+    struct ActScenario {
+        name: &'static str,
+        acts: &'static [Act],
+    }
+
+    /// Every situation the session-level artefact suite drives.
+    ///
+    /// The list is the test's input, so closing a regression means adding the
+    /// sequence that produced it rather than adding an assertion elsewhere.
+    static ACT_SCENARIOS: &[ActScenario] = &[
+        ActScenario {
+            name: "output arrives at the bottom while the viewport is scrolled back",
+            acts: &[
+                Act::Feed("line one\r\nline two\r\nline three\r\nline four\r\nline five\r\n"),
+                Act::Feed("six\r\nseven\r\neight\r\nnine\r\nten\r\neleven\r\ntwelve\r\n"),
+                Act::Scroll(4),
+                Act::Feed("printed while scrolled back\r\n"),
+                Act::Feed("and again\r\n"),
+                Act::Scroll(2),
+                Act::Scroll(-3),
+                Act::ToBottom,
+            ],
+        },
+        ActScenario {
+            name: "a line is rewritten shorter than it was",
+            acts: &[
+                Act::Feed("\x1b[H\x1b[2Ja long line of output here"),
+                Act::Feed("\r\x1b[Kshort"),
+                Act::Feed("\r\nsecond\r\x1b[K"),
+            ],
+        },
+        ActScenario {
+            name: "an SGR change repaints a region without changing its characters",
+            acts: &[
+                Act::Feed("\x1b[H\x1b[2Jplain text on a row"),
+                Act::Feed("\x1b[H\x1b[31mplain text on a row"),
+                Act::Feed("\x1b[H\x1b[1;4;7mplain text on a row"),
+                Act::Feed("\x1b[H\x1b[mplain text on a row"),
+            ],
+        },
+        ActScenario {
+            name: "wide characters and combining marks at a cell boundary",
+            acts: &[
+                Act::Feed("\x1b[H\x1b[2J\u{3042}\u{3044}\u{3046}\u{3048}"),
+                Act::Feed("\x1b[1;2Hn"),
+                Act::Feed("\x1b[1;3Hm"),
+                Act::Feed("\x1b[2;1He\u{0301}fg"),
+                // A pair that ends on the last column, then one that cannot fit.
+                Act::Feed("\x1b[3;39H\u{3042}"),
+                Act::Feed("\x1b[4;40H\u{3042}"),
+                Act::Feed("\x1b[3;39Hz"),
+            ],
+        },
+        ActScenario {
+            name: "the alternate screen is entered and left",
+            acts: &[
+                Act::Feed("primary one\r\nprimary two\r\n"),
+                Act::Feed("\x1b[?1049h"),
+                Act::Feed("\x1b[2J\x1b[H\x1b[7m editor \x1b[m\r\nbuffer body"),
+                Act::Feed("\x1b[?25l"),
+                Act::Feed("\x1b[?25h"),
+                Act::Feed("\x1b[?1049l"),
+                Act::Feed("back on the primary\r\n"),
+            ],
+        },
+        ActScenario {
+            name: "the caret moves, changes shape, hides and shows",
+            acts: &[
+                Act::Feed("\x1b[H\x1b[2Jcaret work"),
+                Act::Feed("\x1b[1;1H"),
+                Act::Feed("\x1b[1;5H"),
+                Act::Feed("\x1b[5 q"),
+                Act::Feed("\x1b[3 q"),
+                Act::Feed("\x1b[1 q"),
+                Act::Feed("\x1b[?25l"),
+                Act::Feed("\x1b[?25h"),
+                Act::Feed("\x1b[8;20H"),
+                Act::Scroll(3),
+                Act::ToBottom,
+            ],
+        },
+        ActScenario {
+            name: "a selection is made, extended, and cleared over a search",
+            acts: &[
+                Act::Feed("\x1b[H\x1b[2Jselect this and this and this\r\nsecond row of text"),
+                Act::SelectStart { row: 0, col: 0, mode: SelectMode::Character },
+                Act::SelectDrag { row: 0, col: 11 },
+                Act::SelectDrag { row: 1, col: 6 },
+                Act::FindType("this"),
+                Act::SelectDrag { row: 1, col: 18 },
+                Act::SelectClear,
+                Act::FindClear,
+                Act::Feed("\r\nthird row"),
+            ],
+        },
+        ActScenario {
+            name: "the find bar and the scrollbar thumb share the corner cell",
+            acts: &[
+                Act::Feed("filler\r\n"),
+                Act::Feed("more\r\nmore\r\nmore\r\nmore\r\nmore\r\nmore\r\nmore\r\nmore\r\n"),
+                Act::Scroll(3),
+                Act::FindType("more"),
+                Act::Scroll(1),
+                Act::FindClear,
+                Act::ToBottom,
+            ],
+        },
+        ActScenario {
+            name: "a composition is typed at the caret and committed",
+            acts: &[
+                Act::Feed("\x1b[H\x1b[2J$ "),
+                Act::Preedit("ni"),
+                Act::Preedit("nih"),
+                Act::Preedit("\u{4f60}\u{597d}"),
+                Act::Preedit(""),
+                Act::Feed("\u{4f60}\u{597d}"),
+            ],
+        },
+        ActScenario {
+            name: "a resize reflows a session that has scrolled",
+            acts: &[
+                Act::Feed("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\n"),
+                Act::Feed("a line long enough that a narrower grid has to wrap it somewhere\r\n"),
+                Act::Scroll(3),
+                Act::Resize { cols: 24, rows: 6 },
+                Act::Feed("after the shrink\r\n"),
+                Act::Resize { cols: 40, rows: 12 },
+                Act::Feed("after the grow\r\n"),
+                Act::Resize { cols: 40, rows: 8 },
+                Act::ToBottom,
+            ],
+        },
+    ];
+
+    fn act(s: &mut PaneSession, a: Act) {
+        match a {
+            Act::Feed(bytes) => s.feed(bytes.as_bytes()),
+            Act::Scroll(rows) => {
+                s.scroll(|v| v.by_lines(rows));
+            }
+            Act::ToBottom => {
+                s.scroll_to_bottom();
+            }
+            Act::SelectStart { row, col, mode } => {
+                let top = s.viewport().top_row();
+                s.select_start(Point { row: top + row, col }, mode);
+            }
+            Act::SelectDrag { row, col } => {
+                let top = s.viewport().top_row();
+                s.select_drag(Point { row: top + row, col });
+            }
+            Act::SelectClear => {
+                s.select_clear();
+            }
+            Act::FindType(pattern) => {
+                s.find_open();
+                s.find_type(pattern).expect("a literal find compiles");
+            }
+            Act::FindClear => s.find_clear(),
+            Act::Resize { cols, rows } => {
+                s.resize(cols, rows, (10, 20)).expect("the emulator accepts the size");
+            }
+            Act::Preedit(text) => {
+                s.set_preedit(text);
+            }
+        }
+    }
+
+    /// WHY: `paint()` is change-gated, so a cell whose damage was never marked
+    /// is a cell the renderer never re-uploads. The instance it already holds is
+    /// drawn again on every frame, so the wrong content stays on screen until
+    /// something unrelated happens to damage that row. That is the whole family
+    /// of static glitches, and none of its members is
+    /// visible from the grid's own state: the grid is correct and the marks are
+    /// not.
+    ///
+    /// The invariant, checked after every act of every scenario: the frame the
+    /// incremental renderer produces is byte for byte the frame a full
+    /// unconditional repaint of the same grid would produce. The reference is a
+    /// clone of the same grid marked wholly damaged and drawn through a
+    /// renderer that remembers nothing, so any difference is a damage mark that
+    /// was owed and not made.
+    ///
+    /// Driven through a real libghostty session rather than a hand-built grid,
+    /// because the marks that go missing are the ones the emulator's own
+    /// projection and the pane's overlay disagree about.
+    #[test]
+    fn every_frame_a_session_produces_matches_a_full_repaint() {
+        let mut rig = Differ::new();
+        for scenario in ACT_SCENARIOS {
+            let mut s =
+                PaneSession::new(40, 8, (10, 20), PaneTheme::default()).expect("a session builds");
+            rig.restart();
+
+            for (n, a_step) in scenario.acts.iter().copied().enumerate() {
+                act(&mut s, a_step);
+                s.sync().expect("the emulator projects onto the grid");
+                if let Some(what) = rig.compare(s.grid_mut()) {
+                    panic!(
+                        "{}: act {n} ({a_step:?}) left an undamaged cell on screen\n  {what}",
+                        scenario.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// The comparison must be able to see an artefact, or it proves nothing.
+    ///
+    /// WHY: a differential test whose two sides can never disagree is green
+    /// forever and says nothing about the code it names. Dropping the damage
+    /// marks without uploading them is exactly what every bug this suite hunts
+    /// does by accident, so the comparison has to fail on it.
+    #[test]
+    fn the_session_comparison_detects_a_dropped_damage_mark() {
+        let mut rig = Differ::new();
+        let mut s = PaneSession::new(40, 8, (10, 20), PaneTheme::default()).expect("a session builds");
+        s.feed(b"first frame");
+        s.sync().unwrap();
+        assert_eq!(rig.compare(s.grid_mut()), None, "the first frame already differs");
+
+        s.feed(b"\r\nan artefact nobody marked");
+        s.sync().unwrap();
+        s.grid_mut().clear_damage();
+        assert!(
+            rig.compare(s.grid_mut()).is_some(),
+            "a dropped damage mark did not show up as a pixel difference"
+        );
+    }
+
+    /// The incremental renderer, the full-repaint renderer, and the two targets
+    /// they draw into.
+    struct Differ {
+        gpu: vitrum_grid::GpuContext,
+        incremental: vitrum_grid::GridRenderer,
+        reference: vitrum_grid::GridRenderer,
+        a: vitrum_grid::HeadlessTarget,
+        b: vitrum_grid::HeadlessTarget,
+        cell: (u32, u32),
+    }
+
+    impl Differ {
+        fn new() -> Self {
+            use vitrum_grid::{GpuContext, GridRenderer, HeadlessTarget, RendererConfig};
+
+            let gpu = GpuContext::headless().expect("the artefact suite needs a wgpu adapter");
+            let config = RendererConfig {
+                format: HeadlessTarget::FORMAT,
+                ..RendererConfig::default()
+            };
+            let incremental = GridRenderer::new(gpu.device(), &config)
+                .expect("a monospace face must be available");
+            let reference = GridRenderer::new(gpu.device(), &config)
+                .expect("a monospace face must be available");
+            // The largest grid any scenario reaches, so one pair of targets
+            // serves them all and a resize never reallocates mid-comparison.
+            let cell = incremental.cell_size();
+            let a = HeadlessTarget::new(gpu.device(), cell.0 * 40, cell.1 * 12);
+            let b = HeadlessTarget::new(gpu.device(), cell.0 * 40, cell.1 * 12);
+            Self { gpu, incremental, reference, a, b, cell }
+        }
+
+        /// Forget the last scenario, so a scenario's first frame is a genuine
+        /// first frame rather than a continuation of the one before it.
+        fn restart(&mut self) {
+            self.incremental.invalidate();
+        }
+
+        /// Draw `grid` incrementally and against a full repaint of the same
+        /// cells, and describe the first pixel where the two disagree.
+        fn compare(&mut self, grid: &mut CellGrid) -> Option<String> {
+            let (cw, ch) = self.cell;
+            let viewport = (cw * u32::from(grid.cols()), ch * u32::from(grid.rows()));
+            let mut want = grid.clone();
+
+            self.incremental
+                .render(self.gpu.device(), self.gpu.queue(), grid, self.a.view(), viewport)
+                .expect("the incremental frame draws");
+            let live = self.a.read(self.gpu.device(), self.gpu.queue());
+
+            want.mark_all_damaged();
+            self.reference.invalidate();
+            self.reference
+                .render(self.gpu.device(), self.gpu.queue(), &mut want, self.b.view(), viewport)
+                .expect("the full repaint draws");
+            let full = self.b.read(self.gpu.device(), self.gpu.queue());
+
+            if live.as_bytes() == full.as_bytes() {
+                return None;
+            }
+            let (x, y) = (0..live.height())
+                .flat_map(|y| (0..live.width()).map(move |x| (x, y)))
+                .find(|(x, y)| live.pixel(*x, *y) != full.pixel(*x, *y))
+                .expect("the images differ, so some pixel differs");
+            Some(format!(
+                "pixel ({x}, {y}) in cell ({}, {}): incremental {:?}, full repaint {:?}",
+                x / cw,
+                y / ch,
+                live.pixel(x, y),
+                full.pixel(x, y)
+            ))
+        }
     }
 }

@@ -5,6 +5,7 @@
 //! - [`grid_geometry`]: construction, bounds, fills, scrolling, and resize.
 //! - [`grid_wide_chars`]: double-width characters and the pair repair rules.
 //! - [`grid_damage`]: what does and does not mark a cell dirty.
+//! - [`damage_diff`]: every incremental frame compared against a full repaint.
 //! - [`font_raster`]: face discovery, cell metrics, and glyph bitmaps.
 //! - [`atlas_packing`]: shelf placement, reset, and exhaustion.
 //! - [`instance_layout`]: the byte layout the vertex shader reads.
@@ -14,6 +15,7 @@
 
 mod atlas_packing;
 mod cell_semantics;
+mod damage_diff;
 mod font_raster;
 mod grid_damage;
 mod grid_geometry;

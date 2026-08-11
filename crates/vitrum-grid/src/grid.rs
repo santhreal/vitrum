@@ -692,26 +692,27 @@ impl CellGrid {
         }
         let blank = Cell::blank(self.default_style);
 
-        if cols == self.cols {
-            self.cells.resize(cols as usize * rows as usize, blank);
-        } else {
-            let mut next = vec![blank; cols as usize * rows as usize];
-            let copy_cols = cols.min(self.cols) as usize;
-            let copy_rows = rows.min(self.rows) as usize;
+        // Every path copies row by row through `row_base`, including the one
+        // where the width does not change. Scrolling rotates `row_slots`, so
+        // `cells` is in physical order and a resize that truncated or extended
+        // that order directly would permute the rows on screen and drop
+        // whichever logical row the rotation had left at the physical end.
+        let mut next = vec![blank; cols as usize * rows as usize];
+        let copy_cols = cols.min(self.cols) as usize;
+        let copy_rows = rows.min(self.rows) as usize;
+        for row in 0..copy_rows {
+            let src = self.row_base(row as u16);
+            let dst = row * cols as usize;
+            next[dst..dst + copy_cols].copy_from_slice(&self.cells[src..src + copy_cols]);
+        }
+        self.cells = next;
+        // A head left in the final column lost its tail to the truncation.
+        if cols < self.cols {
+            let last = cols as usize - 1;
             for row in 0..copy_rows {
-                let src = self.row_base(row as u16);
-                let dst = row * cols as usize;
-                next[dst..dst + copy_cols].copy_from_slice(&self.cells[src..src + copy_cols]);
-            }
-            self.cells = next;
-            // A head left in the final column lost its tail to the truncation.
-            if cols < self.cols {
-                let last = cols as usize - 1;
-                for row in 0..copy_rows {
-                    let idx = row * cols as usize + last;
-                    if self.cells[idx].slot == CellSlot::WideHead {
-                        self.cells[idx] = Cell::blank(self.cells[idx].style());
-                    }
+                let idx = row * cols as usize + last;
+                if self.cells[idx].slot == CellSlot::WideHead {
+                    self.cells[idx] = Cell::blank(self.cells[idx].style());
                 }
             }
         }
@@ -795,8 +796,15 @@ impl CellGrid {
 
     /// Blank the surviving half of any wide pair that straddles the edge of the
     /// range `[col, col + width)` about to be overwritten.
+    ///
+    /// The base comes from [`CellGrid::row_base`] and not from `row * cols`.
+    /// Scrolling rotates `row_slots`, so after any scroll the two differ, and
+    /// the flat form reads a pair out of one row and blanks a cell in another
+    /// while recording the damage against a third. The blanked cell is then a
+    /// change no damage span covers, which is a wrong cell that stays on screen
+    /// until something else happens to repaint that row.
     fn detach_straddling_pairs(&mut self, col: u16, row: u16, width: u16) {
-        let base = row as usize * self.cols as usize;
+        let base = self.row_base(row);
         if col > 0 && self.cells[base + col as usize - 1].slot == CellSlot::WideHead {
             let idx = base + col as usize - 1;
             let blank = Cell::blank(self.cells[idx].style());

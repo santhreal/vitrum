@@ -474,6 +474,21 @@ impl GridRenderer {
         self.last = None;
     }
 
+    /// True when the next [`GridRenderer::render`] will rebuild every instance
+    /// and redraw, whatever the grid's damage says.
+    ///
+    /// A host whose paint is gated on [`CellGrid::is_dirty`] has to ask this as
+    /// well. The two gates answer different questions: the grid says whether a
+    /// cell changed, and this says whether what is on screen is still the frame
+    /// this renderer drew. After [`GridRenderer::invalidate`] the answer is no,
+    /// and a host that skipped the frame because no cell changed would leave a
+    /// new swapchain image showing whatever was in that memory until the child
+    /// happens to write something.
+    #[must_use]
+    pub const fn needs_rebuild(&self) -> bool {
+        self.last.is_none()
+    }
+
     /// Draw `grid` into `target`.
     ///
     /// Returns without recording any GPU command when the grid has no damage

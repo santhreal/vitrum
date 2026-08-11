@@ -92,12 +92,48 @@ impl Backend {
     }
 }
 
-/// The wgpu mode a theme's present choice asks for.
-const fn wanted(present: Present) -> wgpu::PresentMode {
+/// Present modes the pane is allowed to configure.
+///
+/// Both hand the compositor a complete image. `Fifo` queues finished frames
+/// and releases one per vertical blank; `Mailbox` replaces the queued frame
+/// with the newest finished one and never waits for the compositor, which is
+/// the lowest latency a composited desktop can offer.
+///
+/// `wgpu::PresentMode::Immediate` is the third mode a driver offers and it is
+/// deliberately not representable here. It hands the image straight to the
+/// scanout that is already reading, so a present that lands part way down the
+/// panel shows the top of one frame and the bottom of the next. The renderer
+/// clears its attachment and redraws every instance each frame, so the two
+/// halves are two different states of the whole grid rather than two states of
+/// one changed row: a line of text that moved appears in both places at once.
+/// Naming the safe set as a type is what makes the tearing mode unreachable
+/// instead of merely unchosen, because there is no value of this enum that
+/// produces it and every path to a swapchain configuration goes through one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SafeMode {
+    Fifo,
+    Mailbox,
+}
+
+impl SafeMode {
+    const fn wgpu(self) -> wgpu::PresentMode {
+        match self {
+            Self::Fifo => wgpu::PresentMode::Fifo,
+            Self::Mailbox => wgpu::PresentMode::Mailbox,
+        }
+    }
+}
+
+/// The tear-free mode a theme's present choice asks for.
+///
+/// Exhaustive on purpose: a choice added to [`Present`] stops compiling here
+/// until someone says which tear-free mode it means.
+const fn wanted(present: Present) -> SafeMode {
     match present {
-        Present::Vsync => wgpu::PresentMode::Fifo,
-        Present::Newest => wgpu::PresentMode::Mailbox,
-        Present::Immediate => wgpu::PresentMode::Immediate,
+        Present::Vsync => SafeMode::Fifo,
+        // Both of these ask for "do not wait for the compositor". Mailbox is
+        // the answer to that which does not tear, so it serves both.
+        Present::Newest | Present::Immediate => SafeMode::Mailbox,
     }
 }
 
@@ -108,21 +144,11 @@ const fn wanted(present: Present) -> wgpu::PresentMode {
 /// the window. Fifo is guaranteed by the specification everywhere, which is
 /// why it is the fallback and not a second guess.
 pub(crate) fn clamp_present(want: Present, offered: &[wgpu::PresentMode]) -> wgpu::PresentMode {
-    let want = wanted(want);
+    let want = wanted(want).wgpu();
     if offered.contains(&want) {
         return want;
     }
-    // Mailbox and Immediate are each other's nearest neighbour: both are the
-    // answer to "do not wait for the compositor".
-    let second = match want {
-        wgpu::PresentMode::Mailbox => wgpu::PresentMode::Immediate,
-        wgpu::PresentMode::Immediate => wgpu::PresentMode::Mailbox,
-        _ => wgpu::PresentMode::Fifo,
-    };
-    if offered.contains(&second) {
-        return second;
-    }
-    wgpu::PresentMode::Fifo
+    SafeMode::Fifo.wgpu()
 }
 
 /// An X11 display connection wgpu can hold onto.
@@ -276,7 +302,7 @@ impl PaneSurface {
             .unwrap_or(caps.formats[0]);
         let offered = caps.present_modes.clone();
         let chosen = clamp_present(present, &offered);
-        if chosen != wanted(present) {
+        if chosen != wanted(present).wgpu() {
             tracing::info!(
                 wanted = ?present,
                 using = ?chosen,
@@ -404,15 +430,26 @@ impl PaneSurface {
 
     /// Draw the grid, if anything changed, and present.
     ///
-    /// Returns whether a frame was actually put on screen. A clean grid
-    /// submits no GPU command at all, which is what makes an idle pane free.
+    /// Returns whether a frame was actually put on screen. A clean grid over a
+    /// swapchain the renderer still owns submits no GPU command at all, which
+    /// is what makes an idle pane free.
+    ///
+    /// The skip needs both halves of the question answered. `is_dirty` says
+    /// whether a cell changed; `needs_rebuild` says whether what is on screen
+    /// is still the frame this renderer drew. Reconfiguring a swapchain hands
+    /// back a new set of images with undefined contents, and a resize inside
+    /// one cell, a present-mode change and a font rebuild all reconfigure
+    /// without changing a single cell. Skipping those frames leaves the
+    /// operator looking at whatever was in that memory until the child writes
+    /// something, which is a pane that goes to garbage on a drag and stays
+    /// there.
     ///
     /// # Errors
     ///
     /// The swapchain could not produce an image twice running, or the renderer
     /// failed.
     pub(crate) fn present(&mut self, grid: &mut CellGrid) -> Result<bool> {
-        if !grid.is_dirty() {
+        if !grid.is_dirty() && !self.renderer.needs_rebuild() {
             return Ok(false);
         }
         match self.draw(grid) {
@@ -432,6 +469,16 @@ impl PaneSurface {
     }
 
     /// One attempt at a frame.
+    ///
+    /// An acquired image is presented only when this call drew the whole of it.
+    /// A swapchain image is recycled, so it holds an older frame's pixels until
+    /// something writes it; the render pass clears the attachment and redraws
+    /// every instance, so once it has run the image is a complete frame, and
+    /// until it has run the image is whatever was there two frames ago.
+    /// Presenting one of those is the stale-frame flash the operator sees as a
+    /// flicker, and it is why the caller's decision to draw is not enough on
+    /// its own: the render can still decline, and a declined render must take
+    /// the image with it rather than put it on screen.
     fn draw(&mut self, grid: &mut CellGrid) -> Result<bool> {
         use wgpu::CurrentSurfaceTexture as Acquired;
         let frame = match self.surface.get_current_texture() {
@@ -441,15 +488,31 @@ impl PaneSurface {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let stats = self
+        let stats = match self
             .renderer
             .render(&self.device, &self.queue, grid, &view, self.size)
-            .map_err(|e| anyhow!("render the pane: {e}"))?;
-        // Present either way: the texture was acquired, and dropping it
-        // unpresented wedges the swapchain. Nothing waits on the GPU here, so
-        // the UI thread returns before the frame is scanned out.
+        {
+            Ok(stats) => stats,
+            Err(e) => {
+                // Nothing was written into this image. Returning it to the
+                // swapchain unpresented is what the caller's reconfigure then
+                // recovers from, and it is the only option that does not put
+                // an unpainted image in front of the operator.
+                drop(view);
+                drop(frame);
+                return Err(anyhow!("render the pane: {e}"));
+            }
+        };
+        if !stats.gpu_work {
+            drop(view);
+            drop(frame);
+            return Ok(false);
+        }
+        // Nothing waits on the GPU here, so the UI thread returns before the
+        // frame is scanned out. The present is ordered behind the submit, so
+        // the compositor never reads an image the queue is still writing.
         frame.present();
-        Ok(stats.gpu_work)
+        Ok(true)
     }
 }
 
@@ -565,6 +628,12 @@ mod tests {
         assert!(why.contains("GDK_BACKEND=x11"), "no remedy named: {why}");
     }
 
+    /// Every present choice the pane can be given, so a choice added to
+    /// [`Present`] has to be added here as well. The list is short enough to
+    /// hold in one place, and `wanted` is exhaustive, so a new variant stops
+    /// the crate compiling before it reaches this test.
+    const EVERY_CHOICE: [Present; 3] = [Present::Vsync, Present::Newest, Present::Immediate];
+
     /// WHY: configuring a surface with a present mode the adapter does not
     /// offer panics inside wgpu, so an operator picking one in Settings would
     /// take the window down. Fifo is guaranteed everywhere and is the floor.
@@ -572,27 +641,67 @@ mod tests {
     fn a_present_mode_the_gpu_lacks_falls_back_to_one_it_has() {
         use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
 
-        // Everything offered: the request is honoured exactly.
         for (want, expect) in [
             (Present::Vsync, Fifo),
-            (Present::Immediate, Immediate),
             (Present::Newest, Mailbox),
+            (Present::Immediate, Mailbox),
         ] {
             assert_eq!(clamp_present(want, &[Fifo, Immediate, Mailbox]), expect);
         }
 
         // Only Fifo, which is the minimum any driver may offer.
-        for want in [Present::Vsync, Present::Immediate, Present::Newest] {
+        for want in EVERY_CHOICE {
             assert_eq!(clamp_present(want, &[Fifo]), Fifo, "{want:?}");
         }
-
-        // The two tear-free-but-unthrottled modes stand in for each other
-        // before either falls all the way back to waiting.
-        assert_eq!(clamp_present(Present::Newest, &[Fifo, Immediate]), Immediate);
-        assert_eq!(clamp_present(Present::Immediate, &[Fifo, Mailbox]), Mailbox);
 
         // An adapter offering nothing recognised still returns something
         // configurable rather than the caller's unsupported choice.
         assert_eq!(clamp_present(Present::Newest, &[]), Fifo);
+    }
+
+    /// WHY: `Immediate` hands a frame to the scanout that is already reading
+    /// the panel, so a present that lands part way down shows the top of one
+    /// frame and the bottom of the next. The renderer redraws the whole
+    /// attachment every frame, so those halves are two states of the whole
+    /// grid, and the operator sees a line of text in two places at once.
+    ///
+    /// The invariant this closes is not "the default does not tear", which
+    /// only covers the reported case. It is that no present choice, over any
+    /// set of modes an adapter can report, produces a tearing swapchain: not
+    /// the choice named after it, and not a fallback taken because the mode
+    /// that was asked for is missing. Falling back from Mailbox to Immediate
+    /// is how the tearing mode used to be reached without anyone selecting it.
+    #[test]
+    fn no_present_choice_can_configure_a_tearing_swapchain() {
+        use wgpu::PresentMode::{AutoNoVsync, AutoVsync, Fifo, FifoRelaxed, Immediate, Mailbox};
+
+        // Every subset of what an adapter can report, so no combination of
+        // offered modes routes a choice into the tearing one.
+        let all = [Fifo, FifoRelaxed, Immediate, Mailbox, AutoVsync, AutoNoVsync];
+        for bits in 0u32..(1 << all.len()) {
+            let offered: Vec<wgpu::PresentMode> = all
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| bits & (1 << i) != 0)
+                .map(|(_, m)| *m)
+                .collect();
+            for want in EVERY_CHOICE {
+                let chosen = clamp_present(want, &offered);
+                assert_ne!(
+                    chosen, Immediate,
+                    "{want:?} over {offered:?} configured a tearing swapchain"
+                );
+                assert!(
+                    matches!(chosen, Fifo | Mailbox),
+                    "{want:?} over {offered:?} chose {chosen:?}, which is neither \
+                     of the two modes that present a complete frame"
+                );
+                assert!(
+                    offered.contains(&chosen) || chosen == Fifo,
+                    "{want:?} over {offered:?} chose {chosen:?}, which the adapter \
+                     did not offer and which is not the guaranteed floor"
+                );
+            }
+        }
     }
 }

@@ -377,6 +377,7 @@ pub fn claims(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Chord> {
 /// here: for a while the launcher had the rule and nothing else did, which is
 /// why a preset chord worked inside the dialog and did nothing anywhere else.
 #[must_use]
+#[cfg(test)]
 pub fn chord_from_event(
     key: &str,
     code: &str,
@@ -848,7 +849,7 @@ pub fn help_rows_for(group: Group) -> Vec<HelpRow> {
 // This half is a pure function: `CustomBinding::plan` takes the binding and
 // `Facts`, a snapshot of the state the predicates ask about, and returns the
 // flat ordered `Effect` list. It reads no signal, touches no socket and knows
-// nothing about Dioxus, so the whole feature is testable without a window.
+// nothing about the toolkit, so the whole feature is testable without a window.
 
 /// How deeply a conditional may nest inside a binding.
 ///

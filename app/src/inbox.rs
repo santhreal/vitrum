@@ -1,5 +1,5 @@
 //! Everything the sidebar renders, derived by `vitrum-model` and dressed for
-//! the DOM here.
+//! the widgets here.
 //!
 //! This module owns no rules. Status precedence, disposition, ordering,
 //! sectioning, rollups, wake labels and traversal all come out of
@@ -40,33 +40,42 @@ use vitrum_model::{
 };
 use vitrum_proto::{ProjectId, ProjectInfo, SessionId, SessionInfo};
 
-/// Active rows one project shows before the "show all" affordance.
+/// Active rows one project shows before the "show all" affordance, on a fresh
+/// profile.
 ///
 /// Eight is the tab strip's budget too, and for the same reason: past that a
 /// list stops being scannable and starts needing a search. A project over the
 /// limit keeps its focused row visible whatever its position, so the row you
 /// are looking at can never be the one behind the affordance.
+///
+/// The number a paint uses comes from `settings.inbox.previewRows`, which
+/// defaults to this. Kept as a constant because the catalogue's default is
+/// pinned against it, so retuning one without the other turns the suite red.
+#[cfg(test)]
 pub const PREVIEW_LIMIT: usize = 8;
 
-/// Rows the Done shelf shows before the "Show more" affordance.
+/// Rows the Done shelf shows before the "Show more" affordance, on a fresh
+/// profile.
 ///
 /// The Active band has had [`PREVIEW_LIMIT`] since the beginning and the Done
 /// band had nothing, so it was the one band in the sidebar whose row count was
 /// unbounded: every session an operator has ever finished in a bucket is still
-/// a row, a comparator and a DOM node on every paint once the shelf is open.
+/// a row, a comparator and a widget on every paint once the shelf is open.
 /// A month of work in one project is not a list, and it is not what anyone
 /// opens the shelf to look for.
 ///
 /// Ten, because the shelf answers one question — "what did I just finish" —
 /// and the answer is always near the top of a band sorted by when the work
 /// ended. Anything older is an archive lookup, which is what the filter is
-/// for. T3 Code independently landed on ten as well
-/// (`SidebarV2.tsx:168`, `SETTLED_TAIL_INITIAL_COUNT`).
+/// for.
 ///
-/// The cut is a READING gesture and not a preference, which is why the bit
-/// that undoes it lives in `WindowState::settled_expanded` beside the Active
-/// band's and is deliberately not persisted: coming back to a collapsed tail
-/// is the safe default, and the two cuts stay symmetric.
+/// Whether the cut is undone is a READING gesture and not a preference, which
+/// is why the bit that undoes it lives in `WindowState::settled_expanded`
+/// beside the Active band's and is deliberately not persisted: coming back to
+/// a collapsed tail is the safe default, and the two cuts stay symmetric. How
+/// deep the cut is IS a preference, and comes from
+/// `settings.inbox.settledRows`.
+#[cfg(test)]
 pub const SETTLED_TAIL_LIMIT: usize = 10;
 
 /// The render tick's clock, in the model's terms.
@@ -335,8 +344,8 @@ impl<'a> RootedProjects<'a> {
 /// Costs one [`project_key`] per project, which is one `realpath` each:
 /// measured at 0.8us for `/tmp` and 4.9us for a six-component path on this
 /// machine's filesystem. With the handful of projects a window has open that
-/// is a rounding error against the 16-20ms a single `SessionUpdated` costs
-/// WebKit, and nothing calls it while the window idles.
+/// is a rounding error against the cost of rebuilding the rows a single
+/// `SessionUpdated` touches, and nothing calls it while the window idles.
 #[must_use]
 pub fn coalesce_projects(projects: &[ProjectInfo]) -> RootedProjects<'_> {
     let mut groups: Vec<RootedProject> = Vec::new();
@@ -940,6 +949,10 @@ pub(crate) fn build_group<'a>(
     preview_expanded: bool,
     clock: Clock,
     policy: DispositionPolicy,
+    // Rows the Active band keeps before the cut, from
+    // `settings.inbox.previewRows`. Floored at one: a cut of zero hides every
+    // live row behind an affordance whose label counts rows nobody can see.
+    preview_limit: usize,
 ) -> Group<'a> {
     let mut active = Vec::new();
     let mut snoozed = Vec::new();
@@ -976,9 +989,10 @@ pub(crate) fn build_group<'a>(
     // Doing it with `contains` was two O(n*h) scans and a third allocation,
     // measured at 5.445us and 92 allocations for one arrangement.
     let mut hidden: Vec<&SessionView> = Vec::new();
-    if !preview_expanded && active.len() > PREVIEW_LIMIT {
+    let preview_limit = preview_limit.max(1);
+    if !preview_expanded && active.len() > preview_limit {
         let ids: Vec<SessionId> = active.iter().map(|row| row.id()).collect();
-        let split = preview_sessions(&ids, focused, false, PREVIEW_LIMIT);
+        let split = preview_sessions(&ids, focused, false, preview_limit);
         hidden.reserve_exact(split.hidden.len());
         let mut cut = 0usize;
         active.retain(|row| {

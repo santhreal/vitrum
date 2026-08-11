@@ -39,7 +39,7 @@
 //!
 //! Nothing in this file animates and nothing here is measured at runtime.
 
-use dioxus::prelude::*;
+pub(crate) mod native;
 
 use crate::inbox::Pill;
 use crate::state::{ConnState, UiState, status_label};
@@ -76,7 +76,7 @@ const WORDMARK: &str = vitrum_os::branding::APP_WORDMARK;
 /// its own name twice: once in this slot and once in the sidebar header 44px
 /// below it. The wordmark is now a separate element that is always present, so
 /// this slot is free to say nothing when there is nothing to say.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Context {
     /// Session title, or empty when no session is focused.
     pub primary: String,
@@ -203,182 +203,6 @@ pub fn conn(state: &ConnState, url: &str) -> Conn {
             title,
             retryable: false,
         },
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-pub struct TitleBarProps {
-    pub state: Signal<UiState>,
-    /// Daemon URL, for the connection tooltip.
-    pub server: &'static str,
-    /// The workspace switcher, built by [`crate::ui::workspaces`]. Passed in
-    /// rather than constructed here so this file stays about the window frame
-    /// and does not grow a second opinion about workspaces.
-    pub switcher: Element,
-    pub on_drag: EventHandler<()>,
-    pub on_toggle_maximize: EventHandler<()>,
-    pub on_minimize: EventHandler<()>,
-    pub on_close: EventHandler<()>,
-    pub on_shortcuts: EventHandler<()>,
-    pub on_retry: EventHandler<()>,
-    /// Version string for the quiet update chip. `None` means nothing to say.
-    ///
-    /// A plain value rather than the offer signal so a change in the parent
-    /// always reaches this frame: the titlebar's props compare equal across
-    /// signal writes that do not change any other field, and a skipped
-    /// re-render would leave a ready update invisible.
-    pub update_version: Option<String>,
-    /// Open Settings → About so Install does not need a second Check.
-    pub on_update: EventHandler<()>,
-    /// Persist a dismissal for this exact version and hide the chip.
-    pub on_dismiss_update: EventHandler<()>,
-}
-
-#[component]
-pub fn TitleBar(props: TitleBarProps) -> Element {
-    let (ctx, link) = {
-        let st = props.state.read();
-        (context(&st), conn(&st.daemon.conn, props.server))
-    };
-    let inset = if DRAWS_WINDOW_CONTROLS {
-        0.0
-    } else {
-        MACOS_TRAFFIC_LIGHT_INSET
-    };
-    let update_version = props.update_version.clone();
-
-    rsx! {
-        div {
-            class: "rg-titlebar",
-            style: "padding-left: calc(var(--rg-space-3) + {inset}px)",
-            // The drag region is the bar itself minus its buttons. tao's
-            // `drag_window` hands the gesture to the window manager, which is
-            // what makes tiling, snapping and the shake gesture keep working;
-            // moving the window by hand from mousemove deltas does not.
-            onmousedown: move |e| {
-                use dioxus::html::input_data::MouseButton;
-                if e.trigger_button() == Some(MouseButton::Primary) {
-                    props.on_drag.call(());
-                }
-            },
-            ondoubleclick: move |_| props.on_toggle_maximize.call(()),
-
-            span { class: "rg-titlebar__brand", "{WORDMARK}" }
-
-            {props.switcher}
-
-            div { class: "rg-titlebar__context",
-                // No status dot here. The status is already spelled out in
-                // words two elements along ("running", "exited 3"), and the
-                // sidebar row for the same session carries its own dot beside
-                // its own title. A third marker for one fact is the kind of
-                // repetition that makes a bar read as clutter.
-                if !ctx.primary.is_empty() {
-                    span { class: "rg-titlebar__primary", "{ctx.primary}" }
-                }
-                span { class: "rg-titlebar__secondary", "{ctx.secondary}" }
-            }
-
-            div { class: "rg-titlebar__actions",
-                // A quiet chip, not a modal. The About tab owns Install; this
-                // only says a newer release exists and gets out of the way
-                // when dismissed. Sitting before the connection mark keeps
-                // the window-control corner free of a moving target.
-                if let Some(version) = update_version {
-                    div { class: "rg-update",
-                        button {
-                            class: "rg-update__open",
-                            r#type: "button",
-                            title: "Open Settings → About to install vitrum {version}",
-                            aria_label: "Update available: vitrum {version}",
-                            onmousedown: move |e| e.stop_propagation(),
-                            onclick: move |_| props.on_update.call(()),
-                            "Update {version}"
-                        }
-                        button {
-                            class: "rg-update__dismiss",
-                            r#type: "button",
-                            title: "Dismiss until a later release",
-                            aria_label: "Dismiss update {version}",
-                            onmousedown: move |e| e.stop_propagation(),
-                            onclick: move |_| props.on_dismiss_update.call(()),
-                            "×"
-                        }
-                    }
-                }
-                // The whole connection banner, folded to this. It is a
-                // non-interactive marker while the socket is healthy and grows
-                // a word and a Retry the moment it is not.
-                div {
-                    class: "rg-conn {link.class}",
-                    title: "{link.title}",
-                    span { class: "rg-conn__dot" }
-                    if !link.word.is_empty() {
-                        span { class: "rg-conn__word", "{link.word}" }
-                    }
-                    if link.retryable {
-                        button {
-                            class: "rg-btn-inline",
-                            r#type: "button",
-                            onmousedown: move |e| e.stop_propagation(),
-                            onclick: move |_| props.on_retry.call(()),
-                            "Retry"
-                        }
-                    }
-                }
-                // No `+` here.
-                //
-                // The sidebar footer's control does this and says which agent
-                // it will start; this one was a bare glyph offering the same
-                // action, on a band that already carries a wordmark, a
-                // workspace switcher, a context line, a connection state and
-                // the window controls. It survives the sidebar's 3rem
-                // collapsed rail, so nothing here was reachable that is not
-                // reachable there, and Ctrl+Shift+N opens the list from
-                // anywhere.
-                button {
-                    class: "rg-titlebar__action",
-                    r#type: "button",
-                    title: "Keyboard shortcuts (F1)",
-                    aria_label: "Keyboard shortcuts",
-                    onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| props.on_shortcuts.call(()),
-                    "?"
-                }
-            }
-
-            if DRAWS_WINDOW_CONTROLS {
-                div { class: "rg-window-controls",
-                    button {
-                        class: "rg-window-control",
-                        r#type: "button",
-                        title: "Minimise",
-                        aria_label: "Minimise",
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| props.on_minimize.call(()),
-                        span { class: "rg-window-control__glyph", "\u{2500}" }
-                    }
-                    button {
-                        class: "rg-window-control",
-                        r#type: "button",
-                        title: "Maximise",
-                        aria_label: "Maximise",
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| props.on_toggle_maximize.call(()),
-                        span { class: "rg-window-control__glyph", "\u{25a1}" }
-                    }
-                    button {
-                        class: "rg-window-control rg-window-control--close",
-                        r#type: "button",
-                        title: "Close",
-                        aria_label: "Close",
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| props.on_close.call(()),
-                        span { class: "rg-window-control__glyph", "\u{00d7}" }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -682,50 +506,6 @@ mod tests {
         assert_eq!(link.class, "rg-conn--fixture");
     }
 
-    /// The quiet update chip must name the version it offers. A bare "Update"
-    /// next to the connection mark is a rumour; the version is the fact.
-    #[test]
-    fn the_update_chip_names_the_version() {
-        use dioxus::prelude::*;
-        #[derive(Props, Clone, PartialEq)]
-        struct HarnessProps {
-            version: Option<String>,
-        }
-        #[component]
-        fn Harness(props: HarnessProps) -> Element {
-            let state = use_signal(UiState::default);
-            rsx! {
-                TitleBar {
-                    state,
-                    server: "ws://127.0.0.1:1",
-                    switcher: rsx! { span {} },
-                    on_drag: move |()| {},
-                    on_toggle_maximize: move |()| {},
-                    on_minimize: move |()| {},
-                    on_close: move |()| {},
-                    on_shortcuts: move |()| {},
-                    on_retry: move |()| {},
-                    update_version: props.version,
-                    on_update: move |()| {},
-                    on_dismiss_update: move |()| {},
-                }
-            }
-        }
-        let mut dom = VirtualDom::new_with_props(
-            Harness,
-            HarnessProps {
-                version: Some("9.9.9".into()),
-            },
-        );
-        dom.rebuild_in_place();
-        let html = dioxus_ssr::render(&dom);
-        assert!(
-            html.contains("Update 9.9.9"),
-            "chip missing from {html}"
-        );
-        assert!(html.contains("rg-update"), "chip class missing from {html}");
-    }
-
     /// Every surface that names a session state reads the shared vocabulary.
     ///
     /// The sibling test above proves the bar and the pill agree for the
@@ -765,19 +545,34 @@ mod tests {
 
         /// Every surface that can put a session's state in front of a person.
         const SURFACES: &[(&str, &str)] = &[
-            ("ui/titlebar.rs", include_str!("titlebar.rs")),
-            ("ui/sidebar.rs", include_str!("sidebar.rs")),
-            ("ui/menu.rs", include_str!("menu.rs")),
-            ("ui/search/render.rs", include_str!("search/render.rs")),
-            ("ui/settings.rs", include_str!("settings.rs")),
-            ("ui/workspaces.rs", include_str!("workspaces.rs")),
+            ("ui/titlebar/native.rs", include_str!("titlebar/native.rs")),
+            ("ui/sidebar/widgets.rs", include_str!("sidebar/widgets.rs")),
+            ("ui/menu/native.rs", include_str!("menu/native.rs")),
+            ("ui/search/native.rs", include_str!("search/native.rs")),
+            ("ui/dialog/native.rs", include_str!("dialog/native.rs")),
+            ("ui/settings/sheet.rs", include_str!("settings/sheet.rs")),
+            ("ui/settings/spec.rs", include_str!("settings/spec.rs")),
+            ("ui/panebar.rs", include_str!("panebar.rs")),
+            ("ui/toast.rs", include_str!("toast.rs")),
             ("ui/mod.rs", include_str!("mod.rs")),
         ];
 
         for (name, src) in SURFACES {
             // Production markup only. A test may spell a word, because
             // asserting the word is what a test of the word looks like.
-            let code = src.split_once("#[cfg(test)]").map_or(*src, |(a, _)| a);
+            // Anchored on the test module declaration, not the bare
+            // attribute: several of these files carry `#[cfg(test)]` on
+            // individual items, and cutting at the first one silently
+            // shrinks the scan to nothing and passes.
+            let code = src
+                .split_once("\n#[cfg(test)]\nmod ")
+                .map_or(*src, |(a, _)| a);
+            assert!(
+                code.len() > src.len() / 2,
+                "the scan of {name} collapsed to {} of {} bytes; the anchor moved",
+                code.len(),
+                src.len()
+            );
             for (n, line) in code.lines().enumerate() {
                 let line = line.trim_start();
                 if line.starts_with("//") {

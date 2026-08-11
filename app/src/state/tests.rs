@@ -796,7 +796,7 @@ fn the_focused_tab_is_never_evicted() {
     // Focus the least recently used tab without going through open().
     st.window.focused = Some(SessionId(10));
     st.window.tabs.push(SessionId(999));
-    st.window.evict_stale_tabs();
+    st.window.evict_stale_tabs(st.daemon.settings.tab_capacity());
     assert!(st.window.tabs.contains(&SessionId(10)));
 }
 
@@ -1235,7 +1235,7 @@ fn nothing_in_a_menu_names_a_tab() {
 fn the_snooze_presets_are_the_models() {
     let st = with(&[1], &[(10, 1, 0)]);
     let mine = st.snooze_presets(clock());
-    let theirs = vitrum_model::snooze_presets(clock());
+    let theirs = vitrum_model::snooze_presets(clock(), vitrum_model::SnoozeHours::default());
     assert_eq!(mine, theirs);
     assert!(
         mine.iter().any(|p| p.id == SnoozePresetId::Hour),
@@ -1549,7 +1549,7 @@ fn the_attention_count_and_the_visible_list_see_the_same_rows() {
     // `attention_count_of` does internally, it has to agree with this.
     let agrees = |st: &UiState, what: &str| -> (usize, usize) {
         let tree = st.tree(clock());
-        let visible = st.window.visible_ids_of(&tree);
+        let visible = st.visible_ids_of(&tree);
         let policy = st.daemon.policy();
         let want = visible
             .iter()
@@ -3568,8 +3568,8 @@ fn the_whole_document_round_trips_through_json() {
 
 /// One window saving must not delete another window's layout.
 ///
-/// Each desktop window has its own VirtualDom and therefore its own
-/// `UiState`, so a window that captured the whole document would write
+/// Each desktop window has its own `UiState`, so a window that captured the
+/// whole document would write
 /// itself into slot 0 and drop every other entry. This is the merge that
 /// stops it, and the padding rule that stops an unsaved slot inheriting a
 /// neighbour's tabs.
@@ -3855,6 +3855,39 @@ fn a_document_written_before_a_field_existed_still_loads_whole() {
     assert!(
         !text.contains("\"hits\"") && !text.contains("\"query\""),
         "the profile carries the switches and nothing else from the search"
+    );
+}
+
+/// A confirmation the operator does not remember granting is worse than no
+/// confirmation. Arming a session for termination is an answer to a question
+/// asked seconds ago, so it must die with the window it was asked in and must
+/// never come back out of the profile.
+#[test]
+fn a_saved_profile_never_restores_a_session_already_armed_for_termination() {
+    let mut set = WindowState::default();
+    set.armed_terminate = vec![SessionId(10), SessionId(11)];
+    set.sidebar_collapsed = true;
+    let mut doc = Persisted::default();
+    doc.put_window(set.index, WindowSnapshot::of(&set));
+    let text = serde_json::to_string(&doc).expect("the document serialises");
+    assert!(
+        !text.contains("armed") && !text.contains("\"10\"") && !text.contains("terminate"),
+        "an armed session must not reach the file at all: {text}"
+    );
+    let back = match parse_ui_state(&text) {
+        UiStateLoad::Loaded(doc) => *doc,
+        other => panic!("expected a loaded document, got {other}"),
+    };
+    let mut restored = WindowState::default();
+    restored.armed_terminate = vec![SessionId(99)];
+    assert!(back.restore_window(&mut restored));
+    assert!(
+        restored.sidebar_collapsed,
+        "the rest of the snapshot still restores, so this is not a vacuous pass"
+    );
+    assert!(
+        restored.armed_terminate.is_empty(),
+        "restoring a profile must clear anything armed, not leave the caller's list standing"
     );
 }
 

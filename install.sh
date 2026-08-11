@@ -8,11 +8,13 @@
 #
 #   sh install.sh                 install the latest release
 #   sh install.sh 0.1.0           install a specific version
+#   sh install.sh --channel=nightly   install the current nightly build
 #   sh install.sh --uninstall     remove everything the installer wrote
 #   sh install.sh --help          full usage
 #
 # Env overrides:
 #   VITRUM_VERSION       version to install, same as the argument
+#   VITRUM_CHANNEL       stable or nightly, same as --channel
 #   VITRUM_INSTALL_DIR   where the binaries go (default: $HOME/.local/bin)
 #   VITRUM_BASE_URL      where the release assets live, for a mirror
 #   GITHUB_TOKEN         sent to the GitHub API, for rate-limited networks
@@ -31,9 +33,14 @@
 set -eu
 
 REPO="santhreal/vitrum"
+# The one tag the nightly channel ever resolves. It moves to the commit each
+# nightly was built from, holds one build at a time, and is marked prerelease
+# so the latest-release lookup above walks past it.
+NIGHTLY_TAG="nightly"
 VERSION="${VITRUM_VERSION:-}"
 INSTALL_DIR="${VITRUM_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="${VITRUM_BASE_URL:-}"
+CHANNEL="${VITRUM_CHANNEL:-stable}"
 INTEGRATE=1
 RUNTIME_CHECK=1
 INSTALL_DEPS=1
@@ -117,6 +124,11 @@ Options:
   --install-dir=PATH      where to put the binaries
                           (default: $HOME/.local/bin)
   --version=VERSION       same as the positional VERSION argument
+  --channel=CHANNEL       stable, the default, installs the newest published
+                          release; nightly installs the current build of
+                          `main` from the moving `nightly` tag. A version and
+                          a mirror both name one build, so neither combines
+                          with nightly.
   --base-url=URL          directory holding the release archive and its
                           SHA256SUMS, for a mirror or an air-gapped copy;
                           needs an explicit VERSION
@@ -133,6 +145,7 @@ Options:
 
 Environment:
   VITRUM_VERSION          same as --version
+  VITRUM_CHANNEL          same as --channel
   VITRUM_INSTALL_DIR      same as --install-dir
   VITRUM_BASE_URL         same as --base-url
   GITHUB_TOKEN            bearer token for the GitHub API
@@ -192,6 +205,15 @@ while [ $# -gt 0 ]; do
             VERSION="$2"
             shift
             ;;
+        --channel=*)
+            CHANNEL="${1#--channel=}"
+            ;;
+        --channel)
+            [ $# -ge 2 ] || die "--channel needs a channel" \
+                "Pass it as --channel=nightly."
+            CHANNEL="$2"
+            shift
+            ;;
         --base-url=*)
             BASE_URL="${1#--base-url=}"
             ;;
@@ -228,6 +250,28 @@ done
 # `install.sh 0.1.0` from building two different URLs.
 VERSION="${VERSION#v}"
 BASE_URL="${BASE_URL%/}"
+
+case "$CHANNEL" in
+    stable | nightly) ;;
+    *)
+        die "unknown channel: $CHANNEL" \
+            "The channels are stable, the newest published release, and" \
+            "nightly, the current build of main."
+        ;;
+esac
+
+# A nightly is whatever the moving `nightly` tag holds right now. Naming a
+# version or a mirror alongside it asks for two different builds at once, and
+# the installer would have to pick one silently.
+if [ "$CHANNEL" = nightly ]; then
+    [ -z "$VERSION" ] || die "--channel=nightly and version $VERSION name two different builds" \
+        "A nightly has no version to ask for: it is whatever the nightly tag" \
+        "holds now. Install the nightly with 'sh install.sh --channel=nightly'," \
+        "or that exact version with 'sh install.sh $VERSION'."
+    [ -z "$BASE_URL" ] || die "--channel=nightly and --base-url name two different builds" \
+        "A mirror holds the archives that were copied into it, so install from" \
+        "it by version: 'sh install.sh X.Y.Z --base-url=$BASE_URL'."
+fi
 
 [ -n "$INSTALL_DIR" ] || die "install directory is empty" \
     "Pass --install-dir=PATH or unset VITRUM_INSTALL_DIR."
@@ -715,7 +759,7 @@ case "$os" in
                     "download for this one." \
                     "Build from source on this machine instead:" \
                     "  https://github.com/$REPO/blob/main/CONTRIBUTING.md" \
-                    "You will need a WebKitGTK 4.1 development package first."
+                    "You will need a GTK 3 development package first."
                 ;;
         esac
         # The published Linux build links glibc. On a musl host it would
@@ -762,7 +806,7 @@ esac
 #
 # Everything that can be known before a byte is downloaded is checked before a
 # byte is downloaded. Finding out that a directory is read-only, or that the
-# machine has no WebKit, after ninety megabytes have crossed a metered link is
+# machine has no GTK, after ninety megabytes have crossed a metered link is
 # a worse experience than the failure itself.
 
 # The identifiers this distribution answers to, most specific first.
@@ -836,7 +880,7 @@ runtime_pm() {
 }
 
 # The package that carries the shared library $1 on this distribution, or
-# nothing when there is none. "install a WebKit runtime" is not an instruction
+# nothing when there is none. "install a GTK runtime" is not an instruction
 # anyone can run, and neither is a package name from another distribution.
 #
 # A soname with no entry under a distribution is a distribution that does not
@@ -849,55 +893,55 @@ runtime_pkg() {
         case "$rp_candidate" in
             debian | ubuntu | linuxmint | pop | elementary | raspbian | kali)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'libwebkit2gtk-4.1-0' ;;
+                    libgtk-3.so.0) printf 'libgtk-3-0' ;;
                     libxdo.so.3) printf 'libxdo3' ;;
                 esac
                 return 0
                 ;;
             fedora | rhel | centos | rocky | almalinux)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk4.1' ;;
+                    libgtk-3.so.0) printf 'gtk3' ;;
                     libxdo.so.3) printf 'xdotool' ;;
                 esac
                 return 0
                 ;;
             arch | manjaro | endeavouros | cachyos)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk-4.1' ;;
+                    libgtk-3.so.0) printf 'gtk3' ;;
                 esac
                 return 0
                 ;;
             opensuse | opensuse-tumbleweed | opensuse-leap | suse | sles)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'libwebkit2gtk-4_1-0' ;;
+                    libgtk-3.so.0) printf 'libgtk-3-0' ;;
                     libxdo.so.3) printf 'libxdo3' ;;
                 esac
                 return 0
                 ;;
             alpine)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk-4.1' ;;
+                    libgtk-3.so.0) printf 'gtk+3.0' ;;
                     libxdo.so.3) printf 'xdotool' ;;
                 esac
                 return 0
                 ;;
             void)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'webkit2gtk' ;;
+                    libgtk-3.so.0) printf 'gtk+3' ;;
                     libxdo.so.3) printf 'xdotool' ;;
                 esac
                 return 0
                 ;;
             gentoo)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'net-libs/webkit-gtk:4.1' ;;
+                    libgtk-3.so.0) printf 'x11-libs/gtk+:3' ;;
                     libxdo.so.3) printf 'x11-misc/xdotool' ;;
                 esac
                 return 0
                 ;;
             nixos)
                 case "$rp_lib" in
-                    libwebkit2gtk-4.1.so.0) printf 'nixpkgs.webkitgtk_4_1' ;;
+                    libgtk-3.so.0) printf 'nixpkgs.gtk3' ;;
                     libxdo.so.3) printf 'nixpkgs.xdotool' ;;
                 esac
                 return 0
@@ -917,23 +961,23 @@ runtime_command() {
     fi
 }
 
-webkit_package() {
-    wp_pkg=$(runtime_pkg libwebkit2gtk-4.1.so.0)
+gtk_package() {
+    wp_pkg=$(runtime_pkg libgtk-3.so.0)
     if [ -n "$wp_pkg" ]; then
         runtime_command "$wp_pkg"
     else
-        printf 'install your distribution package for libwebkit2gtk-4.1.so.0'
+        printf 'install your distribution package for libgtk-3.so.0'
     fi
 }
 
-have_webkit() {
+have_gtk() {
     if [ -z "$SYSROOT" ] && command -v ldconfig >/dev/null 2>&1; then
-        if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then return 0; fi
+        if ldconfig -p 2>/dev/null | grep -q 'libgtk-3\.so\.0'; then return 0; fi
     fi
     for wdir in /usr/lib /usr/lib64 /lib /lib64 /usr/local/lib \
         /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu \
         /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
-        for wlib in "$SYSROOT$wdir"/libwebkit2gtk-4.1.so*; do
+        for wlib in "$SYSROOT$wdir"/libgtk-3.so.0*; do
             if [ -e "$wlib" ]; then return 0; fi
         done
     done
@@ -1153,22 +1197,22 @@ assert_writable "$INSTALL_DIR"
 refuse_if_client_running
 resolve_downloader
 
-if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ] && ! have_webkit; then
+if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ] && ! have_gtk; then
     if [ "$INSTALL_DEPS" = 0 ]; then
-        die "vitrum needs a WebKit runtime and this machine has none" \
-            "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
+        die "vitrum needs a GTK runtime and this machine has none" \
+            "libgtk-3.so.0 is vitrum's only system dependency, and without" \
             "it the binary installs and then fails to open a window." \
             "Install it first:" \
-            "  $(webkit_package)" \
+            "  $(gtk_package)" \
             "Then run this installer again." \
             "To install anyway, for an image that adds the runtime separately, pass" \
             "--no-runtime-check."
     fi
 
-    resolve_packages libwebkit2gtk-4.1.so.0
+    resolve_packages libgtk-3.so.0
     if [ -n "$DEPS_UNPACKAGED" ]; then
-        die "vitrum needs a WebKit runtime and this installer cannot install one" \
-            "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
+        die "vitrum needs a GTK runtime and this installer cannot install one" \
+            "libgtk-3.so.0 is vitrum's only system dependency, and without" \
             "it the binary installs and then fails to open a window." \
             "No package on this distribution is known to provide it." \
             "Install it yourself, then run this installer again." \
@@ -1176,17 +1220,17 @@ if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ] && ! have_webkit; then
             "--no-runtime-check."
     fi
 
-    say "vitrum needs libwebkit2gtk-4.1.so.0, and this machine has none."
+    say "vitrum needs libgtk-3.so.0, and this machine has none."
     say "Installing $DEPS_PKGS."
     deps_rc=0
     install_packages $DEPS_PKGS || deps_rc=$?
     if [ -n "$DEPS_WHY" ]; then
-        die "vitrum needs a WebKit runtime and this installer cannot install one" \
-            "libwebkit2gtk-4.1.so.0 is vitrum's only system dependency, and without" \
+        die "vitrum needs a GTK runtime and this installer cannot install one" \
+            "libgtk-3.so.0 is vitrum's only system dependency, and without" \
             "it the binary installs and then fails to open a window." \
             "$DEPS_WHY" \
             "Install it yourself, then run this installer again:" \
-            "  $(webkit_package)" \
+            "  $(gtk_package)" \
             "To install anyway, for an image that adds the runtime separately, pass" \
             "--no-runtime-check."
     fi
@@ -1197,15 +1241,15 @@ if [ "$os" = "Linux" ] && [ "$RUNTIME_CHECK" = 1 ] && ! have_webkit; then
             "Install the package another way and run this installer again with" \
             "--no-deps, which skips this step."
     fi
-    if ! have_webkit; then
-        die "$DEPS_PKGS installed and libwebkit2gtk-4.1.so.0 is still not here" \
+    if ! have_gtk; then
+        die "$DEPS_PKGS installed and libgtk-3.so.0 is still not here" \
             "The package manager exited zero, so the package this installer names" \
             "for this distribution does not carry that library. Nothing of vitrum" \
             "was installed." \
             "Report it at https://github.com/$REPO/issues" \
             "To install anyway, pass --no-runtime-check."
     fi
-    say "libwebkit2gtk-4.1.so.0 is installed."
+    say "libgtk-3.so.0 is installed."
     say ""
 fi
 
@@ -1221,38 +1265,94 @@ fi
 # version
 # ============================================================
 
-if [ -n "$BASE_URL" ]; then
-    [ -n "$VERSION" ] || die "--base-url needs an explicit version" \
-        "A mirror has no releases API to ask, so the version cannot be resolved." \
-        "Pass it: sh install.sh 0.1.0 --base-url=$BASE_URL"
-elif [ -z "$VERSION" ]; then
-    say "Resolving the latest release of $REPO."
-    latest=$(fetch_api "https://api.github.com/repos/$REPO/releases/latest") || latest=""
-    VERSION=$(printf '%s\n' "$latest" |
-        sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
-    # The API is asked first because it answers with the release, and second
-    # because a token makes it reliable. When it does not answer — a spent
-    # anonymous rate limit on a shared address is the common case, and it
-    # arrives as 403 on a network that is working — the website's own
-    # redirect gives the same version and is not the resource that ran out.
-    if [ -z "$VERSION" ]; then
-        VERSION=$(latest_tag_by_redirect) || VERSION=""
+TMPDIR_SELF=$(mktemp -d 2>/dev/null || mktemp -d -t vitrum) ||
+    die "could not create a temporary directory" \
+        "Check that TMPDIR points somewhere writable."
+MANIFEST_NEW="$TMPDIR_SELF/manifest"
+: > "$MANIFEST_NEW"
+
+# The release's checksum file, fetched into the scratch directory and refused
+# unless it is one. Both channels need it, and the nightly channel needs it
+# before it knows what to download, so it is a function rather than a step.
+fetch_sums() {
+    say "Downloading SHA256SUMS."
+    fetch "$BASE/SHA256SUMS" "$TMPDIR_SELF/SHA256SUMS" ||
+        die_net "could not download $BASE/SHA256SUMS" \
+            "Every vitrum release publishes it, so a release without one is" \
+            "incomplete and must not be installed. Report it at" \
+            "https://github.com/$REPO/issues"
+
+    if ! head -1 "$TMPDIR_SELF/SHA256SUMS" | grep -Eq '^[0-9a-fA-F]{64}[ *]'; then
+        die_net "what came back for SHA256SUMS is not a checksum file" \
+            "Its first line is not a digest and a filename, so something answered on" \
+            "the release's behalf: a proxy, a captive portal, or a sign-in page." \
+            "Nothing was installed."
     fi
-    [ -n "$VERSION" ] || die_net "could not resolve the latest release" \
-        "Neither the releases API nor the redirect on the releases page" \
-        "answered. Check your network, or pass an explicit version:" \
-        "  sh install.sh 0.1.0" \
-        "Published versions are listed at https://github.com/$REPO/releases"
+}
+
+if [ "$CHANNEL" = nightly ]; then
+    BASE="https://github.com/$REPO/releases/download/$NIGHTLY_TAG"
+else
+    if [ -n "$BASE_URL" ]; then
+        [ -n "$VERSION" ] || die "--base-url needs an explicit version" \
+            "A mirror has no releases API to ask, so the version cannot be resolved." \
+            "Pass it: sh install.sh 0.1.0 --base-url=$BASE_URL"
+    elif [ -z "$VERSION" ]; then
+        say "Resolving the latest release of $REPO."
+        latest=$(fetch_api "https://api.github.com/repos/$REPO/releases/latest") || latest=""
+        VERSION=$(printf '%s\n' "$latest" |
+            sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
+        # The API is asked first because it answers with the release, and second
+        # because a token makes it reliable. When it does not answer — a spent
+        # anonymous rate limit on a shared address is the common case, and it
+        # arrives as 403 on a network that is working — the website's own
+        # redirect gives the same version and is not the resource that ran out.
+        if [ -z "$VERSION" ]; then
+            VERSION=$(latest_tag_by_redirect) || VERSION=""
+        fi
+        [ -n "$VERSION" ] || die_net "could not resolve the latest release" \
+            "Neither the releases API nor the redirect on the releases page" \
+            "answered. Check your network, or pass an explicit version:" \
+            "  sh install.sh 0.1.0" \
+            "Published versions are listed at https://github.com/$REPO/releases"
+    fi
+
+    ARCHIVE="vitrum-${VERSION}-${TARGET}.tar.gz"
+    if [ -n "$BASE_URL" ]; then
+        BASE="$BASE_URL"
+    else
+        BASE="https://github.com/$REPO/releases/download/v${VERSION}"
+    fi
 fi
 
-ARCHIVE="vitrum-${VERSION}-${TARGET}.tar.gz"
-if [ -n "$BASE_URL" ]; then
-    BASE="$BASE_URL"
-else
-    BASE="https://github.com/$REPO/releases/download/v${VERSION}"
+# The nightly tag names no version, so the version is read out of the release
+# rather than asked for: its SHA256SUMS carries one line per platform, and the
+# line for this target names the archive and with it the build. Reading it from
+# the checksum file rather than from the releases API means the name that is
+# downloaded and the name that is verified come from the same source, and an
+# archive the release did not check in is refused before it is fetched.
+resolve_nightly() {
+    fetch_sums
+    ARCHIVE=$(sed -n "s/^[0-9a-fA-F]\{64\} [ *]*\(vitrum-.*-${TARGET}\.tar\.gz\)\$/\1/p" \
+        "$TMPDIR_SELF/SHA256SUMS" | head -1)
+    [ -n "$ARCHIVE" ] || die "the nightly release has no archive for ${TARGET}" \
+        "Its SHA256SUMS lists:" \
+        "$(sed 's/^[0-9a-fA-F]* [ *]*/  /' "$TMPDIR_SELF/SHA256SUMS" | tr '\n' ' ')" \
+        "Report it at https://github.com/$REPO/issues, or install a stable" \
+        "release instead: sh install.sh"
+    VERSION="${ARCHIVE#vitrum-}"
+    VERSION="${VERSION%-${TARGET}.tar.gz}"
+}
+
+SUMS_READY=0
+if [ "$CHANNEL" = nightly ]; then
+    say "Resolving the current nightly build of $REPO."
+    resolve_nightly
+    SUMS_READY=1
 fi
 
 say ""
+say "  channel      ${CHANNEL}"
 say "  version      v${VERSION}"
 say "  target       ${TARGET}"
 say "  archive      ${ARCHIVE}"
@@ -1266,17 +1366,24 @@ say ""
 # download and verify
 # ============================================================
 
-TMPDIR_SELF=$(mktemp -d 2>/dev/null || mktemp -d -t vitrum) ||
-    die "could not create a temporary directory" \
-        "Check that TMPDIR points somewhere writable."
-MANIFEST_NEW="$TMPDIR_SELF/manifest"
-: > "$MANIFEST_NEW"
-
 say "Downloading $ARCHIVE."
-fetch "$BASE/$ARCHIVE" "$TMPDIR_SELF/$ARCHIVE" ||
-    die_net "could not download $BASE/$ARCHIVE" \
-        "Check that v${VERSION} is published and carries an asset for ${TARGET}:" \
-        "  https://github.com/$REPO/releases/tag/v${VERSION}"
+if ! fetch "$BASE/$ARCHIVE" "$TMPDIR_SELF/$ARCHIVE"; then
+    # One re-resolve, on the nightly channel only, because that is the one
+    # channel whose release is replaced while people are installing from it.
+    # The tag holds one build at a time and every build has its own archive
+    # name, so a nightly published between the checksum file and the archive
+    # takes the name that was just resolved with it. A stable tag is fixed and
+    # never does this, so there the first failure is the answer.
+    if [ "$CHANNEL" = nightly ]; then
+        say "That archive is gone; a new nightly landed while this was running."
+        resolve_nightly
+        say "Downloading $ARCHIVE."
+    fi
+    fetch "$BASE/$ARCHIVE" "$TMPDIR_SELF/$ARCHIVE" ||
+        die_net "could not download $BASE/$ARCHIVE" \
+            "Check that the release is published and carries an asset for ${TARGET}:" \
+            "  https://github.com/$REPO/releases"
+fi
 
 # Why a shape check when there is a digest two steps below: because "checksum
 # mismatch" is the wrong answer to "the transfer stopped half way" and to "a
@@ -1316,18 +1423,11 @@ if [ -n "$shape" ]; then
         "the connection."
 fi
 
-say "Downloading SHA256SUMS."
-fetch "$BASE/SHA256SUMS" "$TMPDIR_SELF/SHA256SUMS" ||
-    die_net "could not download $BASE/SHA256SUMS" \
-        "Every vitrum release publishes it, so a release without one is" \
-        "incomplete and must not be installed. Report it at" \
-        "https://github.com/$REPO/issues"
-
-if ! head -1 "$TMPDIR_SELF/SHA256SUMS" | grep -Eq '^[0-9a-fA-F]{64}[ *]'; then
-    die_net "what came back for SHA256SUMS is not a checksum file" \
-        "Its first line is not a digest and a filename, so something answered on" \
-        "the release's behalf: a proxy, a captive portal, or a sign-in page." \
-        "Nothing was installed."
+# Already in hand on the nightly channel, which had to read it to learn what
+# to download. Fetching it twice would also let the two halves come from
+# different builds of a tag that moves.
+if [ "$SUMS_READY" -eq 0 ]; then
+    fetch_sums
 fi
 
 # Matched literally rather than with a regex: the archive name is full of dots,

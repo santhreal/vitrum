@@ -237,8 +237,8 @@ pub(crate) fn claim_in_pane(
         alt: mods.alt,
         shift: mods.shift,
     };
-    // The pane only has focus when no layer is open: a layer is a webview
-    // surface on top of it and takes the keyboard with it.
+    // The pane only has focus when no layer is open: a layer is a dialog over
+    // the frame and takes the keyboard with it.
     let Some(claim) = claim_live(&pressed, Focus::Terminal, false) else {
         return false;
     };
@@ -301,38 +301,35 @@ fn key_name(key: pane::key::Key, digit: Option<char>) -> Option<String> {
     })
 }
 
+/// The chord one GTK key press means.
+///
+/// Built from the same two helpers the pane uses, so a chord fires from the
+/// shell and from inside the terminal under identical rules. In particular the
+/// top-row digit is taken from the unshifted keyval: the layout's name for
+/// Ctrl+Shift+1 is `!`, and a chord stored as `1` would never match the
+/// keystroke it is named after.
+///
+/// `None` for a keystroke that names no chord, which is a bare modifier press
+/// or a keyval with neither a character nor a name.
+pub(crate) fn chord_from_gdk(event: &gtk::gdk::EventKey) -> Option<Chord> {
+    let (key, mods) = pane::surface::decode_event(event)?;
+    Some(Chord {
+        key: key_name(key, pane::surface::digit_of(event))?,
+        ctrl: mods.ctrl,
+        alt: mods.alt,
+        shift: mods.shift,
+    })
+}
+
 /// Handle one chord bound to the operator's own action list.
 ///
 /// The binding is looked up again here, against this window's profile, rather
 /// than carried from the press: the list can be edited between the two, and
 /// running the binding as it was is running a binding that no longer exists.
-pub(crate) fn dispatch_custom(
-    pressed: &Chord,
-    bridge: Bridge,
-    st: Signal<UiState>,
-    attached: Signal<Option<SessionId>>,
-    opts: Options,
-    pending_terminate: Signal<Vec<SessionId>>,
-    pending_open: Signal<Option<PendingLaunch>>,
-) {
-    let found = st
-        .peek()
-        .daemon
-        .settings
-        .keyboard
-        .custom
-        .lookup(pressed)
-        .cloned();
+pub(crate) fn dispatch_custom(cx: &Rc<Ctx>, pressed: &Chord) {
+    let found = cx.peek(|st| st.daemon.settings.keyboard.custom.lookup(pressed).cloned());
     match found {
-        Some(binding) => run_binding(
-            &binding,
-            bridge,
-            st,
-            attached,
-            opts,
-            pending_terminate,
-            pending_open,
-        ),
+        Some(binding) => run_binding(cx, &binding),
         None => tracing::debug!(
             "{} is no longer bound",
             crate::launch::format_chord(pressed)
@@ -345,19 +342,11 @@ pub(crate) fn dispatch_custom(
 /// Planned to completion before anything is performed. A binding that cannot be
 /// planned does NOTHING and says so: half of a sequence is worse than none of
 /// it, because the bytes that did reach the pty run whatever they mean.
-fn run_binding(
-    binding: &CustomBinding,
-    bridge: Bridge,
-    mut st: Signal<UiState>,
-    attached: Signal<Option<SessionId>>,
-    opts: Options,
-    pending_terminate: Signal<Vec<SessionId>>,
-    pending_open: Signal<Option<PendingLaunch>>,
-) {
-    let effects = match binding.plan(&facts(st)) {
+fn run_binding(cx: &Rc<Ctx>, binding: &CustomBinding) {
+    let effects = match binding.plan(&facts(cx)) {
         Ok(effects) => effects,
         Err(why) => {
-            st.write().window.flash = Some(Flash::notice(format!(
+            cx.flash(Flash::notice(format!(
                 "{} did nothing: {why}",
                 binding.title()
             )));
@@ -366,18 +355,8 @@ fn run_binding(
     };
     for effect in effects {
         match effect {
-            Effect::Action(action) => {
-                on_key(
-                    action,
-                    bridge,
-                    st,
-                    attached,
-                    opts,
-                    pending_terminate,
-                    pending_open,
-                );
-            }
-            Effect::Text(bytes) => send_literal(bridge, st, bytes),
+            Effect::Action(action) => on_key(cx, action),
+            Effect::Text(bytes) => send_literal(cx, bytes),
         }
     }
 }
@@ -388,12 +367,12 @@ fn run_binding(
 /// so a binding's bytes are indistinguishable from typed ones by the time they
 /// reach the child. With nothing focused there is no pty to write to, and
 /// saying so beats dropping the keystroke silently.
-fn send_literal(bridge: Bridge, mut st: Signal<UiState>, data: Vec<u8>) {
-    let Some(session) = st.peek().window.focused else {
-        st.write().window.flash = Some(Flash::notice("Focus a session before sending text to it."));
+fn send_literal(cx: &Rc<Ctx>, data: Vec<u8>) {
+    let Some(session) = cx.peek(|st| st.window.focused) else {
+        cx.flash(Flash::notice("Focus a session before sending text to it."));
         return;
     };
-    bridge.msg(&ClientMsg::Input { session, data });
+    cx.bridge.msg(&ClientMsg::Input { session, data });
 }
 
 /// The state snapshot a binding's predicates ask about.
@@ -401,52 +380,53 @@ fn send_literal(bridge: Bridge, mut st: Signal<UiState>, data: Vec<u8>) {
 /// Built here rather than inside `keymap`, because this is the only place that
 /// holds the window: the planner stays a pure function of this value, which is
 /// what lets the binding tests build one by hand and prove something real.
-fn facts(st: Signal<UiState>) -> Facts {
-    let snapshot = st.peek();
-    let focused = snapshot.window.focused.and_then(|id| {
-        let row = snapshot.row(id)?;
-        Some(FocusedSession {
-            status: row.status().into(),
-            unread: row.info.unread,
-            command: row.info.command.clone(),
-        })
-    });
-    // Onboarding and What's New have no predicate of their own, and reporting
-    // them as "no layer" would make `layer-open` answer a question about a
-    // window that has a sheet over it. `Unknown` never matches, which is the
-    // honest answer.
-    let layer = match &snapshot.window.layer {
-        Layer::None => None,
-        Layer::Shortcuts => Some(LayerKind::Shortcuts),
-        Layer::Menu(_) => Some(LayerKind::Menu),
-        Layer::NewSession(_) => Some(LayerKind::NewSession),
-        Layer::Settings(_) => Some(LayerKind::Settings),
-        Layer::Rename(_) => Some(LayerKind::Rename),
-        Layer::Search => Some(LayerKind::Search),
-        Layer::Onboarding | Layer::WhatsNew => Some(LayerKind::Unknown),
-    };
-    let mut workspace_attention = std::collections::BTreeSet::new();
-    for row in snapshot.daemon.workspace_rows(snapshot.window.workspace) {
-        let raised = &row.info.attention;
-        if raised.bell {
-            workspace_attention.insert(AttentionKind::Bell);
+fn facts(cx: &Rc<Ctx>) -> Facts {
+    cx.peek(|snapshot| {
+        let focused = snapshot.window.focused.and_then(|id| {
+            let row = snapshot.row(id)?;
+            Some(FocusedSession {
+                status: row.status().into(),
+                unread: row.info.unread,
+                command: row.info.command.clone(),
+            })
+        });
+        // Onboarding and What's New have no predicate of their own, and
+        // reporting them as "no layer" would make `layer-open` answer a
+        // question about a window that has a sheet over it. `Unknown` never
+        // matches, which is the honest answer.
+        let layer = match &snapshot.window.layer {
+            Layer::None => None,
+            Layer::Shortcuts => Some(LayerKind::Shortcuts),
+            Layer::Menu(_) => Some(LayerKind::Menu),
+            Layer::NewSession(_) => Some(LayerKind::NewSession),
+            Layer::Settings(_) => Some(LayerKind::Settings),
+            Layer::Rename(_) => Some(LayerKind::Rename),
+            Layer::Search => Some(LayerKind::Search),
+            Layer::Onboarding | Layer::WhatsNew => Some(LayerKind::Unknown),
+        };
+        let mut workspace_attention = std::collections::BTreeSet::new();
+        for row in snapshot.daemon.workspace_rows(snapshot.window.workspace) {
+            let raised = &row.info.attention;
+            if raised.bell {
+                workspace_attention.insert(AttentionKind::Bell);
+            }
+            if raised.failed {
+                workspace_attention.insert(AttentionKind::Failed);
+            }
+            if raised.waiting == Some(true) {
+                workspace_attention.insert(AttentionKind::Waiting);
+            }
+            if raised.idle_ms >= vitrum_proto::IDLE_ATTENTION_MS {
+                workspace_attention.insert(AttentionKind::Idle);
+            }
         }
-        if raised.failed {
-            workspace_attention.insert(AttentionKind::Failed);
+        Facts {
+            focused,
+            layer,
+            sidebar_visible: !snapshot.window.sidebar_collapsed,
+            workspace_attention,
         }
-        if raised.waiting == Some(true) {
-            workspace_attention.insert(AttentionKind::Waiting);
-        }
-        if raised.idle_ms >= vitrum_proto::IDLE_ATTENTION_MS {
-            workspace_attention.insert(AttentionKind::Idle);
-        }
-    }
-    Facts {
-        focused,
-        layer,
-        sidebar_visible: !snapshot.window.sidebar_collapsed,
-        workspace_attention,
-    }
+    })
 }
 
 /// Perform one keyboard action.
@@ -455,114 +435,83 @@ fn facts(st: Signal<UiState>) -> Facts {
 /// every arm ends in the same reconcile. A missing reconcile is the classic
 /// bug here: focus moves, the strip repaints, and the terminal keeps streaming
 /// the previous session.
-pub(crate) fn on_key(
-    action: KeyAction,
-    bridge: Bridge,
-    mut st: Signal<UiState>,
-    attached: Signal<Option<SessionId>>,
-    opts: Options,
-    pending_terminate: Signal<Vec<SessionId>>,
-    pending_open: Signal<Option<PendingLaunch>>,
-) {
+pub(crate) fn on_key(cx: &Rc<Ctx>, action: KeyAction) {
     match action {
-        KeyAction::NextTab => st.write().cycle(1),
-        KeyAction::PrevTab => st.write().cycle(-1),
-        KeyAction::SelectTab(i) => st.write().focus_index(i),
+        KeyAction::NextTab => cx.edit(|st| st.cycle(1)),
+        KeyAction::PrevTab => cx.edit(|st| st.cycle(-1)),
+        KeyAction::SelectTab(i) => cx.edit(|st| st.focus_index(i)),
         KeyAction::CloseTab => {
-            let focused = st.peek().window.focused;
-            if let Some(id) = focused {
-                st.write().close_tab(id);
+            if let Some(id) = cx.peek(|st| st.window.focused) {
+                cx.edit(|st| st.close_tab(id));
             }
         }
         // Shared with the row's context menu, so the keyboard and the pointer
-        // cannot drift apart. `focused` is peeked into a local BEFORE the
-        // match: a scrutinee's temporary lives to the end of the match, and an
-        // `st.write()` inside an arm while that read guard is still live
-        // panics. CloseSession below is written the same way for the same
-        // reason.
-        KeyAction::DuplicateSession => {
-            let focused = st.peek().window.focused;
-            match focused {
-                Some(id) => duplicate_session(bridge, st, id),
-                None => {
-                    st.write().window.flash =
-                        Some(Flash::notice("Focus a session before duplicating it."))
-                }
-            }
-        }
+        // cannot drift apart.
+        KeyAction::DuplicateSession => match cx.peek(|st| st.window.focused) {
+            Some(id) => duplicate_session(cx, id),
+            None => cx.flash(Flash::notice("Focus a session before duplicating it.")),
+        },
         KeyAction::ToggleSidebar => {
-            let mut w = st.write();
-            w.window.sidebar_collapsed = !w.window.sidebar_collapsed;
+            cx.edit(|st| st.window.sidebar_collapsed = !st.window.sidebar_collapsed);
         }
         KeyAction::FocusSearch => {
-            // Expanding first: focusing a field inside a 48px rail that hides
-            // the input would put the caret nowhere.
-            st.write().window.sidebar_collapsed = false;
-            bridge.focus_ui("#rg-filter".to_string());
+            // Expanding first: focusing a field inside a collapsed rail that
+            // hides the input would put the caret nowhere.
+            cx.edit(|st| st.window.sidebar_collapsed = false);
+            cx.shell.focus("rg-filter");
         }
-        KeyAction::OpenSearch => toggle_layer(st, Layer::Search),
+        KeyAction::OpenSearch => toggle_layer(cx, Layer::Search),
         KeyAction::FocusSidebar => {
-            st.write().window.sidebar_collapsed = false;
+            cx.edit(|st| st.window.sidebar_collapsed = false);
             let model_clock = tick().model;
-            let target = st
-                .peek()
-                .window
-                .focused
-                .or_else(|| st.peek().visible_ids(model_clock).first().copied());
-            let selector = match target {
-                Some(id) => format!("#{}", ui::sidebar::row_id(id)),
-                // No rows to land on. Focusing the list container still moves
-                // the caret out of the terminal, which is the point.
-                None => "#rg-sidebar-body".to_string(),
-            };
-            bridge.focus_ui(selector);
+            let target = cx.peek(|st| {
+                st.window
+                    .focused
+                    .or_else(|| st.visible_ids(model_clock).first().copied())
+            });
+            match target {
+                Some(id) => cx.shell.focus(&ui::sidebar::row_id(id)),
+                // No rows to land on. Focusing the list itself still moves the
+                // caret out of the terminal, which is the point.
+                None => cx.shell.focus("rg-sidebar-body"),
+            }
         }
-        KeyAction::NewSession => open_new_session(st, None),
-        KeyAction::LaunchPreset(id) => launch_preset(bridge, st, pending_open, id),
+        KeyAction::NewSession => open_new_session(cx, None),
+        KeyAction::LaunchPreset(id) => launch_preset(cx, id),
         KeyAction::RenameSession => {
-            let seed = st
-                .peek()
-                .window
-                .focused
-                .and_then(|id| st.peek().session(id).map(|s| (id, s.title.clone())));
+            let seed = cx.peek(|st| {
+                st.window
+                    .focused
+                    .and_then(|id| st.session(id).map(|s| (id, s.title.clone())))
+            });
             match seed {
-                Some((session, title)) if st.peek().server_ready() => {
-                    st.write().window.layer = Layer::Rename(RenameSeed { session, title });
+                Some((session, title)) if cx.peek(UiState::server_ready) => {
+                    cx.edit(|st| st.window.layer = Layer::Rename(RenameSeed { session, title }));
                 }
-                Some(_) => {
-                    st.write().window.flash = Some(Flash::notice(
-                        "Renaming needs the daemon; this window is not connected.",
-                    ));
-                }
-                None => {
-                    st.write().window.flash =
-                        Some(Flash::notice("Focus a session before renaming it."));
-                }
+                Some(_) => cx.flash(Flash::notice(
+                    "Renaming needs the daemon; this window is not connected.",
+                )),
+                None => cx.flash(Flash::notice("Focus a session before renaming it.")),
             }
         }
-        KeyAction::CloseSession => {
-            let focused = st.peek().window.focused;
-            match focused {
-                Some(id) => request_terminate(bridge, st, &[id], opts, pending_terminate),
-                None => {
-                    st.write().window.flash =
-                        Some(Flash::notice("No session is focused, so nothing to close."))
-                }
-            }
-        }
-        KeyAction::NextAttention => jump_to_attention(bridge, st, Direction::Next),
-        KeyAction::PrevAttention => jump_to_attention(bridge, st, Direction::Previous),
-        KeyAction::NextRow => step_rows(bridge, st, Direction::Next, false),
-        KeyAction::PrevRow => step_rows(bridge, st, Direction::Previous, false),
-        KeyAction::ExtendDown => step_rows(bridge, st, Direction::Next, true),
-        KeyAction::ExtendUp => step_rows(bridge, st, Direction::Previous, true),
+        KeyAction::CloseSession => match cx.peek(|st| st.window.focused) {
+            Some(id) => request_terminate(cx, &[id]),
+            None => cx.flash(Flash::notice("No session is focused, so nothing to close.")),
+        },
+        KeyAction::NextAttention => jump_to_attention(cx, Direction::Next),
+        KeyAction::PrevAttention => jump_to_attention(cx, Direction::Previous),
+        KeyAction::NextRow => step_rows(cx, Direction::Next, false),
+        KeyAction::PrevRow => step_rows(cx, Direction::Previous, false),
+        KeyAction::ExtendDown => step_rows(cx, Direction::Next, true),
+        KeyAction::ExtendUp => step_rows(cx, Direction::Previous, true),
         KeyAction::SelectAllRows => {
-            st.write().select_all_visible(tick().model);
+            let at = tick().model;
+            cx.edit(|st| st.select_all_visible(at));
         }
-        KeyAction::ToggleShortcuts => toggle_layer(st, Layer::Shortcuts),
-        KeyAction::Dismiss => dismiss(st),
+        KeyAction::ToggleShortcuts => toggle_layer(cx, Layer::Shortcuts),
+        KeyAction::Dismiss => dismiss(cx),
     }
-    reconcile(bridge, st, attached, opts);
+    reconcile(cx);
 }
 
 /// Focus the next or previous session that wants the operator.
@@ -578,25 +527,24 @@ pub(crate) fn on_key(
 /// fold with no scroll is indistinguishable from the shortcut doing nothing.
 /// An empty queue says so rather than silently no-opping, which is the same
 /// failure in a different disguise.
-pub(crate) fn jump_to_attention(bridge: Bridge, mut st: Signal<UiState>, direction: Direction) {
+pub(crate) fn jump_to_attention(cx: &Rc<Ctx>, direction: Direction) {
     let tick = tick();
-    let target = st.peek().attention_target(tick.model, direction);
+    let target = cx.peek(|st| st.attention_target(tick.model, direction));
     let Some(id) = target else {
-        let waiting = st.peek().attention_count(tick.model);
-        st.write().window.flash = Some(Flash::notice(if waiting == 0 {
+        let waiting = cx.peek(|st| st.attention_count(tick.model));
+        cx.flash(Flash::notice(if waiting == 0 {
             "No session needs you right now.".to_string()
         } else {
             format!("{waiting} session needs you, and you are already on it.")
         }));
         return;
     };
-    {
-        let mut w = st.write();
-        w.window.sidebar_collapsed = false;
-        w.reveal(id, tick.model);
-        w.open(id, tick.now_ms);
-    }
-    bridge.focus_ui(format!("#{}", ui::sidebar::row_id(id)));
+    cx.edit(|st| {
+        st.window.sidebar_collapsed = false;
+        st.reveal(id, tick.model);
+        st.open(id, tick.now_ms);
+    });
+    cx.shell.focus(&ui::sidebar::row_id(id));
 }
 
 /// Move focus one row through the visible list, optionally extending the
@@ -606,26 +554,20 @@ pub(crate) fn jump_to_attention(bridge: Bridge, mut st: Signal<UiState>, directi
 /// bottom of a twenty-row list must stop, not spin back to the top: this is
 /// list traversal, not a queue, and the queue has its own key.
 ///
-/// Always asks the shell to scroll the row into view. Focus moving to a row
-/// below the fold with no scroll is indistinguishable from the key doing
-/// nothing, which is defect 7's other half.
-pub(crate) fn step_rows(
-    bridge: Bridge,
-    mut st: Signal<UiState>,
-    direction: Direction,
-    extend: bool,
-) {
+/// Always asks the shell to move focus to the row, because focus landing on a
+/// row below the fold is what scrolls it into view. A traversal with no scroll
+/// is indistinguishable from the key doing nothing.
+pub(crate) fn step_rows(cx: &Rc<Ctx>, direction: Direction, extend: bool) {
     let model_clock = tick().model;
-    let Some(id) = st.peek().step_target(model_clock, direction) else {
+    let Some(id) = cx.peek(|st| st.step_target(model_clock, direction)) else {
         return;
     };
-    {
-        let mut w = st.write();
+    cx.edit(|st| {
         // Selection is instant and never waits on the daemon: stepping through
         // the list must not attach and detach a PTY per keypress. The focused
         // row changes only on a plain step, and even then the terminal follows
         // through the normal reconcile below.
-        w.click_row(
+        st.click_row(
             id,
             if extend {
                 state::Click::Range
@@ -635,8 +577,8 @@ pub(crate) fn step_rows(
             model_clock,
         );
         if !extend {
-            w.window.focused = Some(id);
+            st.window.focused = Some(id);
         }
-    }
-    bridge.focus_ui(format!("#{}", ui::sidebar::row_id(id)));
+    });
+    cx.shell.focus(&ui::sidebar::row_id(id));
 }

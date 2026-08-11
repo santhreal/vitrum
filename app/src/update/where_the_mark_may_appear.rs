@@ -24,7 +24,7 @@ const UI_SOURCES: &[(&str, &str)] = &[
     ("ui/terminal.rs", include_str!("../ui/terminal.rs")),
     ("ui/titlebar.rs", include_str!("../ui/titlebar.rs")),
     ("ui/workspaces.rs", include_str!("../ui/workspaces.rs")),
-    ("app.css", include_str!("../app.css")),
+    ("assets/shell.css", include_str!("../../assets/shell.css")),
 ];
 
 /// Ways the mark could get into a window.

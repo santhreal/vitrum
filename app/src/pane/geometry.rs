@@ -71,6 +71,7 @@ impl PaneRect {
     /// A zero axis is not a small pane, it is a pane that is not on screen:
     /// the widget is unmapped, or the shell is mid-layout. Configuring a
     /// swapchain to it is a validation error on every backend.
+    #[cfg(test)]
     pub(crate) const fn is_paintable(self) -> bool {
         self.width > 0 && self.height > 0
     }
@@ -138,6 +139,7 @@ const fn clamp_axis(cells: u32, min: u16) -> u16 {
 /// chrome all give zero rather than a garbage count or a panic: a caller
 /// measuring a widget that is not laid out yet gets a number that clamps to
 /// the floor instead of a grid nobody can render.
+#[cfg(test)]
 pub(crate) fn cells_across(box_px: f64, chrome_px: f64, cell_px: f64) -> u32 {
     if !(cell_px > 0.0) || !box_px.is_finite() || !chrome_px.is_finite() {
         return 0;
@@ -151,6 +153,7 @@ pub(crate) fn cells_across(box_px: f64, chrome_px: f64, cell_px: f64) -> u32 {
 }
 
 /// The grid a box can show, chrome and floors applied.
+#[cfg(test)]
 pub(crate) fn pane_grid(
     box_w: f64,
     box_h: f64,

@@ -2,7 +2,7 @@
 //!
 //! These check three things a workflow file can get wrong in a way that looks
 //! like a broken change rather than a broken pipeline: a Linux job that does
-//! not install the system webview fails to link and blames the diff, a job
+//! not install the system libraries fails to link and blames the diff, a job
 //! with no timeout holds a runner for six hours, and a workflow with no
 //! concurrency group starts a fresh matrix for every push to a branch while
 //! the superseded ones keep the runners the new one is queued behind. A queued
@@ -12,13 +12,14 @@
 //! live. The alternative is discovering each of them once per rewrite, on a
 //! contributor's pull request.
 
-/// Every workflow that builds this workspace on Linux installs the webview.
+/// Every workflow that builds this workspace on Linux installs the GTK
+/// development packages.
 ///
 /// Named through the one script rather than four copies of an apt line, so
 /// adding a package is one edit. A job that misses it fails at link time with
-/// an error about `webkit2gtk` that says nothing about the cause.
+/// an error about `gtk+-3.0` that says nothing about the cause.
 #[test]
-fn every_linux_build_job_installs_the_system_webview() {
+fn every_linux_build_job_installs_the_system_dependencies() {
     for (name, text) in workflows() {
         let builds = text.contains("cargo build")
             || text.contains("cargo test")
@@ -28,14 +29,14 @@ fn every_linux_build_job_installs_the_system_webview() {
             continue;
         }
         assert!(
-            text.contains("./.github/system-webview.sh"),
-            "{name} builds this workspace but never installs the system webview, \
-             so its Linux job cannot link the client"
+            text.contains("./.github/system-deps.sh"),
+            "{name} builds this workspace but never installs the system \
+             dependencies, so its Linux job cannot link the client"
         );
         assert!(
-            !text.contains("libwebkit2gtk-4.1-dev"),
-            "{name} names the webview packages itself; that list lives in \
-             .github/system-webview.sh so it is changed in one place"
+            !text.contains("libgtk-3-dev"),
+            "{name} names the GTK packages itself; that list lives in \
+             .github/system-deps.sh so it is changed in one place"
         );
     }
 }
@@ -43,7 +44,7 @@ fn every_linux_build_job_installs_the_system_webview() {
 /// Whether a workflow runs anything on Linux.
 ///
 /// A workflow that builds only on macOS and Windows has nothing to link
-/// WebKitGTK into, and requiring the install script there would be requiring an
+/// GTK into, and requiring the install script there would be requiring an
 /// apt call on a mac. `vitrum` is the label of the self-hosted Linux runner, so
 /// it names a Linux job exactly as `ubuntu-latest` does; miss it and the guard
 /// above stops covering the workflow every pull request actually runs.
@@ -749,25 +750,29 @@ fn published_targets() -> Vec<String> {
     targets
 }
 
-/// The workflow that pushes a release tag hands that tag to the one that
-/// builds it.
+/// Every workflow a release tag would have started is started by the cut.
 ///
 /// WHY: this repository intends ten or more releases a day, which only works
 /// while one dispatch is the whole operation. It is one because of a link
 /// nothing else in the pipeline states: a tag pushed with the workflow token
-/// starts no workflow, by GitHub's own rule against a run triggering a run, so
-/// `release.yml` is asked for by name with the tag as an input. Delete that
-/// step and the cut still succeeds. It commits, it tags, it pushes, it reports
-/// green, and no archive is ever built for the tag it published, which is the
-/// same end state as the v0.1.0 release that carries no assets.
+/// starts no workflow, by GitHub's own rule against a run triggering a run. A
+/// tag pushed by hand starts every workflow whose triggers name `v*`; a tag
+/// pushed by the cut starts none of them, so each one is asked for by name.
 ///
-/// The two ends are found rather than named. The cutting workflow is whichever
-/// one pushes a tag, which [`one_script_cuts_a_release`] has already
-/// established is exactly one, and the building workflow is whichever file
-/// that one dispatches. Renaming either file keeps this true; dropping the
-/// link between them does not.
+/// Both halves of that have already shipped as defects. `release.yml` was
+/// dispatched with `gh workflow list`, a command that succeeds and starts
+/// nothing, and the tag it published carries no archives. `publish.yml` was
+/// never dispatched at all, and six releases went by with no crate reaching
+/// crates.io, because the workflow that would have published them only runs
+/// on the push nobody makes any more.
+///
+/// The set is derived rather than listed: a new workflow that triggers on a
+/// tag is red here until somebody either dispatches it from the cut or writes
+/// down why the cut does not owe it. That is the property, because the way
+/// this breaks is a workflow being added to the tag trigger and to nothing
+/// else.
 #[test]
-fn a_cut_hands_the_tag_to_the_workflow_that_builds_it() {
+fn a_cut_starts_every_workflow_a_tag_push_would() {
     let all = workflows();
     let (cutter, body) = all
         .iter()
@@ -778,44 +783,95 @@ fn a_cut_hands_the_tag_to_the_workflow_that_builds_it() {
         })
         .expect("one workflow pushes a release tag");
 
-    let dispatched = body
+    let dispatched: Vec<String> = body
         .split("gh workflow run ")
         .skip(1)
         .filter_map(|rest| rest.split_whitespace().next())
         .map(str::to_string)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        dispatched.len(),
-        1,
-        "{cutter} pushes a release tag and dispatches {dispatched:?}. A tag \
-         pushed by a workflow token starts nothing, so exactly one dispatch is \
-         what turns a cut into a release; none means the tag is never built, \
-         and two means two builds race for the same release."
-    );
-    let built = &dispatched[0];
+        .collect();
 
-    let (_, target) = all
-        .iter()
-        .find(|(name, _)| name == built)
-        .unwrap_or_else(|| {
-            panic!(
-                "{cutter} dispatches {built}, which is not a workflow in this \
-                 repository. `gh workflow run` on a name that does not resolve \
-                 fails after the tag has already been pushed."
-            )
-        });
+    for built in &dispatched {
+        let (_, target) = all
+            .iter()
+            .find(|(name, _)| name == built)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{cutter} dispatches {built}, which is not a workflow in this \
+                     repository. `gh workflow run` on a name that does not resolve \
+                     fails after the tag has already been pushed."
+                )
+            });
+        assert!(
+            target.contains("workflow_dispatch:") && instructions(target).contains("tag:"),
+            "{built} takes no `tag` input, so the tag {cutter} just pushed cannot \
+             be handed to it and the dispatch builds whatever main is at instead"
+        );
+    }
 
-    let target_body = instructions(target);
+    for (name, text) in &all {
+        if name == cutter || !triggers_on_a_release_tag(text) {
+            continue;
+        }
+        // The one recorded exemption, and the reason it is one. `ci-green.sh`
+        // refuses to cut a commit `platforms` has not passed, and the release
+        // commit adds version literals and a changelog section to that commit
+        // and nothing a compiler reads. Dispatching it would spend a full
+        // macOS and Windows matrix per cut to rebuild an answer already in
+        // hand.
+        if name == "platforms.yml" {
+            assert!(
+                instructions(&workflow("cut.yml")).contains("ci-green.sh"),
+                "the cut no longer requires platforms.yml green on the commit \
+                 being cut, and it does not dispatch platforms.yml either, so \
+                 nothing checks the shipped platforms for a release"
+            );
+            continue;
+        }
+        assert!(
+            dispatched.contains(name),
+            "{name} runs on a `v*` tag push and {cutter} does not dispatch it. \
+             A tag pushed by a workflow token starts nothing, so {name} simply \
+             never runs for a release cut here: it goes on looking healthy \
+             because the last hand-pushed tag was green. Dispatch it from \
+             {cutter}, or record here why a cut does not owe it."
+        );
+    }
+
     assert!(
-        target.contains("workflow_dispatch:") && target.contains("tag:"),
-        "{built} takes no `tag` input, so the tag {cutter} just pushed cannot \
-         be handed to it and the dispatch builds whatever main is at instead"
+        dispatched.iter().any(|name| {
+            let text = workflow(name);
+            text.contains("gh release edit") || text.contains("gh release create")
+        }),
+        "{cutter} dispatches {dispatched:?} and none of them touches a release, \
+         so a cut ends with a tag and no assets"
     );
-    assert!(
-        target_body.contains("gh release edit") || target_body.contains("gh release create"),
-        "{built} is what {cutter} dispatches to publish a release and it never \
-         touches a release, so a cut ends with a tag and no assets"
-    );
+}
+
+/// Whether a push of a `v*` tag starts this workflow.
+fn triggers_on_a_release_tag(text: &str) -> bool {
+    let triggers: String = instructions(text)
+        .lines()
+        .skip_while(|line| !line.starts_with("on:"))
+        .skip(1)
+        .take_while(|line| line.starts_with(' ') || line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Some((_, after)) = triggers.split_once("push:") else {
+        return false;
+    };
+    after
+        .lines()
+        .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
+        .any(|line| line.trim_start().starts_with("tags:") && line.contains("v*"))
+}
+
+/// One workflow's text, by file name.
+fn workflow(name: &str) -> String {
+    workflows()
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("{name} is a workflow in this repository"))
+        .1
 }
 
 /// Every channel a release publishes on is exercised by the install workflow.
@@ -883,4 +939,174 @@ fn every_release_channel_is_installed_by_something() {
              ever downloads"
         );
     }
+}
+
+/// No release step decides anything from the exit status of a pipeline.
+///
+/// WHY: a `run:` block with no `shell:` key runs under `bash -e`, which is
+/// `set -e` without `set -o pipefail`. The status of `a | b` is then `b`'s
+/// alone, and `a` can fail into it unnoticed. `publish.yml` read
+/// `if cargo publish -p "$c" 2>&1 | tee /tmp/out; then echo "published $c"`,
+/// and `tee` succeeds for every input it can write: six releases reported
+/// thirteen crates published each, crates.io received none of them, and every
+/// run was green.
+///
+/// The rule is narrow on purpose. A pipeline whose result is data — a `grep`
+/// feeding a variable, a `sort` writing a file — is checked by whatever reads
+/// the data. What cannot be allowed is a pipeline *as a condition*, where a
+/// masked status is a decision taken on a lie. Either name `shell: bash`,
+/// which GitHub runs with `pipefail`, or do not put a pipeline in the test.
+#[test]
+fn no_step_takes_a_decision_from_a_masked_exit_status() {
+    for (name, text) in workflows() {
+        for step in run_steps(&text) {
+            if step.shell.as_deref() == Some("bash") || step.shell.as_deref() == Some("pwsh") {
+                continue;
+            }
+            for line in step.body.lines() {
+                let line = line.trim();
+                let condition = line.strip_prefix("if ").or_else(|| line.strip_prefix("while "));
+                let Some(condition) = condition else { continue };
+                // `[ ... ]` and `[[ ... ]]` are one command, and a `|` inside
+                // one is not a pipeline. A bare command followed by `|` is.
+                if condition.starts_with('[') || !condition.contains('|') {
+                    continue;
+                }
+                if condition.contains("||") && !condition.replace("||", "").contains('|') {
+                    continue;
+                }
+                panic!(
+                    "{name}, step `{}`, decides on a pipeline without pipefail:\n\
+                     \x20    {line}\n\
+                     The default shell for a `run:` block is `bash -e`, so the \
+                     status tested is the last command's and the first one can \
+                     fail silently. Add `shell: bash` to the step, which GitHub \
+                     runs with `-o pipefail`, or take the pipeline out of the \
+                     condition.",
+                    step.name
+                );
+            }
+        }
+    }
+}
+
+/// The cut asks the release it just published whether it holds anything.
+///
+/// WHY: `v0.1.0` was tagged, has a release page, and carries no assets. A
+/// matrix leg asked for a runner label GitHub had retired, so it queued
+/// forever, the publish job waited on it forever, and the tag was left naming
+/// a release nobody can install. Nothing in the cut noticed, because the cut
+/// was finished the moment the tag was pushed.
+///
+/// A build being green is not the property. The property is that after the
+/// build, something downloads what the release actually holds and compares it
+/// against what an installer will ask for, and that the cut's verdict depends
+/// on that answer. `tools/release/published.sh` is that something: it fails on
+/// `v0.1.0` today.
+#[test]
+fn a_cut_verifies_the_release_it_published() {
+    let cut = instructions(&workflow("cut.yml"));
+
+    assert!(
+        cut.contains("published.sh"),
+        "cut.yml pushes a tag, asks for a build and never asks what the \
+         release ended up holding. A dispatch that starts nothing and a matrix \
+         leg that queues forever both leave a tag naming an empty release, and \
+         both look exactly like a successful cut from here."
+    );
+    assert!(
+        cut.contains("await-run.sh"),
+        "cut.yml dispatches a workflow and does not wait for it. \
+         `gh workflow run` succeeds when GitHub accepts the request, including \
+         when the request creates no run at all, so the cut reports green \
+         before anything has been built."
+    );
+    assert!(
+        cut.contains("install.sh"),
+        "cut.yml never installs the release it cut. Every other check in the \
+         pipeline asks the pipeline a question; this is the only one that asks \
+         the question a person asks."
+    );
+
+    // And the verifier has to be one that fails, rather than a script that
+    // prints and exits zero.
+    let script = std::fs::read_to_string(repo_root().join("tools/release/published.sh"))
+        .expect("tools/release/published.sh is what the cut runs");
+    assert!(
+        script.contains("has no release for"),
+        "tools/release/published.sh no longer refuses a tag with no release \
+         behind it, which is the exact shape v0.1.0 has"
+    );
+    assert!(
+        script.contains("carries no archive for"),
+        "tools/release/published.sh no longer refuses a release that is \
+         missing a published target's archive"
+    );
+}
+
+/// A `run:` step, with the shell it was given.
+struct RunStep {
+    name: String,
+    shell: Option<String>,
+    body: String,
+}
+
+/// Every `run:` step in a workflow, as its name, its shell and its body.
+///
+/// Read from the text rather than from a YAML tree because every other guard
+/// here reads the text, and a step's shell is the line beside it: `shell:` and
+/// `run:` sit at the same indentation under one `-` item.
+fn run_steps(text: &str) -> Vec<RunStep> {
+    let mut steps = Vec::new();
+    let mut name = String::new();
+    let mut shell = None;
+    let mut body = String::new();
+    let mut depth = 0;
+    let mut in_run = false;
+
+    let flush = |steps: &mut Vec<RunStep>, name: &mut String, shell: &mut Option<String>, body: &mut String| {
+        if !body.is_empty() {
+            steps.push(RunStep {
+                name: std::mem::take(name),
+                shell: shell.take(),
+                body: std::mem::take(body),
+            });
+        }
+    };
+
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim_start();
+        if in_run {
+            if line.trim().is_empty() || indent > depth {
+                body.push_str(line);
+                body.push('\n');
+                continue;
+            }
+            in_run = false;
+        }
+        if trimmed.starts_with("- name:") || trimmed.starts_with("- uses:") {
+            flush(&mut steps, &mut name, &mut shell, &mut body);
+            name = trimmed.trim_start_matches("- name:").trim().to_string();
+            shell = None;
+        } else if let Some(rest) = trimmed.strip_prefix("shell:") {
+            shell = Some(rest.trim().to_string());
+        } else if trimmed == "run: |" || trimmed.starts_with("run: |") {
+            depth = indent;
+            in_run = true;
+        } else if let Some(rest) = trimmed.strip_prefix("run:") {
+            body.push_str(rest);
+            body.push('\n');
+        }
+    }
+    flush(&mut steps, &mut name, &mut shell, &mut body);
+    steps
+}
+
+/// The repository root, from the app crate's manifest directory.
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the app crate has a parent directory")
+        .to_path_buf()
 }

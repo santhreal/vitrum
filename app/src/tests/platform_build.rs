@@ -4,7 +4,8 @@
 //! was switched off to make the workspace compile, which it did, and then 43
 //! renderer tests failed on a real Windows runner because D3D12's WARP device
 //! is the only adapter a GPU-less Windows VM has. Turning it back on needs
-//! `Cargo.lock` to hand gpu-allocator the same `windows` crate wgpu-hal uses.
+//! `Cargo.lock` to hand gpu-allocator the same `windows` crate wgpu-hal uses,
+//! which stays true only while the graph locks exactly one of them.
 //!
 //! The Windows cross check in CI catches a regression of either within about a
 //! minute, and these say out loud what it would be failing about.
@@ -36,44 +37,58 @@ fn the_renderer_keeps_every_backend_the_default_set_has() {
 
 /// gpu-allocator and wgpu-hal name Direct3D types through the same `windows`.
 ///
-/// wgpu-hal requires `windows` 0.62 and `tao` requires 0.61, so both are in
-/// the graph and neither can move. gpu-allocator accepts `>=0.53, <=0.62`, and
-/// cargo would rather reuse a node than add one, so left alone it wires
-/// gpu-allocator to 0.61 and `D3D12_RESOURCE_DESC` stops being one type across
-/// the call between them. `Cargo.lock` points that edge at 0.62 instead.
+/// wgpu-hal requires `windows` 0.62 and gpu-allocator accepts
+/// `>=0.53, <=0.62`. While a second consumer pinned an older one, cargo would
+/// rather reuse a node than add one, so it wired gpu-allocator to that older
+/// node and `D3D12_RESOURCE_DESC` stopped being one type across the call
+/// between them. The webview brought that second consumer in; nothing does
+/// now, so the graph locks one `windows` and the two agree by construction.
 ///
-/// Compared against wgpu-hal's own edge rather than a version written down
-/// here, so this keeps holding when wgpu moves to a newer `windows`.
+/// Asserted as a count rather than as a version, because the defect is a
+/// SECOND node existing at all. A lock with one writes the edge unversioned,
+/// so a version comparison cannot see the difference between agreement and a
+/// split that has not happened yet.
 #[test]
-fn the_lock_gives_gpu_allocator_the_windows_wgpu_hal_uses() {
+fn the_lock_holds_one_windows_crate_for_every_direct3d_consumer() {
     let lock = read_repo_file("Cargo.lock");
-    let consumer = windows_edge(&lock, "wgpu-hal");
-    let allocator = windows_edge(&lock, "gpu-allocator");
+    let versions = locked_versions(&lock, "windows");
     assert_eq!(
-        allocator, consumer,
-        "gpu-allocator is built against windows {allocator} while wgpu-hal \
-         uses {consumer}, so the Direct3D handles they pass between them are \
-         different types and dx12 does not compile"
+        versions.len(),
+        1,
+        "Cargo.lock holds {} `windows` packages ({versions:?}); cargo wires \
+         gpu-allocator to whichever node it can reuse, so the Direct3D handles \
+         it passes wgpu-hal become a different type and dx12 does not compile. \
+         Pin gpu-allocator's edge at the one wgpu-hal uses.",
+        versions.len()
     );
+    for consumer in ["wgpu-hal", "gpu-allocator"] {
+        assert!(
+            package_block(&lock, consumer).contains("\n \"windows\""),
+            "{consumer} no longer depends on `windows` at all, so this guard \
+             has stopped covering the edge it was written for"
+        );
+    }
 }
 
-/// The `windows` version a locked package is built against.
-fn windows_edge(lock: &str, package: &str) -> String {
+/// Every locked version of `package`, in lock order.
+fn locked_versions(lock: &str, package: &str) -> Vec<String> {
+    lock.split("[[package]]\n")
+        .filter_map(|block| block.strip_prefix(&format!("name = \"{package}\"\nversion = \"")))
+        .filter_map(|rest| rest.split_once('"'))
+        .map(|(version, _)| version.to_string())
+        .collect()
+}
+
+/// The `[[package]]` block for `package`, up to the next one.
+fn package_block<'a>(lock: &'a str, package: &str) -> &'a str {
     let start = lock
         .find(&format!("[[package]]\nname = \"{package}\"\n"))
         .unwrap_or_else(|| panic!("{package} is not in Cargo.lock"));
     let rest = &lock[start..];
-    // A package block ends where the next one begins, or at the end of file.
     let end = rest[1..]
         .find("\n[[package]]")
-        .map(|at| at + 1)
-        .unwrap_or(rest.len());
-    rest[..end]
-        .lines()
-        .filter_map(|line| line.trim().trim_matches(['"', ','].as_slice()).strip_prefix("windows "))
-        .map(str::to_string)
-        .next()
-        .unwrap_or_else(|| panic!("{package} has no `windows` dependency in Cargo.lock"))
+        .map_or(rest.len(), |at| at + 1);
+    &rest[..end]
 }
 
 /// A file read from the repository root.

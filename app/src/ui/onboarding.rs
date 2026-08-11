@@ -50,8 +50,6 @@
 //! screen until they dismiss it, and the dismissal reports which way it went
 //! so the caller can persist it.
 
-use dioxus::prelude::*;
-
 use crate::keymap::{CHORDS, KeyAction};
 use crate::launch::Detected;
 
@@ -168,15 +166,6 @@ pub struct Page {
     pub title: String,
     pub blurb: String,
     pub rows: Vec<Step>,
-}
-
-/// How the operator left.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    /// Read it and pressed the primary control.
-    Finished,
-    /// Dismissed it. Persisted the same way: it does not come back.
-    Skipped,
 }
 
 /// The chord that fires `action`, rendered the way the shortcut overlay
@@ -517,114 +506,8 @@ pub fn finish_label(machine: &Machine) -> &'static str {
 // The component
 // ---------------------------------------------------------------------------
 
-#[derive(Props, Clone, PartialEq)]
-pub struct OnboardingProps {
-    /// What the caller read off this machine.
-    pub machine: Machine,
-    /// How the operator left. Persisting it is the caller's job: this surface
-    /// holds no profile handle and writes no file.
-    pub on_close: EventHandler<Outcome>,
-}
-
-/// The first-launch walkthrough.
-///
-/// Every string here comes from [`pages`] and [`finish_label`], so there is
-/// nothing to assert against a renderer that is not already asserted against
-/// those. The only state it owns is which page is showing.
-#[component]
-pub fn Onboarding(props: OnboardingProps) -> Element {
-    let machine = props.machine.clone();
-    let deck = pages(&machine);
-    let last = deck.len().saturating_sub(1);
-    let finish = finish_label(&machine);
-
-    let mut at = use_signal(|| 0usize);
-    let index = (at()).min(last);
-    let page = &deck[index];
-    let on_last = index == last;
-
-    rsx! {
-        div {
-            class: "rg-layer rg-layer--dim",
-            onclick: move |_| props.on_close.call(Outcome::Skipped),
-            div {
-                class: "rg-sheet rg-sheet--onboarding",
-                role: "dialog",
-                aria_label: "Welcome to vitrum",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "rg-sheet__head",
-                    span { class: "rg-sheet__title", "{page.title}" }
-                    button {
-                        class: "rg-btn-inline",
-                        r#type: "button",
-                        onclick: move |_| props.on_close.call(Outcome::Skipped),
-                        "Skip"
-                    }
-                }
-
-                div { class: "rg-sheet__body",
-                    p { class: "rg-onboard__intro", "{page.blurb}" }
-                    ol { class: "rg-onboard__steps",
-                        for step in page.rows.iter() {
-                            li {
-                                class: match step.state {
-                                    StepState::Done => "rg-onboard__step rg-onboard__step--done",
-                                    StepState::Todo => "rg-onboard__step rg-onboard__step--todo",
-                                    StepState::Info => "rg-onboard__step rg-onboard__step--info",
-                                },
-                                key: "{step.title}",
-                                span { class: "rg-onboard__step-title", "{step.title}" }
-                                span { class: "rg-onboard__step-body", "{step.body}" }
-                            }
-                        }
-                    }
-                }
-
-                div { class: "rg-sheet__foot rg-onboard__foot",
-                    // The position indicator is decorative: the count and the
-                    // position are already announced by the page heading, and
-                    // a screen reader stepping through four dots learns
-                    // nothing from them.
-                    div {
-                        class: "rg-onboard__dots",
-                        aria_hidden: "true",
-                        for (n, p) in deck.iter().enumerate() {
-                            span {
-                                key: "{p.chapter:?}",
-                                class: if n == index {
-                                    "rg-onboard__dot rg-onboard__dot--on"
-                                } else {
-                                    "rg-onboard__dot"
-                                },
-                            }
-                        }
-                    }
-                    if index > 0 {
-                        button {
-                            class: "rg-btn",
-                            r#type: "button",
-                            onclick: move |_| at.set(index.saturating_sub(1)),
-                            "Back"
-                        }
-                    }
-                    button {
-                        class: "rg-btn rg-btn--primary",
-                        r#type: "button",
-                        onclick: move |_| {
-                            if on_last {
-                                props.on_close.call(Outcome::Finished);
-                            } else {
-                                at.set(index + 1);
-                            }
-                        },
-                        if on_last { "{finish}" } else { "Next" }
-                    }
-                }
-            }
-        }
-    }
-}
+/// The first-run sheet itself, built as GTK widgets.
+pub mod native;
 
 #[cfg(test)]
 mod tests {

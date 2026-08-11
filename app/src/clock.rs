@@ -39,9 +39,9 @@ pub fn now() -> TimeFormat {
 /// labels are coarser still. The milliseconds are therefore never visible on
 /// screen — but they were visible to `PartialEq`.
 ///
-/// [`TimeFormat`] is a prop of every session row, so a reading that differs by
-/// one millisecond makes every row's props compare unequal, and Dioxus rebuilds
-/// and re-diffs the entire list. At the stated load of twenty sessions the
+/// [`TimeFormat`] is handed to every session row, so a reading that differs by
+/// one millisecond makes every row's inputs compare unequal and the whole list
+/// is rebuilt. At the stated load of twenty sessions the
 /// daemon pushes twenty `SessionUpdated` a second and exactly one row changes
 /// on each, so the client was rebuilding the whole sidebar twenty times a
 /// second to redraw one row's timestamp.
@@ -206,35 +206,33 @@ mod tests {
     /// closing the indirect case would need machinery worth more than the bug.
     #[test]
     fn the_clock_has_exactly_one_literal_call_site() {
-        let main = include_str!("main.rs");
         assert_eq!(
-            main.matches("clock::now()").count(),
+            include_str!("main.rs").matches("clock::now()").count(),
             1,
             "main.rs must read the render clock exactly once"
         );
         assert_eq!(
-            main.matches("clock::home()").count(),
+            include_str!("shell/run.rs").matches("clock::home()").count(),
             1,
-            "main.rs must read the home directory exactly once"
+            "the shell must read the home directory exactly once"
         );
-        // The MARKUP half only. These names legitimately appear in a test's
-        // own name and prose — `the_home_directory_is_written_...` contains
-        // `home_dir` — and a guard that greps its own test module reports the
-        // documentation as the violation.
+        // The PRODUCTION half only. These names legitimately appear in a
+        // test's own name and prose, and a guard that greps its own test
+        // module reports the documentation as the violation.
         for (name, src) in [
-            ("ui/sidebar.rs", include_str!("ui/sidebar.rs")),
-            ("ui/titlebar.rs", include_str!("ui/titlebar.rs")),
-            ("ui/dialog.rs", include_str!("ui/dialog.rs")),
-            ("ui/terminal.rs", include_str!("ui/terminal.rs")),
-            ("ui/menu.rs", include_str!("ui/menu.rs")),
+            ("ui/sidebar/widgets.rs", include_str!("ui/sidebar/widgets.rs")),
+            ("ui/titlebar/native.rs", include_str!("ui/titlebar/native.rs")),
+            ("ui/dialog/native.rs", include_str!("ui/dialog/native.rs")),
+            ("ui/panebar.rs", include_str!("ui/panebar.rs")),
+            ("ui/menu/native.rs", include_str!("ui/menu/native.rs")),
         ] {
-            let markup = src
+            let code = src
                 .split_once("\n#[cfg(test)]\n")
                 .map_or(src, |(before, _)| before);
             assert!(
-                markup.contains("rsx!"),
-                "{name}: the markup/test split ate the markup, so this guard \
-                 is scanning nothing"
+                code.contains("gtk"),
+                "{name}: the production/test split ate the widgets, so this \
+                 guard is scanning nothing"
             );
             // A CALL, not a bare token: `home_dir` is a substring of
             // `home_directory`, and matching the token alone fires on prose.
@@ -245,8 +243,9 @@ mod tests {
                 "home_dir(",
             ] {
                 assert!(
-                    !markup.contains(banned),
-                    "{name} calls {banned}; it must take the value as a prop instead"
+                    !code.contains(banned),
+                    "{name} calls {banned}; it must take the value as an \
+                     argument instead"
                 );
             }
         }

@@ -906,7 +906,7 @@ mod tests {
         s.sync().expect("sync");
     }
 
-    /// WHY: a pane painted black. One of the two causes
+    /// WHY: a pane can paint black. One of the two causes
     /// is here: a grid built with the renderer's default style and recoloured
     /// afterwards paints its first frame in the wrong colour, and on a window
     /// that opens dark that first frame is black-on-black.
@@ -1768,9 +1768,8 @@ mod tests {
     /// is a cell the renderer never re-uploads. The instance it already holds is
     /// drawn again on every frame, so the wrong content stays on screen until
     /// something unrelated happens to damage that row. That is the whole family
-    /// of static glitches, and none of its members is
-    /// visible from the grid's own state: the grid is correct and the marks are
-    /// not.
+    /// of static glitches, and none of its members is visible from the grid's
+    /// own state: the grid is correct and the marks are not.
     ///
     /// The invariant, checked after every act of every scenario: the frame the
     /// incremental renderer produces is byte for byte the frame a full

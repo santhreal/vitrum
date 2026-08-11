@@ -16,8 +16,6 @@
 //! existed still looks deliberate, and picking an icon is an override rather
 //! than a chore.
 
-use dioxus::prelude::*;
-
 /// One icon: what it is called on disk, what it is called to a person, and
 /// what it draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,97 +237,6 @@ const BY_COMMAND: [(&str, &str); 40] = [
     ("hx", "pencil"),
     ("nano", "pencil"),
 ];
-
-#[derive(Props, Clone, PartialEq)]
-pub struct IconGlyphProps {
-    pub icon: Icon,
-    /// Extra class on the `svg`, so the caller sizes it for its own surface.
-    #[props(default = String::new())]
-    pub class: String,
-}
-
-/// Draw one icon.
-///
-/// `aria-hidden`, always. Every surface that draws one also writes the label
-/// in text or in a `title`, so a screen reader announcing the shape as well
-/// would say the same thing twice.
-#[component]
-pub fn IconGlyph(props: IconGlyphProps) -> Element {
-    rsx! {
-        svg {
-            class: "rg-icon {props.class}",
-            view_box: "0 0 16 16",
-            fill: "none",
-            stroke: "currentColor",
-            stroke_width: "1.25",
-            stroke_linecap: "round",
-            stroke_linejoin: "round",
-            "aria-hidden": "true",
-            path { d: "{props.icon.stroke}" }
-            if !props.icon.fill.is_empty() {
-                path { d: "{props.icon.fill}", fill: "currentColor", stroke: "none" }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-pub struct IconPickerProps {
-    /// The slug currently stored, if any.
-    pub selected: Option<String>,
-    /// The command the entry runs, so the unset state can show what it would
-    /// draw instead of an empty box.
-    pub command_line: String,
-    /// `None` when the operator clears the choice back to the default.
-    pub on_pick: EventHandler<Option<String>>,
-}
-
-/// Choose the icon for a saved command.
-///
-/// A flat grid of every icon plus one Default cell, not a dropdown: the whole
-/// set is fourteen shapes and a menu that hides thirteen of them to save one
-/// row costs a click to learn what the choices even are.
-///
-/// The Default cell draws [`default_for`] rather than a blank, so the operator
-/// can see what they are keeping before they override it.
-#[component]
-pub fn IconPicker(props: IconPickerProps) -> Element {
-    let chosen = props.selected.clone();
-    let implied = default_for(&props.command_line);
-    let unset = chosen.as_deref().and_then(from_slug).is_none();
-
-    rsx! {
-        div { class: "rg-iconpick", role: "radiogroup", aria_label: "Icon",
-            button {
-                class: if unset { "rg-iconpick__cell rg-iconpick__cell--on" } else { "rg-iconpick__cell" },
-                r#type: "button",
-                role: "radio",
-                aria_checked: unset.to_string(),
-                title: "Default ({implied.label})",
-                onclick: move |_| props.on_pick.call(None),
-                IconGlyph { icon: *implied, class: "rg-iconpick__glyph" }
-            }
-            for icon in ALL.iter() {
-                {
-                    let on = chosen.as_deref() == Some(icon.slug);
-                    let slug = icon.slug;
-                    rsx! {
-                        button {
-                            key: "{slug}",
-                            class: if on { "rg-iconpick__cell rg-iconpick__cell--on" } else { "rg-iconpick__cell" },
-                            r#type: "button",
-                            role: "radio",
-                            aria_checked: on.to_string(),
-                            title: "{icon.label}",
-                            onclick: move |_| props.on_pick.call(Some(slug.to_string())),
-                            IconGlyph { icon: *icon, class: "rg-iconpick__glyph" }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// The icon an operator did not choose still has to be the right one.
 #[cfg(test)]

@@ -52,27 +52,32 @@
 //! word. The field submits on Enter, and a switch only re-runs a sweep if the
 //! owner chooses to.
 
-use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use vitrum_fmt::{bytes, count, text};
 use vitrum_proto::{ClientMsg, SearchHit, SessionId};
 
 /// Context lines requested either side of a hit.
 ///
-/// Two. One is not enough to tell a stack frame from its caller, and four
-/// turns a twelve-hit answer into a log viewer that no longer fits the sheet:
-/// at a 20px line box, four either side is a 180px row and three rows fill
-/// the list.
-pub const CONTEXT_LINES: u16 = 2;
+/// A preference, read from the live settings bus on every sweep. The default
+/// is two: one is not enough to tell a stack frame from its caller, and four
+/// turns a twelve-hit answer into a log viewer that no longer fits the sheet.
+/// At a 20px line box, four either side is a 180px row and three rows fill
+/// the list, so a larger budget trades hits on screen for lines around each.
+pub(crate) fn context_lines() -> u16 {
+    crate::state::live::shell_settings().search_context_lines
+}
 
 /// Hit cap for one sweep.
 ///
-/// The daemon rations this per session (`search::fairness_cap`, a quarter of
-/// the budget floored at eight), so 500 is 125 per session once more than one
-/// session is in scope: enough that a chatty agent cannot crowd out a quiet
-/// one, and small enough that the answer is a list a person reads rather than
-/// a file they scroll.
-pub const MAX_HITS: u32 = 500;
+/// A preference, read from the live settings bus on every sweep. The daemon
+/// rations this per session (`search::fairness_cap`, a quarter of the budget
+/// floored at eight), so the default 500 is 125 per session once more than
+/// one session is in scope: enough that a chatty agent cannot crowd out a
+/// quiet one, and small enough that the answer is a list a person reads
+/// rather than a file they scroll.
+pub(crate) fn max_hits() -> u32 {
+    crate::state::live::shell_settings().search_max_hits
+}
 
 /// How much of the swept pattern the summary quotes back.
 ///
@@ -346,7 +351,8 @@ pub fn summary(answer: Option<&Answer>, searching: bool, scope: usize) -> Summar
             class: "rg-search__summary rg-search__summary--truncated",
             text: format!(
                 "First {matches} in {sessions} of {where_}, then the sweep hit its cap of \
-                 {MAX_HITS}. There are more. Swept {swept} so far."
+                 {cap}. There are more. Swept {swept} so far.",
+                cap = max_hits()
             ),
         };
     }
@@ -391,9 +397,9 @@ fn distinct_sessions(hits: &[SearchHit]) -> usize {
 /// sweep.
 ///
 /// Built here rather than at the send site so the caps live beside the UI
-/// that reports them: [`summary`] names `MAX_HITS` when it says the sweep was
-/// truncated, and a send site that chose its own cap would make that sentence
-/// a lie.
+/// that reports them: [`summary`] names the hit cap when it says the sweep
+/// was truncated, and a send site that chose its own cap would make that
+/// sentence a lie.
 ///
 /// An all-whitespace pattern returns `None`. A literal sweep for `" "` would
 /// match nearly every line of every ring, which is 200 MiB of scanning to
@@ -409,8 +415,8 @@ pub fn request(query: &str, options: Options, sessions: Vec<SessionId>) -> Optio
         regex: options.regex,
         case_insensitive: options.case_insensitive,
         whole_word: options.whole_word,
-        context_lines: CONTEXT_LINES,
-        max_hits: MAX_HITS,
+        context_lines: context_lines(),
+        max_hits: max_hits(),
     })
 }
 
@@ -436,213 +442,8 @@ pub fn mark_class(empty: bool) -> &'static str {
     }
 }
 
-#[derive(Props, Clone, PartialEq)]
-pub struct SearchProps {
-    /// What is in the field. Owned by the caller so reopening the layer can
-    /// restore the last query instead of clearing it.
-    pub query: String,
-    pub options: Options,
-    /// The last answer, or `None` when nothing has been swept. The two render
-    /// differently; see [`summary`].
-    pub answer: Option<Answer>,
-    /// True between the send and the answer. A 200 MiB sweep is 84 to 96 ms
-    /// of daemon CPU, which is long enough for "No matches" to flash on
-    /// screen and be read as the answer.
-    pub searching: bool,
-    /// How many sessions the sweep is restricted to, zero for all of them.
-    /// Comes from the sidebar selection at the moment the sweep was sent.
-    pub scope: usize,
-    /// Session titles for the group headings. A session missing here is
-    /// headed by its id rather than left blank.
-    pub titles: Vec<(SessionId, String)>,
-    pub on_query: EventHandler<String>,
-    pub on_toggle: EventHandler<Toggle>,
-    /// Run the sweep. Fired by Enter in the field.
-    pub on_submit: EventHandler<()>,
-    /// Take me to this line: the session, and the byte offset of the matched
-    /// line's first byte in that session's cumulative output.
-    pub on_activate: EventHandler<(SessionId, u64)>,
-    pub on_dismiss: EventHandler<()>,
-}
-
-#[component]
-pub fn Search(props: SearchProps) -> Element {
-    let summary = summary(props.answer.as_ref(), props.searching, props.scope);
-    let groups = match props.answer.as_ref() {
-        Some(answer) => group_by_session(&answer.hits, &props.titles),
-        None => Vec::new(),
-    };
-
-    rsx! {
-        div {
-            class: "rg-layer rg-layer--dim rg-search-layer",
-            onclick: move |_| props.on_dismiss.call(()),
-            div {
-                class: "rg-search",
-                role: "dialog",
-                aria_label: "Search scrollback",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "rg-sheet__head rg-search__head",
-                    span { class: "rg-sheet__title", "Search scrollback" }
-                    // The same control, in the same corner, as the one on
-                    // the shortcuts sheet. It was a private `.rg-search__close`
-                    // that rendered as bare text next to a bordered button two
-                    // sheets away; 21-search.css says what that cost.
-                    button {
-                        class: "rg-btn-inline",
-                        r#type: "button",
-                        onclick: move |_| props.on_dismiss.call(()),
-                        "Close"
-                    }
-                }
-
-                // One element, not a wrapper holding a magnifier and an
-                // input. The placeholder says what the field is and how it
-                // submits, which is what the glyph and the button used to do
-                // between them.
-                input {
-                    class: "rg-search__input",
-                    id: "rg-search-input",
-                    r#type: "text",
-                    placeholder: "Pattern, then Enter",
-                    value: "{props.query}",
-                    // The caret goes here as the layer opens. It has to be done
-                    // on mount rather than by the shell when it handles the
-                    // chord: the element does not exist yet at that point, so a
-                    // focus command issued there finds nothing and the operator
-                    // types into whatever had focus before. Inside a live pane
-                    // that means the pattern is fed to the child process.
-                    onmounted: move |e| {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                        });
-                    },
-                    // Escape is deliberately not handled. The bridge matches
-                    // the shell's chord table on `window` in the capture
-                    // phase and claims it for Dismiss before any handler here
-                    // could run.
-                    oninput: move |e| props.on_query.call(e.value()),
-                    onkeydown: move |e| {
-                        if e.key() == Key::Enter {
-                            props.on_submit.call(());
-                            e.prevent_default();
-                        }
-                    },
-                }
-
-                div { class: "rg-search__opts",
-                    for which in Toggle::ALL {
-                        button {
-                            key: "{which:?}",
-                            class: "{opt_class(props.options.is_on(which))}",
-                            r#type: "button",
-                            aria_pressed: "{props.options.is_on(which)}",
-                            onclick: move |_| props.on_toggle.call(which),
-                            "{which.label()}"
-                        }
-                    }
-                }
-
-                div { class: "{summary.class}", "{summary.text}" }
-
-                if !groups.is_empty() {
-                    div { class: "rg-search__results",
-                        for group in groups.iter() {
-                            div { class: "rg-search__group", key: "{group.session.0}",
-                                div { class: "rg-search__group-head",
-                                    span { class: "rg-search__group-name", "{group.label}" }
-                                    span { class: "rg-search__group-count",
-                                        "{matches_word(group.hits.len() as u64)}"
-                                    }
-                                }
-                                for (index , hit) in group.hits.iter().enumerate() {
-                                    Hit {
-                                        key: "{hit.line_seq}:{index}",
-                                        session: hit.session,
-                                        line_seq: hit.line_seq,
-                                        before: hit.before.iter().map(|l| line_text(l)).collect(),
-                                        split: split_hit(
-                                            &hit.visible,
-                                            hit.match_start,
-                                            hit.match_end,
-                                        ),
-                                        after: hit.after.iter().map(|l| line_text(l)).collect(),
-                                        on_activate: props.on_activate,
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct HitProps {
-    session: SessionId,
-    line_seq: u64,
-    /// The context lines, already decoded.
-    ///
-    /// Decoded by the caller rather than here, and that is the difference
-    /// between this row costing its text and costing its text plus a copy of
-    /// the raw bytes. The props used to be the whole [`SearchHit`], so every
-    /// render of the layer deep-copied `visible` plus every context line of
-    /// every hit, up to [`MAX_HITS`] of them, and then decoded them anyway.
-    /// Nothing in the markup ever wanted the bytes.
-    before: Vec<String>,
-    split: Split,
-    after: Vec<String>,
-    on_activate: EventHandler<(SessionId, u64)>,
-}
-
-/// One matched line with its context.
-///
-/// A `button` holding only phrasing content, so the whole row is one keyboard
-/// stop and one pointer target rather than a div wearing `role="button"` and
-/// a hand-written key handler.
-#[component]
-fn Hit(props: HitProps) -> Element {
-    let split = &props.split;
-    let session = props.session;
-    let line_seq = props.line_seq;
-    let on_activate = props.on_activate;
-
-    rsx! {
-        button {
-            class: "rg-search__hit",
-            r#type: "button",
-            title: "Jump to this line (byte {count::grouped(line_seq)} of this session's output)",
-            onclick: move |_| on_activate.call((session, line_seq)),
-
-            for (index , line) in props.before.iter().enumerate() {
-                span { class: "rg-search__ctx", key: "b{index}", "{line}" }
-            }
-            span { class: "rg-search__line",
-                span { class: "rg-search__pre", "{split.before}" }
-                span { class: "{mark_class(split.empty_mark)}", "{split.matched}" }
-                span { class: "rg-search__post", "{split.after}" }
-            }
-            for (index , line) in props.after.iter().enumerate() {
-                span { class: "rg-search__ctx", key: "a{index}", "{line}" }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
-/// Render smoke tests.
-///
-/// Everything in `search.rs`'s own test module exercises pure functions and
-/// stylesheet text. Nothing there has ever built the markup, so a panic in the
-/// RSX, a bad `key`, or a highlight that is computed correctly and then
-/// dropped on the floor by the markup would all pass 25 green tests.
-///
-/// These render the real component through `dioxus-ssr` and assert on the HTML
-/// that comes out.
-#[cfg(test)]
-mod render;
+/// The sheet itself, built as GTK widgets.
+pub mod native;

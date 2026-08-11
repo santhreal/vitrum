@@ -1,0 +1,67 @@
+/* Every transition the product declares.
+ *
+ * One file, for two reasons. Reduced motion drops it instead of overriding it
+ * with zeroed durations, so there is no state in which a transition exists
+ * with no time to run in. And "does anything in this product loop" is a
+ * question with one place to look: there is no `animation` here, and
+ * `nothing_in_the_sheet_can_loop` refuses one.
+ *
+ * Nothing geometric is transitioned. A width, a height or a padding that
+ * changes over time relayouts the window on every frame it runs, and the
+ * window contains a pty whose size is a function of that layout. Colour,
+ * opacity and the focus ring are the whole vocabulary.
+ *
+ * Values are token placeholders resolved by `app/src/shell/style.rs`,
+ * under the same rule the structural sheet is held to.
+ */
+
+/* Press and hover feedback. This IS the answer to the operator's input, so it
+ * runs at the fast duration: longer and the control feels like it is thinking
+ * about it. */
+.rg-titlebar__action,
+.rg-window-control,
+.rg-sidebar__action,
+.rg-session__close,
+.rg-btn,
+.rg-btn-inline,
+.rg-select,
+.rg-switch,
+.rg-menu__item,
+.rg-settings__tab,
+.rg-wsbar__item,
+.rg-search__hit,
+.rg-launch__dir,
+.rg-recents__row,
+.rg-presets__chip,
+.rg-iconpick {
+  transition: background-color $t-fast$ $ease-standard$,
+              color $t-fast$ $ease-standard$,
+              border-color $t-fast$ $ease-standard$;
+}
+
+/* The focus ring. Same duration as the press it usually follows. */
+.rg-btn:focus,
+.rg-select:focus,
+.rg-switch:focus,
+.rg-field__input:focus,
+.rg-sidebar__search:focus-within {
+  transition: box-shadow $t-fast$ $ease-standard$,
+              border-color $t-fast$ $ease-standard$;
+}
+
+/* The row under the pointer. A list is a surface the eye tracks across, and at
+ * the fast duration the highlight reads as flicker rather than as following. */
+.rg-session,
+.rg-project__header {
+  transition: background-color $t-base$ $ease-standard$;
+}
+
+/* The status pill's colour. The word and the glyph swap instantly, so this is
+ * not carrying the information: it is settling the surface behind information
+ * that already changed. */
+.rg-pill,
+.rg-conn,
+.rg-session__rail {
+  transition: background-color $t-base$ $ease-standard$,
+              color $t-base$ $ease-standard$;
+}

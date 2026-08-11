@@ -19,10 +19,8 @@ use super::*;
 
 use crate::testkit::NOW;
 use vitrum_model::SessionView;
-use vitrum_proto::{Attention, ProjectId, SessionInfo};
+use vitrum_proto::{Attention, ProjectId, SessionId, SessionInfo};
 
-const APP_CSS: &str = include_str!("../../app.css");
-const SIDEBAR_CSS: &str = include_str!("../../../assets/sidebar.css");
 
 // ───────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -50,75 +48,10 @@ fn session(id: u64, status: SessionStatus) -> SessionView {
     })
 }
 
-/// One custom property's declared value, verbatim.
-fn token<'a>(css: &'a str, name: &str) -> &'a str {
-    let (_, rest) = css
-        .split_once(&format!("{name}:"))
-        .unwrap_or_else(|| panic!("no stylesheet declares {name}"));
-    let (value, _) = rest
-        .split_once(';')
-        .unwrap_or_else(|| panic!("{name}'s declaration never ends"));
-    value.trim()
-}
-
-/// One CSS length in rem, for the tokens this module also holds in Rust.
-fn token_rem(css: &str, name: &str) -> f64 {
-    let value = token(css, name);
-    value
-        .strip_suffix("rem")
-        .unwrap_or_else(|| panic!("{name} is {value}, which this guard cannot resolve to rem"))
-        .trim()
-        .parse()
-        .expect("a rem length is a number")
-}
-
-/// One rule's declaration block.
-fn rule<'a>(css: &'a str, selector: &str) -> &'a str {
-    let (_, rest) = css
-        .split_once(&format!("\n{selector} {{"))
-        .unwrap_or_else(|| panic!("no stylesheet rule for {selector}"));
-    let (block, _) = rest
-        .split_once('}')
-        .unwrap_or_else(|| panic!("{selector}'s rule never closes"));
-    block
-}
-
 // ───────────────────────────────────────────────────────────────────────────
 // Geometry
 // ───────────────────────────────────────────────────────────────────────────
 
-/// WHY: the rectangle is computed from numbers that also live in a stylesheet,
-/// and nothing at run time compares them.
-///
-/// The class: the pane is a native widget positioned by arithmetic. That
-/// arithmetic cannot read the document, so every token it uses is duplicated
-/// in Rust. A token edited on one side only does not fail, warn, or look
-/// wrong in a diff: the widget is placed a few pixels off the box the
-/// stylesheet reserved, forever, and the operator sees a seam.
-///
-/// What it does not catch: a token this module does not use. That is
-/// deliberate; the pair is the contract, not the file.
-#[test]
-fn the_frame_reads_the_same_tokens_the_stylesheet_does() {
-    for (css, name, held) in [
-        (APP_CSS, "--rg-titlebar-h", TITLEBAR_REM),
-        (APP_CSS, "--rg-panebar-h", PANEBAR_REM),
-        (APP_CSS, "--rg-pane-pad", PANE_PAD_REM),
-        (
-            SIDEBAR_CSS,
-            "--rg-sidebar-width-collapsed",
-            SIDEBAR_RAIL_REM,
-        ),
-    ] {
-        assert_eq!(
-            token_rem(css, name),
-            held,
-            "{name} is declared once in the stylesheet and once in \
-             ui/terminal.rs, and the two no longer agree, so the native pane \
-             is placed off the box the document reserved for it"
-        );
-    }
-}
 
 /// WHY: a pane handed a box larger than the window puts its last rows behind
 /// the window edge.
@@ -307,7 +240,7 @@ fn a_nonsense_scale_falls_back_rather_than_producing_a_nonsense_box() {
 /// holds for one cell is not an equality.
 #[test]
 fn the_grid_the_frame_yields_is_the_grid_the_pane_derives() {
-    use crate::pane::PaneRect;
+    use crate::pane::geometry::PaneRect;
 
     for (w, h) in [
         (1920u32, 1080u32),
@@ -388,101 +321,8 @@ fn the_grid_the_frame_yields_is_the_grid_the_pane_derives() {
 // The column
 // ───────────────────────────────────────────────────────────────────────────
 
-/// WHY: a strip that takes a line from the pane makes every agent on screen
-/// repaint its whole viewport.
-///
-/// The class, and the chain that makes it expensive: an in-flow child of
-/// `.rg-main` shortens the pane's box, a shorter box is fewer rows, fewer rows
-/// is a PTY resize, and a resize makes a full-screen TUI reflow and repaint
-/// everything it has drawn. So a two-line notice about ONE session flashes
-/// EVERY agent in the window, twice.
-///
-/// The stylesheet makes the wrong thing the default: `.rg-main > *` is
-/// absolutely positioned, so a strip added by anybody, in any file, is out of
-/// flow whether or not they knew this rule. What this guard adds is the other
-/// half: an opt-out is a decision, and a third one turns the suite red until
-/// somebody records why the pane may be shortened for it.
-///
-/// What it does not catch: a child that opts out through a different
-/// mechanism, such as its own `position: static` in a more specific rule.
-/// Nothing in this tree does that and the default above makes it pointless.
-#[test]
-fn the_pane_column_holds_only_the_pane_and_its_bar() {
-    assert!(
-        APP_CSS.contains("\n.rg-main > * {"),
-        "the default that puts every child of .rg-main out of flow is gone, \
-         so a strip added later takes a line from the pane and reflows every \
-         agent in the window"
-    );
-    assert!(
-        rule(APP_CSS, ".rg-main > *").contains("position: absolute"),
-        "the default no longer removes a child from flow"
-    );
 
-    // Derived from the file, not listed here: a fourth opt-out appears in this
-    // set the moment somebody writes it, and the assertion below fails naming
-    // it.
-    let mut opted: Vec<&str> = APP_CSS
-        .match_indices(".rg-main > .")
-        .map(|(i, _)| {
-            let rest = &APP_CSS[i + ".rg-main > ".len()..];
-            let end = rest
-                .find(|c: char| c == ',' || c == ' ' || c == '\n' || c == '{')
-                .unwrap_or(rest.len());
-            &rest[..end]
-        })
-        .collect();
-    opted.sort_unstable();
-    opted.dedup();
-    assert_eq!(
-        opted,
-        vec![".rg-panebar", ".rg-terminal"],
-        "exactly two things in the pane column may occupy space: the pane and \
-         the bar under it. Anything else here shortens the pane and repaints \
-         every agent on screen"
-    );
-}
 
-/// WHY: a bar whose height follows its content is a bar that resizes the pane.
-///
-/// The whole reason the exit bar was folded into a permanent strip is that it
-/// appeared and disappeared. A `min-height`, or a height left to the content,
-/// puts that back the moment a two-line message is written into it.
-#[test]
-fn the_bar_is_the_same_box_empty_as_it_is_full() {
-    let block = rule(APP_CSS, ".rg-panebar");
-    assert!(
-        block.contains("height: var(--rg-panebar-h)"),
-        "the bar no longer states its height, so an empty bar and a bar with \
-         an exit sentence in it are different boxes and the pane resizes \
-         between them:\n{block}"
-    );
-    assert!(
-        !block.contains("min-height"),
-        "a min-height lets content grow the bar, which is the resize this \
-         strip exists to remove:\n{block}"
-    );
-    assert!(
-        block.contains("flex: 0 0 var(--rg-panebar-h)"),
-        "the bar can be compressed or stretched by its siblings, so its \
-         height is not the token after all:\n{block}"
-    );
-}
-
-/// The exit bar is gone, in markup and in the stylesheet. A rule left behind
-/// for a class nothing emits is dead weight that reads as a live surface.
-#[test]
-fn nothing_still_draws_a_separate_exit_bar() {
-    assert!(
-        !APP_CSS.contains("rg-exitbar"),
-        "the exit bar's rules survive, so the strip that appeared under the \
-         pane when a child died can come back with one line of markup"
-    );
-    assert!(
-        !include_str!("../terminal.rs").contains("rg-exitbar"),
-        "the frame still emits the exit bar"
-    );
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // What the pane is showing

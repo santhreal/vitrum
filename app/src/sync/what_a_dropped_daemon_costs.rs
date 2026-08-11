@@ -34,6 +34,12 @@ use vitrum_proto::{PROTOCOL_VERSION, ServerMsg, SessionStatus};
 /// `schedule_reconnect`, and whether the URL it dials is the resolved one.
 #[test]
 fn the_reconnect_schedule_doubles_then_holds_then_ends() {
+    // The schedule reads the live bus, so the lease is what makes this the
+    // default document's schedule rather than whatever a parallel test left.
+    let _bus = crate::state::live::exclusive();
+    let prefs = crate::state::ConnectionPrefs::default();
+    let max_ms = u64::from(prefs.reconnect_max_ms);
+    let attempts_max = prefs.reconnect_attempts;
     assert_eq!(reconnect_delay_ms(0), Some(RECONNECT_BASE_MS));
     assert_eq!(reconnect_delay_ms(1), Some(RECONNECT_BASE_MS * 2));
     assert_eq!(reconnect_delay_ms(2), Some(RECONNECT_BASE_MS * 4));
@@ -45,7 +51,7 @@ fn the_reconnect_schedule_doubles_then_holds_then_ends() {
     while let Some(delay) = reconnect_delay_ms(attempts) {
         assert!(delay >= prev, "attempt {attempts} waits less than the one before");
         assert!(
-            delay <= RECONNECT_MAX_MS,
+            delay <= max_ms,
             "attempt {attempts} waits {delay}ms, past the ceiling"
         );
         prev = delay;
@@ -56,9 +62,9 @@ fn the_reconnect_schedule_doubles_then_holds_then_ends() {
             "the schedule does not terminate; it is a polling loop"
         );
     }
-    assert_eq!(attempts, RECONNECT_ATTEMPTS);
+    assert_eq!(attempts, attempts_max);
     assert_eq!(
-        reconnect_delay_ms(RECONNECT_ATTEMPTS),
+        reconnect_delay_ms(attempts_max),
         None,
         "past the last attempt the window must say the daemon is gone and \
          offer Retry, not keep dialling"

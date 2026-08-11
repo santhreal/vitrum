@@ -26,12 +26,6 @@
 //! outside a text field, `Ctrl+/` outside the terminal, plus the `?` button at
 //! the end of the tab strip for anyone who never presses a function key.
 
-use dioxus::prelude::*;
-
-use crate::keymap::GROUPS;
-use crate::state::UiState;
-use crate::ui::settings::effective_help_rows;
-
 /// Why the primary modifier is Ctrl on macOS too.
 ///
 /// Cmd+Tab is the macOS application switcher and is intercepted by the window
@@ -44,99 +38,12 @@ const MODIFIER_NOTE: &str = "vitrum uses Ctrl on every platform, macOS included,
 /// never mistaken for the shipped defaults.
 const REBOUND_NOTE: &str = "Some shortcuts have been changed in Settings \u{203a} Keyboard. The chords below are the ones that fire.";
 
-#[derive(Props, Clone, PartialEq)]
-pub struct ShortcutsProps {
-    pub state: Signal<UiState>,
-    pub on_dismiss: EventHandler<()>,
-}
-
-#[component]
-pub fn Shortcuts(props: ShortcutsProps) -> Element {
-    let (rows, rebound) = {
-        let read = props.state.read();
-        let prefs = &read.daemon.settings.keyboard;
-        (effective_help_rows(prefs), !prefs.overrides.is_empty())
-    };
-
-    rsx! {
-        div {
-            class: "rg-layer rg-layer--dim",
-            onclick: move |_| props.on_dismiss.call(()),
-            div {
-                class: "rg-sheet rg-sheet--shortcuts",
-                role: "dialog",
-                aria_label: "Keyboard shortcuts",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "rg-sheet__head",
-                    span { class: "rg-sheet__title", "Keyboard" }
-                    button {
-                        class: "rg-btn-inline",
-                        r#type: "button",
-                        onclick: move |_| props.on_dismiss.call(()),
-                        "Close"
-                    }
-                }
-
-                div { class: "rg-keys",
-                    for group in GROUPS {
-                        div { class: "rg-keys__group", key: "{group.title()}",
-                            div { class: "rg-keys__heading", "{group.title()}" }
-                            for row in rows.iter().filter(|row| row.group == group) {
-                                div { class: "rg-keys__row", key: "{row.keys}",
-                                    // One chip per alternative, not one chip
-                                    // holding a slash. `kbd` is `white-space:
-                                    // nowrap`, so a combined
-                                    // "Ctrl+Shift+Tab / Ctrl+Shift+PageUp"
-                                    // could neither wrap nor shrink: it
-                                    // overflowed its fixed column and drew on
-                                    // top of the description beside it. Split,
-                                    // the surrounding spaces give the line a
-                                    // legal break and each chord stays intact.
-                                    span { class: "rg-keys__chord",
-                                        for (i, chord) in row.keys.split(" / ").enumerate() {
-                                            span { key: "{chord}",
-                                                if i > 0 {
-                                                    " / "
-                                                }
-                                                kbd { "{chord}" }
-                                            }
-                                        }
-                                    }
-                                    span { class: "rg-keys__what", "{row.what}" }
-                                }
-                            }
-                        }
-                    }
-                    // The pane's own chords, in their own section, after every
-                    // shell binding. They are not in `rows` and must not be:
-                    // `rows` is folded from the table dispatch matches, and an
-                    // entry there would be claimed by the shell before the
-                    // pane ever saw the key.
-                    div { class: "rg-keys__group", key: "{crate::keymap::PANE_SECTION_TITLE}",
-                        div { class: "rg-keys__heading", "{crate::keymap::PANE_SECTION_TITLE}" }
-                        for row in crate::keymap::PANE_CHORDS {
-                            div { class: "rg-keys__row", key: "{row.keys}",
-                                span { class: "rg-keys__chord", kbd { "{row.keys}" } }
-                                span { class: "rg-keys__what", "{row.what}" }
-                            }
-                        }
-                    }
-                }
-
-                if rebound {
-                    div { class: "rg-sheet__note", "{REBOUND_NOTE}" }
-                }
-                div { class: "rg-sheet__note", "{MODIFIER_NOTE}" }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MODIFIER_NOTE, REBOUND_NOTE};
+    use crate::keymap::GROUPS;
     use crate::keymap::{Group, HelpRow, KeyAction};
+    use crate::ui::settings::effective_help_rows;
     use crate::state::KeyboardPrefs;
     use crate::ui::settings::{Binding, set_override};
 
@@ -424,3 +331,6 @@ mod tests {
         assert_eq!(GROUPS[0], Group::Switching);
     }
 }
+
+/// The overlay itself, built as GTK widgets.
+pub mod native;

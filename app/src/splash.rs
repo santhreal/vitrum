@@ -53,10 +53,9 @@ pub(crate) fn should_paint(elapsed_ms: u128, prefs: crate::state::StartupPrefs) 
 /// image is still a launch, and the surface underneath is already the right
 /// colour; refusing to open a window over it would be the only worse answer.
 #[cfg(target_os = "linux")]
-pub(crate) fn install(window: &vitrum_dioxus_desktop::tao::window::Window) {
+pub(crate) fn install(window: &gtk::Window) {
     use gtk::glib::object::ObjectExt;
     use gtk::glib::value::ToValue;
-    use vitrum_dioxus_desktop::tao::platform::unix::WindowExtUnix;
 
     // The snapshot the whole start is built from, read once here rather than
     // per draw: this handler runs on every expose for as long as the mark is
@@ -64,23 +63,21 @@ pub(crate) fn install(window: &vitrum_dioxus_desktop::tao::window::Window) {
     // kind of cost this module exists to avoid.
     let prefs = crate::state::startup_prefs().0.settings.startup;
 
-    window
-        .gtk_window()
-        .connect_local("draw", true, move |values| {
-            let widget: gtk::Widget = values.first()?.get().ok()?;
-            let cr: gtk::cairo::Context = values.get(1)?.get().ok()?;
-            // Elapsed time first, because it is two atomics and the retirement
-            // check walks the widget tree. On a fast start this is the only
-            // work the handler ever does.
-            let elapsed = crate::boot::since_start().map_or(0, |d| d.as_millis());
-            if should_paint(elapsed, prefs) && !retired(&widget) {
-                paint(&widget, &cr);
-            }
-            // `false` is "the drawing is not finished with", which lets every
-            // child of the window draw as usual. Returning `true` here would
-            // stop the content being painted at all.
-            Some(false.to_value())
-        });
+    window.connect_local("draw", true, move |values| {
+        let widget: gtk::Widget = values.first()?.get().ok()?;
+        let cr: gtk::cairo::Context = values.get(1)?.get().ok()?;
+        // Elapsed time first, because it is two atomics and the retirement
+        // check walks the widget tree. On a fast start this is the only work
+        // the handler ever does.
+        let elapsed = crate::boot::since_start().map_or(0, |d| d.as_millis());
+        if should_paint(elapsed, prefs) && !retired(&widget) {
+            paint(&widget, &cr);
+        }
+        // `false` is "the drawing is not finished with", which lets every
+        // child of the window draw as usual. Returning `true` here would stop
+        // the content being painted at all.
+        Some(false.to_value())
+    });
 }
 
 /// Whether the shell has taken the surface, so the mark is finished.
@@ -92,10 +89,10 @@ pub(crate) fn install(window: &vitrum_dioxus_desktop::tao::window::Window) {
 /// mark down on its own, and a splash that never retires is not a splash, it
 /// is a diamond stamped over the running application.
 ///
-/// The condition is the shell's own view being mapped rather than a timer. A
-/// mapped view is drawing, whatever it has managed to draw so far, and it is
-/// the same widget that will hold the first frame. A timer would be a guess
-/// about a machine we are not on.
+/// The condition is the terminal's own widget being mapped rather than a
+/// timer. A mapped drawing area is the surface the first frame lands on,
+/// whatever it has managed to draw so far. A timer would be a guess about a
+/// machine we are not on.
 #[cfg(target_os = "linux")]
 fn retired(window: &gtk::Widget) -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,31 +101,30 @@ fn retired(window: &gtk::Widget) -> bool {
     if RETIRED.load(Ordering::Relaxed) {
         return true;
     }
-    if !holds_a_mapped_webview(window) {
+    if !holds_a_mapped_pane(window) {
         return false;
     }
     RETIRED.store(true, Ordering::Relaxed);
     true
 }
 
-/// Depth-first search for the shell's mapped view under this widget.
+/// Depth-first search for the terminal's mapped widget under this one.
 ///
-/// By type name, because the widget arrives through GTK rather than through
-/// the shell toolkit and this crate never names that toolkit's Rust types.
 /// The tree is a window, a box and its handful of children, so the walk is
 /// over before it starts.
 #[cfg(target_os = "linux")]
-fn holds_a_mapped_webview(widget: &gtk::Widget) -> bool {
-    use gtk::glib::object::{Cast, ObjectExt};
+fn holds_a_mapped_pane(widget: &gtk::Widget) -> bool {
+    use gtk::glib::object::Cast;
+    use gtk::glib::prelude::ObjectExt;
     use gtk::prelude::{ContainerExt, WidgetExt};
 
-    if widget.type_().name().contains("WebKitWebView") && widget.is_mapped() {
+    if widget.is::<gtk::DrawingArea>() && widget.is_mapped() {
         return true;
     }
     let Ok(container) = widget.clone().downcast::<gtk::Container>() else {
         return false;
     };
-    container.children().iter().any(holds_a_mapped_webview)
+    container.children().iter().any(holds_a_mapped_pane)
 }
 
 /// The mark, centred on the widget, in its own colour.
@@ -160,7 +156,7 @@ const MARK_PX: u32 = 96;
 /// `cairo::ImageSurface` is not shareable and this is read from whichever
 /// thread GTK happens to be drawing on. Composing the surface around the bytes
 /// costs one copy of 36 KiB, on a path that runs a handful of times per launch
-/// and never once the webview has covered it.
+/// and never once the window has covered it.
 #[cfg(target_os = "linux")]
 static MARK_ARGB32: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
     let img = vitrum_os::mark::render_mark(MARK_PX, vitrum_os::mark::MARK_COLOUR);
@@ -192,4 +188,4 @@ fn mark_surface() -> Option<gtk::cairo::ImageSurface> {
 /// Nothing to draw on: every other platform reaches its first frame through a
 /// path this module knows nothing about.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn install(_window: &vitrum_dioxus_desktop::tao::window::Window) {}
+pub(crate) fn install(_window: &gtk::Window) {}

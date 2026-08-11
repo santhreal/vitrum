@@ -60,9 +60,8 @@ mod host;
 #[cfg(target_os = "linux")]
 pub(crate) mod surface;
 
-pub(crate) use geometry::PaneRect;
 #[cfg(target_os = "linux")]
-pub(crate) use host::{PaneHost, install, place};
+pub(crate) use host::{PaneHost, install_in};
 
 use crate::state::live::PaneSettings;
 use theme::{CursorShape, Palette, PaneTheme, Present};
@@ -192,8 +191,8 @@ mod tests {
     use crate::state::Settings;
     use crate::state::live::PaneSettings;
 
-    /// WHY: the pane ignored the configured terminal
-    /// colours. The bus carries them and the pane has to actually use them,
+    /// WHY: a pane that ignores the operator's own terminal colours is a
+    /// defect. The bus carries them and the pane has to actually use them,
     /// including for the two colours no configuration format declares.
     ///
     /// The invariant: with a palette in force, every colour the pane paints

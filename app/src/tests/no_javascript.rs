@@ -5,16 +5,15 @@
 //! which meant two escape-sequence parsers in one product, a working
 //! directory and a prompt boundary held in a JavaScript addon's private state
 //! where the sidebar could not read them, and a frame budget owned by a DOM
-//! layout pass.
-//! The pane is now a GTK drawing area with a wgpu surface on it, painted by
-//! `vitrum-grid` from the grid the Ghostty parser maintains, and every script
-//! this repository wrote is gone.
+//! layout pass. The window around the pane was a WebKit view too, driven by a
+//! vendored `dioxus-desktop` fork whose renderer injected its own interpreter
+//! as a script.
 //!
-//! One remains that it did not write. The window around the pane is still a
-//! WebKit view driven by the vendored `dioxus-desktop` fork, and that
-//! renderer injects its own interpreter as a script. It is named in
-//! `ALLOWED`, path by path, with the reason. It goes away when the shell
-//! stops being a webview.
+//! Both are gone. The pane is a GTK drawing area with a wgpu surface on it,
+//! painted by `vitrum-grid` from the grid the Ghostty parser maintains, and
+//! the window around it is GTK widgets. Nothing in this product interprets a
+//! script, so [`ALLOWED`] is empty and every entry it ever held is deleted
+//! rather than exempted.
 //!
 //! A deletion is not a decision until something stops it coming back. A
 //! vendored script arrives one file at a time, each addition small and each
@@ -26,8 +25,8 @@
 //! crate source rather than in this tree, and a string this repository
 //! assembles at run time out of pieces no literal contains. The first is
 //! upstream's tree and not shipped from here; the second is a way of writing
-//! code nobody has a reason to use now that the pane generates no document
-//! at all.
+//! code nobody has a reason to use now that this product generates no
+//! document at all.
 
 use super::tree;
 
@@ -36,29 +35,11 @@ const SCRIPT_SUFFIXES: [&str; 6] = [".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"
 
 /// Tracked paths allowed to be, or to write, a script, each with its reason.
 ///
-/// Three entries, all in `vendor/`, all belonging to the same fact: the
-/// window itself is still a WebKit view driven by `dioxus-desktop`, which
-/// this repository vendors as a fork. Its renderer applies every UI edit
-/// through an interpreter it injects as a script, and its `Document` sends
-/// head elements through the same channel. That is the shell, not the pane:
-/// the terminal is a GTK drawing area painted by `vitrum-grid` and has no
-/// script anywhere near it.
-///
-/// These are listed one path at a time rather than by directory, so a new
-/// script vendored into the fork still turns this red. They go away when the
-/// shell stops being a webview, and not before; nothing in this repository
-/// can remove them while it is one.
-const ALLOWED: [&str; 3] = [
-    // The eval channel `dioxus-desktop` opens to its own interpreter. Its
-    // `Document` impl routes stylesheet and meta creation through it.
-    "vendor/src/js/native_eval.js",
-    // The TypeScript that file is generated from, kept so the fork can be
-    // rebased onto upstream.
-    "vendor/src/ts/native_eval.ts",
-    // Serves the interpreter into the view. A webview renderer cannot paint
-    // without it.
-    "vendor/src/protocol.rs",
-];
+/// Empty, and an empty list is the whole point: there is no renderer left
+/// that needs an interpreter, so an exception here would be a new one rather
+/// than an inherited one. Adding an entry means writing down which shipped
+/// surface cannot be built in Rust.
+const ALLOWED: [&str; 0] = [];
 
 #[test]
 fn no_tracked_file_is_a_script() {

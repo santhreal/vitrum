@@ -75,11 +75,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
-use dioxus::prelude::*;
-use vitrum_proto::{ProjectId, ProjectInfo, SessionId};
+use vitrum_proto::ProjectInfo;
 
 use crate::launch::{self, CommandSource, Detected, Launch, LaunchStore, SavedPreset};
-use crate::state::{NewSessionSeed, RenameSeed, UiState};
+use crate::state::{Layer, UiState};
 
 /// Rows the launcher shows at once.
 ///
@@ -97,9 +96,13 @@ const DIROPT_ON: &str = "rg-launch__diropt rg-launch__diropt--on";
 
 /// Commands drawn out of [`launch::command_suggestions`] before ranking.
 ///
-/// The whole history plus the agents plus the shell. Truncating here would
-/// hide a command from the query that the operator has definitely run.
-const SUGGEST_MAX: usize = launch::HISTORY_MAX + 8;
+/// The whole ranked history plus the agents plus the shell. Truncating here
+/// would hide a command from the query that the operator has definitely run,
+/// so the ceiling follows `launcher.historyLimit` rather than the count a
+/// fresh profile happens to keep.
+fn suggest_max(st: &UiState) -> usize {
+    st.daemon.settings.launcher.history_max() + 8
+}
 
 // ---------------------------------------------------------------------------
 // Intents
@@ -239,7 +242,7 @@ pub fn intents(
 
     let mut recent: Vec<Intent> = Vec::new();
     let mut agents: Vec<Intent> = Vec::new();
-    for s in launch::command_suggestions(store, detected, "", now_ms, SUGGEST_MAX) {
+    for s in launch::command_suggestions(store, detected, "", now_ms, suggest_max(st)) {
         let band = match s.source {
             CommandSource::History => Band::Recent,
             CommandSource::Detected => Band::Agent,
@@ -742,16 +745,6 @@ pub fn top_word(store: &LaunchStore, now_ms: u64) -> Option<String> {
     store.presets.first().map(|p| p.label.clone())
 }
 
-/// [`top_word`], read off the UI thread.
-///
-/// One small profile file, but the sidebar is the hottest surface in the
-/// product and it is on a filesystem somebody may have mounted over a network.
-/// The caller re-runs this when the session list changes, which is the only
-/// moment the answer can have moved.
-pub async fn primary_word_now() -> Option<String> {
-    off_thread(|| top_word(&launch::load_launch_store(), launch::now_ms())).await
-}
-
 /// What the primary half of the control reads.
 ///
 /// Collapsed to the 3rem rail there is room for the glyph and nothing else,
@@ -770,6 +763,7 @@ pub fn go_label(word: Option<&str>, wide: bool) -> String {
 }
 
 /// The tooltip on the primary half: the whole sentence, place included.
+#[cfg(test)]
 pub fn go_tip(word: Option<&str>, place: &str) -> String {
     match word {
         Some(w) if place.is_empty() => {
@@ -954,6 +948,7 @@ pub fn key_of(presets: &[SavedPreset], i: usize) -> String {
 /// `code` rather than `key` for the same reason [`chord_of`] reads it there:
 /// the top row's digits are layout- and Shift-dependent in `key` and are not
 /// in `code`.
+#[cfg(test)]
 fn digit_of(code: &str) -> Option<usize> {
     let d = code.strip_prefix("Digit")?;
     let n: usize = d.parse().ok()?;
@@ -963,762 +958,6 @@ fn digit_of(code: &str) -> Option<usize> {
 // ---------------------------------------------------------------------------
 // The component
 // ---------------------------------------------------------------------------
-
-#[derive(Props, Clone, PartialEq)]
-pub struct NewSessionProps {
-    pub state: Signal<UiState>,
-    pub seed: NewSessionSeed,
-    pub on_launch: EventHandler<(ProjectId, Launch)>,
-    pub on_dismiss: EventHandler<()>,
-}
-
-#[component]
-pub fn NewSessionDialog(props: NewSessionProps) -> Element {
-    let state = props.state;
-    let on_launch = props.on_launch;
-    let on_dismiss = props.on_dismiss;
-    let seeded = props.seed.cwd.clone();
-
-    // Resolved once when the launcher opens. One small profile read and two
-    // environment reads; no directory walk and no `PATH` walk.
-    let store = use_signal(launch::load_launch_store);
-    let home = use_signal(launch::user_home);
-    let opened_ms = use_signal(launch::now_ms);
-
-    // The one unbounded read on this surface. Five `PATH` lookups, each across
-    // every directory in `PATH`, so it happens on a thread and the list paints
-    // without it.
-    let found = use_resource(move || async move { off_thread(launch::detected_agents).await });
-
-    let mut here = use_signal(move || launch::seed_cwd(&seeded, &store.read(), &home.read()));
-    let mut query = use_signal(String::new);
-    let mut hi = use_signal(|| 0usize);
-    let mut armed = use_signal(|| false);
-    let mut said = use_signal(|| None::<String>);
-
-    // Keyed on the directory to scan, not on the whole query, so typing
-    // further into one folder spawns no thread and re-runs no syscall.
-    let scan_dir = use_memo(move || {
-        let text = query.read().clone();
-        if looks_like_path(&text) {
-            launch::split_dir_input(&text, &home.read()).0
-        } else {
-            String::new()
-        }
-    });
-    let entries = scanned_dirs(scan_dir);
-
-    // What is typed in the `in` field, which is not the same thing as `here`.
-    // `here` is the resolved directory a launch would use; this is the text,
-    // including the trailing separator that means "show me what is inside".
-    // Completing against `here` would drop that separator and re-offer the
-    // folder you just descended into.
-    let mut dir_text = use_signal(move || shorten_home(&here.read(), &home.read()));
-    let dir_scan = use_memo(move || launch::split_dir_input(&dir_text.read(), &home.read()).0);
-    let dir_entries = scanned_dirs(dir_scan);
-
-    // Completions for the `in` field, or the directories you have launched in
-    // before when there is nothing to complete against.
-    //
-    // One list, not a filesystem popup beside a recents datalist. Two lists
-    // under one field is two things to learn and two ways to be surprised, and
-    // the platform datalist could not be keyboard-driven from here anyway.
-    let dir_picks = use_memo(move || {
-        let typed = dir_text.read().clone();
-        // Nothing typed is not "no answer": it is the moment the operator has
-        // said least and where you last worked is the most useful thing on
-        // screen. Completing an empty field against the filesystem would offer
-        // the root's children, which is never where anybody is going.
-        if typed.trim().is_empty() {
-            return recent_dirs(&state.peek(), &store.read().last_cwd);
-        }
-        let fragment = launch::split_dir_input(&typed, &home.read()).1;
-        let scanned = dir_entries.read();
-        let list: &[String] = match (*scanned).as_ref() {
-            Some(l) => l.as_slice(),
-            None => &[],
-        };
-        let hits = launch::filter_dirs(list, &fragment, DIR_MAX);
-        // An exact, complete directory name is not a suggestion: offering
-        // `software/` while `software/` is what the field already says makes
-        // Tab a no-op and the list a mirror of the input.
-        let whole = launch::tidy_dir(&launch::expand_home(&typed, &home.read()));
-        if hits.len() == 1 && launch::tidy_dir(&hits[0]) == whole {
-            return Vec::new();
-        }
-        hits
-    });
-    let mut dir_hi = use_signal(|| 0usize);
-
-    // Two memos rather than one. Ranking depends on the profile, the place and
-    // the PATH answer; filtering depends only on the query. Split, a keystroke
-    // re-runs the second alone, which allocates nothing.
-    //
-    // The daemon is read through `peek`, NOT `read`, and that is the difference
-    // between this surface costing nothing and costing 65us per PTY frame.
-    // `read` subscribes, so a daemon pushing output twenty times a second would
-    // rebuild every row twenty times a second for an answer that has not
-    // changed. It is also the better behaviour: a session appearing in another
-    // window must not reshuffle the list under the operator's hand, for exactly
-    // the reason the late `PATH` answer is ranked below the recents. The
-    // launcher is a point-in-time surface and says so.
-    let all = use_memo(move || {
-        let st = state.peek();
-        let found = found.read();
-        let agents: &[Detected] = match (*found).as_ref() {
-            Some(v) => v.as_slice(),
-            None => &[],
-        };
-        intents(
-            &st,
-            &store.read(),
-            agents,
-            &here.read(),
-            &home.read(),
-            opened_ms(),
-        )
-    });
-
-    let picks = use_memo(move || {
-        let text = query.read().clone();
-        if is_dir_search(&text) {
-            let fragment = launch::split_dir_input(&text, &home.read()).1;
-            let scanned = entries.read();
-            let list: &[String] = match (*scanned).as_ref() {
-                Some(l) => l.as_slice(),
-                None => &[],
-            };
-            return launch::filter_dirs(list, &fragment, DIR_MAX)
-                .into_iter()
-                .map(Pick::Cd)
-                .collect::<Vec<_>>();
-        }
-        let rows = all.read();
-        let mut out: Vec<Pick> = listed(&rows, &text)
-            .into_iter()
-            .map(|i| Pick::Go(rows[i].clone()))
-            .collect();
-        if let Some(extra) = typed_intent(&rows, &state.peek(), &here.read(), &text, &home.read()) {
-            if out.len() >= ROWS_MAX {
-                out.truncate(ROWS_MAX - 1);
-            }
-            out.push(Pick::Go(extra));
-        }
-        out
-    });
-
-    // Take a row: launch it, or make it the place.
-    let mut take = move |i: usize| {
-        let pick = match picks.read().get(i) {
-            Some(p) => p.clone(),
-            None => return,
-        };
-        match pick {
-            Pick::Cd(path) => {
-                here.set(path);
-                query.set(String::new());
-                push_query("");
-                hi.set(0);
-                armed.set(false);
-                said.set(None);
-            }
-            // Peeked into a local BEFORE the match. A scrutinee's temporary
-            // lives to the end of the match, so reading it inline holds a
-            // `GenerationalRef` across every arm and the two arms below
-            // cannot then borrow `armed` mutably to move the state on.
-            Pick::Go(intent) => {
-                let was_armed = *armed.peek();
-                match attempt(&intent, was_armed) {
-                    Attempt::Go(l) => {
-                        // Sent, not recorded. `main.rs::start_session` is the
-                        // single place a launch leaves this client, so the
-                        // history write, the flash and the focus correlation
-                        // are identical whether the launch came from here, from
-                        // the sidebar's control or from the context menu.
-                        // Recording it here too was a double bump: one launch
-                        // counted twice, which quietly skews the ranking this
-                        // whole surface is built on.
-                        let pid = {
-                            let st = state.peek();
-                            launch::resolve_project(&st.daemon.projects, &l.cwd).0
-                        };
-                        on_launch.call((pid, l));
-                    }
-                    Attempt::Warn(why) => {
-                        armed.set(true);
-                        said.set(Some(format!("{why} Take it again to run it anyway.")));
-                    }
-                    Attempt::Refuse(why) => {
-                        armed.set(false);
-                        said.set(Some(why));
-                    }
-                }
-            }
-        }
-    };
-
-    let home_now = home.read().clone();
-    // The rows are read through the guard and drawn straight out of it. This
-    // used to clone the whole `Vec<Pick>` first, which on a full list is nine
-    // `Intent`s and their five owned strings each, deep-copied on every
-    // keystroke to build a `Vec<RowView>` that is itself owned.
-    let (count, views): (usize, Vec<RowView>) = {
-        let rows = picks.read();
-        (rows.len(), rows.iter().map(|p| view(p, &home_now)).collect())
-    };
-    let cur = if count == 0 {
-        0
-    } else {
-        (*hi.read()).min(count - 1)
-    };
-    let presets = store.read().presets.clone();
-    let line = note(said.read().as_deref(), count, &query.read());
-    // The one place every row shares, or `None` when they differ.
-    //
-    // The place chip exists to tell two otherwise identical rows apart. When
-    // every row carries the SAME place it tells nothing apart, and the panel
-    // renders one string five times down its right edge. That is the state a
-    // fresh machine opens in, because with no projects yet every suggestion
-    // runs in home: five rows reading `~`, none of which was a fact the
-    // operator needed per row. Said once, above the list, it is context; said
-    // on every row it is noise.
-    let here_now = launch::tidy_dir(&here.read());
-
-    // Which completion row is highlighted, asked once per row instead of twice.
-    // The clamp is what keeps a stale highlight from naming a row that a newer,
-    // shorter list no longer has.
-    let dir_selected =
-        move |i: usize| i == dir_hi().min(dir_picks.read().len().saturating_sub(1));
-
-    rsx! {
-        div {
-            class: "rg-layer rg-layer--dim",
-            onclick: move |_| on_dismiss.call(()),
-            div {
-                class: "rg-sheet rg-sheet--launcher",
-                role: "dialog",
-                aria_label: "Start a session",
-                onclick: move |e| e.stop_propagation(),
-
-                // WHERE, then WHAT. Two fields, each labelled, each holding
-                // one thing.
-                //
-                // This surface used to be a single box reading "Agent,
-                // project, branch, or a /path": one field that silently
-                // changed mode depending on whether what you typed looked
-                // like a path, so the operator could not tell what they were
-                // setting or how to set the other half. A session is a
-                // command and a directory. Saying so in two fields is the
-                // whole design.
-                div { class: "rg-launch__field",
-                    label { class: "rg-launch__label", r#for: "rg-launch-dir", "in" }
-                    input {
-                        class: "rg-launch__dir",
-                        id: "rg-launch-dir",
-                        r#type: "text",
-                        spellcheck: false,
-                        autocomplete: "off",
-                        role: "combobox",
-                        aria_expanded: if dir_picks.read().is_empty() { "false" } else { "true" },
-                        aria_controls: "rg-launch-dirs",
-                        placeholder: "Directory",
-                        initial_value: "{shorten_home(&here.read(), &home_now)}",
-                        oninput: move |e| {
-                            let typed = e.value();
-                            // `~` is what the operator types and what every
-                            // recent is offered as, so it has to be accepted
-                            // back: storing the literal string would spawn the
-                            // session in a directory called `~`.
-                            let full = launch::expand_home(&typed, &home.read());
-                            here.set(launch::tidy_dir(&full));
-                            dir_text.set(typed);
-                            dir_hi.set(0);
-                            said.set(None);
-                        },
-                        onkeydown: move |e: KeyboardEvent| {
-                            let hits = dir_picks.read().clone();
-                            let count = hits.len();
-                            let cur = dir_hi().min(count.saturating_sub(1));
-                            match e.key() {
-                                Key::ArrowDown if count > 0 => {
-                                    e.prevent_default();
-                                    dir_hi.set((cur + 1) % count);
-                                }
-                                Key::ArrowUp if count > 0 => {
-                                    e.prevent_default();
-                                    dir_hi.set((cur + count - 1) % count);
-                                }
-                                // Descend, exactly as a shell does. The
-                                // separator is what makes the next Tab offer
-                                // what is INSIDE rather than re-offer this.
-                                Key::Tab if !e.modifiers().shift() && count > 0 => {
-                                    e.prevent_default();
-                                    let mut next = shorten_home(&hits[cur], &home.read());
-                                    next.push(MAIN_SEPARATOR);
-                                    here.set(launch::tidy_dir(&hits[cur]));
-                                    push_dir(&next);
-                                    dir_text.set(next);
-                                    dir_hi.set(0);
-                                    said.set(None);
-                                }
-                                // Tab with nothing to complete moves to `run`,
-                                // because a dead key in a two-field form reads
-                                // as the field being broken.
-                                Key::Tab if !e.modifiers().shift() => {
-                                    e.prevent_default();
-                                    push_query(&query.read().clone());
-                                }
-                                // The directory is set as you type, so Enter
-                                // here means "done with this field", not
-                                // "launch": launching from the place field
-                                // would start whatever the other field happens
-                                // to hold.
-                                Key::Enter => {
-                                    e.prevent_default();
-                                    if count > 0 {
-                                        let mut next = shorten_home(&hits[cur], &home.read());
-                                        next.push(MAIN_SEPARATOR);
-                                        here.set(launch::tidy_dir(&hits[cur]));
-                                        push_dir(&next);
-                                        dir_text.set(next);
-                                        dir_hi.set(0);
-                                    }
-                                    push_query(&query.read().clone());
-                                }
-                                _ => {}
-                            }
-                        },
-                    }
-                    if !dir_picks.read().is_empty() {
-                        ul {
-                            class: "rg-launch__dirs",
-                            id: "rg-launch-dirs",
-                            role: "listbox",
-                            aria_label: "Directories",
-                            for (i, full) in dir_picks.read().iter().enumerate() {
-                                li {
-                                    class: if dir_selected(i) { DIROPT_ON } else { DIROPT },
-                                    key: "{full}",
-                                    role: "option",
-                                    aria_selected: dir_selected(i),
-                                    title: "{full}",
-                                    // Kept off mousedown so the field never
-                                    // loses focus: a blur would move the caret
-                                    // out from under the click.
-                                    onmousedown: move |e| e.prevent_default(),
-                                    onclick: {
-                                        let full = full.clone();
-                                        move |_| {
-                                            let mut next = shorten_home(&full, &home.read());
-                                            next.push(MAIN_SEPARATOR);
-                                            here.set(launch::tidy_dir(&full));
-                                            push_dir(&next);
-                                            dir_text.set(next);
-                                            dir_hi.set(0);
-                                            said.set(None);
-                                        }
-                                    },
-                                    span { class: "rg-launch__dirleaf", "{launch::leaf(full)}" }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                div { class: "rg-launch__field",
-                    label { class: "rg-launch__label", r#for: "rg-launch-q", "run" }
-                input {
-                    class: "rg-launch__query",
-                    id: "rg-launch-q",
-                    r#type: "text",
-                    spellcheck: false,
-                    autocomplete: "off",
-                    role: "combobox",
-                    aria_expanded: "true",
-                    aria_autocomplete: "list",
-                    aria_controls: "rg-launch-list",
-                    aria_activedescendant: "rg-launch-r{cur}",
-                    placeholder: "Command, or an agent name",
-                    initial_value: "",
-                    onmounted: move |e| {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                        });
-                    },
-                    oninput: move |e| {
-                        query.set(e.value());
-                        hi.set(0);
-                        armed.set(false);
-                        said.set(None);
-                    },
-                    onkeydown: move |e: KeyboardEvent| {
-                        let m = e.modifiers();
-                        if m.meta() {
-                            return;
-                        }
-                        // A saved preset's chord is checked before the row
-                        // numbers, because it is the operator's own binding and
-                        // this surface is the only place it ever fires.
-                        if m.ctrl() || m.alt() {
-                            let code = format!("{:?}", e.code());
-                            let chord = crate::keymap::chord_from_event(
-                                &e.key().to_string(),
-                                &code,
-                                m.ctrl(),
-                                m.alt(),
-                                m.shift(),
-                            );
-                            let hit = launch::preset_for_chord(&store.read().presets, &chord)
-                                .cloned();
-                            if let Some(preset) = hit {
-                                e.prevent_default();
-                                e.stop_propagation();
-                                match launch::preset_fault(&preset) {
-                                    Some(fault) => said.set(Some(fault.sentence())),
-                                    None => match launch::preset_launch(&preset, &here.read()) {
-                                        Ok(l) => {
-                                            let pid = {
-                                                let st = state.peek();
-                                                launch::resolve_project(&st.daemon.projects, &l.cwd).0
-                                            };
-                                            on_launch.call((pid, l));
-                                        }
-                                        Err(why) => said.set(Some(why)),
-                                    },
-                                }
-                                return;
-                            }
-                            // Ctrl+S: keep this one.
-                            //
-                            // Saving used to live only in Settings, which
-                            // means the moment you know a command is worth
-                            // keeping is the moment you have to leave the
-                            // surface you are on and retype it. It is saved
-                            // from here, where you just typed it, with the
-                            // directory you just chose.
-                            //
-                            // The label is the command line, because asking
-                            // for a name is a second question at the exact
-                            // moment the operator wanted to start working.
-                            // Settings renames it and binds a chord to it.
-                            if m.ctrl() && !m.alt() && e.key() == Key::Character("s".to_string()) {
-                                e.prevent_default();
-                                let line = query.read().trim().to_string();
-                                let cwd = launch::tidy_dir(&here.read());
-                                save_typed(store, said, &line, &cwd);
-                                return;
-                            }
-                            if m.ctrl() && !m.alt()
-                                && let Some(n) = digit_of(&code) {
-                                    e.prevent_default();
-                                    take(n - 1);
-                                    return;
-                                }
-                        }
-                        match e.key() {
-                            Key::ArrowDown if count > 0 => {
-                                e.prevent_default();
-                                hi.set((cur + 1) % count);
-                            }
-                            Key::ArrowUp if count > 0 => {
-                                e.prevent_default();
-                                hi.set((cur + count - 1) % count);
-                            }
-                            // Complete the highlighted row into the field
-                            // rather than committing it: a directory gains a
-                            // separator so the next Tab offers what is inside,
-                            // exactly as a shell does, and a command is filled
-                            // in whole with the caret left at the end so a flag
-                            // can be added to it without retyping the line.
-                            //
-                            // Tab used to do nothing at all on a command row.
-                            // A dead key in a form reads as the form being
-                            // broken, which is the same reason the `in` field's
-                            // Tab falls through to this field instead of
-                            // sitting there doing nothing.
-                            Key::Tab if !m.shift() => {
-                                // Always swallowed. There is nothing else
-                                // focusable on this surface, so a Tab that got
-                                // through would move focus off the query and
-                                // out of the launcher entirely.
-                                e.prevent_default();
-                                // Both cloned out before the field is
-                                // written. The picks memo reads `query`, so
-                                // holding either guard across the write
-                                // borrows the same generational slot twice.
-                                let chosen = picks.read().get(cur).cloned();
-                                let typed = query.read().clone();
-                                if let Some(pick) = chosen
-                                    && let Some(next) = completion(&pick, &typed)
-                                {
-                                    push_query(&next);
-                                    query.set(next);
-                                    hi.set(0);
-                                    said.set(None);
-                                }
-                            }
-                            Key::Enter => {
-                                e.prevent_default();
-                                if count > 0 {
-                                    take(cur);
-                                } else {
-                                    said.set(Some(no_row_reason(&query.read())));
-                                }
-                            }
-                            _ => {}
-                        }
-                    },
-                }
-                    // Saving lives where the command was typed. Before this it
-                    // was Ctrl+S and nothing else, and before that it was only
-                    // in Settings, so the moment an operator decided a line was
-                    // worth keeping they had to leave the surface they were on
-                    // and retype it. The chord still works and is named in the
-                    // tooltip, so this control teaches it instead of replacing
-                    // it.
-                    button {
-                        class: "rg-launch__save",
-                        r#type: "button",
-                        disabled: query.read().trim().is_empty(),
-                        title: "Save this command as a preset (Ctrl+S)",
-                        "aria-label": "Save this command as a preset",
-                        // Off mousedown, so the field does not blur and take
-                        // the launcher down before the click lands.
-                        onmousedown: move |e| e.prevent_default(),
-                        onclick: move |_| {
-                            let line = query.read().trim().to_string();
-                            let cwd = launch::tidy_dir(&here.read());
-                            save_typed(store, said, &line, &cwd);
-                        },
-                        "Save"
-                    }
-                }
-
-                // The operator's own saved choices, above everything ranked,
-                // because a preset is a decision already made rather than a
-                // guess. Only with an empty query, for the same reason the
-                // recents below carry: once you are typing, the ranked list is
-                // the answer and the presets rank into it.
-                if query.read().is_empty() {
-                    crate::ui::presets::Presets {
-                        presets: store.read().presets.clone(),
-                        here: here_now.clone(),
-                        on_launch: move |l: launch::Launch| {
-                            let pid = launch::resolve_project(
-                                &state.peek().daemon.projects,
-                                &l.cwd,
-                            )
-                            .0;
-                            on_launch.call((pid, l));
-                        },
-                    }
-                }
-
-                // Where you were, not just what you ran. The suggestion list
-                // below ranks COMMANDS and carries one directory each, so it
-                // cannot offer "the same command in the other checkout". Only
-                // with an empty query: once you are typing, the list below is
-                // the answer and a second list is noise.
-                if query.read().is_empty() {
-                    crate::ui::recents::Recents {
-                        entries: launch::recents(&store.read()).to_vec(),
-                        // `peek`, not `read`, for the reason the two memos
-                        // above give: `read` here subscribed the whole
-                        // launcher to `UiState`, so a daemon streaming output
-                        // twenty times a second rebuilt this surface and
-                        // re-cloned the project list twenty times a second
-                        // while somebody was typing into it.
-                        projects: state.peek().daemon.projects.clone(),
-                        home: home.read().clone(),
-                        on_launch: move |l: launch::Launch| {
-                            let pid = launch::resolve_project(
-                                &state.read().daemon.projects,
-                                &l.cwd,
-                            )
-                            .0;
-                            on_launch.call((pid, l));
-                        },
-                    }
-                }
-
-                ul {
-                    class: "rg-launch__list",
-                    id: "rg-launch-list",
-                    role: "listbox",
-                    aria_label: "Launch",
-                    for (i, v) in views.iter().enumerate() {
-                        li {
-                            class: if i == cur { "rg-launch__row rg-launch__row--on" } else { "rg-launch__row" },
-                            key: "{v.text}|{i}",
-                            id: "rg-launch-r{i}",
-                            role: "option",
-                            aria_selected: (i == cur).to_string(),
-                            title: "{v.tip}",
-                            // Kept off mousedown so the query never loses
-                            // focus: a blur would close the surface before the
-                            // click landed.
-                            onmousedown: move |e| e.prevent_default(),
-                            onclick: move |_| take(i),
-                            // A reserved slot, never a conditional element. A
-                            // row whose Ctrl+digit a saved preset already owns
-                            // draws no digit, and if the slot collapsed with it
-                            // the rows either side would sit on two different
-                            // left edges.
-                            span { class: "rg-launch__key", "{key_of(&presets, i)}" }
-                            if let Some(mark) = v.mark {
-                                svg {
-                                    class: "rg-launch__agent",
-                                    view_box: "0 0 16 16",
-                                    fill: "none",
-                                    stroke: "currentColor",
-                                    stroke_width: "1.25",
-                                    stroke_linecap: "round",
-                                    stroke_linejoin: "round",
-                                    "aria-hidden": "true",
-                                    path { d: "{mark.stroke}" }
-                                    if !mark.fill.is_empty() {
-                                        path { d: "{mark.fill}", fill: "currentColor", stroke: "none" }
-                                    }
-                                }
-                            } else {
-                                // A directory row. The box is held so the two
-                                // kinds of row share one text column; dropping
-                                // the element would step every path row 24px
-                                // left of every agent row.
-                                span { class: "rg-launch__agent" }
-                            }
-                            span { class: "rg-launch__text", "{v.text}" }
-                            // A place chip only when the row would run
-                            // somewhere OTHER than the `in` field says. The
-                            // field already states the common case; repeating
-                            // it on every row is the same number twice.
-                            if let Some((place, full)) = &v.place
-                                && launch::tidy_dir(full) != here_now
-                            {
-                                span { class: "rg-launch__place", title: "{full}", "{place}" }
-                            }
-                            if let Some(branch) = &v.branch {
-                                span { class: "rg-launch__branch", "{branch}" }
-                            }
-                        }
-                    }
-                }
-
-                if let Some(msg) = line {
-                    div { class: "rg-launch__note", "{msg}" }
-                }
-            }
-        }
-    }
-}
-
-/// The directories inside `dir`, scanned off the UI thread, empty while `dir`
-/// is empty.
-///
-/// One scanner, called once per field. The `run` field completes a path typed
-/// as a query and the `in` field completes the place, which are two questions
-/// with one answer: what is inside this directory. Written twice they were two
-/// `read_dir` walks that could disagree, and the second one was free to be the
-/// one that forgot [`off_thread`]. A directory on an unreachable mount blocks
-/// in the kernel for as long as the mount wants, so that is a frozen window,
-/// not a slow list.
-fn scanned_dirs(dir: Memo<String>) -> Resource<Vec<String>> {
-    use_resource(move || {
-        let dir = dir();
-        async move {
-            if dir.is_empty() {
-                Vec::new()
-            } else {
-                off_thread(move || launch::list_dirs(&dir)).await
-            }
-        }
-    })
-}
-
-/// Write `value` into the query element and put the caret after it.
-///
-/// The query input is UNCONTROLLED: it carries `initial_value`, which sets
-/// `defaultValue` once, rather than `value`, which Dioxus marks volatile and
-/// re-asserts on every render with the rule "if the element differs from what
-/// was rendered, overwrite the element". That is not a style preference. While
-/// somebody is typing, the element is always ahead of the signal by however
-/// many `oninput` events are still crossing the IPC bridge, so any render NOT
-/// caused by the newest keystroke rolls the element back and the characters in
-/// between are gone.
-///
-/// Measured on the real display before this changed: typing
-/// `/tmp/newsession-tree/proj1` into the controlled field at 120ms per
-/// character produced `/tmp/esesso-tree/proj1`, four characters short. The
-/// directory scan resolving mid-burst is what supplies the extra renders, and
-/// making the render cheaper does not close the race, it only narrows it.
-///
-/// So the element owns the text and the signal follows it through `oninput`.
-/// The one direction that still has to go the other way is this function, for
-/// when the launcher itself sets the query from a Tab or a directory pick.
-/// That only ever happens on a key or a click, with no keystrokes in flight.
-fn push_query(value: &str) {
-    push_input("rg-launch-q", value);
-}
-
-/// Write `value` into the `in` field and put the caret after it.
-///
-/// Same reason as [`push_query`]: the directory field is uncontrolled, so a
-/// completion the launcher chooses has to be written to the element.
-fn push_dir(value: &str) {
-    push_input("rg-launch-dir", value);
-}
-
-/// Write `value` into the element with `id` and put the caret after it.
-fn push_input(id: &str, value: &str) {
-    // Escaped through serde rather than by hand: `~/it's "here"` is a legal
-    // directory name and pasting it into a script raw is a syntax error.
-    let text = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string());
-    let el = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
-    document::eval(&format!(
-        "{{const el=document.getElementById({el});\
-         if(el){{el.value={text};\
-         el.setSelectionRange(el.value.length,el.value.length);el.focus();}}}}"
-    ));
-}
-
-/// Keep the typed line as a preset, and report what happened.
-///
-/// One function behind two controls. Ctrl+S and the Save button beside the
-/// field must not be able to drift into saving different things, or into
-/// explaining the same refusal two different ways.
-///
-/// The profile is taken from the signal the launcher already loaded when it
-/// opened, never re-read here: a second file read on a keypress is exactly
-/// what `the_open_path_never_walks_path_or_the_filesystem` exists to stop.
-///
-/// The label is the command line itself, because asking for a name is a second
-/// question at the exact moment the operator wanted to start working. Settings
-/// renames it and binds a chord to it.
-fn save_typed(
-    mut store: Signal<LaunchStore>,
-    mut said: Signal<Option<String>>,
-    line: &str,
-    cwd: &str,
-) {
-    let existing = store.read().presets.clone();
-    said.set(Some(
-        match launch::preset_from_typed(line, cwd, &existing) {
-            Ok(preset) => {
-                let label = preset.label.clone();
-                let mut next = existing;
-                next.push(preset);
-                match launch::save_presets(&next) {
-                    Ok(()) => {
-                        store.write().presets = next;
-                        format!("Saved \u{201c}{label}\u{201d}. Bind a key to it in Settings.")
-                    }
-                    Err(why) => why,
-                }
-            }
-            Err(why) => why,
-        },
-    ));
-}
 
 /// The rows the list is allowed to draw for `text`, best first, as indices
 /// into `rows`.
@@ -1885,95 +1124,63 @@ impl<T> Future for Take<T> {
     }
 }
 
-#[derive(Props, Clone, PartialEq)]
-pub struct RenameProps {
-    pub seed: RenameSeed,
-    pub on_rename: EventHandler<(SessionId, String)>,
-    pub on_dismiss: EventHandler<()>,
-}
-
-/// Rename one session.
+/// Put the surface `layer` names on screen, or take down whatever is on it.
 ///
-/// The new title goes to the daemon, not into a client-side map. A title only
-/// this window knows vanishes on restart and is invisible to a second window,
-/// which is the prototype smell this pass exists to remove; the server owns
-/// session identity, so it owns the name.
-///
-/// This is also where the launcher's optional label went. Naming a session is
-/// something an operator does to a session they can see, once, well after it
-/// started; asking for it on the way in put a third field on the fastest path
-/// in the product to serve a case that already had its own surface.
-#[component]
-pub fn RenameDialog(props: RenameProps) -> Element {
-    let session = props.seed.session;
-    let mut value = use_signal(|| props.seed.title.clone());
-    let mut error = use_signal(|| None::<String>);
+/// The one entry point the shell calls when [`crate::state::WindowState::layer`]
+/// moves. The match is exhaustive, so a variant added to [`Layer`] stops the
+/// build rather than opening nothing, and every arm ends in exactly one
+/// [`crate::shell::Shell::present`] or one dismiss: a layer is one surface,
+/// never a stack.
+pub(crate) fn present_layer(shell: &crate::shell::Shell, layer: &Layer) {
+    use std::rc::Rc;
 
-    let mut commit = move || {
-        let next = value.read().trim().to_string();
-        if next.is_empty() {
-            error.set(Some(
-                "A session needs a name. Type one, or cancel to keep the current title."
-                    .to_string(),
-            ));
-            return;
+    use crate::shell::Dialog;
+
+    match layer {
+        Layer::None => shell.dismiss(),
+        Layer::Shortcuts => {
+            let prefs = shell.peek(|st| st.daemon.settings.keyboard.clone());
+            shell.present(crate::ui::shortcuts::native::build(shell, &prefs) as Rc<dyn Dialog>);
         }
-        props.on_rename.call((session, next));
-    };
-
-    rsx! {
-        div {
-            class: "rg-layer rg-layer--dim",
-            onclick: move |_| props.on_dismiss.call(()),
-            div {
-                class: "rg-sheet rg-sheet--narrow",
-                role: "dialog",
-                aria_label: "Rename session",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "rg-sheet__head",
-                    span { class: "rg-sheet__title", "Rename session" }
-                }
-                div { class: "rg-field",
-                    input {
-                        class: "rg-field__input",
-                        id: "rg-rename",
-                        r#type: "text",
-                        autocomplete: "off",
-                        value: "{value}",
-                        oninput: move |e| {
-                            value.set(e.value());
-                            error.set(None);
-                        },
-                        onkeydown: move |e| {
-                            if e.key() == Key::Enter {
-                                e.prevent_default();
-                                commit();
-                            }
-                        },
-                    }
-                    span { class: "rg-field__hint",
-                        "Saved on the daemon, so every window sees it."
-                    }
-                }
-                if let Some(msg) = error.read().clone() {
-                    div { class: "rg-sheet__error", "{msg}" }
-                }
-                div { class: "rg-sheet__foot",
-                    button {
-                        class: "rg-btn",
-                        r#type: "button",
-                        onclick: move |_| props.on_dismiss.call(()),
-                        "Cancel"
-                    }
-                    button {
-                        class: "rg-btn rg-btn--primary",
-                        r#type: "button",
-                        onclick: move |_| commit(),
-                        "Rename"
-                    }
-                }
+        Layer::Search => {
+            shell.present(crate::ui::search::native::build(shell) as Rc<dyn Dialog>);
+        }
+        // Owned by the settings module, which builds its own sheet and knows
+        // which tab it is on.
+        Layer::Settings(_) => crate::ui::settings::sheet::present_layer(shell, layer),
+        Layer::Onboarding => {
+            shell.present(crate::ui::onboarding::native::build(shell) as Rc<dyn Dialog>);
+        }
+        Layer::WhatsNew => {
+            let releases = shell.peek(|st| {
+                crate::ui::whatsnew::whats_new(st.daemon.settings.last_seen_version().as_ref())
+            });
+            let seen = shell.clone();
+            let sheet = crate::ui::whatsnew::native::build(shell, &releases, move || {
+                seen.update(|st| {
+                    st.daemon
+                        .settings
+                        .mark_seen(&crate::update::current_version());
+                    st.window.layer = Layer::None;
+                });
+                seen.peek(crate::ui::settings::commit);
+            });
+            shell.present(sheet as Rc<dyn Dialog>);
+        }
+        // A menu is positioned, so it is presented as a popover at the point
+        // that was clicked and GTK does the clamping. An empty menu opens
+        // nothing: a popover with no items is a surface that swallows the next
+        // click for nothing.
+        Layer::Menu(menu) => {
+            if let Some(sheet) = crate::ui::menu::native::build(shell, menu.clone()) {
+                shell.present_at(sheet as Rc<dyn Dialog>, menu.x as i32, menu.y as i32);
             }
+        }
+        Layer::NewSession(seed) => {
+            shell.present(native::build(shell, seed) as Rc<dyn Dialog>);
+        }
+        Layer::Rename(seed) => {
+            shell.present(native::rename(shell, seed) as Rc<dyn Dialog>);
         }
     }
 }
@@ -1988,3 +1195,6 @@ mod tests;
 /// a way nobody writes them.
 #[cfg(test)]
 mod what_the_launcher_shows;
+
+/// The launcher itself, built as GTK widgets.
+pub mod native;

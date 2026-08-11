@@ -13,6 +13,7 @@
 
 use super::*;
 use crate::launch::LaunchStore;
+use crate::state::LauncherPrefs;
 
 /// The place function every case uses: deterministic, and never a real path.
 fn place(cwd: &str) -> String {
@@ -377,8 +378,16 @@ fn the_pane_always_says_what_the_product_is() {
 #[test]
 fn the_last_launch_is_the_head_of_recents() {
     let mut store = LaunchStore::default();
-    launch::remember(&mut store, "codex", &[], "/src/vitrum", 1_000);
-    launch::remember(&mut store, "claude", &["--resume".into()], "/src/other", 2_000);
+    let prefs = LauncherPrefs::default();
+    launch::remember(&mut store, "codex", &[], "/src/vitrum", 1_000, prefs);
+    launch::remember(
+        &mut store,
+        "claude",
+        &["--resume".into()],
+        "/src/other",
+        2_000,
+        prefs,
+    );
 
     let head = store.recents.first().cloned().expect("no recent recorded");
     assert_eq!(head.command, "claude");

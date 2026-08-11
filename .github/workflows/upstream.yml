@@ -23,14 +23,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "vendor/**"
       - "vendor-pty/**"
       - "vendor-ghostty-vt-sys/**"
       - "tools/upstream/**"
       - ".github/workflows/upstream.yml"
   pull_request:
     paths:
-      - "vendor/**"
       - "vendor-pty/**"
       - "vendor-ghostty-vt-sys/**"
       - "tools/upstream/**"
@@ -63,6 +61,5 @@ jobs:
       # a question. Installing Rust here would be a minute spent on nothing.
       - name: Check every fork against upstream
         run: |
-          sh tools/upstream/check.sh
           sh tools/upstream/check.sh --fork vendor-pty
           sh tools/upstream/check.sh --fork vendor-ghostty-vt-sys

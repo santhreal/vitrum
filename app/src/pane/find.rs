@@ -419,8 +419,8 @@ mod tests {
     /// WHY: a rescan happens on every frame that changes while the find bar is
     /// open. Resetting the current match to the top on each one makes the
     /// highlight jump away from what the operator is reading every time the
-    /// agent prints a line, which is the flapping seen in
-    /// another surface and would be the same defect here.
+    /// agent prints a line. That is the flapping another surface already had,
+    /// and it would be the same defect here.
     #[test]
     fn output_arriving_does_not_move_the_current_match() {
         let mut f = find(Query::literal("error").case_insensitive(true));

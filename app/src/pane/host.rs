@@ -8,10 +8,10 @@
 //!
 //! # Where the pane sits
 //!
-//! The toplevel's existing child is moved into a `GtkOverlay` and the pane is
-//! added as an overlay child inside a `GtkFixed`. `GtkFixed` has no window of
-//! its own, so it never intercepts a click meant for the shell underneath, and
-//! the drawing area is moved and sized by the shell in device pixels.
+//! Packed into the box the frame reserves for it, expanding and filling. Its
+//! rectangle is therefore decided by the toolkit walking the widget tree, and
+//! nothing computes it: a repaint of the titlebar, the sidebar or the bar
+//! cannot move the terminal, because none of them is its parent.
 //!
 //! # The frame clock
 //!
@@ -36,10 +36,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use gtk::prelude::*;
-use vitrum_dioxus_desktop::tao::platform::unix::WindowExtUnix;
-use vitrum_dioxus_desktop::tao::window::{Window, WindowId};
 
-use super::geometry::{MIN_COLS, MIN_ROWS, PaneRect, pane_grid};
+use crate::WindowId;
+
+use super::geometry::PaneRect;
 use super::key::{Key, Named};
 use super::mouse::{self, Action, Button, Position};
 use super::pacing::{FrameLog, FrameStats, Pacer, Tick, WINDOW};
@@ -57,13 +57,40 @@ use super::{InputSink, PaneReport, ReportSink, keymode, theme_from};
 /// the scroll is not shown until the next frame anyway.
 const AUTOSCROLL_MS: u32 = 16;
 
+/// How many allocations the pane's widget has been given.
+///
+/// A counter and not a log, because the claim it defends is a number: the
+/// pane resizes when its own allocation changes and at no other time. A
+/// repaint of the sidebar, the titlebar, the bar or a dialog must leave this
+/// standing still, and a drag of the divider must move it.
+static ALLOCATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many of those allocations changed the grid the child is writing into.
+///
+/// Strictly fewer than [`ALLOCATIONS`]: an allocation whose pixels divide
+/// into the same cell count costs nothing beyond a frame, which is why a
+/// one-pixel drag does not resize a pty.
+static RESIZES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Allocations the pane's widget has been given in this process.
+pub(crate) fn allocations() -> usize {
+    ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Grid resizes the pane has performed in this process.
+pub(crate) fn resizes() -> usize {
+    RESIZES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 thread_local! {
-    /// Every pane in this process, by the window it lives in.
+    /// Every pane in this process, by the ordinal of the window it lives in.
     ///
     /// Thread-local because GTK is single-threaded and every one of these is
-    /// created, used and dropped on the main loop. Keyed by window because
-    /// this process opens more than one, and an unkeyed handle would let one
-    /// window's shell place another window's pane.
+    /// created, used and dropped on the main loop. Keyed by the ordinal
+    /// rather than by a toolkit window handle because the ordinal is the
+    /// identity the rest of the program already uses for a window: geometry
+    /// is remembered under it, the tray checks it, and it survives the
+    /// toolkit underneath the window being replaced.
     static PANES: RefCell<HashMap<WindowId, PaneHost>> = RefCell::new(HashMap::new());
 }
 
@@ -81,8 +108,6 @@ struct Inner {
     /// The window this pane lives in, for the chord table's benefit.
     window: WindowId,
     area: gtk::DrawingArea,
-    /// The parent the shell moves the pane inside.
-    fixed: gtk::Fixed,
     /// The emulator, the grid and the overlay.
     session: PaneSession,
     /// The swapchain, once the widget is realized.
@@ -124,36 +149,24 @@ struct Drag {
 // Installation
 // ---------------------------------------------------------------------------
 
-/// Give `window` a pane.
+/// Give the window numbered `ordinal` a pane, inside `parent`.
 ///
-/// Runs from the window's construction callback, before the shell mounts, so
-/// the pane is parsing and holding a grid for the whole interval the shell is
-/// still being built.
+/// Runs while the frame is being built and before the window is shown, so the
+/// pane is parsing and holding a grid for the whole interval the panels are
+/// still being mounted.
+///
+/// `parent` is the box the frame reserves for the terminal. The area is packed
+/// to expand and fill, so its rectangle comes from the toolkit's allocation
+/// and from nothing else.
 ///
 /// # Errors
 ///
-/// The toplevel has no child to wrap, or the emulator refused its first size.
-pub(crate) fn install(window: &Window, input: InputSink) -> Result<PaneHost> {
-    let toplevel = window.gtk_window();
-    let child = toplevel
-        .child()
-        .ok_or_else(|| anyhow!("the window has no content to put the pane over"))?;
-
-    // The shell keeps its own window and its own input. The pane goes in a
-    // `GtkFixed`, which has no window at all, so a click that misses the
-    // drawing area lands on the shell exactly as it did before.
-    let overlay = gtk::Overlay::new();
-    toplevel.remove(&child);
-    overlay.add(&child);
-    let fixed = gtk::Fixed::new();
-    fixed.set_has_window(false);
-    overlay.add_overlay(&fixed);
-    // The overlay pass must not treat the pane as a thing to centre or
-    // stretch: the shell has already decided where it goes, to the pixel.
-    overlay.set_overlay_pass_through(&fixed, false);
-    toplevel.add(&overlay);
-    overlay.show_all();
-
+/// The emulator refused its first size.
+pub(crate) fn install_in(
+    parent: &gtk::Box,
+    ordinal: WindowId,
+    input: InputSink,
+) -> Result<PaneHost> {
     let area = gtk::DrawingArea::new();
     area.set_can_focus(true);
     area.add_events(
@@ -168,13 +181,13 @@ pub(crate) fn install(window: &Window, input: InputSink) -> Result<PaneHost> {
             | gdk::EventMask::ENTER_NOTIFY_MASK
             | gdk::EventMask::LEAVE_NOTIFY_MASK,
     );
-    fixed.put(&area, 0, 0);
+    parent.pack_start(&area, true, true, 0);
     area.show();
 
     let theme = theme_from(&crate::state::live::pane_settings());
     let scale = area.scale_factor().max(1);
-    // A size before the shell has measured anything. It is replaced by the
-    // first `place`, and it exists so the emulator is never zero by zero: a
+    // A size before the toolkit has allocated anything. It is replaced by the
+    // first allocation, and it exists so the emulator is never zero by zero: a
     // child started against a zero grid writes into nothing and its first
     // screen is lost.
     let session = PaneSession::new(80, 24, (8, 16), theme)
@@ -182,9 +195,8 @@ pub(crate) fn install(window: &Window, input: InputSink) -> Result<PaneHost> {
 
     let host = PaneHost {
         inner: Rc::new(RefCell::new(Inner {
-            window: window.id(),
+            window: ordinal,
             area: area.clone(),
-            fixed: fixed.clone(),
             session,
             surface: None,
             fault: None,
@@ -202,20 +214,8 @@ pub(crate) fn install(window: &Window, input: InputSink) -> Result<PaneHost> {
     };
 
     host.wire(&area);
-    PANES.with(|m| m.borrow_mut().insert(window.id(), host.clone()));
+    PANES.with(|m| m.borrow_mut().insert(ordinal, host.clone()));
     Ok(host)
-}
-
-/// Move and size the pane. Device pixels, padding box, client-area origin.
-///
-/// The shell has already subtracted every piece of chrome. The pane divides
-/// what it is given into whole cells and subtracts nothing else, which is what
-/// keeps the content off the top edge and keeps the bottom of an approval
-/// prompt inside the window.
-pub(crate) fn place(window: &Window, rect: PaneRect) {
-    if let Some(host) = PaneHost::for_window(window.id()) {
-        host.place(rect);
-    }
 }
 
 impl PaneHost {
@@ -244,38 +244,6 @@ impl PaneHost {
     /// Where the pane sends what only the shell can act on.
     pub(crate) fn on_report(&self, report: ReportSink) {
         self.inner.borrow_mut().report = Some(report);
-    }
-
-    /// Move and size the pane.
-    pub(crate) fn place(&self, rect: PaneRect) {
-        let (area, fixed, scale, showable) = {
-            let mut inner = self.inner.borrow_mut();
-            if inner.rect == rect {
-                return;
-            }
-            inner.rect = rect;
-            let scale = inner.scale.max(1);
-            let showable = rect.is_paintable() && holds_a_grid(rect, inner.cell_px(), scale);
-            (inner.area.clone(), inner.fixed.clone(), scale, showable)
-        };
-        // GTK positions in logical pixels; the shell measured device pixels.
-        // Dividing here rather than at the call site keeps one definition of
-        // what a `PaneRect` means.
-        fixed.move_(&area, rect.x / scale, rect.y / scale);
-        if showable {
-            area.set_size_request(
-                (rect.width / scale as u32) as i32,
-                (rect.height / scale as u32) as i32,
-            );
-            area.show();
-        } else {
-            // A rectangle with nowhere to put a grid is a pane that is not on
-            // screen: the widget is unmapped, or the shell is mid-layout.
-            // Hiding it is the honest answer; a one-pixel swapchain is a
-            // validation error and a floor-sized grid is a pty resize every
-            // agent on screen has to repaint for.
-            area.hide();
-        }
     }
 
     /// Adopt a new theme while the window is open.
@@ -485,7 +453,7 @@ impl PaneHost {
     ///
     /// With a surface this returns `Stop` and draws nothing: the X window
     /// under the widget belongs to the GPU and a themed background drawn over
-    /// it on every expose is the flicker this fixes.
+    /// it on every expose flickers.
     fn draw_fallback(&self, area: &gtk::DrawingArea, cr: &gtk::cairo::Context) -> glib::Propagation {
         let (fault, bg) = {
             let inner = self.inner.borrow();
@@ -520,7 +488,14 @@ impl PaneHost {
     }
 
     /// Follow the widget to a new size.
+    ///
+    /// The ONLY way the pane changes size. There is no second entry point
+    /// that takes a rectangle from elsewhere: a rectangle computed from the
+    /// window size and the sidebar width, and pushed here whenever anything
+    /// on screen re-rendered, is what made the terminal move under the
+    /// operator while something else painted.
     fn allocated(&self, alloc: &gtk::Allocation) {
+        ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let resized = {
             let mut inner = self.inner.borrow_mut();
             let scale = inner.scale.max(1) as u32;
@@ -528,6 +503,17 @@ impl PaneHost {
                 (alloc.width().max(1) as u32) * scale,
                 (alloc.height().max(1) as u32) * scale,
             );
+            // What the pane is, in device pixels, for everything that reasons
+            // about the surface rather than the widget: the scrollbar thumb,
+            // the selection, and the slack under the last full row. Read from
+            // the allocation because the allocation is the only truth about
+            // where the pane is.
+            inner.rect = PaneRect {
+                x: alloc.x().max(0) * scale as i32,
+                y: alloc.y().max(0) * scale as i32,
+                width: px.0,
+                height: px.1,
+            };
             let Some(surface) = inner.surface.as_mut() else {
                 return;
             };
@@ -542,6 +528,18 @@ impl PaneHost {
                 return;
             }
             inner.pacer.mark();
+            RESIZES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Both counts, on the one line that means the pty was resized.
+            // The claim they defend is a comparison over time, so a reader
+            // needs the pair at the moment it moved rather than a total at
+            // the end: a repaint of any other surface must leave these
+            // standing still and only a change of the pane's own allocation
+            // may move them.
+            tracing::debug!(
+                allocations = allocations(),
+                resizes = resizes(),
+                "pane resized to {cols}x{rows}"
+            );
             (cols, rows)
         };
         self.report(PaneReport::Resize {
@@ -1402,29 +1400,6 @@ const fn drag_changes(mode: SelectMode, from: Point, to: Point) -> bool {
     !matches!(mode, SelectMode::Line) && from.col != to.col
 }
 
-/// Whether a rectangle still holds a grid worth handing to a child.
-///
-/// [`PaneRect::is_paintable`] answers whether a swapchain can be configured,
-/// which is a different question. GTK is sized in logical pixels, so the
-/// device rectangle is divided by the scale and truncated before the widget
-/// ever sees it, and one cell is a fraction of a logical pixel at any scale
-/// above one. A rectangle that comes out of that with no more than the floor
-/// is the shell mid-layout: showing it resizes the pty down to the floor and
-/// every agent on screen repaints its whole transcript into a sliver.
-fn holds_a_grid(rect: PaneRect, cell: (u32, u32), scale: i32) -> bool {
-    let divisor = scale.max(1) as u32;
-    let s = f64::from(divisor);
-    let (cols, rows) = pane_grid(
-        f64::from(rect.width / divisor),
-        f64::from(rect.height / divisor),
-        0.0,
-        0.0,
-        f64::from(cell.0) / s,
-        f64::from(cell.1) / s,
-    );
-    cols > MIN_COLS && rows > MIN_ROWS
-}
-
 /// The button held during a motion event, if any.
 fn held_button(state: gdk::ModifierType) -> Option<Button> {
     if state.contains(gdk::ModifierType::BUTTON1_MASK) {
@@ -1542,27 +1517,5 @@ mod tests {
         // A line selection covers whole rows, so only the row matters.
         assert!(!drag_changes(SelectMode::Line, a, b));
         assert!(drag_changes(SelectMode::Line, a, c));
-    }
-
-    /// WHY: a rectangle three pixels wide is paintable and holds no column.
-    /// Showing it resizes the pty to the floor, and every agent on screen
-    /// repaints its whole transcript into a sliver for one frame of a drag.
-    #[test]
-    fn a_rectangle_that_cannot_hold_a_grid_is_not_shown() {
-        let rect = |w: u32, h: u32| PaneRect {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-        };
-        assert!(holds_a_grid(rect(1920, 1080), (10, 20), 1));
-        assert!(!holds_a_grid(PaneRect::EMPTY, (10, 20), 1));
-        // Exactly the floor is the clamp talking, not a grid.
-        assert!(!holds_a_grid(rect(20, 20), (10, 20), 1));
-        assert!(holds_a_grid(rect(30, 60), (10, 20), 1));
-        // At 2x the widget is given half the pixels and the cell is half a
-        // logical pixel, so the same rectangle survives.
-        assert!(holds_a_grid(rect(3840, 2160), (20, 40), 2));
-        assert!(!holds_a_grid(rect(40, 40), (20, 40), 2));
     }
 }

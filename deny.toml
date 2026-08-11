@@ -21,25 +21,22 @@ yanked = "deny"
 unmaintained = "workspace"
 ignore = [
     # RUSTSEC-2024-0415: the gtk3 bindings are unmaintained in favour of gtk4.
-    # gtk3 is what wry and tao bind, which is what the shipping Linux window
-    # is; the tray reaches it a second way through libappindicator. gtk4 is a
-    # migration of the whole webview stack and cannot start here. Re-check
-    # when wry moves.
+    # gtk3 is this application's window, and it is gtk3 rather than gtk4
+    # because the terminal pane presents a wgpu swapchain on the drawing
+    # area's own native subwindow, which gtk4 removed. Re-check when the pane
+    # can present without one.
     "RUSTSEC-2024-0415",
     # RUSTSEC-2024-0412: the gdk3 bindings, the same gtk3 stack one layer
     # down, and the id this graph actually resolves to. Same reason and same
-    # exit as RUSTSEC-2024-0415: it goes when wry moves to gtk4.
+    # exit as RUSTSEC-2024-0415.
     "RUSTSEC-2024-0412",
     # RUSTSEC-2024-0429: `glib::VariantStrIter`'s `Iterator` implementation
     # passes `&p` to a C function that writes through it, which a recent
     # compiler may discard. This is `unsound`, a category of its own, so
     # scoping `unmaintained` does not cover it and removing this entry made it
-    # fail. glib 0.18 is what gtk3 binds, which is what tao and wry bind, which
-    # is this application's window; nothing here can reach glib 0.19 before wry
-    # does. Nothing in this workspace constructs or iterates a
-    # `VariantStrIter`: the only glib this product calls directly is the native
-    # pane's `MainContext` and `ObjectExt` on a drawing area. Re-check when wry
-    # moves.
+    # fail. glib 0.18 is what gtk 0.18 binds, so nothing here reaches glib
+    # 0.19 before the gtk3 bindings do, and they are unmaintained. Nothing in
+    # this workspace constructs or iterates a `VariantStrIter`.
     "RUSTSEC-2024-0429",
     # RUSTSEC-2026-0192: ttf-parser is unmaintained, with skrifa named as the
     # replacement. vitrum-grid reaches it through fontdue and fontdb as well
@@ -70,8 +67,7 @@ allow = [
     "Unicode-3.0",
     # slotmap, foldhash, const_format, konst.
     "Zlib",
-    # cssparser, selectors, dtoa-short, all reached through the webview stack,
-    # and option-ext through dirs. MPL-2.0 is file-level copyleft: it binds the
+    # option-ext, through dirs. MPL-2.0 is file-level copyleft: it binds the
     # files it covers, which nothing here modifies, and does not reach vitrum's
     # own sources. Compatible with distributing under MIT OR Apache-2.0.
     "MPL-2.0",
@@ -92,8 +88,8 @@ allow = [
 
 [bans]
 # A tree this size never agrees with itself on bitflags, hashbrown, getrandom
-# or windows-sys: the webview stack, tokio and the image codecs each unify
-# around a different major. Denying duplicates would fail on upstream's
+# or windows-sys: the gtk bindings, tokio, wgpu and the image codecs each
+# unify around a different major. Denying duplicates would fail on upstream's
 # schedule rather than on anything done here, so report and move on.
 multiple-versions = "warn"
 wildcards = "warn"

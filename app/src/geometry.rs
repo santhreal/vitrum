@@ -4,6 +4,9 @@
 //! and the physical rectangle the OS is asked for. Both are decided here so
 //! that a restored window and a fresh one go through the same arithmetic.
 
+use gtk::gdk;
+use gtk::prelude::*;
+
 use super::*;
 
 /// The logical density this program aims to put in front of the operator.
@@ -23,8 +26,8 @@ use super::*;
 /// At 110 the same panel lands on 1.5x and the list holds half again as many.
 ///
 /// The bug this exists to fix is still the one it always was: the X session
-/// here reports `Xft.dpi: 96` with `GDK_SCALE` unset, so the toolkit hands the
-/// webview a scale factor of exactly 1.0 for both a 163 dpi panel and an 82
+/// here reports `Xft.dpi: 96` with `GDK_SCALE` unset, so the toolkit reports a
+/// scale factor of exactly 1.0 for both a 163 dpi panel and an 82
 /// dpi one, and `16px` comes out 2.5 mm tall on the first. Nothing is broken;
 /// everything is half-size.
 pub(crate) const REFERENCE_DPI: f64 = 110.0;
@@ -146,85 +149,66 @@ pub(crate) fn quantize_ui_scale(raw: f64) -> f64 {
 /// Read a monitor's density through GDK, which is the only interface on X11
 /// that knows the panel's physical size.
 ///
-/// tao's own `scale_factor()` is not enough and cannot be: it forwards
-/// `gdk_monitor_get_scale_factor`, which on this session is 1 on both a 82 dpi
-/// panel and a 163 dpi one because nobody set `GDK_SCALE`. The millimetres
-/// come from RandR, which reads them out of the EDID, and they are the only
-/// signal that distinguishes the two.
-#[cfg(target_os = "linux")]
-pub(crate) fn density_of(monitor: &MonitorHandle) -> Density {
-    use gtk::gdk::prelude::MonitorExt;
-    use vitrum_dioxus_desktop::tao::platform::unix::MonitorHandleExtUnix;
-
-    let gdk = monitor.gdk_monitor();
-    // GDK reports geometry in logical pixels and tao reports it in device
-    // pixels; the density arithmetic wants device pixels, so undo GDK's
-    // division rather than tao's multiplication.
-    let os_scale = f64::from(gdk.scale_factor().max(1));
-    let geometry = gdk.geometry();
+/// The toolkit's own scale factor is not enough and cannot be: on an X session
+/// with `Xft.dpi: 96` and no `GDK_SCALE` it is 1 for both a 82 dpi panel and a
+/// 163 dpi one. The millimetres come from RandR, which reads them out of the
+/// EDID, and they are the only signal that distinguishes the two.
+///
+/// One implementation for every platform, because GDK answers everywhere.
+/// macOS and Windows report a scale factor that is already the whole answer
+/// and leave the millimetres at zero, which is exactly what makes
+/// [`Density::ui_scale`] hand back 1.0 and defer to them.
+pub(crate) fn density_of(monitor: &gdk::Monitor) -> Density {
+    // GDK reports geometry in logical pixels and the density arithmetic wants
+    // device pixels, so the toolkit's division is undone here.
+    let os_scale = f64::from(monitor.scale_factor().max(1));
+    let geometry = monitor.geometry();
     Density {
         width_px: (f64::from(geometry.width().max(0)) * os_scale) as u32,
         height_px: (f64::from(geometry.height().max(0)) * os_scale) as u32,
-        width_mm: gdk.width_mm().max(0) as u32,
-        height_mm: gdk.height_mm().max(0) as u32,
+        width_mm: monitor.width_mm().max(0) as u32,
+        height_mm: monitor.height_mm().max(0) as u32,
         os_scale,
     }
 }
 
-/// Everywhere else, the platform already did this properly.
+/// Every monitor attached right now, and the primary one.
 ///
-/// macOS reports a backing scale factor that is the whole answer, and Windows
-/// reports the per-monitor effective DPI the user chose in Settings. tao
-/// forwards both. Leaving the millimetres at zero is what makes
-/// [`Density::ui_scale`] hand back 1.0 and defer to them.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn density_of(monitor: &MonitorHandle) -> Density {
-    let size = monitor.size();
-    Density {
-        width_px: size.width,
-        height_px: size.height,
-        width_mm: 0,
-        height_mm: 0,
-        os_scale: monitor.scale_factor(),
-    }
+/// Empty with no display, which is a headless process and not an error worth
+/// refusing to open a window over: the geometry rules all have an answer for
+/// no monitor at all.
+pub(crate) fn monitors() -> (Vec<gdk::Monitor>, Option<gdk::Monitor>) {
+    let Some(display) = gdk::Display::default() else {
+        return (Vec::new(), None);
+    };
+    let all: Vec<gdk::Monitor> = (0..display.n_monitors())
+        .filter_map(|i| display.monitor(i))
+        .collect();
+    let primary = display.primary_monitor().or_else(|| all.first().cloned());
+    (all, primary)
 }
 
 /// The density of the monitor `window` is on right now.
-pub(crate) fn window_density(window: &Window) -> Density {
-    window
-        .current_monitor()
-        .or_else(|| window.primary_monitor())
-        .as_ref()
-        .map(density_of)
-        .unwrap_or(Density {
-            width_px: 0,
-            height_px: 0,
-            width_mm: 0,
-            height_mm: 0,
-            os_scale: window.scale_factor(),
-        })
+pub(crate) fn window_density(window: &gtk::Window) -> Density {
+    let on = gdk::Display::default().and_then(|display| {
+        window
+            .window()
+            .and_then(|surface| display.monitor_at_window(&surface))
+            .or_else(|| display.primary_monitor())
+    });
+    on.as_ref().map(density_of).unwrap_or(Density {
+        width_px: 0,
+        height_px: 0,
+        width_mm: 0,
+        height_mm: 0,
+        os_scale: f64::from(window.scale_factor().max(1)),
+    })
 }
 
 /// The scale this window should be drawn at: the override if there is one,
 /// otherwise the panel's own answer.
-pub(crate) fn window_ui_scale(window: &Window, override_scale: Option<f64>) -> f64 {
+pub(crate) fn window_ui_scale(window: &gtk::Window, override_scale: Option<f64>) -> f64 {
     override_scale.unwrap_or_else(|| window_density(window).ui_scale())
-}
-
-/// Width of the document, in CSS pixels, once `scale` is applied.
-///
-/// tao measures the client area in device pixels. The webview divides those by
-/// the toolkit's scale factor to get CSS pixels, and page zoom divides them
-/// again, so a 3840 px client area at 1.75 zoom is a 2194 CSS pixel document.
-/// Anything reasoning about layout has to work in that second number.
-pub(crate) fn css_viewport_width(window: &Window, scale: f64) -> f64 {
-    let device = f64::from(window.inner_size().width);
-    let divisor = window.scale_factor() * scale;
-    if divisor > 0.0 {
-        device / divisor
-    } else {
-        device
-    }
 }
 
 /// Fraction of the document the sidebar takes when nobody has dragged it.
@@ -234,6 +218,7 @@ pub(crate) fn css_viewport_width(window: &Window, scale: f64) -> f64 {
 /// titles beside an ocean of terminal. A fraction is the same sidebar on every
 /// screen, and 22% is where a 30-character session title stops eliding at the
 /// default type size.
+#[cfg(test)]
 pub(crate) const SIDEBAR_FRACTION: f64 = 0.22;
 
 /// Document width the automatic sidebar will not eat into.
@@ -241,9 +226,11 @@ pub(crate) const SIDEBAR_FRACTION: f64 = 0.22;
 /// 80 columns plus the tab strip's padding. When the window is too narrow to
 /// hold both, the terminal wins: a sidebar beside a 30-column terminal is a
 /// file manager, not a terminal shell.
+#[cfg(test)]
 pub(crate) const MIN_CONTENT_CSS_PX: f64 = 360.0;
 
 /// Sidebar width, in CSS pixels, for a window nobody has dragged.
+#[cfg(test)]
 pub(crate) fn default_sidebar_width(css_window_width: f64) -> f64 {
     let room = (css_window_width - MIN_CONTENT_CSS_PX).max(SIDEBAR_MIN_PX);
     (css_window_width * SIDEBAR_FRACTION)
@@ -284,16 +271,6 @@ pub(crate) const CASCADE_CSS_PX: f64 = 32.0;
 
 /// Cascade steps before starting over at the top left.
 pub(crate) const CASCADE_STEPS: usize = 8;
-
-/// What a window needs to know about itself that the process cannot infer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WindowSeed {
-    /// Slot in the remembered-geometry table.
-    pub(crate) ordinal: usize,
-    /// A session this window was asked to open, carried in by a `vitrum://`
-    /// URL that a second launch handed over.
-    pub(crate) link: Option<DeepLink>,
-}
 
 /// Geometry for every window this process has opened, by ordinal.
 ///
@@ -452,11 +429,12 @@ pub(crate) fn load_geometry(monitors: &[Monitor]) -> Vec<WindowGeometry> {
 /// called `commit`, and the exit hooks wrote only `windows.json`. The state
 /// survived a restart when some unrelated control committed afterwards and
 /// carried it along, and was lost when nothing did.
-pub(crate) fn save_window_state(st: Signal<UiState>) {
-    let state = st.peek();
-    if let Err(why) = crate::state::save_prefs(&state.daemon, &state.window) {
-        tracing::warn!("window state not saved: {why}");
-    }
+pub(crate) fn save_window_state(shell: &crate::shell::Shell) {
+    shell.peek(|state| {
+        if let Err(why) = crate::state::save_prefs(&state.daemon, &state.window) {
+            tracing::warn!("window state not saved: {why}");
+        }
+    });
 }
 
 /// Write remembered geometry.
@@ -496,14 +474,22 @@ pub(crate) fn save_geometry() {
 /// The monitor list in the form [`window_state::clamp_to_monitors`] wants,
 /// primary first because that function breaks ties by position in the slice
 /// and "the second screen is gone" has to land on the primary.
+///
+/// Logical pixels, because that is what GTK is told when a window is placed
+/// and a rectangle compared in one unit and applied in another is a window at
+/// a quarter size on the first machine with `GDK_SCALE` set.
 pub(crate) fn monitor_rects(
-    primary: Option<&MonitorHandle>,
-    all: &[MonitorHandle],
+    primary: Option<&gdk::Monitor>,
+    all: &[gdk::Monitor],
 ) -> Vec<Monitor> {
-    let rect = |m: &MonitorHandle| {
-        let p = m.position();
-        let s = m.size();
-        Monitor::new(p.x, p.y, s.width, s.height)
+    let rect = |m: &gdk::Monitor| {
+        let g = m.geometry();
+        Monitor::new(
+            g.x(),
+            g.y(),
+            g.width().max(0) as u32,
+            g.height().max(0) as u32,
+        )
     };
     let mut out: Vec<Monitor> = primary.map(rect).into_iter().collect();
     for m in all {
@@ -518,19 +504,17 @@ pub(crate) fn monitor_rects(
 /// Read a live window's rectangle.
 ///
 /// The sidebar width comes from the book rather than from the window, because
-/// it is a document measurement the window cannot see. Keeping it out of here
-/// is what lets `Moved` write a rectangle without clobbering a width the user
-/// dragged half a second earlier.
-pub(crate) fn measure(window: &Window, ordinal: usize) -> WindowGeometry {
-    let size = window.inner_size();
-    let position = window
-        .outer_position()
-        .unwrap_or(PhysicalPosition::new(0, 0));
+/// it is a layout measurement in CSS pixels and the window is in logical ones.
+/// Keeping it out of here is what lets a move write a rectangle without
+/// clobbering a width the operator dragged half a second earlier.
+pub(crate) fn measure(window: &gtk::Window, ordinal: usize) -> WindowGeometry {
+    let (width, height) = window.size();
+    let (x, y) = window.position();
     WindowGeometry {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
+        x,
+        y,
+        width: width.max(0) as u32,
+        height: height.max(0) as u32,
         maximized: window.is_maximized(),
         sidebar_width: remembered(ordinal)
             .map(|s| s.sidebar_width)
@@ -540,34 +524,31 @@ pub(crate) fn measure(window: &Window, ordinal: usize) -> WindowGeometry {
 
 /// Geometry for a window that has never been placed.
 ///
-/// Every number here is in device pixels, which is what tao reports and what
-/// the window manager consumes. Persisting device pixels rather than logical
-/// ones is deliberate: the two agree on this machine and diverge the moment
-/// somebody sets `GDK_SCALE`, and a rectangle saved in one unit and restored
-/// in the other is a window at a quarter size with no clue why.
+/// Every number here is in logical pixels, which is the unit GTK is given when
+/// a window is placed and sized. Persisting the same unit the toolkit consumes
+/// is deliberate: logical and device pixels agree until somebody sets
+/// `GDK_SCALE`, and a rectangle saved in one and restored in the other is a
+/// window at a quarter size with no clue why.
 pub(crate) fn fresh_geometry(
-    monitor: Option<&MonitorHandle>,
+    monitor: Option<&gdk::Monitor>,
     scale: f64,
     ordinal: usize,
 ) -> WindowGeometry {
-    let density = monitor.map(density_of);
-    let os_scale = density.map_or(1.0, |d| d.os_scale).max(1.0);
     let (mx, my, mw, mh) = match monitor {
         Some(m) => {
-            let p = m.position();
-            let s = m.size();
+            let g = m.geometry();
             (
-                p.x as f64,
-                p.y as f64,
-                f64::from(s.width),
-                f64::from(s.height),
+                f64::from(g.x()),
+                f64::from(g.y()),
+                f64::from(g.width().max(0)),
+                f64::from(g.height().max(0)),
             )
         }
         None => (
             0.0,
             0.0,
-            FRESH_WINDOW_CSS.0 * scale * os_scale,
-            FRESH_WINDOW_CSS.1 * scale * os_scale,
+            FRESH_WINDOW_CSS.0 * scale,
+            FRESH_WINDOW_CSS.1 * scale,
         ),
     };
 
@@ -585,15 +566,15 @@ pub(crate) fn fresh_geometry(
     // The old fixed size survives as the FLOOR, so a small laptop panel is
     // never worse off than before, and the 90% cap still keeps the frame
     // reachable.
-    let fresh_w = FRESH_WINDOW_CSS.0 * scale * os_scale;
-    let fresh_h = FRESH_WINDOW_CSS.1 * scale * os_scale;
+    let fresh_w = FRESH_WINDOW_CSS.0 * scale;
+    let fresh_h = FRESH_WINDOW_CSS.1 * scale;
     let width = (mw * FRESH_WINDOW_MONITOR_TARGET)
         .max(fresh_w)
         .min(mw * FRESH_WINDOW_MONITOR_FRACTION);
     let height = (mh * FRESH_WINDOW_MONITOR_TARGET)
         .max(fresh_h)
         .min(mh * FRESH_WINDOW_MONITOR_FRACTION);
-    let step = (ordinal % CASCADE_STEPS) as f64 * CASCADE_CSS_PX * scale * os_scale;
+    let step = (ordinal % CASCADE_STEPS) as f64 * CASCADE_CSS_PX * scale;
     // Centre, then cascade, then push back on screen: eight steps down and
     // right from the middle of a small monitor walks the last window off the
     // bottom corner, and a window whose title bar is off screen cannot be

@@ -106,12 +106,11 @@ jobs:
         with:
           shared-key: linux
 
-      # The client links the system webview. On Ubuntu that is WebKitGTK, and
-      # nothing in the runner image provides it. The script returns immediately
-      # when the packages are already there, which is the normal case on a
-      # self-hosted runner.
-      - name: system webview
-        run: ./.github/system-webview.sh
+      # The client links GTK3, and nothing in the runner image provides its
+      # development package. The script returns immediately when the packages
+      # are already there, which is the normal case on a self-hosted runner.
+      - name: system dependencies
+        run: ./.github/system-deps.sh
 
       # The terminal engine is built from Ghostty source by `vitrum-vt`, whose
       # default `vendored` route needs Zig. The version is the one Ghostty
@@ -208,8 +207,8 @@ jobs:
 
       # The gate lives in the client binary, and the client links the system
       # webview, so this job needs the same two prerequisites the build does.
-      - name: system webview
-        run: ./.github/system-webview.sh
+      - name: system dependencies
+        run: ./.github/system-deps.sh
 
       - name: zig toolchain
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -555,8 +554,8 @@ jobs:
           shared-key: linux
           # The test job on this platform is the one that populates the cache.
           save-if: false
-      - name: system webview
-        run: ./.github/system-webview.sh
+      - name: system dependencies
+        run: ./.github/system-deps.sh
       - name: zig toolchain
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
@@ -595,7 +594,7 @@ jobs:
       # runner's assumptions do not hold.
       #
       # Debian 12 is the oldest glibc among the distributions with a packaged
-      # WebKitGTK 4.1; Arch is the newest of everything and the one whose
+      # GTK3; Arch is the newest of everything and the one whose
       # library sonames move first. `--version` is enough: the loader resolves
       # every DT_NEEDED before main runs, which is exactly what failed.
       - name: the archive starts on Debian 12 and on Arch
@@ -608,12 +607,12 @@ jobs:
           docker run --rm -v "$PWD/distro-check:/a:ro" debian:12 sh -c '
             set -eu
             apt-get update -qq
-            apt-get install -y -qq libwebkit2gtk-4.1-0 libayatana-appindicator3-1 >/dev/null
+            apt-get install -y -qq libgtk-3-0 libayatana-appindicator3-1 >/dev/null
             /a/vitrum-server --version
             /a/vitrum --version'
           docker run --rm -v "$PWD/distro-check:/a:ro" archlinux:latest sh -c '
             set -eu
-            pacman -Syu --noconfirm --needed webkit2gtk-4.1 libayatana-appindicator >/dev/null
+            pacman -Syu --noconfirm --needed gtk3 libayatana-appindicator >/dev/null
             /a/vitrum-server --version
             /a/vitrum --version'
           rm -rf distro-check

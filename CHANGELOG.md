@@ -19,7 +19,16 @@ Before 1.0, a minor bump may break compatibility.
   script and the serialised tables handed across to them are deleted.
   `app/src/tests/no_javascript.rs` enumerates the tracked tree and fails on a
   script file or a script element, so the deletion is a decision rather than a
-  commit. The shell is still Dioxus over the system webview.
+  commit.
+- **The window is native GTK, and the product links no webview.** The shell
+  around the pane was a Dioxus document rendered by WebKitGTK, and in that
+  arrangement no pointer or keyboard event reached Rust: the close glyph, the
+  chords and the sidebar rows were all inert, and the pane never painted
+  because the callback that measures its rectangle never fired. Titlebar,
+  sidebar, pane bar, settings, dialogs, launcher, menus and toasts are GTK 3
+  widgets now, in the same toplevel that owns the pane's subwindow. The
+  `dioxus`, `dioxus-ssr` and vendored `dioxus-desktop` dependencies are gone
+  with `vendor/`, and Linux links GTK 3 instead of WebKitGTK.
 - **The window is drawn like an application and not like a page.** Every
   surface is on one baseline grid and one spacing scale, sized against the
   system text size rather than against a fixed pixel count. Rows, headers,

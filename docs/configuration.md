@@ -44,6 +44,7 @@ rejected, and the clamped value is what gets written back.
 | `textScalePct` | Interface text scale, 80 to 200 | `100` |
 | `reduceMotion` | Take the reduced-motion path whatever the desktop reports | `false` |
 | `confirmTerminate` | Ask before terminating a live child | `true` |
+| `maxTabs` | Tabs the strip holds before it evicts the least recently used one, 2 to 32 | `8` |
 
 ### Terminal
 
@@ -130,11 +131,63 @@ Under `policy`.
 |---|---|---|
 | `autoSettleAfterMs` | Inactivity after which an unattended row settles itself. `null` disables it | `604800000` |
 
+### Inbox bands
+
+Under `inbox`. A band draws this many rows and offers the rest behind one
+affordance. The focused row is drawn whether or not the cut reaches it.
+
+| Key | Effect | Default |
+|---|---|---|
+| `previewRows` | Inbox rows a bucket draws, 1 to 50 | `8` |
+| `settledRows` | Done-shelf rows a bucket draws, 1 to 100 | `10` |
+
+### Launcher
+
+Under `launcher`. Lowering `historyLimit` trims by rank, so what goes is what
+was least worth suggesting rather than what is oldest.
+
+| Key | Effect | Default |
+|---|---|---|
+| `recentRows` | Recent commands the launcher lists, 1 to 50 | `12` |
+| `historyLimit` | Commands kept in the ranked history, 10 to 1000 | `60` |
+
+### Snooze
+
+Under `snooze`. Both are hours of the day, 0 to 23, and they set when the
+named presets in the snooze menu wake.
+
+| Key | Effect | Default |
+|---|---|---|
+| `morningHour` | Hour the morning presets wake at | `9` |
+| `eveningHour` | Hour the evening preset wakes at | `18` |
+
+### Search
+
+Under `search`. The daemon rations `maxHits` per session, a quarter of it
+floored at eight, so the cap is shared rather than granted to each session.
+
+| Key | Effect | Default |
+|---|---|---|
+| `contextLines` | Lines quoted either side of a hit, 0 to 64 | `2` |
+| `maxHits` | Hits one sweep returns before the answer is truncated, 25 to 5000 | `500` |
+
+### Connection
+
+Under `connection`. The schedule doubles from 250 ms, holds at
+`reconnectMaxMs`, and ends after `reconnectAttempts`, at which point the
+window offers Retry.
+
+| Key | Effect | Default |
+|---|---|---|
+| `reconnectMaxMs` | Longest gap between two attempts, 1000 to 600000 | `30000` |
+| `reconnectAttempts` | Attempts before Retry is offered instead, 1 to 200 | `25` |
+
 ### Updates and first run
 
 | Key | Effect | Default |
 |---|---|---|
 | `updateChannel` | `stable` or `nightly` | `stable` |
+| `updateCheckHours` | Hours between quiet checks while a window is open, 1 to 168 | `4` |
 | `showRestartToUpdate` | Draw the restart band after an update is staged | `true` |
 | `ignoredUpdate` | Newest version dismissed from the titlebar. Empty means none | `""` |
 | `seenVersion` | Version whose release notes were last shown | `""` |

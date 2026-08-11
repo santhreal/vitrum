@@ -393,11 +393,11 @@ mod tests {
         }
     }
 
-    /// WHY: the pane's type was the wrong
-    /// physical size on a dense panel. Points are a physical unit and pixels
-    /// are not, so the conversion has to go through the display's measured
-    /// scale. A pane that converts at a fixed ratio draws 12 pt at 16 px on a
-    /// panel where the rest of the window draws it at 28.
+    /// WHY: the pane's type comes out the wrong physical size on a dense
+    /// panel. Points are a physical unit and pixels are not, so the conversion
+    /// has to go through the display's measured scale. A pane that converts at
+    /// a fixed ratio draws 12 pt at 16 px on a panel where the rest of the
+    /// window draws it at 28.
     #[test]
     fn type_size_follows_the_displays_scale_rather_than_a_constant() {
         let theme = PaneTheme {

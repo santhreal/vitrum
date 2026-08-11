@@ -93,8 +93,8 @@ pub struct PaneSettings {
 
 /// Everything outside the component tree reads out of the settings document.
 ///
-/// The window frame, the tray and the boot surface all live outside Dioxus and
-/// all read preferences. They get the same treatment as the pane rather than a
+/// The window frame, the tray and the boot surface all live outside the
+/// settings sheet and all read preferences. They get the same treatment as the pane rather than a
 /// second mechanism.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellSettings {
@@ -115,6 +115,19 @@ pub struct ShellSettings {
     pub flash_life_ms: Option<u64>,
     /// Window chrome alpha, as a percentage.
     pub opacity_pct: u8,
+    /// Longest gap between two reconnect attempts, in milliseconds. Read by
+    /// the reconnect schedule, which runs on the socket task and never sees a
+    /// component body.
+    pub reconnect_max_ms: u32,
+    /// Reconnect attempts before the schedule ends and Retry is offered.
+    pub reconnect_attempts: u32,
+    /// Lines of context one search sweep asks for either side of a hit.
+    pub search_context_lines: u16,
+    /// Hits one search sweep is capped at.
+    pub search_max_hits: u32,
+    /// Hours between two quiet update checks. Read by the update watcher,
+    /// which is a task and not a component.
+    pub update_check_hours: u8,
 }
 
 impl PaneSettings {
@@ -172,6 +185,30 @@ impl ShellSettings {
             startup: settings.startup,
             flash_life_ms: settings.notices.flash_life_ms(),
             opacity_pct: settings.appearance.opacity_pct,
+            // Re-clamped here rather than trusted, for the same reason the
+            // pane snapshot re-clamps its own: `derive` is reachable from a
+            // document that has not been through `Settings::clamp`, and a
+            // subscriber has nowhere to put a value it cannot use.
+            reconnect_max_ms: settings.connection.reconnect_max_ms.clamp(
+                super::RECONNECT_MAX_MS_MIN,
+                super::RECONNECT_MAX_MS_MAX,
+            ),
+            reconnect_attempts: settings.connection.reconnect_attempts.clamp(
+                super::RECONNECT_ATTEMPTS_MIN,
+                super::RECONNECT_ATTEMPTS_MAX,
+            ),
+            search_context_lines: settings
+                .search
+                .context_lines
+                .clamp(super::CONTEXT_LINES_MIN, super::CONTEXT_LINES_MAX),
+            search_max_hits: settings
+                .search
+                .max_hits
+                .clamp(super::MAX_HITS_MIN, super::MAX_HITS_MAX),
+            update_check_hours: settings.update_check_hours.clamp(
+                super::UPDATE_CHECK_HOURS_MIN,
+                super::UPDATE_CHECK_HOURS_MAX,
+            ),
         }
     }
 }

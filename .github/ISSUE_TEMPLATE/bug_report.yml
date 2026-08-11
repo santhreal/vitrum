@@ -82,8 +82,8 @@ body:
     attributes:
       label: "Linux: desktop or compositor, and Wayland or X11"
       description: >-
-        Say which, and paste `echo $XDG_SESSION_TYPE`. The client renders in the
-        system WebKitGTK view, and a translucent window needs a compositor to
+        Say which, and paste `echo $XDG_SESSION_TYPE`. The client is a GTK3
+        window, and a translucent one needs a compositor to
         blend against; on a bare window manager the alpha channel is blended
         with nothing. Wrong colours, a black window, or missing decorations are
         usually this. Write "not Linux" on macOS or Windows.
@@ -92,13 +92,13 @@ body:
       required: true
 
   - type: input
-    id: webkit
+    id: gtk
     attributes:
-      label: "Linux: WebKitGTK version"
+      label: "Linux: GTK 3 version"
       description: >-
-        `pkg-config --modversion webkit2gtk-4.1`, or your package manager's
-        version for `libwebkit2gtk-4.1`. It is the only system dependency, so
-        it is the first thing to rule out. Write "not Linux" elsewhere.
+        `pkg-config --modversion gtk+-3.0`, or your package manager's version
+        for `libgtk-3-0`. It is the only system dependency, so it is the first
+        thing to rule out. Write "not Linux" elsewhere.
     validations:
       required: true
 

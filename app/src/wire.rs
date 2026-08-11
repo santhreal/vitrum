@@ -239,6 +239,73 @@ pub enum ClientEvent {
     /// flight, are both this side's to know. The pane reports the gesture and
     /// nothing else.
     PageBack,
+    /// A control-plane message a panel built and wants sent.
+    ///
+    /// The route out for anything a panel decides that is not a chord: the
+    /// launcher's `Start`, the terminate confirmation's `Close`, the search
+    /// sweep. It goes through the reducer rather than through the socket
+    /// because the reducer is where a fixture window is kept off the wire, and
+    /// a panel holding the socket would make a fixture dial a daemon.
+    Msg { msg: vitrum_proto::ClientMsg },
+    /// The session list or the strip changed, so re-attach.
+    ///
+    /// Which session this window is attached to is the reducer's to know: it
+    /// holds the attachment and it is the only place that can tell an
+    /// unnecessary re-attach from a necessary one. A panel that changed the
+    /// strip says so and stops there.
+    Reconcile,
+    /// Put text on the system clipboard.
+    ///
+    /// Raised rather than done, because the answer comes back as
+    /// [`ClientEvent::Copied`] and a panel that wrote the clipboard itself
+    /// would have to report its own success, which is how a "Copied" notice
+    /// for a refused write gets written.
+    Clipboard { text: String },
+    /// Start a session the launcher decided on.
+    ///
+    /// The reducer holds the record of a launch that has been sent and not yet
+    /// confirmed, which is what focuses the new row the moment the daemon
+    /// answers. A panel that sent the request itself would leave that record
+    /// unwritten and the new session unfocused.
+    Start {
+        project: vitrum_proto::ProjectId,
+        launch: crate::launch::Launch,
+    },
+    /// Start a second session with this one's command, directory and title.
+    Duplicate { session: vitrum_proto::SessionId },
+    /// Terminate these sessions, asking first when the profile says to.
+    ///
+    /// The confirmation is a notice with a control on it rather than a modal,
+    /// because a modal for this would be a fourth surface competing for Escape
+    /// with the three that already exist.
+    Terminate {
+        targets: Vec<vitrum_proto::SessionId>,
+    },
+    /// Point this window's socket at another daemon and re-attach.
+    ///
+    /// The reducer owns the bridge and the attachment, and both have to move
+    /// together: dialling a second daemon while still holding a session id
+    /// minted by the first would address input to a session that does not
+    /// exist there. A panel that dialled the socket itself would leave the
+    /// attachment pointing at the old daemon's numbering.
+    Redial { url: String },
+    /// Reopen the socket after a failure.
+    ///
+    /// Raised rather than done because a retry goes through the same daemon
+    /// probe as startup: on a machine where nothing is listening it starts the
+    /// daemon that should have been running, and that needs the bridge and the
+    /// command line, neither of which a panel holds.
+    Retry,
+    /// Start the top-ranked launch outright, with no launcher at all.
+    ///
+    /// The decision is not a panel's to make. Which launch is top-ranked is
+    /// read from the operator's history, and whether it is confident enough to
+    /// run unasked is `crate::ui::dialog::primary_launch`. Sent as an intent
+    /// so the launcher and the sidebar's one-click control cannot come to two
+    /// different answers about the same directory.
+    LaunchNow {
+        project: Option<vitrum_proto::ProjectId>,
+    },
     /// Something the client could not make sense of: an undecodable frame, a
     /// surface that stopped answering. Surfaced, never swallowed.
     Bad { detail: String },

@@ -48,7 +48,9 @@
 //! up in the live table through [`crate::ui::onboarding::chord_for`], so a
 //! rebind cannot leave this surface teaching a key that does nothing.
 
+#[cfg(test)]
 use crate::launch::{self, AgentAvailability, RecentEntry};
+#[cfg(test)]
 use crate::ui::onboarding;
 
 /// The headline. What this product is, in one line.
@@ -57,10 +59,12 @@ use crate::ui::onboarding;
 /// pane paints it before the machine has been read. What vitrum is does not
 /// depend on what is installed, and a first-run screen that is blank for as
 /// long as a `PATH` walk takes is a first-run screen that looks broken.
+#[cfg(test)]
 pub const HEADLINE: &str = "Run your coding agents here.";
 
 /// The sentence under it: the two facts that distinguish this from a terminal
 /// with tabs. Sessions outlive the window, and the sidebar is an inbox.
+#[cfg(test)]
 pub const BLURB: &str = "Every session is one agent working in one project. They \
     run in a daemon of their own, so closing this window does not stop them, \
     and the sidebar tells you which one is waiting on you.";
@@ -70,6 +74,7 @@ pub const BLURB: &str = "Every session is one agent working in one project. They
 /// The only impure part of this module, and it is a value rather than a set
 /// of calls so that [`first_run`] can be driven from a table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct Machine {
     /// Every agent vitrum knows about, installed or not, in table order.
     pub roster: Vec<AgentAvailability>,
@@ -86,21 +91,9 @@ pub struct Machine {
     pub home: String,
 }
 
-/// Read the machine. Blocking: one `PATH` walk per known agent and one small
-/// profile read, so callers run it off the UI thread and once.
-pub fn read_machine() -> Machine {
-    Machine {
-        roster: launch::agent_roster_now(),
-        last: launch::load_launch_store().recents.first().cloned(),
-        cwd: std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        home: launch::user_home(),
-    }
-}
-
 /// One named agent on the offer list.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct Offer {
     /// The name a person recognises: "Claude Code".
     pub label: &'static str,
@@ -123,6 +116,7 @@ pub struct Offer {
 
 /// The single action the pane offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct Start {
     /// The command line to launch, exactly as it will be split and spawned.
     pub line: String,
@@ -143,6 +137,7 @@ pub struct Start {
 
 /// What the empty pane draws.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct FirstRun {
     pub headline: &'static str,
     pub blurb: &'static str,
@@ -175,6 +170,7 @@ pub struct FirstRun {
 /// - Otherwise the first installed agent in table order, in `here`. Named on
 ///   the control, so it is offered rather than guessed.
 /// - Otherwise nothing, and the screen says what it looked for.
+#[cfg(test)]
 pub fn first_run(machine: &Machine, here: &str, place: impl Fn(&str) -> String) -> FirstRun {
     let here = here.trim();
     let remembered = machine.last.as_ref().filter(|e| runnable(machine, e));
@@ -252,6 +248,7 @@ pub fn first_run(machine: &Machine, here: &str, place: impl Fn(&str) -> String) 
 /// operator really ran, the roster has no opinion on it, and the launch path
 /// validates it on the way out anyway. A command vitrum DOES know has to still
 /// be installed, because that is a question this module has already answered.
+#[cfg(test)]
 fn runnable(machine: &Machine, entry: &RecentEntry) -> bool {
     if entry.command.trim().is_empty() {
         return false;
@@ -264,6 +261,7 @@ fn runnable(machine: &Machine, entry: &RecentEntry) -> bool {
 }
 
 /// The remembered directory, or `here` when it left none.
+#[cfg(test)]
 fn pick_dir(remembered: &str, here: &str) -> String {
     let remembered = remembered.trim();
     if remembered.is_empty() {
@@ -274,6 +272,7 @@ fn pick_dir(remembered: &str, here: &str) -> String {
 }
 
 /// Assemble one [`Start`], including the sentence on the control.
+#[cfg(test)]
 fn build(
     machine: &Machine,
     line: String,
@@ -308,6 +307,7 @@ fn build(
 /// argument is not what distinguishes one launch from another and it does not
 /// fit a control, and a first-run operator reading a flag they did not write
 /// is being shown the product's plumbing.
+#[cfg(test)]
 fn word_for(machine: &Machine, line: &str) -> String {
     let program = line.split_whitespace().next().unwrap_or(line);
     let name = basename(program);
@@ -320,6 +320,7 @@ fn word_for(machine: &Machine, line: &str) -> String {
 }
 
 /// The program a command line names, without its directory.
+#[cfg(test)]
 fn basename(command: &str) -> &str {
     command.rsplit(['/', '\\']).next().unwrap_or(command)
 }
@@ -330,6 +331,7 @@ fn basename(command: &str) -> &str {
 /// end and a list is something the operator can act on. The list is built from
 /// the roster rather than written out, so an agent added to the table appears
 /// here without anyone remembering to.
+#[cfg(test)]
 fn nothing_line(offers: &[Offer]) -> String {
     let names: Vec<&str> = offers.iter().map(|o| o.command).collect();
     let looked = onboarding::join_names(&names);
@@ -343,15 +345,6 @@ fn nothing_line(offers: &[Offer]) -> String {
              or open the launcher and run any command you like."
         ),
     }
-}
-
-/// The line under the control that names the other way in.
-///
-/// Read from the live chord table rather than written into the copy, for the
-/// same reason the onboarding sheet does it: a rebind must not leave a surface
-/// teaching a key that no longer opens anything.
-pub fn other_way() -> Option<String> {
-    onboarding::chord_for(crate::keymap::KeyAction::NewSession)
 }
 
 #[cfg(test)]

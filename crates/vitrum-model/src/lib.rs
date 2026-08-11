@@ -92,7 +92,8 @@ pub use order::{ActiveOrder, Arranged, SectionCounts, SectionSplit, arrange, arr
 pub use rollup::{ProjectRollup, StatusCounts, rollup_all, rollup_project};
 pub use selection::{MenuAction, MenuItem, Selection, SelectionFacts, context_menu};
 pub use snooze::{
-    Snooze, SnoozePreset, SnoozePresetId, snooze_presets, wake_countdown_label, wake_description,
+    Snooze, SnoozeHours, SnoozePreset, SnoozePresetId, snooze_presets, wake_countdown_label,
+    wake_description,
 };
 pub use status::{
     ALL_STATUS_SOURCES, ALL_STATUSES, SidebarStatus, StatusResolution, StatusSource, TitleClaim,

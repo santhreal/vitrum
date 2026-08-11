@@ -343,6 +343,7 @@ impl WorkspaceSet {
     /// Numbering starts at 2, so the first workspace an operator makes beside
     /// the built-in one is "Workspace 2" and never "Workspace 1" sitting next
     /// to the nameless one that already draws as "Workspace".
+    #[cfg(test)]
     pub fn suggested_name(&self) -> String {
         let taken: BTreeSet<&str> = self.list.iter().map(|w| w.display_name()).collect();
         (2..)

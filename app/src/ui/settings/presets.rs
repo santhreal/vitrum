@@ -13,9 +13,7 @@
 //! meant every window's `save_prefs` rewriting them on every unrelated
 //! preference change.
 
-use dioxus::prelude::*;
-
-use crate::state::UiState;
+use super::sheet::Host;
 
 /// Longest label the editor will store, in characters.
 ///
@@ -355,301 +353,276 @@ pub fn move_by(list: &mut [crate::launch::SavedPreset], id: u64, delta: isize) -
 }
 
 
+/// Re-read the saved commands, apply one change, write them back.
+///
+/// Re-reads rather than trusting what is on screen. Every window in the
+/// process edits one file, so a copy taken when this page was drawn is stale
+/// the moment a second window adds a row, and writing that stale copy back
+/// whole would delete the other window's work with nothing saying so.
+///
+/// The page is redrawn from disk either way, including on refusal: the
+/// re-read may itself be the news, which is what `Vanished` reports. True
+/// means the change reached the disk, which is what tells a create form it
+/// may forget what was typed into it.
+fn apply(
+    host: &Host,
+    change: impl FnOnce(&mut Vec<crate::launch::SavedPreset>) -> Result<(), PresetRefusal>,
+) -> bool {
+    let mut next = crate::launch::presets_saved();
+    let (landed, why) = match change(&mut next) {
+        Err(why) => (false, why.to_string()),
+        Ok(()) => match crate::launch::save_presets(&next) {
+            Ok(()) => {
+                // A preset's chord lives in the SAME table the built-in chords
+                // do, so saving one has to re-announce that table or the
+                // shortcut just bound does nothing until the app restarts.
+                // Presets are not part of `Settings`, so the commit path that
+                // normally announces never runs for them.
+                crate::state::live::publish_presets(&next);
+                (true, String::new())
+            }
+            Err(why) => (
+                false,
+                format!(
+                    "The saved commands could not be written: {why}. Nothing on disk changed."
+                ),
+            ),
+        },
+    };
+    host.report(why);
+    landed
+}
+
+/// The Saved commands page, as widgets.
+///
+/// Every text field commits on activate and on focus-out, never on each
+/// keystroke. A per-character commit asks the validator to accept every
+/// prefix of what is being typed, and each refusal overwrites the banner the
+/// last one wrote.
+pub(super) fn page(host: &Host) -> gtk::Widget {
+    use gtk::prelude::*;
+
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let intro = host.field(
+        "Saved commands",
+        "A label, a program, and its arguments. Saved commands appear in the new-session \
+         dialog's picker, so the agent you start twenty times a day is one click rather than a \
+         retyped command line. A shortcut starts its command while that dialog is open; nothing \
+         binds these keys anywhere else.",
+        "",
+    );
+    root.pack_start(&intro.root, false, false, 0);
+
+    let rows = crate::launch::presets_saved();
+    let count = rows.len();
+
+    if rows.is_empty() {
+        let empty = super::sheet::wrapped(
+            "None saved yet. The new-session dialog still accepts any command line; a saved \
+             command is for the ones you type often.",
+        );
+        empty.style_context().add_class("rg-field__hint");
+        root.pack_start(&empty, false, false, 0);
+    }
+
+    for (index, preset) in rows.into_iter().enumerate() {
+        let id = preset.id;
+        // One PATH walk per row, on a page redrawn only when a field is
+        // committed. It is the same check the dialog runs before it spawns,
+        // run early enough to be useful.
+        let fault = crate::launch::preset_fault(&preset);
+        let line = crate::launch::join_command(&preset.command, &preset.args);
+        let field = host.field("", "", "");
+        field.root.style_context().add_class("rg-field--preset");
+
+        let label = row_entry(host, &preset.label, "Label", move |host, text| {
+            apply(host, |l| revise(l, id, PresetField::Label, &text));
+        });
+        field.control.pack_start(&label, true, true, 0);
+
+        let up = gtk::Button::with_label("\u{2191}");
+        up.style_context().add_class("rg-btn");
+        up.set_sensitive(index > 0);
+        {
+            let host = host.clone();
+            up.connect_clicked(move |_| {
+                apply(&host, |l| {
+                    move_by(l, id, -1)
+                        .then_some(())
+                        .ok_or(PresetRefusal::Vanished)
+                });
+            });
+        }
+        field.control.pack_start(&up, false, false, 0);
+
+        let down = gtk::Button::with_label("\u{2193}");
+        down.style_context().add_class("rg-btn");
+        down.set_sensitive(index + 1 < count);
+        {
+            let host = host.clone();
+            down.connect_clicked(move |_| {
+                apply(&host, |l| {
+                    move_by(l, id, 1)
+                        .then_some(())
+                        .ok_or(PresetRefusal::Vanished)
+                });
+            });
+        }
+        field.control.pack_start(&down, false, false, 0);
+
+        let delete = gtk::Button::with_label("Delete");
+        delete.style_context().add_class("rg-btn");
+        delete.style_context().add_class("rg-btn--danger");
+        {
+            let host = host.clone();
+            delete.connect_clicked(move |_| {
+                apply(&host, |l| {
+                    remove(l, id).then_some(()).ok_or(PresetRefusal::Vanished)
+                });
+            });
+        }
+        field.control.pack_start(&delete, false, false, 0);
+
+        for (value, placeholder, target) in [
+            (line.clone(), "Command and arguments", PresetField::CommandLine),
+            (
+                preset.cwd.clone().unwrap_or_default(),
+                "Working directory, or the dialog's",
+                PresetField::Cwd,
+            ),
+            (
+                preset.shortcut.clone().unwrap_or_default(),
+                "Shortcut",
+                PresetField::Shortcut,
+            ),
+        ] {
+            let entry = row_entry(host, &value, placeholder, move |host, text| {
+                apply(host, |l| revise(l, id, target, &text));
+            });
+            field.root.pack_start(&entry, false, false, 0);
+        }
+
+        if let Some(fault) = fault {
+            let hint = super::sheet::wrapped(&fault.sentence());
+            hint.style_context().add_class("rg-field__hint");
+            field.root.pack_start(&hint, false, false, 0);
+        }
+
+        // A grid of glyphs is a webview affordance. The same choice reads as
+        // a named list, and the name is what the tooltip said anyway.
+        let icons = gtk::ComboBoxText::new();
+        icons.style_context().add_class("rg-select");
+        icons.style_context().add_class("rg-iconpick");
+        let implied = crate::ui::icons::default_for(&line);
+        icons.append(Some(""), &format!("Automatic ({})", implied.label));
+        for icon in &crate::ui::icons::ALL {
+            icons.append(Some(icon.slug), icon.label);
+        }
+        icons.set_active_id(Some(
+            preset
+                .icon
+                .as_deref()
+                .and_then(crate::ui::icons::from_slug)
+                .map_or("", |i| i.slug),
+        ));
+        {
+            let host = host.clone();
+            icons.connect_changed(move |combo| {
+                let slug = combo.active_id().map(|s| s.to_string()).unwrap_or_default();
+                apply(&host, |l| revise(l, id, PresetField::Icon, &slug));
+            });
+        }
+        field.root.pack_start(&icons, false, false, 0);
+
+        root.pack_start(&field.root, false, false, 0);
+    }
+
+    let create_row = host.field("", "", "");
+    create_row
+        .root
+        .style_context()
+        .add_class("rg-field--preset-new");
+    let label_entry = draft_entry(host, NEW_LABEL, "Label");
+    create_row.control.pack_start(&label_entry, true, true, 0);
+    let command_entry = draft_entry(host, NEW_COMMAND, "Command and arguments");
+    create_row.root.pack_start(&command_entry, false, false, 0);
+    let save = gtk::Button::with_label("Save command");
+    save.style_context().add_class("rg-btn");
+    save.style_context().add_class("rg-btn--primary");
+    {
+        let host = host.clone();
+        let label_entry = label_entry.clone();
+        let command_entry = command_entry.clone();
+        save.connect_clicked(move |_| {
+            let label = label_entry.text().to_string();
+            let command = command_entry.text().to_string();
+            // The drafts are only forgotten once the row is on disk. A
+            // refused label that also cleared the form would make the
+            // operator retype a command line to read why it was refused.
+            if apply(&host, |l| create(l, &label, &command).map(|_| ())) {
+                host.clear_draft(NEW_LABEL);
+                host.clear_draft(NEW_COMMAND);
+            }
+        });
+    }
+    create_row.control.pack_start(&save, false, false, 0);
+    root.pack_start(&create_row.root, false, false, 0);
+
+    root.upcast()
+}
+
+/// An entry that commits its text once, on activate and on focus-out.
+fn row_entry(
+    host: &Host,
+    value: &str,
+    placeholder: &str,
+    commit: impl Fn(&Host, String) + Clone + 'static,
+) -> gtk::Entry {
+    use gtk::prelude::*;
+
+    let entry = gtk::Entry::new();
+    entry.style_context().add_class("rg-field__input");
+    entry.set_text(value);
+    entry.set_placeholder_text(Some(placeholder));
+    entry.set_hexpand(true);
+    {
+        let host = host.clone();
+        let commit = commit.clone();
+        entry.connect_activate(move |entry| commit(&host, entry.text().to_string()));
+    }
+    {
+        let host = host.clone();
+        entry.connect_focus_out_event(move |entry, _| {
+            commit(&host, entry.text().to_string());
+            glib::Propagation::Proceed
+        });
+    }
+    entry
+}
+
+/// An entry whose text is remembered across redraws but committed by a button.
+fn draft_entry(host: &Host, key: &'static str, placeholder: &str) -> gtk::Entry {
+    use gtk::prelude::*;
+
+    let entry = gtk::Entry::new();
+    entry.style_context().add_class("rg-field__input");
+    entry.set_placeholder_text(Some(placeholder));
+    entry.set_hexpand(true);
+    entry.set_text(&host.draft(key, ""));
+    let host = host.clone();
+    entry.connect_changed(move |entry| host.set_draft(key, entry.text().to_string()));
+    entry
+}
+
+/// Draft key for the new command's label.
+const NEW_LABEL: &str = "presets.newLabel";
+/// Draft key for the new command's command line.
+const NEW_COMMAND: &str = "presets.newCommand";
+
 // ---------------------------------------------------------------------------
 // Presets
 // ---------------------------------------------------------------------------
-
-/// Re-read the saved commands, apply one change, write them back.
-///
-/// Re-reads rather than trusting the signal it is about to overwrite. Every
-/// window in the process edits one file, so a copy taken when this panel
-/// mounted is stale the moment a second window adds a row, and writing that
-/// stale copy back whole would delete the other window's work with nothing on
-/// screen saying so.
-///
-/// The signal is only advanced when the write succeeded. A row that is on the
-/// screen but not on the disk is the defect this whole tab exists to avoid, so
-/// a failed write leaves the fields showing what is actually stored and puts
-/// the reason underneath them.
-fn edit_presets(
-    mut list: Signal<Vec<crate::launch::SavedPreset>>,
-    mut error: Signal<String>,
-    change: impl FnOnce(&mut Vec<crate::launch::SavedPreset>) -> Result<(), PresetRefusal>,
-) {
-    let mut next = crate::launch::presets_saved();
-    match change(&mut next) {
-        // Nothing was mutated: every operation validates before it writes. The
-        // list is still advanced because the re-read above may itself be news,
-        // which is the case `Vanished` is reporting.
-        Err(why) => {
-            error.set(why.to_string());
-            list.set(next);
-        }
-        Ok(()) => match crate::launch::save_presets(&next) {
-            Ok(()) => {
-                error.set(String::new());
-                // A preset's chord lives in the SAME table the built-in
-                // chords do, so saving one has to re-announce that table or
-                // the shortcut the operator just bound does nothing until the
-                // app restarts. Presets are not part of `Settings`, so the
-                // commit path that normally announces never runs for them:
-                // this is the one place that closes the link.
-                crate::state::live::publish_presets(&next);
-                list.set(next);
-            }
-            Err(why) => error.set(format!(
-                "The saved commands could not be written: {why}. Nothing on disk changed."
-            )),
-        },
-    }
-}
-
-/// The saved-command editor.
-///
-/// Takes no props, and that is a statement about where the data lives. Saved
-/// commands are not in [`Settings`]: they are a list of records the operator
-/// authored, they are consumed by [`crate::launch`] rather than by any
-/// derivation in this module, and putting them in the settings document would
-/// have meant every window's `save_prefs` rewriting them on every unrelated
-/// preference change.
-///
-/// Editing is direct. There is no "edit preset" sub-dialog, because a dialog
-/// inside a dialog gives the escape key two meanings that nothing on screen
-/// distinguishes, and because a four-field record is smaller than the modal
-/// that would frame it.
-///
-/// # Every field commits on `onchange`, and none on `oninput`
-///
-/// Measured, not preferred. A text input whose `value` is bound to a signal
-/// and whose `oninput` writes that signal re-renders the panel on every
-/// keystroke, and the re-render writes `value` back into the DOM node while
-/// the operator is still typing into it. Characters are lost. Driving the
-/// running binary through xdotool at a 20 ms inter-key delay, the two create
-/// fields in this panel took `Missing agent` as `Misn aet` and
-/// `no-such-agent-xyz --flag` as `n-uh-agt-xy -flag`, while the row fields
-/// beside them, which already committed on `onchange`, took a 16-character
-/// path at the same delay with every character intact.
-///
-/// So nothing in this file reads a half-typed field. `onchange` fires on
-/// blur, and the blur that a click on the primary button causes is dispatched
-/// before that button's click, which is what makes reading the signal in the
-/// click handler correct. The same defect was in the Workspaces panel's two
-/// name fields and the Advanced panel's daemon URL, and all three are fixed
-/// the same way.
-#[component]
-pub(super) fn PresetsPanel(state: Signal<UiState>) -> Element {
-    let list = use_signal(crate::launch::presets_saved);
-    let error = use_signal(String::new);
-    let mut new_label = use_signal(String::new);
-    let mut new_command = use_signal(String::new);
-
-    let rows = list();
-    let count = rows.len();
-
-    rsx! {
-        div { class: "rg-field",
-            span { class: "rg-field__label", "Saved commands" }
-            span { class: "rg-field__desc",
-                "A label, a program, and its arguments. Saved commands appear in the \
-                 new-session dialog's picker, so the agent you start twenty times a day is one \
-                 click rather than a retyped command line. A shortcut starts its command while \
-                 that dialog is open; nothing binds these keys anywhere else."
-            }
-        }
-
-        // Above the list. See the same banner in `WorkspacesPanel`.
-        if !error.read().is_empty() {
-            div { class: "rg-sheet__error", "{error}" }
-        }
-
-        if rows.is_empty() {
-            div { class: "rg-preset__empty",
-                "None saved yet. The new-session dialog still accepts any command line; a saved \
-                 command is for the ones you type often."
-            }
-        }
-
-        for (index , preset) in rows.iter().cloned().enumerate() {
-            {
-                let id = preset.id;
-                // One PATH walk per row, on a panel that re-renders only when
-                // a field is committed. It is the same check the dialog runs
-                // before it spawns, run early enough to be useful.
-                let fault = crate::launch::preset_fault(&preset);
-                let line = crate::launch::join_command(&preset.command, &preset.args);
-                let cwd = preset.cwd.clone().unwrap_or_default();
-                let shortcut = preset.shortcut.clone().unwrap_or_default();
-                rsx! {
-                    div { class: "rg-field rg-field--preset", key: "{id}",
-                        input {
-                            class: "rg-field__input rg-field__input--prose rg-preset__label",
-                            r#type: "text",
-                            value: "{preset.label}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            aria_label: "Label",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    |l| revise(l, id, PresetField::Label, &text),
-                                );
-                            },
-                        }
-                        span { class: "rg-field__control",
-                            button {
-                                class: "rg-btn",
-                                r#type: "button",
-                                disabled: index == 0,
-                                aria_label: "Move up",
-                                onclick: move |_| {
-                                    edit_presets(
-                                        list,
-                                        error,
-                                        |l| {
-                                            move_by(l, id, -1).then_some(()).ok_or(PresetRefusal::Vanished)
-                                        },
-                                    );
-                                },
-                                "\u{2191}"
-                            }
-                            button {
-                                class: "rg-btn",
-                                r#type: "button",
-                                disabled: index + 1 >= count,
-                                aria_label: "Move down",
-                                onclick: move |_| {
-                                    edit_presets(
-                                        list,
-                                        error,
-                                        |l| {
-                                            move_by(l, id, 1).then_some(()).ok_or(PresetRefusal::Vanished)
-                                        },
-                                    );
-                                },
-                                "\u{2193}"
-                            }
-                            button {
-                                class: "rg-btn rg-btn--danger",
-                                r#type: "button",
-                                onclick: move |_| {
-                                    edit_presets(
-                                        list,
-                                        error,
-                                        |l| remove(l, id).then_some(()).ok_or(PresetRefusal::Vanished),
-                                    );
-                                },
-                                "Delete"
-                            }
-                        }
-                        input {
-                            class: "rg-field__input rg-preset__cmd",
-                            r#type: "text",
-                            value: "{line}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            placeholder: "Command and arguments",
-                            aria_label: "Command and arguments",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    |l| revise(l, id, PresetField::CommandLine, &text),
-                                );
-                            },
-                        }
-                        input {
-                            class: "rg-field__input rg-preset__cwd",
-                            r#type: "text",
-                            value: "{cwd}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            placeholder: "Working directory, or the dialog's",
-                            aria_label: "Default working directory",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(list, error, |l| revise(l, id, PresetField::Cwd, &text));
-                            },
-                        }
-                        input {
-                            class: "rg-field__input rg-preset__key",
-                            r#type: "text",
-                            value: "{shortcut}",
-                            spellcheck: false,
-                            autocomplete: "off",
-                            placeholder: "Shortcut",
-                            aria_label: "Shortcut",
-                            onchange: move |e| {
-                                let text = e.value();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    |l| revise(l, id, PresetField::Shortcut, &text),
-                                );
-                            },
-                        }
-                        if let Some(fault) = fault {
-                            span { class: "rg-field__hint rg-preset__fault", "{fault.sentence()}" }
-                        }
-                        crate::ui::icons::IconPicker {
-                            selected: preset.icon.clone(),
-                            command_line: line.clone(),
-                            on_pick: move |slug: Option<String>| {
-                                let text = slug.unwrap_or_default();
-                                edit_presets(
-                                    list,
-                                    error,
-                                    |l| revise(l, id, PresetField::Icon, &text),
-                                );
-                            },
-                        }
-                    }
-                }
-            }
-        }
-
-        div { class: "rg-field rg-field--preset-new",
-            input {
-                class: "rg-field__input rg-field__input--prose rg-preset__label",
-                r#type: "text",
-                value: "{new_label}",
-                spellcheck: false,
-                autocomplete: "off",
-                placeholder: "Label",
-                aria_label: "New saved command label",
-                onchange: move |e| new_label.set(e.value()),
-            }
-            input {
-                class: "rg-field__input rg-preset__cmd",
-                r#type: "text",
-                value: "{new_command}",
-                spellcheck: false,
-                autocomplete: "off",
-                placeholder: "Command and arguments",
-                aria_label: "New saved command line",
-                onchange: move |e| new_command.set(e.value()),
-            }
-            span { class: "rg-field__control",
-                button {
-                    class: "rg-btn rg-btn--primary",
-                    r#type: "button",
-                    onclick: move |_| {
-                        let label = new_label.peek().clone();
-                        let command = new_command.peek().clone();
-                        edit_presets(list, error, |l| create(l, &label, &command).map(|_| ()));
-                        if error.peek().is_empty() {
-                            new_label.set(String::new());
-                            new_command.set(String::new());
-                        }
-                    },
-                    "Save command"
-                }
-            }
-        }
-    }
-}
 
 /// The saved-command editor, which is the only writer of `launch.json`'s
 /// preset list.

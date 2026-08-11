@@ -516,7 +516,7 @@ fn every_document_the_readme_links_to_exists() {
 /// An installer is judged on the day it fails. Every case below was reached
 /// by a machine at some point: a proxy that returns a sign-in page, a
 /// transfer that stops half way, a directory owned by root, an editor open
-/// on the binary being replaced, a distribution whose WebKit package is
+/// on the binary being replaced, a distribution whose GTK package is
 /// spelled differently, an architecture nobody publishes for. Each one used
 /// to arrive as a 404, a bare non-zero exit, or the wrong diagnosis
 /// entirely: "checksum mismatch" is what a truncated download used to say,
@@ -625,14 +625,14 @@ fn the_installer_answers_for_what_a_real_machine_does() {
     );
 
     // The runtime package, spelled the way each distribution spells it.
-    // "install a WebKit runtime" is not an instruction anyone can run.
+    // "install a GTK runtime" is not an instruction anyone can run.
     for package in [
-        "libwebkit2gtk-4.1-0",  // Debian, Ubuntu
-        "webkit2gtk4.1",        // Fedora
-        "webkit2gtk-4.1",       // Arch
-        "libwebkit2gtk-4_1-0",  // openSUSE
-        "net-libs/webkit-gtk",  // Gentoo
-        "webkitgtk_4_1",        // NixOS
+        "libgtk-3-0",      // Debian, Ubuntu, openSUSE
+        "gtk3",            // Fedora, Arch
+        "gtk+3.0",         // Alpine
+        "gtk+3",           // Void
+        "x11-libs/gtk+:3", // Gentoo
+        "nixpkgs.gtk3",    // NixOS
     ] {
         assert!(
             sh.contains(package),
@@ -676,14 +676,14 @@ fn the_installer_answers_for_what_a_real_machine_does() {
     }
 
     // The checks that cost nothing run before the download that costs
-    // something. Finding out that the machine has no WebKit after ninety
+    // something. Finding out that the machine has no GTK after ninety
     // megabytes crossed a metered link is a worse experience than the
     // failure itself.
     let download = sh
         .find("Downloading $ARCHIVE")
         .expect("install.sh downloads the archive");
     for (what, needle) in [
-        ("the WebKit runtime check", "needs a WebKit runtime"),
+        ("the GTK runtime check", "needs a GTK runtime"),
         ("the write permission check", "cannot be written to"),
         ("the running-client check", "is running from"),
     ] {

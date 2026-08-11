@@ -13,11 +13,10 @@
 #
 # Needs network. Run it from anywhere; paths resolve against the repository.
 #
-#   sh tools/upstream/check.sh                      check vendor/
-#   sh tools/upstream/check.sh --fork DIR           check another fork
+#   sh tools/upstream/check.sh --fork DIR           check one fork
 #   sh tools/upstream/check.sh --patches D          also write divergences to D/
 #
-# The forks in this repository are `vendor` (dioxus-desktop) and
+# The forks in this repository are `vendor-pty` (portable-pty) and
 # `vendor-ghostty-vt-sys`. Each names what to compare in its own UPSTREAM.toml
 # `compare` key, so a fork whose only change is a build script is checked as
 # closely as one that changes library code.
@@ -32,7 +31,7 @@
 set -eu
 
 patches=""
-fork="vendor"
+fork="vendor-pty"
 while [ $# -gt 0 ]; do
   case "$1" in
     --patches)

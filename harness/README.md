@@ -67,6 +67,9 @@ harness/remote/measure.py   PSS and CPU for a process tree, from /proc
 harness/remote/sessions.py  a WebSocket client that creates sessions
 harness/remote/mockllm.py   a streaming OpenAI/Anthropic server, no model
 harness/remote/agentsim.py  an agent TUI that drives one session
+harness/world.sh            a population of windows and sessions, keystrokes timed
+harness/frame.sh            what a frame costs, per phase, and what measuring it costs
+harness/frame_compare.py    pairs the frame arms and decides the zero-cost verdict
 harness/out/                reports, captures and remote logs land here
 ```
 
@@ -75,6 +78,11 @@ copies two files and five scripts to the measurement host, runs `rig.sh` there
 over ssh, and copies the results back. If there is no release build it prints
 the `cargo build` line and stops, because a harness that quietly rebuilds is a
 harness that can report a binary you did not mean to test.
+
+`world.sh` and `frame.sh` are the exceptions to that. They run here, they do
+build, and neither opens a window: `world.sh` drives the daemon over a socket
+and `frame.sh` renders off-screen. See "A world of windows", "What a frame
+costs" and "Divergence and races" below.
 
 ## The measurement host
 
@@ -346,6 +354,124 @@ amount, and the traffic scales with connections times renames: at the default
 twelve connections there are tens of thousands of frames to read back, which
 takes tens of seconds. A budget sized for a handful of connections fails the
 run for not converging when nothing is wrong.
+
+## A world of windows
+
+```
+harness/world.sh [windows] [streams] [keystrokes] [ssh-host]
+```
+
+Defaults are four windows, seven streaming sessions and four hundred timed
+keystrokes. The last argument is an ssh destination; without it every session
+is local and the ssh row is absent from the report rather than reported as
+zero.
+
+The population is the one the product is operated in: several windows on one
+daemon, every window attached to every session, three sessions per window, a
+widest-geometry agreement across all of them. On top of that the focused
+window types, and the round trip from the byte leaving its socket to the same
+byte arriving back is timed once per keystroke.
+
+Three conditions are measured in one run:
+
+| condition | what else is running |
+|---|---|
+| `quiet` | nothing but the population |
+| `loaded` | the streaming sessions producing output the whole time |
+| `ssh` | the same, and the typed session lives on another machine |
+
+Each is a distribution with its tail: count, min, mean, p50, p95, p99, max, in
+nanoseconds. A p50 alone hides the case the operator notices.
+
+The platform floor is measured in the same run, not quoted from elsewhere. It
+is a pty echo round trip plus a loopback TCP round trip, four hundred samples
+each, and it is the cost of the hops a keystroke crosses that no client can
+remove. It is subtracted only when the daemon is on this machine, because a
+floor measured here does not describe hops to somewhere else. `net_ns` is the
+subtracted figure, `raw_ns` is what was measured, `floor.subtracted` says which
+applies, and `floor.note` says why in one line. Subtraction saturates at zero:
+a sample below the floor means the two measurements disagreed by less than
+their own noise.
+
+`extra.load_added_p50_ns` and `extra.ssh_added_p50_ns` are the differences
+between conditions, stated so nobody reconstructs them wrongly. They are
+differences between rows of one run, not claims about a network.
+
+The daemon the script starts is private to the run. Its token goes in a
+run-local `XDG_RUNTIME_DIR` and it listens on a free port, so a daemon already
+in use keeps its token, its port and its sessions.
+
+## What a frame costs
+
+```
+harness/frame.sh [rounds] [frames]
+```
+
+Where frame time goes, split into parse, grid store, damage, upload and
+submit, measured in the process doing the work rather than inferred from
+outside it. The renderer runs off-screen against a real adapter. There is no
+window and no display.
+
+The instrumentation is behind the non-default `probe` cargo feature. A shipped
+build carries no probe instruction at all, and a build with the feature carries
+one runtime switch that is off until asked. That gives three arms, and the
+script builds two binaries to get them:
+
+| arm | build | switch |
+|---|---|---|
+| `absent` | default features | no code |
+| `off` | `--features probe` | off |
+| `on` | `--features probe` | on |
+
+`off - absent` is what the feature costs a build that never uses it, and it is
+the claim worth checking. The script alternates rounds so a machine that warms
+or throttles moves both arms together, pairs the rounds, and takes a bootstrap
+interval over the paired medians with a fixed seed. It also runs `absent`
+against itself to get this machine's round-to-round variation, and a
+difference smaller than that is not claimed as a cost. `zero_cost_when_off` is
+that comparison, not an assertion.
+
+`on - off` is what measuring costs while measuring, which is the number to
+subtract in your head when reading the phase table.
+
+The run fails rather than reporting if a phase never records, if the phases sum
+to more than the frame they are inside, if an idle frame does GPU work, or if a
+frame the renderer skipped opened a span. The last one is the interesting
+gate: the skip path returns before any span opens, so a skipped frame must cost
+nothing at all to have the probe compiled in.
+
+## Divergence and races
+
+```
+cargo run -p vitrum-bench --release -- divergence [--cases N] [--schedules N] [--out DIR]
+```
+
+Two hunts, both differential, neither needing a daemon or a display.
+
+The first feeds one input to the parser and grid whole, in one call with one
+sync, and feeds the same bytes to a second engine split at chosen offsets with
+a sync after each piece. Those are the replay path and the live path. The
+screens must be identical, and a split falling inside a UTF-8 sequence, a CSI,
+an OSC or a scroll-region change must not be visible in the result.
+
+The second runs several sessions on their own threads under a deterministic
+baton that names which thread moves at each step. Every thread's screen must be
+the screen it produces alone. A schedule is a list of thread indices, so a
+failure is a list of small integers and replays exactly.
+
+A hunt that finds something minimises it before recording it: delta debugging
+over the bytes, then over the splits, until dropping anything makes the
+divergence go away. What lands in `crates/vitrum-bench/artifacts/` is the
+smallest input that still diverges, its splits or its schedule, and a status.
+
+The corpus is checked on every run and by the test suite. An `open` artefact
+must still reproduce and a `fixed` artefact must not, so neither a fix nobody
+recorded nor a fix somebody undid can sit there unnoticed. A corpus that is not
+checked in both directions is the same as no corpus.
+
+A clean run means nothing unless the comparison can fail, so the detector is
+gated by tests that feed it screens which really are different and require it
+to say so.
 
 ## What a remote box cannot tell you honestly
 
@@ -679,6 +805,40 @@ second:
   `nvidia-smi` failing under `pipefail` and truncating the report, and the
   verdict emitting binary names as if they were apt packages. Both fixed and
   re-verified on both hosts.
+
+The three local harnesses were exercised on the desktop baseline machine, a
+Ryzen 9 9950X with an NVIDIA card. None of them opened a display.
+
+- `world.sh 4 7 400`, with the burst and typing sessions run through ssh to a
+  second machine on the LAN. Four windows, twelve sessions, forty-eight
+  attachments, seven streaming. Four hundred keystrokes timed in each of the
+  three conditions, all seven checks passed, no failures. The floor measured in
+  the same run was 3.3 us of pty echo plus 6.7 us of loopback, and the daemon
+  was local so it was subtracted. Net p50/p95/p99: quiet 1.10/2.11/2.15 ms,
+  loaded 1.04/1.82/2.16 ms, ssh 18.51/20.98/26.02 ms. Load added nothing
+  measurable at the median; ssh added 17.5 ms, which is that link and not a
+  property of the product. The worst single keystroke was 8.4 ms quiet and
+  103.7 ms over ssh, which is why the tails are reported and not only the
+  medians.
+- `frame.sh`, six rounds of four hundred frames per arm. `off - absent` came
+  out at a median of 1.40 us against a noise ceiling of 13.4 us measured
+  between consecutive `absent` rounds, so the feature's cost to a build that
+  never switches it on is below what this machine's own round-to-round drift is
+  worth: the verdict is yes, and it is a bound rather than a zero. `on - off`
+  was 1.24 us. The phase split of a 242 us frame: store 73.1%, upload 13.6%,
+  damage 8.2%, submit 3.7%, parse 0.4%. Every phase recorded, the phases summed
+  inside the frame, no idle frame did GPU work, and no skipped frame opened a
+  span.
+- `divergence --cases 1000000 --schedules 100000`, 9 minutes 23 seconds of
+  wall time: 228 s over a million chunking cases totalling 100.96 MB, and
+  335 s over a hundred thousand scheduled interleavings across four threads
+  plus the same number run free. Nothing diverged, so the corpus directory
+  `crates/vitrum-bench/artifacts/` does not exist yet. A negative result is
+  only worth the detector behind it, so the detector is gated rather than
+  assumed: fed two screens that differ by one byte it reports the cell, and a
+  schedule one step short of the work it was given is caught as a divergence.
+  Both gates were confirmed by reintroducing the defect and watching the suite
+  go red.
 
 A guard can be right and never run. Proving the two separately, because a
 review elsewhere in this tree found guards proved as a DECISION with nothing

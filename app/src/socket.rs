@@ -568,8 +568,8 @@ pub(crate) struct Net {
     epoch: u64,
     events: UnboundedSender<(u64, SocketEvent)>,
     /// The runtime the socket task runs on. Captured on the UI thread, where
-    /// dioxus-desktop's multi-threaded runtime is in context, so the socket
-    /// does its I/O on a worker rather than between two paints.
+    /// the shell's multi-threaded runtime is in context, so the socket does its
+    /// I/O on a worker rather than between two paints.
     runtime: Option<tokio::runtime::Handle>,
     /// The pane, once its surface exists.
     sink: Option<Rc<RefCell<dyn PaneSink>>>,

@@ -33,7 +33,7 @@ impl Drop for Scratch {
 /// The obvious version asked the OS for port 0 and dropped the socket,
 /// which races anything else on the machine. Linux hands out
 /// 32768..60999 for every outbound connection, and this suite spawns
-/// daemons and webviews that take them constantly, so a port drawn from
+/// daemons and clients that take them constantly, so a port drawn from
 /// that range can be gone before it is probed.
 /// `no_autostart_leaves_a_dead_port_alone` saw exactly that twice: it
 /// probed a port the kernel had just handed to somebody else and got

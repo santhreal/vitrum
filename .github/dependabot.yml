@@ -1,10 +1,10 @@
 version: 2
 
-# `vendor/` and `vendor-pty/` are not updated here. They are forks carried in
-# tree, tracked by hand against the crates they forked, and
-# `.github/workflows/upstream.yml` is what asks the question: it runs weekly and
-# on any change under `vendor/` or `tools/upstream/`, downloads the pristine
-# upstream crate named in `vendor/UPSTREAM.toml`, and fails when the real
+# `vendor-pty/` and `vendor-ghostty-vt-sys/` are not updated here. They are
+# forks carried in tree, tracked by hand against the crates they forked, and
+# `.github/workflows/upstream.yml` is what asks the question: it runs weekly
+# and on any change under a fork or `tools/upstream/`, downloads the pristine
+# upstream crate named in that fork's `UPSTREAM.toml`, and fails when the real
 # divergence stops matching the divergence that file lists. Absorbing an
 # upstream release is a deliberate edit to the fork, not a version bump.
 
@@ -26,11 +26,6 @@ updates:
       cargo-patch-and-minor:
         update-types: ["minor", "patch"]
     ignore:
-      # The vendored dioxus-desktop fork pins the whole dioxus family at the
-      # version it forked from, and `vendor/UPSTREAM.toml` is the record of
-      # that. Bumping one of them out from under the fork breaks the divergence
-      # check rather than upgrading anything.
-      - dependency-name: "dioxus*"
       # The vendored portable-pty fork replaces the published crate outright;
       # a PR raising it would change nothing that is built.
       - dependency-name: "portable-pty"

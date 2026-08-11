@@ -1,9 +1,5 @@
 use super::*;
 
-/// This module's own stylesheet.
-const SEARCH_CSS: &str = include_str!("../../../assets/parts/21-search.css");
-/// The shell's stylesheet, which owns `.rg-layer` and its dim modifier.
-const APP_CSS: &str = include_str!("../../app.css");
 
 fn hit(visible: &[u8], start: u32, end: u32) -> SearchHit {
     SearchHit {
@@ -171,20 +167,27 @@ fn clean_text_round_trips_at_every_length() {
     }
 }
 
-/// A truncated answer must say so, and must never read as a total.
+/// A truncated answer must say so, must never read as a total, and must quote
+/// the cap that was actually sent.
 ///
 /// The daemon stops at its cap and sets `truncated`. An operator shown
 /// "12 matches" who was really shown 12 of 400 will conclude the other
 /// 388 do not exist, which is the entire failure mode the flag was added
-/// to prevent.
+/// to prevent. The cap is a setting, so the sentence is checked against a
+/// published non-default value: a hardcoded 500 in the sentence would still
+/// match a fresh profile and pass.
 #[test]
 fn a_truncated_answer_says_these_are_the_first_n() {
+    let _bus = crate::state::live::exclusive();
+    let mut settings = crate::state::Settings::default();
+    settings.search.max_hits = 750;
+    crate::state::live::publish(&settings);
     let hits = vec![hit(b"boom", 0, 4), hit(b"boom", 0, 4)];
     let out = summary(Some(&answer(hits, true, 2 * 1024 * 1024)), false, 0);
     assert_eq!(
         out.text,
         "First 2 matches in 1 session of every session's scrollback, then the sweep hit its \
-         cap of 500. There are more. Swept 2.0 MiB so far.",
+         cap of 750. There are more. Swept 2.0 MiB so far.",
     );
     assert_eq!(
         out.class,
@@ -260,24 +263,6 @@ fn not_searched_yet_and_no_matches_are_different() {
     assert_ne!(busy.class, idle.class);
 }
 
-/// Removing the submit button must not remove the instruction to submit.
-///
-/// The button was deleted for repeating the field beside it. Its function
-/// lives in Enter, and the only place the product says so is the idle
-/// line and the placeholder. If either stops naming Enter, submitting
-/// becomes an undiscoverable feature.
-#[test]
-fn the_idle_line_and_the_placeholder_both_name_enter() {
-    assert!(summary(None, false, 0).text.contains("Enter"));
-    let src = include_str!("../search.rs");
-    let markup = src
-        .split_once("#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
-    assert!(
-        markup.contains("placeholder: \"Pattern, then Enter\""),
-        "the field no longer says how it submits"
-    );
-}
 
 /// The summary quotes the pattern the DAEMON swept, not the field.
 ///
@@ -364,10 +349,17 @@ fn a_blank_pattern_produces_no_request() {
 /// The request must carry the switches the operator set, and the caps the
 /// summary reports.
 ///
-/// A send site that chose its own `max_hits` would make the truncation
-/// sentence, which names `MAX_HITS`, quote a number that was never sent.
+/// The caps are settings, so the assertion publishes a document that is not
+/// the default: a send site that hardcoded either one would still match the
+/// fresh-profile values and pass, and the truncation sentence would then quote
+/// a cap that was never sent.
 #[test]
-fn the_request_carries_the_options_and_the_declared_caps() {
+fn the_request_carries_the_options_and_the_configured_caps() {
+    let _bus = crate::state::live::exclusive();
+    let mut settings = crate::state::Settings::default();
+    settings.search.context_lines = 5;
+    settings.search.max_hits = 1_200;
+    crate::state::live::publish(&settings);
     let options = Options::default()
         .toggled(Toggle::Regex)
         .toggled(Toggle::WholeWord);
@@ -380,34 +372,34 @@ fn the_request_carries_the_options_and_the_declared_caps() {
             regex: true,
             case_insensitive: false,
             whole_word: true,
-            context_lines: CONTEXT_LINES,
-            max_hits: MAX_HITS,
+            context_lines: 5,
+            max_hits: 1_200,
         }
     );
 }
 
-/// `CONTEXT_LINES` must be pinned by something other than itself.
+/// The default context budget must be pinned by something other than itself.
 ///
 /// Found by mutation: changing it from 2 to 7 passed the whole suite,
 /// because the only assertion touching it compared
-/// `msg.context_lines` against `CONTEXT_LINES`, so both sides moved
+/// `msg.context_lines` against the same constant, so both sides moved
 /// together. That is an arithmetic identity wearing a test's clothes: it
 /// cannot fail for any value.
 ///
-/// The constant is load-bearing for layout and its doc comment says so,
-/// which until now was a claim with no test behind it. A hit row is the
-/// matched line plus context either side, each on the 20px line box
-/// `--rg-lead-body` gives `.rg-search__hit`, plus that rule's 8px of
-/// block padding top and bottom. So the row is
-/// `(1 + 2 * CONTEXT_LINES) * 20 + 16`, and every number below is a
-/// literal precisely so the assertion cannot move with the constant.
+/// The budget is adjustable, but its default is what the list is laid out
+/// for. A hit row is the matched line plus context either side, each on the
+/// 20px line box `--rg-lead-body` gives `.rg-search__hit`, plus that rule's
+/// 8px of block padding top and bottom. So the row is
+/// `(1 + 2 * context) * 20 + 16`, and every number below is a literal
+/// precisely so the assertion cannot move with the default.
 #[test]
 fn the_context_budget_keeps_several_hits_on_screen_at_once() {
+    let default = crate::state::SearchPrefs::default().context_lines;
     assert_eq!(
-        CONTEXT_LINES, 2,
-        "changing the context budget changes the height of every hit row"
+        default, 2,
+        "changing the default context budget changes the height of every hit row"
     );
-    let row_px = (1 + 2 * u32::from(CONTEXT_LINES)) * 20 + 16;
+    let row_px = (1 + 2 * u32::from(default)) * 20 + 16;
     assert_eq!(
         row_px, 116,
         "a hit row is no longer five lines and its padding"
@@ -431,20 +423,36 @@ fn the_context_budget_keeps_several_hits_on_screen_at_once() {
 /// again, which is the defect restored one layer up and invisible to the
 /// suite written to prevent it.
 ///
-/// So this reads the shipped `main.rs`. That file is not mine, and the
-/// guard deliberately lives with the contract it defends rather than with
-/// the code it reads: the wiring is what my module needs in order to
-/// exist at all, and its owner should learn from a red test rather than
-/// from a user finding a dead chord.
+/// So this reads the shipped shell: the reducer files behind
+/// [`crate::testkit::shell`], the layer table in `ui/dialog.rs`, and the
+/// send site in this module's own GTK surface. Those files are not all
+/// mine, and the guard deliberately lives with the contract it defends
+/// rather than with the code it reads: the wiring is what my module needs
+/// in order to exist at all, and its owner should learn from a red test
+/// rather than from a user finding a dead chord.
 ///
-/// Four links, each able to break alone: the layer renders the component,
+/// Four links, each able to break alone: the layer builds the surface,
 /// a chord opens that layer, the send site builds its request through
 /// [`request`] so the caps the summary quotes are the caps sent, and the
 /// request actually reaches the socket.
 #[test]
 fn the_shell_still_reaches_this_module() {
-    shell_reaches_search(&crate::testkit::shell())
+    shell_reaches_search(&shipped_shell())
         .expect("the shipped client no longer reaches this module");
+}
+
+/// The shipped sources the four links are spread across.
+///
+/// The layer table moved to `ui/dialog.rs` and the send site to this
+/// module's GTK surface when the shell stopped being a document, so a scan
+/// of the reducer files alone can no longer see either of them.
+fn shipped_shell() -> String {
+    format!(
+        "{}\n{}\n{}",
+        crate::testkit::shell(),
+        include_str!("../dialog.rs"),
+        include_str!("native.rs"),
+    )
 }
 
 /// The four links the shell needs for this module to be reachable, and
@@ -452,22 +460,25 @@ fn the_shell_still_reaches_this_module() {
 const LINKS: [(&str, &str); 5] = [
     (
         "Layer::Search => {",
-        "no layer arm renders the search surface, so the overlay can never appear",
+        "no layer arm presents the search surface, so the overlay can never appear",
     ),
     (
-        "ui::search::Search {",
-        "the layer arm no longer renders this module's component",
+        "crate::ui::search::native::build(shell)",
+        "the layer arm no longer builds this module's surface",
     ),
     (
-        "KeyAction::OpenSearch => toggle_layer(st, Layer::Search)",
+        "KeyAction::OpenSearch => toggle_layer(cx, Layer::Search)",
         "no chord opens the search layer, so the feature is unreachable from the keyboard",
     ),
     (
-        "ui::search::request(",
-        "the send site no longer builds its request here, so the caps the summary quotes \
-         are not the caps that were sent",
+        "request(&query, options, scope.clone())",
+        "the send site no longer builds its request through `request`, so the caps the \
+         summary quotes are not the caps that were sent",
     ),
-    ("bridge.msg(&msg);", "the request is built and never sent"),
+    (
+        "shell.send(ClientEvent::Msg { msg });",
+        "the request is built and never sent",
+    ),
 ];
 
 /// Does `main` still wire this module into the running client?
@@ -516,16 +527,24 @@ fn shell_reaches_search(main: &str) -> Result<(), String> {
 /// rather than merely green.
 #[test]
 fn the_reachability_guard_fails_on_each_broken_link() {
-    let real = crate::testkit::shell();
+    let real = shipped_shell();
     let real = real.as_str();
     assert!(shell_reaches_search(real).is_ok());
 
     for (needle, _) in LINKS {
-        let broken = real.replacen(needle, "/* unwired */", 1);
-        assert_ne!(broken, real, "{needle:?} is not in main.rs to begin with");
+        // EVERY occurrence, not the first. A needle that appears twice lets a
+        // mutation leave the second copy standing, and the clause reports
+        // green for a link it never tested.
+        let hits = real.matches(needle).count();
+        assert!(
+            hits > 0,
+            "{needle:?} is not in the shipped shell at all, so this clause has never tested \
+             anything: the call site was renamed and the needle was not"
+        );
+        let broken = real.replace(needle, "/* unwired */");
         assert!(
             shell_reaches_search(&broken).is_err(),
-            "breaking {needle:?} left the guard green"
+            "breaking all {hits} occurrences of {needle:?} left the guard green"
         );
     }
 
@@ -607,115 +626,6 @@ fn the_switches_round_trip_through_a_profile() {
     assert!(!partial.whole_word);
 }
 
-/// Every class this file writes must have a rule.
-///
-/// An unstyled class is not an error anywhere: the element renders with no
-/// box, no padding and no colour, and reads as a layout bug rather than a
-/// missing rule. Read out of the markup rather than a hand-kept list,
-/// because a list is the thing that stops matching the markup. Only the
-/// code above `#[cfg(test)]` is scanned; below it these same names are
-/// assertion data.
-#[test]
-fn every_emitted_class_is_styled() {
-    let src = include_str!("../search.rs");
-    let markup = src
-        .split_once("#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
-
-    let mut seen = Vec::new();
-    for (at, _) in markup.match_indices("class: \"") {
-        let rest = &markup[at + 8..];
-        let Some(end) = rest.find('"') else { continue };
-        for token in rest[..end].split_whitespace() {
-            if token.starts_with("rg-") && !token.contains('{') {
-                seen.push(token);
-            }
-        }
-    }
-    seen.sort_unstable();
-    seen.dedup();
-    assert!(
-        seen.len() > 12,
-        "only found {} classes; the extraction broke rather than the markup",
-        seen.len()
-    );
-
-    for class in seen {
-        // `styled`, not `contains`. A bare substring test is satisfied by
-        // a LONGER class name, so `.rg-search__group` is "found" by the
-        // rules for `.rg-search__group-head` and `.rg-search__group-count`
-        // and renaming its own rule out from under live markup leaves this
-        // green. That is precisely the regression the guard names, and it
-        // escaped a mutation until this line changed.
-        let mine = styled(SEARCH_CSS, class);
-        // `.rg-layer` and its dim modifier are app.css's and are reused
-        // deliberately: the bridge queries `.rg-layer` to decide whether
-        // Escape belongs to a layer, so a private backdrop class would
-        // leave this surface un-dismissable.
-        let shell = class.starts_with("rg-layer") && styled(APP_CSS, class);
-        assert!(
-            mine || shell,
-            "search markup emits .{class} but no stylesheet has a rule for it"
-        );
-    }
-}
-
-/// Does `css` carry a rule for exactly `class`, not merely for something
-/// beginning with it?
-///
-/// The next character after `.rg-foo` must not be able to continue a CSS
-/// identifier, or `.rg-foo` matches `.rg-foo-bar`. Modifiers still
-/// resolve, because `-` continues an identifier and `.rg-foo--on` is
-/// therefore only found by a search for `rg-foo--on`.
-fn styled(css: &str, class: &str) -> bool {
-    let needle = format!(".{class}");
-    css.match_indices(&needle).any(|(at, _)| {
-        css[at + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
-    })
-}
-
-/// Every class assembled at runtime must be styled too.
-///
-/// The test above skips interpolated `class: "{...}"` values by design,
-/// which is exactly where the state modifiers live: the switch's pressed
-/// state, the caret highlight and all five summary tones.
-#[test]
-fn every_runtime_class_is_styled() {
-    let scanned = 4096;
-    let names = [
-        opt_class(true),
-        opt_class(false),
-        mark_class(true),
-        mark_class(false),
-        summary(None, true, 0).class,
-        summary(None, false, 0).class,
-        summary(Some(&answer(Vec::new(), false, scanned)), false, 0).class,
-        summary(
-            Some(&answer(vec![hit(b"x", 0, 1)], false, scanned)),
-            false,
-            0,
-        )
-        .class,
-        summary(
-            Some(&answer(vec![hit(b"x", 0, 1)], true, scanned)),
-            false,
-            0,
-        )
-        .class,
-    ];
-
-    for full in names {
-        for class in full.split_whitespace() {
-            assert!(
-                SEARCH_CSS.contains(&format!(".{class}")),
-                "21-search.css has no rule for .{class}"
-            );
-        }
-    }
-}
 
 /// The five summary tones must be five distinct classes.
 ///
@@ -747,179 +657,7 @@ fn each_summary_state_has_its_own_modifier() {
     assert_eq!(unique.len(), all.len(), "two summary states share a class");
 }
 
-/// The sheet must fit at every window width, including beside the
-/// sidebar's 224px floor.
-///
-/// The layer covers the whole window, so a fixed sheet width wider than a
-/// narrow window overflows it and the results scroll sideways underneath.
-/// The width has to be capped against the viewport, and the sheet has to
-/// be allowed to shrink below the unwrappable monospace line inside it.
-#[test]
-fn the_sheet_width_is_capped_against_the_window() {
-    let rule = css_rule(".rg-search {");
-    assert!(
-        rule.contains("max-width: 100%"),
-        "the search sheet has no width cap: {rule}"
-    );
-    assert!(
-        rule.contains("min-width: 0"),
-        "the search sheet cannot shrink below its content: {rule}"
-    );
-}
 
-/// Nothing in this stylesheet may loop, and nothing may animate.
-///
-/// Idle cost is the product's competitive claim. The shell's own guard
-/// (`main.rs::stylesheets_never_loop_and_keep_transitions_brief`) only
-/// covers files registered in `stylesheets()`, so this file guards itself
-/// from the moment it exists rather than from the moment it is wired.
-#[test]
-fn the_stylesheet_declares_no_motion_at_all() {
-    let code = strip_comments(SEARCH_CSS);
-    // Nine, not the three anybody remembers. A guard whose subject is
-    // "nothing on this surface may move" cannot name only the spellings
-    // that came to mind: `scroll-behavior: smooth` and `@starting-style`
-    // are motion and would have walked straight past the short list.
-    // Bare words rather than `animation:`, so the longhands are covered
-    // too.
-    for banned in [
-        "infinite",
-        "animation",
-        "transition",
-        "@keyframes",
-        "scroll-behavior",
-        "@starting-style",
-        "view-transition",
-        "will-change",
-        "offset-path",
-    ] {
-        assert!(
-            !code.contains(banned),
-            "21-search.css declares {banned}, which it has no reduced-motion block for"
-        );
-    }
-}
 
-/// Every length in this stylesheet is on the 4px grid.
-///
-/// Authored in rem at 1x, so a grid multiple is a multiple of 0.25rem.
-/// Pixel literals are allowed only at 1px, the hairline, which is a
-/// device-resolution artefact rather than a design measurement. A 3px
-/// rail or a 6px radius is what put the sidebar's left edges on four
-/// different columns.
-///
-/// The unit set is DERIVED, not listed. Checking `rem` and `px` and
-/// nothing else leaves `padding: 0.4em` invisible to the guard whose
-/// whole subject is the grid, so this collects every number glued to
-/// letters and requires the units it finds to be exactly rem and px.
-/// Percentages carry no letters and are untouched, which is what keeps
-/// `width: 100%` and `max-width: 100%` legal.
-#[test]
-fn every_length_is_on_the_four_pixel_grid() {
-    let code = strip_comments(SEARCH_CSS);
-    let mut units: Vec<&str> = Vec::new();
-    let mut checked = 0;
 
-    let bytes = code.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_digit() {
-            i += 1;
-            continue;
-        }
-        // A number may be preceded by a `-` or a `.`; `number_before`
-        // reads back over the digits and the point for the value.
-        let mut end = i;
-        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
-            end += 1;
-        }
-        let unit_start = end;
-        let mut unit_end = end;
-        while unit_end < bytes.len() && bytes[unit_end].is_ascii_alphabetic() {
-            unit_end += 1;
-        }
-        if unit_end > unit_start {
-            let unit = &code[unit_start..unit_end];
-            let value: f64 = code[i..end].parse().unwrap_or(f64::NAN);
-            if !units.contains(&unit) {
-                units.push(unit);
-            }
-            match unit {
-                "rem" => {
-                    let px = value * 16.0;
-                    assert!(
-                        (px / 4.0).fract() < 1e-9,
-                        "{value}rem is {px}px, which is off the 4px grid"
-                    );
-                }
-                "px" => assert_eq!(
-                    value, 1.0,
-                    "{value}px is a literal length; only the 1px hairline is exempt"
-                ),
-                other => panic!(
-                    "{value}{other} uses a unit this guard cannot place on the grid; \
-                     author lengths in rem at 1x, or in 1px hairlines"
-                ),
-            }
-            checked += 1;
-        }
-        i = unit_end.max(end);
-    }
 
-    units.sort_unstable();
-    assert_eq!(
-        units,
-        ["px", "rem"],
-        "the stylesheet grew a unit the grid guard was never written for"
-    );
-    // The sheet's own width plus one hairline on each of the four
-    // controls. A floor rather than an exact count, so deleting one
-    // border later does not read as a broken scan.
-    assert!(checked >= 5, "only {checked} lengths found; the scan broke");
-}
-
-/// The CSS features Blitz cannot render must stay out.
-///
-/// Each one fails silently: the rule is dropped and the element renders
-/// unstyled, which looks like a markup bug on the one renderer with no
-/// devtools.
-#[test]
-fn the_stylesheet_stays_within_the_supported_subset() {
-    let code = strip_comments(SEARCH_CSS);
-    for banned in [
-        "position: fixed",
-        ":has(",
-        "color-mix(",
-        "oklch(",
-        "@container",
-        "!important",
-    ] {
-        assert!(!code.contains(banned), "21-search.css uses {banned}");
-    }
-}
-
-/// The body of one rule, for asserting on what it declares.
-fn css_rule(selector: &str) -> String {
-    let (_, after) = SEARCH_CSS
-        .split_once(selector)
-        .unwrap_or_else(|| panic!("21-search.css has no rule for {selector}"));
-    after
-        .split_once('}')
-        .map_or_else(|| after.to_string(), |(body, _)| body.to_string())
-}
-
-/// Drop `/* ... */` so a comment discussing a banned feature does not
-/// trip the guards above.
-fn strip_comments(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
-    let mut rest = css;
-    while let Some(open) = rest.find("/*") {
-        out.push_str(&rest[..open]);
-        match rest[open + 2..].find("*/") {
-            Some(close) => rest = &rest[open + 2 + close + 2..],
-            None => return out,
-        }
-    }
-    out.push_str(rest);
-    out
-}

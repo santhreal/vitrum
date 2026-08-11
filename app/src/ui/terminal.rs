@@ -32,24 +32,16 @@
 //! over the top edge of the pane box and are removed from flow, so a transient
 //! sentence cannot move a terminal grid.
 
+#[cfg(test)]
 use crate::pane::geometry;
-use dioxus::prelude::*;
+
 use vitrum_fmt::path;
 use vitrum_model::{AgentKind, SessionView};
-use vitrum_proto::{SessionId, SessionStatus};
+use vitrum_proto::SessionStatus;
 
 use crate::agent::{AgentMark, AgentMarks};
 use crate::inbox::Pill;
 use crate::state::{ConnState, UiState};
-use crate::ui::{dialog, firstrun};
-
-/// Stable key for the reserved box.
-///
-/// The key is what tells Dioxus this is the same node across every render, so
-/// the element is created once at mount and never torn down and rebuilt. The
-/// box reserves the region the native pane is placed over; a rebuild would
-/// leave the widget floating over a region the document no longer describes.
-const TERMINAL_KEY: &str = "rg-terminal-root";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Geometry
@@ -63,6 +55,7 @@ const TERMINAL_KEY: &str = "rg-terminal-root";
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Titlebar height, in rem. `--rg-titlebar-h` in `app.css`.
+#[cfg(test)]
 pub const TITLEBAR_REM: f64 = 2.25;
 
 /// Height of the bar under the pane, in rem. `--rg-panebar-h` in `app.css`.
@@ -70,6 +63,7 @@ pub const TITLEBAR_REM: f64 = 2.25;
 /// One line of `--rg-text-xs` on a 28px band. It is a constant and not a
 /// measurement precisely so that it cannot change: see the module note on why
 /// a bar whose height follows its content resizes every agent on screen.
+#[cfg(test)]
 pub const PANEBAR_REM: f64 = 1.75;
 
 /// Space between the pane's grid and the chrome around it, in rem, on all
@@ -80,10 +74,8 @@ pub const PANEBAR_REM: f64 = 1.75;
 /// against the window edge while its first sat 4px in, and the grid's optical
 /// centre was 4px up and 4px left of the box's. That asymmetry is the
 /// "nothing is centered" report at its largest surface.
+#[cfg(test)]
 pub const PANE_PAD_REM: f64 = 0.5;
-
-/// Collapsed sidebar rail width, in rem. `--rg-sidebar-width-collapsed`.
-pub const SIDEBAR_RAIL_REM: f64 = 3.0;
 
 /// Everything outside the pane that decides where the pane is.
 ///
@@ -92,6 +84,7 @@ pub const SIDEBAR_RAIL_REM: f64 = 3.0;
 /// rather than read out of [`UiState`] because the window's client size and
 /// the display scale are the platform's and are not in the model.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg(test)]
 pub struct PaneLayout {
     /// Window client area width, in device pixels.
     pub window_w: u32,
@@ -112,6 +105,7 @@ pub struct PaneLayout {
 /// pane divides the box it is given by the cell height, so every pixel of
 /// chrome left in that box buys a row the operator cannot see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct PaneFrame {
     pub x: i32,
     pub y: i32,
@@ -119,15 +113,18 @@ pub struct PaneFrame {
     pub height: u32,
 }
 
+#[cfg(test)]
 impl PaneFrame {
     /// Bottom edge, so a caller can assert the frame ends inside the window.
     #[must_use]
+    #[cfg(test)]
     pub fn bottom(&self) -> i64 {
         i64::from(self.y) + i64::from(self.height)
     }
 
     /// Right edge.
     #[must_use]
+    #[cfg(test)]
     pub fn right(&self) -> i64 {
         i64::from(self.x) + i64::from(self.width)
     }
@@ -151,6 +148,7 @@ impl PaneFrame {
 /// end. A pane whose left edge is 8.4 and whose width is 1911.6 is placed at 8
 /// with width 1912 and hangs one pixel over the right edge; rounding each
 /// EDGE and subtracting keeps the box inside the window at every scale.
+#[cfg(test)]
 fn dev(css: f64, scale: f64) -> f64 {
     (css * scale).round()
 }
@@ -161,6 +159,7 @@ fn dev(css: f64, scale: f64) -> f64 {
 /// cell yields the pixels of that box. It exists so the frame can use the
 /// grid arithmetic in [`crate::pane::geometry`] without pretending to know a
 /// font's cell size, which this module has never been told and must not be.
+#[cfg(test)]
 const ONE_DEVICE_PIXEL: f64 = 1.0;
 
 /// Where the pane goes.
@@ -170,6 +169,7 @@ const ONE_DEVICE_PIXEL: f64 = 1.0;
 /// dragged smaller than its own chrome; a zero-sized pane is placed and draws
 /// nothing, and the caller does not have to special-case it.
 #[must_use]
+#[cfg(test)]
 pub fn pane_frame(l: &PaneLayout) -> PaneFrame {
     let scale = if l.scale.is_finite() && l.scale > 0.0 {
         l.scale
@@ -238,6 +238,7 @@ pub fn pane_frame(l: &PaneLayout) -> PaneFrame {
 /// session picked but nothing to show, a child that exited, and a socket that
 /// went away while the child kept running.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub enum PaneState {
     /// A live session is streaming. Nothing is drawn over the grid.
     Live,
@@ -251,6 +252,7 @@ pub enum PaneState {
 
 /// Resolve what the pane is showing.
 #[must_use]
+#[cfg(test)]
 pub fn pane_state(st: &UiState) -> PaneState {
     match st.window.focused.and_then(|id| st.session(id)) {
         None if st.daemon.sessions.is_empty() => PaneState::Empty,
@@ -416,6 +418,7 @@ pub fn worktree_of(row: &SessionView) -> Option<String> {
 /// platform tooltip is a window, so five of them overlap each other and the
 /// pane below.
 #[must_use]
+#[cfg(test)]
 pub fn bar_title(bar: &PaneBar) -> String {
     let mut text = String::new();
     if let Some(agent) = bar.agent {
@@ -450,344 +453,6 @@ pub fn bar_title(bar: &PaneBar) -> String {
 // ───────────────────────────────────────────────────────────────────────────
 // Markup
 // ───────────────────────────────────────────────────────────────────────────
-
-#[derive(Props, Clone, PartialEq)]
-pub struct TerminalPaneProps {
-    pub state: Signal<UiState>,
-    /// Where the daemon is, for the bar's idle line.
-    pub server: String,
-    /// The operator's home directory, so the bar can draw `~`.
-    pub home: String,
-    pub on_new_session: EventHandler<()>,
-    pub on_close_tab: EventHandler<SessionId>,
-    pub on_retry: EventHandler<()>,
-    /// Start one session outright, with no layer at all: the directory, then
-    /// the command line exactly as it should be split and spawned.
-    ///
-    /// The first-run pane's whole point. Every other route to a session from
-    /// an empty window opened the launcher first, which asked an operator who
-    /// had never seen this product to answer three questions before it would
-    /// tell them what it was for. The caller validates and reports, because
-    /// this pane owns no state and raises no flash of its own.
-    pub on_start: EventHandler<(String, String)>,
-    /// Where the pane goes, whenever that changes.
-    ///
-    /// The rectangle is computed here because the layout is known here: the
-    /// sidebar's width, the text scale and the two chrome bands are all this
-    /// module's tokens. It is APPLIED by the shell, because the shell is the
-    /// only place holding a window handle and a pane, and because a component
-    /// that reached for either could not be rendered by a test.
-    ///
-    /// Fired on every render whose layout inputs moved, and only then;
-    /// placing a widget where it already is costs one comparison in the pane.
-    pub on_frame: EventHandler<PaneFrame>,
-    /// The window's client area, in device pixels, and the display scale.
-    ///
-    /// From the platform, so it is a prop rather than something read out of
-    /// [`UiState`]: the model has never held a pixel size and should not
-    /// start. Zero means the window has not reported a size yet, and the
-    /// frame is not fired.
-    pub window_px: (u32, u32),
-    pub scale: f64,
-}
-
-#[component]
-pub fn TerminalPane(props: TerminalPaneProps) -> Element {
-    // Hooks first, and unconditionally.
-    //
-    // Reading the machine costs one `PATH` walk per known agent plus one
-    // profile read. It happens once, on a thread of its own, and only while
-    // the pane is genuinely empty, so a window with a session in it pays
-    // nothing and an idle window never rescans. An answer that arrives after
-    // the first session started is dropped by `use_resource`, which has
-    // already cancelled the future that would have received it.
-    let state = props.state;
-    let vacant = use_memo(move || matches!(pane_state(&state.read()), PaneState::Empty));
-    let machine = use_resource(move || {
-        let vacant = vacant();
-        async move {
-            if !vacant {
-                return None;
-            }
-            Some(dialog::off_thread(firstrun::read_machine).await)
-        }
-    });
-
-    // Where the pane goes, recomputed only when an input to it moved.
-    //
-    // A memo and not a bare call, so a daemon pushing output twenty times a
-    // second does not hand the pane a rectangle twenty times a second. The
-    // five inputs are the whole of what the arithmetic reads; everything else
-    // that changes in this component leaves the pane exactly where it was.
-    let window_px = props.window_px;
-    let scale = props.scale;
-    let frame = use_memo(move || {
-        let st = state.read();
-        // One rem for both lengths below, and the same one the document root
-        // is set to. The rail is `3rem` in the stylesheet and the sidebar's
-        // own width is a pixel count the operator set, so only the rail
-        // follows the text scale; reading an unscaled rem for it while the
-        // frame's rem is scaled puts the pane's left edge in the wrong place
-        // by the whole difference.
-        let rem_px = crate::ui::settings::rem_px(st.daemon.settings.text_scale_pct);
-        pane_frame(&PaneLayout {
-            window_w: window_px.0,
-            window_h: window_px.1,
-            scale,
-            rem_px,
-            sidebar_css: if st.window.sidebar_collapsed {
-                SIDEBAR_RAIL_REM * rem_px
-            } else {
-                st.window.sidebar_width
-            },
-        })
-    });
-    // An effect and not a render step: placing a widget is not markup, and it
-    // has to happen after the render that moved it. A window that has not
-    // reported its size yet is not placed at all, because a zero-sized
-    // rectangle handed to the pane is a resize the child would answer.
-    let on_frame = props.on_frame;
-    use_effect(move || {
-        let f = frame();
-        if f.width > 0 && f.height > 0 {
-            on_frame.call(f);
-        }
-    });
-
-    let st = props.state.read();
-    let pane = pane_state(&st);
-    let focused = st.window.focused;
-    let offline = st.daemon.conn.is_retryable();
-    let connecting = matches!(st.daemon.conn, ConnState::Connecting);
-    let ready = st.server_ready();
-    let bar = pane_bar(&st, &props.home, &props.server);
-    let bar_tip = bar_title(&bar);
-
-    // What the first-run pane offers, and the directory its rows launch in.
-    // `None` for the few milliseconds before the reading lands, which is why
-    // the headline and the sentence under it are constants: the product says
-    // what it is immediately, and only the machine-dependent half waits.
-    let read = machine.read();
-    let first: Option<(firstrun::FirstRun, String)> = (*read)
-        .as_ref()
-        .and_then(|m| m.as_ref())
-        .map(|m| {
-            let seeded = crate::actions::seed_dir(&st, None);
-            let here = if seeded.trim().is_empty() {
-                m.cwd.clone()
-            } else {
-                seeded
-            };
-            let projects = &st.daemon.projects;
-            let home = &m.home;
-            let view = firstrun::first_run(m, &here, |cwd| dialog::place_of(projects, cwd, home));
-            (view, here)
-        });
-    let chord = firstrun::other_way();
-
-    rsx! {
-        // The region the native pane is placed over. No children, ever: the
-        // element exists to reserve space and to be the thing the frame
-        // arithmetic describes, and it is never painted.
-        div {
-            key: "{TERMINAL_KEY}",
-            id: "rg-term",
-            class: "rg-terminal",
-        }
-
-        match pane {
-            PaneState::Live | PaneState::Exited { .. } => rsx! {},
-            // Connecting and offline are NOT empty states. A failure that
-            // renders as "nothing here yet" is a lie, so each keeps its own
-            // sentence and its own modifier, and neither is ever shown the
-            // first-run copy: telling somebody what the product is for while
-            // the thing that runs it is unreachable is the wrong sentence.
-            PaneState::Empty if connecting => rsx! {
-                div { class: "rg-terminal__empty rg-terminal__empty--connecting",
-                    span { class: "rg-terminal__empty-hint",
-                        "Connecting to the session daemon."
-                    }
-                }
-            },
-            PaneState::Empty if offline => rsx! {
-                div { class: "rg-terminal__empty rg-terminal__empty--offline",
-                    span { class: "rg-terminal__empty-hint",
-                        "The session daemon is not answering."
-                    }
-                    button {
-                        class: "rg-btn rg-btn--primary",
-                        r#type: "button",
-                        onclick: move |_| props.on_retry.call(()),
-                        "Retry"
-                    }
-                }
-            },
-            // The first thirty seconds. One statement of what this is, one
-            // aimed action, and the roster of agents this machine can and
-            // cannot run. Everything on it is decided by
-            // `firstrun::first_run`, so the rules are asserted without a DOM.
-            PaneState::Empty => rsx! {
-                div { class: "rg-terminal__empty rg-terminal__empty--first",
-                    // ONE column, and it is a fixed one.
-                    //
-                    // The panel used to be a centred flex column with no
-                    // width, so it was as wide as its widest child and every
-                    // child was centred against a different axis: the
-                    // headline against its own length, the agent list against
-                    // the longest agent note. The list arrives after a PATH
-                    // walk, so the whole panel changed width when it landed
-                    // and every line in it moved sideways. A stated column
-                    // centres once, against the pane, and nothing in it moves
-                    // when the reading arrives.
-                    div { class: "rg-first",
-                        h2 { class: "rg-first__headline", "{firstrun::HEADLINE}" }
-                        p { class: "rg-first__blurb", "{firstrun::BLURB}" }
-
-                        if let Some((view, here)) = first {
-                            if let Some(start) = view.start {
-                                button {
-                                    class: "rg-btn rg-btn--primary rg-first__go",
-                                    r#type: "button",
-                                    // The one keystroke. On a window with
-                                    // nothing in it there is no grid to steal
-                                    // focus, so the second launch is Enter.
-                                    autofocus: true,
-                                    disabled: !ready,
-                                    onclick: {
-                                        let cwd = start.cwd.clone();
-                                        let line = start.line.clone();
-                                        move |_| props.on_start.call((cwd.clone(), line.clone()))
-                                    },
-                                    "{start.label}"
-                                }
-                            }
-                            if let Some(caption) = view.caption {
-                                span { class: "rg-first__caption", "{caption}" }
-                            }
-                            if let Some(said) = view.nothing {
-                                p { class: "rg-first__nothing", "{said}" }
-                            }
-                            ul { class: "rg-first__agents",
-                                for offer in view.offers {
-                                    li {
-                                        key: "{offer.command}",
-                                        class: if offer.primary {
-                                            "rg-first__agent rg-first__agent--on"
-                                        } else if offer.installed {
-                                            "rg-first__agent"
-                                        } else {
-                                            "rg-first__agent rg-first__agent--missing"
-                                        },
-                                        if offer.installed && !offer.primary {
-                                            button {
-                                                class: "rg-first__pick",
-                                                r#type: "button",
-                                                disabled: !ready,
-                                                onclick: {
-                                                    let cwd = here.clone();
-                                                    let line = offer.command.to_string();
-                                                    move |_| props.on_start.call((cwd.clone(), line.clone()))
-                                                },
-                                                span { class: "rg-first__name", "{offer.label}" }
-                                                span { class: "rg-first__note", "{offer.note}" }
-                                            }
-                                        } else {
-                                            span { class: "rg-first__pick",
-                                                span { class: "rg-first__name", "{offer.label}" }
-                                                span { class: "rg-first__note", "{offer.note}" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(chord) = chord {
-                            span { class: "rg-terminal__empty-hint",
-                                "Something else: "
-                                kbd { "{chord}" }
-                            }
-                        }
-                    }
-                }
-            },
-            PaneState::Unfocused => rsx! {
-                div { class: "rg-terminal__empty rg-terminal__empty--unfocused",
-                    div { class: "rg-first",
-                        span { class: "rg-terminal__empty-title", "No session focused" }
-                        span { class: "rg-terminal__empty-hint",
-                            "Pick a session in the sidebar, or press "
-                            kbd { "Alt+1" }
-                            " through "
-                            kbd { "Alt+9" }
-                            "."
-                        }
-                    }
-                }
-            },
-        }
-
-        // ONE line, at every state, forever.
-        //
-        // Outside the `match` above and outside every condition in this
-        // module. The bar is the only child of `.rg-main` below the pane that
-        // occupies space, and its height is a constant, so nothing that
-        // happens to a session can change the pane's rectangle. An exit is a
-        // WORD in this bar, not a strip that appears above it and shortens the
-        // grid by 32px at the moment the operator is reading its last output.
-        div { class: "rg-panebar", title: "{bar_tip}",
-            if let Some(mark) = bar.mark {
-                svg {
-                    class: "rg-panebar__agent",
-                    view_box: "0 0 16 16",
-                    fill: "none",
-                    stroke: "currentColor",
-                    stroke_width: "1.25",
-                    stroke_linecap: "round",
-                    stroke_linejoin: "round",
-                    "aria-hidden": "true",
-                    path { d: "{mark.stroke}" }
-                    if !mark.fill.is_empty() {
-                        path { d: "{mark.fill}", fill: "currentColor", stroke: "none" }
-                    }
-                }
-            }
-            span { class: "rg-panebar__place", "{bar.place}" }
-            if let Some(worktree) = bar.worktree {
-                span { class: "rg-panebar__worktree",
-                    span { class: "rg-panebar__key", "worktree" }
-                    span { class: "rg-panebar__value", "{worktree}" }
-                }
-            }
-            if let Some(branch) = bar.branch {
-                span { class: "rg-panebar__branch", "{branch}" }
-            }
-            span { class: "rg-panebar__gap" }
-            if let Some(exit) = bar.exit {
-                span { class: "rg-panebar__exit", "{exit}" }
-                if let Some(id) = focused {
-                    button {
-                        class: "rg-btn-inline",
-                        r#type: "button",
-                        onclick: move |_| props.on_close_tab.call(id),
-                        // Same wording as the row menu and the shortcut list:
-                        // this stops drawing the transcript, and the session
-                        // it belongs to has already exited.
-                        "Stop viewing"
-                    }
-                }
-            }
-            if let Some(grid) = bar.grid {
-                span { class: "rg-panebar__grid", "{grid}" }
-            }
-            if let Some(pill) = bar.state {
-                span { class: "rg-panebar__state {pill.class}",
-                    span { class: "rg-pill__word", "{pill.word}" }
-                }
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests;

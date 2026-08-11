@@ -69,7 +69,6 @@ on:
     paths:
       # Platform-conditional code and the things that decide how it is built.
       - "**/build.rs"
-      - "vendor/**"
       - "vendor-pty/**"
       - "vendor-ghostty-vt-sys/**"
       - "crates/vitrum-vt/**"
@@ -144,9 +143,9 @@ jobs:
 
       # ARM Linux is Linux: it links the same system webview, and the image
       # does not ship it.
-      - name: system webview
+      - name: system dependencies
         if: runner.os == 'Linux'
-        run: ./.github/system-webview.sh
+        run: ./.github/system-deps.sh
 
       # The terminal engine is built from Ghostty source by `vitrum-vt`, whose
       # default `vendored` route needs Zig. The version is the one Ghostty

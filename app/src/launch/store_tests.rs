@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::LauncherPrefs;
 
 /// A fixed instant, so every age in these tests is exact rather than
 /// "whatever the clock said". 2023-11-14T22:13:20Z.
@@ -113,8 +114,8 @@ fn ties_break_on_recency_then_text() {
 #[test]
 fn a_repeat_launch_bumps_the_existing_entry() {
     let mut store = LaunchStore::default();
-    remember(&mut store, "claude", &[], "/tmp", NOW - DAY);
-    remember(&mut store, "claude", &[], "/tmp", NOW);
+    remember(&mut store, "claude", &[], "/tmp", NOW - DAY, LauncherPrefs::default());
+    remember(&mut store, "claude", &[], "/tmp", NOW, LauncherPrefs::default());
     assert_eq!(store.history.len(), 1);
     assert_eq!(store.history[0].count, 2);
     assert_eq!(store.history[0].last_used_ms, NOW);
@@ -125,13 +126,14 @@ fn a_repeat_launch_bumps_the_existing_entry() {
 #[test]
 fn different_arguments_are_different_history_entries() {
     let mut store = LaunchStore::default();
-    remember(&mut store, "claude", &[], "/tmp", NOW);
+    remember(&mut store, "claude", &[], "/tmp", NOW, LauncherPrefs::default());
     remember(
         &mut store,
         "claude",
         &["--permission-mode".to_string(), "plan".to_string()],
         "/tmp",
         NOW,
+        LauncherPrefs::default(),
     );
     assert_eq!(store.history.len(), 2);
 }
@@ -148,7 +150,7 @@ fn the_history_cap_drops_the_worst_entry_not_the_last_one() {
         ..LaunchStore::default()
     };
     store.history[0] = entry("daily", 500, 0);
-    remember(&mut store, "brand-new", &[], "/tmp", NOW);
+    remember(&mut store, "brand-new", &[], "/tmp", NOW, LauncherPrefs::default());
     assert_eq!(store.history.len(), HISTORY_MAX);
     assert!(
         store.history.iter().any(|e| e.command == "daily"),
@@ -174,9 +176,9 @@ fn the_history_cap_drops_the_worst_entry_not_the_last_one() {
 #[test]
 fn a_launch_records_its_directory_and_never_blanks_it() {
     let mut store = LaunchStore::default();
-    remember(&mut store, "sh", &[], "/src/vitrum", NOW);
+    remember(&mut store, "sh", &[], "/src/vitrum", NOW, LauncherPrefs::default());
     assert_eq!(store.last_cwd, "/src/vitrum");
-    remember(&mut store, "sh", &[], "   ", NOW);
+    remember(&mut store, "sh", &[], "   ", NOW, LauncherPrefs::default());
     assert_eq!(store.last_cwd, "/src/vitrum");
 }
 

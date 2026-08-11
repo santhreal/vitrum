@@ -46,16 +46,6 @@ pub enum BackdropFit {
 }
 
 impl BackdropFit {
-    /// The `background-size` and `background-repeat` pair for this fit.
-    #[must_use]
-    pub fn css(self) -> (&'static str, &'static str) {
-        match self {
-            BackdropFit::Cover => ("cover", "no-repeat"),
-            BackdropFit::Contain => ("contain", "no-repeat"),
-            BackdropFit::Tile => ("auto", "repeat"),
-            BackdropFit::Center => ("auto", "no-repeat"),
-        }
-    }
 }
 
 /// Below this the window is too faint to read or to aim at.
@@ -507,6 +497,302 @@ impl StartupPrefs {
 /// "never draw it" is already a separate switch.
 pub const SPLASH_AFTER_MAX_MS: u16 = 5_000;
 
+/// Fewest and most inbox rows the preview keeps before the "show all"
+/// affordance.
+///
+/// The floor is one because a preview of zero rows is a band that says a
+/// number and shows nothing, which reads as a list that failed to load. The
+/// ceiling is fifty because the cut exists to keep a bucket readable, and a
+/// bucket that draws fifty live agents has already lost that argument.
+pub const PREVIEW_ROWS_MIN: u8 = 1;
+/// Most inbox rows the preview keeps.
+pub const PREVIEW_ROWS_MAX: u8 = 50;
+/// Fewest Done-shelf rows the collapsed shelf keeps.
+pub const SETTLED_ROWS_MIN: u8 = 1;
+/// Most Done-shelf rows the collapsed shelf keeps.
+///
+/// Higher than the inbox cut because a drained row costs a comparator and a
+/// widget and nothing else, while a live row also carries a status pill that
+/// repaints.
+pub const SETTLED_ROWS_MAX: u8 = 100;
+
+/// How many rows each band of a bucket draws before it offers the rest.
+///
+/// Two numbers and not one. The Active band's cut answers "how many agents am
+/// I working with", the Done shelf's answers "what did I just finish", and an
+/// operator who wants every live row still does not want three hundred
+/// drained ones. They were one constant each for three releases, which made
+/// the answer to both questions a property of the build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct InboxPrefs {
+    /// Inbox rows drawn before the "show all" affordance. The focused row is
+    /// rescued from the cut regardless, so this is a floor on what is shown
+    /// rather than an exact count.
+    pub preview_rows: u8,
+    /// Done-shelf rows drawn before the "show more" affordance.
+    pub settled_rows: u8,
+}
+
+impl Default for InboxPrefs {
+    fn default() -> Self {
+        InboxPrefs {
+            preview_rows: 8,
+            settled_rows: 10,
+        }
+    }
+}
+
+impl InboxPrefs {
+    /// Force both cuts into the range a band can draw.
+    pub fn clamp(&mut self) {
+        self.preview_rows = self.preview_rows.clamp(PREVIEW_ROWS_MIN, PREVIEW_ROWS_MAX);
+        self.settled_rows = self.settled_rows.clamp(SETTLED_ROWS_MIN, SETTLED_ROWS_MAX);
+    }
+
+    /// The inbox cut, as the row count a band indexes with.
+    #[must_use]
+    pub fn preview_limit(&self) -> usize {
+        usize::from(self.preview_rows.clamp(PREVIEW_ROWS_MIN, PREVIEW_ROWS_MAX))
+    }
+
+    /// The Done-shelf cut, as the row count a band indexes with.
+    #[must_use]
+    pub fn settled_limit(&self) -> usize {
+        usize::from(self.settled_rows.clamp(SETTLED_ROWS_MIN, SETTLED_ROWS_MAX))
+    }
+}
+
+/// Fewest recent commands the launcher will list.
+pub const RECENT_ROWS_MIN: u8 = 1;
+/// Most recent commands the launcher will list.
+///
+/// The recents band is reached by eye, not by query. Past fifty rows the band
+/// is a file the operator scrolls and the ranked history behind the query is
+/// the faster way to the same command.
+pub const RECENT_ROWS_MAX: u8 = 50;
+/// Fewest history entries kept for ranking.
+///
+/// Ten. Below that the ranker has too little to rank and every launch offers
+/// whatever was run last, which is what the recents band already does.
+pub const HISTORY_LIMIT_MIN: u16 = 10;
+/// Most history entries kept for ranking.
+///
+/// A thousand entries is about 80 KiB of `launch.json` and one ranking pass
+/// per keystroke over that many rows, which is the point where the launcher
+/// starts to feel typed-ahead-of.
+pub const HISTORY_LIMIT_MAX: u16 = 1_000;
+
+/// What the launcher lists, and how much it remembers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LauncherPrefs {
+    /// Rows the recents band draws.
+    pub recent_rows: u8,
+    /// Commands kept in the ranked history. A save trims to this by rank, so
+    /// lowering it drops what was least worth suggesting rather than what is
+    /// oldest.
+    pub history_limit: u16,
+}
+
+impl Default for LauncherPrefs {
+    fn default() -> Self {
+        LauncherPrefs {
+            recent_rows: 12,
+            history_limit: 60,
+        }
+    }
+}
+
+impl LauncherPrefs {
+    /// Force both counts into the range the launcher can draw and store.
+    pub fn clamp(&mut self) {
+        self.recent_rows = self.recent_rows.clamp(RECENT_ROWS_MIN, RECENT_ROWS_MAX);
+        self.history_limit = self
+            .history_limit
+            .clamp(HISTORY_LIMIT_MIN, HISTORY_LIMIT_MAX);
+    }
+
+    /// The recents cut, as the row count the store truncates to.
+    #[must_use]
+    pub fn recents_limit(&self) -> usize {
+        usize::from(self.recent_rows.clamp(RECENT_ROWS_MIN, RECENT_ROWS_MAX))
+    }
+
+    /// The history cut, as the entry count a save trims to.
+    #[must_use]
+    pub fn history_max(&self) -> usize {
+        usize::from(
+            self.history_limit
+                .clamp(HISTORY_LIMIT_MIN, HISTORY_LIMIT_MAX),
+        )
+    }
+}
+
+/// Latest hour of day a snooze preset may wake at.
+///
+/// Hours and not instants: the presets are "this evening" and "tomorrow
+/// morning", and what an operator disagrees with is which hour those name.
+pub const SNOOZE_HOUR_MAX: u8 = 23;
+
+/// When the named snooze presets wake.
+///
+/// The morning hour is used by every preset that lands on a later day; the
+/// evening hour is used by the one that lands on today. Both were fixed at 9
+/// and 18, which is a statement about a working day that a night shift does
+/// not share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SnoozePrefs {
+    /// Hour of day the morning presets wake at.
+    pub morning_hour: u8,
+    /// Hour of day the evening preset wakes at.
+    pub evening_hour: u8,
+}
+
+impl Default for SnoozePrefs {
+    fn default() -> Self {
+        SnoozePrefs {
+            morning_hour: 9,
+            evening_hour: 18,
+        }
+    }
+}
+
+impl SnoozePrefs {
+    /// Force both hours onto the clock.
+    ///
+    /// An hour of 24 is not a late evening, it is midnight of a day the
+    /// calendar arithmetic never reaches, and a preset built from it wakes
+    /// immediately.
+    pub fn clamp(&mut self) {
+        self.morning_hour = self.morning_hour.min(SNOOZE_HOUR_MAX);
+        self.evening_hour = self.evening_hour.min(SNOOZE_HOUR_MAX);
+    }
+
+    /// The two hours, as the model's preset builder takes them.
+    #[must_use]
+    pub fn hours(&self) -> vitrum_model::SnoozeHours {
+        vitrum_model::SnoozeHours {
+            morning: u32::from(self.morning_hour.min(SNOOZE_HOUR_MAX)),
+            evening: u32::from(self.evening_hour.min(SNOOZE_HOUR_MAX)),
+        }
+    }
+}
+
+/// Shortest reconnect ceiling worth offering, in milliseconds.
+///
+/// One second. Below that the ceiling is under the first delay and the
+/// schedule stops backing off at all, which is a reconnect loop against a
+/// daemon that is not listening.
+pub const RECONNECT_MAX_MS_MIN: u32 = 1_000;
+/// Longest reconnect ceiling, in milliseconds. Ten minutes.
+pub const RECONNECT_MAX_MS_MAX: u32 = 600_000;
+/// Fewest reconnect attempts before the Retry control is offered.
+pub const RECONNECT_ATTEMPTS_MIN: u32 = 1;
+/// Most reconnect attempts before the Retry control is offered.
+pub const RECONNECT_ATTEMPTS_MAX: u32 = 200;
+
+/// How long the client keeps trying to reach a daemon that went away.
+///
+/// The first delay is not here. It is a measured 250 ms, sized against how
+/// long a daemon takes to bind its socket, and a shorter one turns the first
+/// two attempts into a busy loop against a port nothing is listening on. What
+/// an operator has an opinion about is the other end: a laptop that suspends
+/// wants a long ceiling and many attempts, and a desktop beside a daemon it
+/// restarts by hand wants the Retry control now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConnectionPrefs {
+    /// Longest gap between two reconnect attempts, in milliseconds.
+    pub reconnect_max_ms: u32,
+    /// Attempts made before the schedule ends and Retry is offered.
+    pub reconnect_attempts: u32,
+}
+
+impl Default for ConnectionPrefs {
+    fn default() -> Self {
+        ConnectionPrefs {
+            reconnect_max_ms: 30_000,
+            reconnect_attempts: 25,
+        }
+    }
+}
+
+impl ConnectionPrefs {
+    /// Force both bounds into the range the schedule can express.
+    pub fn clamp(&mut self) {
+        self.reconnect_max_ms = self
+            .reconnect_max_ms
+            .clamp(RECONNECT_MAX_MS_MIN, RECONNECT_MAX_MS_MAX);
+        self.reconnect_attempts = self
+            .reconnect_attempts
+            .clamp(RECONNECT_ATTEMPTS_MIN, RECONNECT_ATTEMPTS_MAX);
+    }
+}
+
+/// Fewest context lines a search may be asked for. Zero is the hit alone.
+pub const CONTEXT_LINES_MIN: u16 = 0;
+/// Most context lines a search may be asked for.
+///
+/// Matches `vitrum_search::MAX_CONTEXT`, which is the daemon's own ceiling: a
+/// larger number is refused there, so offering it here would be a control
+/// whose top half does nothing.
+pub const CONTEXT_LINES_MAX: u16 = 64;
+/// Fewest hits one sweep may be capped at.
+///
+/// The daemon rations the cap per session, a quarter of it floored at eight,
+/// so a cap below twenty-five gives a second session the floor and nothing
+/// else and the answer stops depending on the number at all.
+pub const MAX_HITS_MIN: u32 = 25;
+/// Most hits one sweep may be capped at.
+pub const MAX_HITS_MAX: u32 = 5_000;
+
+/// What one search sweep asks the daemon for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchPrefs {
+    /// Lines quoted either side of a hit.
+    pub context_lines: u16,
+    /// Hits one sweep returns before it reports the answer truncated.
+    pub max_hits: u32,
+}
+
+impl Default for SearchPrefs {
+    fn default() -> Self {
+        SearchPrefs {
+            context_lines: 2,
+            max_hits: 500,
+        }
+    }
+}
+
+impl SearchPrefs {
+    /// Force both into the range the daemon accepts.
+    pub fn clamp(&mut self) {
+        self.context_lines = self
+            .context_lines
+            .clamp(CONTEXT_LINES_MIN, CONTEXT_LINES_MAX);
+        self.max_hits = self.max_hits.clamp(MAX_HITS_MIN, MAX_HITS_MAX);
+    }
+}
+
+/// Fewest tabs the strip will hold.
+///
+/// Two, because a strip of one has no switch to make and the eviction path
+/// would close the tab the operator just opened.
+pub const MAX_TABS_MIN: u8 = 2;
+/// Most tabs the strip will hold.
+///
+/// Thirty-two. At the sidebar's own width that is a strip of status dots, and
+/// past it the strip stops being a way to reach a session.
+pub const MAX_TABS_MAX: u8 = 32;
+
+/// Fewest hours between two quiet update checks.
+pub const UPDATE_CHECK_HOURS_MIN: u8 = 1;
+/// Most hours between two quiet update checks. A week.
+pub const UPDATE_CHECK_HOURS_MAX: u8 = 168;
+
 /// Rebound shortcuts.
 ///
 /// Keyed by the action's wire name and valued by a chord string, both plain
@@ -604,6 +890,29 @@ pub struct Settings {
     /// Auto-settle tuning. A setting because it is the one disposition rule
     /// with a number in it that an operator has an opinion about.
     pub policy: DispositionPolicy,
+    /// How many rows each band of a bucket draws before it offers the rest.
+    pub inbox: InboxPrefs,
+    /// What the launcher lists, and how much it remembers.
+    pub launcher: LauncherPrefs,
+    /// When the named snooze presets wake.
+    pub snooze: SnoozePrefs,
+    /// How long the client keeps trying to reach a daemon that went away.
+    pub connection: ConnectionPrefs,
+    /// What one search sweep asks the daemon for.
+    pub search: SearchPrefs,
+    /// Tabs the strip holds before it evicts the least recently used one.
+    ///
+    /// Eviction closes nothing: the child keeps running, the row stays in the
+    /// sidebar, and the session moves into the strip's overflow list. What
+    /// this decides is how many sessions are one click away, which is a
+    /// question about the operator's screen and not about the product.
+    pub max_tabs: u8,
+    /// Hours between two quiet update checks while a window is open.
+    ///
+    /// A launch also checks, so this is the interval for a window that stays
+    /// up. Raising it is what an operator on a metered connection wants;
+    /// nothing about the check varies with it otherwise.
+    pub update_check_hours: u8,
     /// Whether the operator has been past the first-run sheet. False on a
     /// fresh profile, and the only thing that opens onboarding.
     pub onboarded: bool,
@@ -657,6 +966,13 @@ impl Default for Settings {
             startup: StartupPrefs::default(),
             daemon_url: String::new(),
             policy: DispositionPolicy::default(),
+            inbox: InboxPrefs::default(),
+            launcher: LauncherPrefs::default(),
+            snooze: SnoozePrefs::default(),
+            connection: ConnectionPrefs::default(),
+            search: SearchPrefs::default(),
+            max_tabs: 8,
+            update_check_hours: 4,
             onboarded: false,
             seen_version: String::new(),
             ignored_update: String::new(),
@@ -691,6 +1007,25 @@ impl Settings {
         self.terminal.clamp();
         self.notices.clamp();
         self.startup.clamp();
+        self.inbox.clamp();
+        self.launcher.clamp();
+        self.snooze.clamp();
+        self.connection.clamp();
+        self.search.clamp();
+        self.max_tabs = self.max_tabs.clamp(MAX_TABS_MIN, MAX_TABS_MAX);
+        self.update_check_hours = self
+            .update_check_hours
+            .clamp(UPDATE_CHECK_HOURS_MIN, UPDATE_CHECK_HOURS_MAX);
+    }
+
+    /// Tabs the strip holds, forced into range.
+    ///
+    /// A method and not a bare field read, because the eviction loop indexes
+    /// with it and a zero read out of a hand-edited profile would evict the
+    /// tab it had just opened on every open.
+    #[must_use]
+    pub fn tab_capacity(&self) -> usize {
+        usize::from(self.max_tabs.clamp(MAX_TABS_MIN, MAX_TABS_MAX))
     }
 
     /// The daemon URL to dial, given whatever the command line asked for.

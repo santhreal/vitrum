@@ -22,10 +22,45 @@ use serde::{Deserialize, Serialize};
 use crate::civil::{Civil, MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE};
 use crate::view::Clock;
 
-/// Hour of day the evening preset wakes at.
-pub const EVENING_HOUR: u32 = 18;
-/// Hour of day the morning presets wake at.
-pub const MORNING_HOUR: u32 = 9;
+/// When the named presets wake, as hours of the day.
+///
+/// Carried in rather than fixed here. The presets are "this evening" and
+/// "tomorrow morning", and which hour those name is a fact about the
+/// operator's day: 9 and 18 describe one working pattern and not a night
+/// shift. [`SnoozeHours::default`] is the pair this crate shipped as
+/// constants, so a caller that has no preference gets the old behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnoozeHours {
+    /// Hour of day the morning presets wake at.
+    pub morning: u32,
+    /// Hour of day the evening preset wakes at.
+    pub evening: u32,
+}
+
+impl Default for SnoozeHours {
+    fn default() -> Self {
+        SnoozeHours {
+            morning: 9,
+            evening: 18,
+        }
+    }
+}
+
+impl SnoozeHours {
+    /// The pair, with each hour forced onto the clock.
+    ///
+    /// An hour past 23 is not a late evening. `with_time` would carry it into
+    /// the following day, so "this evening" would resolve to a time that is
+    /// more than an hour away on every day of the year and the preset would
+    /// never drop off the menu.
+    #[must_use]
+    fn on_the_clock(self) -> SnoozeHours {
+        SnoozeHours {
+            morning: self.morning.min(23),
+            evening: self.evening.min(23),
+        }
+    }
+}
 
 /// A session parked until a wake instant.
 ///
@@ -140,14 +175,15 @@ pub struct SnoozePreset {
     pub wake_at_ms: u64,
 }
 
-/// The snooze choices to offer at `clock`.
+/// The snooze choices to offer at `clock`, waking at `hours`.
 ///
-/// "This evening" only appears while evening is more than an hour away; after
-/// that it would resolve to a time barely distinguishable from "in 1 hour", or
-/// worse, to a time already past. Everything below the hour preset advances by
-/// calendar days, so a snooze set the evening before a clock change still lands
-/// at 9:00 on the intended date.
-pub fn snooze_presets(clock: Clock) -> Vec<SnoozePreset> {
+/// "This evening" only appears while the evening hour is more than an hour
+/// away; after that it would resolve to a time barely distinguishable from "in
+/// 1 hour", or worse, to a time already past. Everything below the hour preset
+/// advances by calendar days, so a snooze set the evening before a clock
+/// change still lands at the morning hour on the intended date.
+pub fn snooze_presets(clock: Clock, hours: SnoozeHours) -> Vec<SnoozePreset> {
+    let hours = hours.on_the_clock();
     let offset = clock.utc_offset_seconds;
     let now_ms = clock.now_ms as i64;
     let now = Civil::from_unix_ms(now_ms, offset);
@@ -162,7 +198,7 @@ pub fn snooze_presets(clock: Clock) -> Vec<SnoozePreset> {
         wake_at_ms: in_an_hour_ms as u64,
     });
 
-    let evening_ms = now.with_time(EVENING_HOUR, 0).to_unix_ms(offset);
+    let evening_ms = now.with_time(hours.evening, 0).to_unix_ms(offset);
     if evening_ms - now_ms > MS_PER_HOUR {
         presets.push(SnoozePreset {
             id: SnoozePresetId::Evening,
@@ -172,7 +208,7 @@ pub fn snooze_presets(clock: Clock) -> Vec<SnoozePreset> {
         });
     }
 
-    let tomorrow = now.add_days(1).with_time(MORNING_HOUR, 0);
+    let tomorrow = now.add_days(1).with_time(hours.morning, 0);
     presets.push(SnoozePreset {
         id: SnoozePresetId::Tomorrow,
         label: "Tomorrow",
@@ -185,7 +221,7 @@ pub fn snooze_presets(clock: Clock) -> Vec<SnoozePreset> {
         0 => 7,
         days => days,
     };
-    let next_week = now.add_days(days_until_monday).with_time(MORNING_HOUR, 0);
+    let next_week = now.add_days(days_until_monday).with_time(hours.morning, 0);
     presets.push(SnoozePreset {
         id: SnoozePresetId::NextWeek,
         label: "Next week",
@@ -373,7 +409,7 @@ mod tests {
     #[test]
     fn a_mid_morning_clock_offers_all_four_presets_in_order() {
         let now = at(2026, 3, 3, 10, 0, 0);
-        let presets = snooze_presets(clock(now, 0));
+        let presets = snooze_presets(clock(now, 0), SnoozeHours::default());
         assert_eq!(
             presets.iter().map(|preset| preset.id).collect::<Vec<_>>(),
             vec![
@@ -404,14 +440,14 @@ mod tests {
         let offset = 0;
         let comfortably_before = at(2026, 3, 3, 16, 59, offset);
         assert!(
-            snooze_presets(clock(comfortably_before, offset))
+            snooze_presets(clock(comfortably_before, offset), SnoozeHours::default())
                 .iter()
                 .any(|preset| preset.id == SnoozePresetId::Evening)
         );
 
         let exactly_an_hour = at(2026, 3, 3, 17, 0, offset);
         assert_eq!(
-            snooze_presets(clock(exactly_an_hour, offset))
+            snooze_presets(clock(exactly_an_hour, offset), SnoozeHours::default())
                 .iter()
                 .map(|preset| preset.id)
                 .collect::<Vec<_>>(),
@@ -420,7 +456,7 @@ mod tests {
 
         let past_evening = at(2026, 3, 3, 21, 0, offset);
         assert!(
-            !snooze_presets(clock(past_evening, offset))
+            !snooze_presets(clock(past_evening, offset), SnoozeHours::default())
                 .iter()
                 .any(|preset| preset.id == SnoozePresetId::Evening)
         );
@@ -440,7 +476,7 @@ mod tests {
             (9, at(2026, 3, 16, 9, 0, 0)),
         ] {
             let now = at(2026, 3, day, 10, 0, 0);
-            let presets = snooze_presets(clock(now, 0));
+            let presets = snooze_presets(clock(now, 0), SnoozeHours::default());
             let next_week = presets
                 .iter()
                 .find(|preset| preset.id == SnoozePresetId::NextWeek)
@@ -459,7 +495,7 @@ mod tests {
     #[test]
     fn day_advancing_presets_use_calendar_days() {
         let late = at(2026, 3, 7, 23, 30, 0);
-        let presets = snooze_presets(clock(late, 0));
+        let presets = snooze_presets(clock(late, 0), SnoozeHours::default());
         let tomorrow = presets
             .iter()
             .find(|preset| preset.id == SnoozePresetId::Tomorrow)
@@ -467,6 +503,70 @@ mod tests {
         let landed = Civil::from_unix_ms(tomorrow.wake_at_ms as i64, 0);
         assert_eq!((landed.year, landed.month, landed.day, landed.hour), (2026, 3, 8, 9));
         assert_eq!(tomorrow.wake_at_ms - late, 9 * 3_600_000 + 30 * 60_000);
+    }
+
+    /// Every hour the presets read comes from the caller.
+    ///
+    /// THE BUG this stops: one of the three `with_time` calls left on a
+    /// constant. Nothing about the menu says which preset built which wake
+    /// instant, so a night shift would set both hours, watch "tomorrow" move
+    /// and "next week" stay at 9:00, and have no way to tell that from the
+    /// calendar arithmetic being wrong.
+    #[test]
+    fn every_named_preset_wakes_at_the_configured_hour() {
+        let hours = SnoozeHours {
+            morning: 4,
+            evening: 22,
+        };
+        // A Tuesday, well before the evening hour, so all four are offered.
+        let now = at(2026, 3, 3, 10, 0, 0);
+        let presets = snooze_presets(clock(now, 0), hours);
+        let hour_of = |id: SnoozePresetId| {
+            let preset = presets
+                .iter()
+                .find(|preset| preset.id == id)
+                .expect("preset is offered before the evening hour");
+            Civil::from_unix_ms(preset.wake_at_ms as i64, 0).hour
+        };
+        assert_eq!(hour_of(SnoozePresetId::Evening), 22);
+        assert_eq!(hour_of(SnoozePresetId::Tomorrow), 4);
+        assert_eq!(hour_of(SnoozePresetId::NextWeek), 4);
+        // The hour preset is relative and must not follow either setting.
+        assert_eq!(hour_of(SnoozePresetId::Hour), 11);
+    }
+
+    /// An hour past the end of the clock is pulled back to 23 rather than
+    /// carried into the next day.
+    ///
+    /// THE BUG this stops: `with_time(24, 0)` rolling over, which puts "this
+    /// evening" more than an hour away at every instant of every day. The
+    /// preset then never drops off the menu and offers a wake time on the
+    /// wrong date.
+    #[test]
+    fn an_hour_off_the_clock_is_pulled_back_rather_than_rolled_over() {
+        let now = at(2026, 3, 3, 23, 45, 0);
+        let presets = snooze_presets(
+            clock(now, 0),
+            SnoozeHours {
+                morning: 99,
+                evening: 24,
+            },
+        );
+        assert!(
+            !presets
+                .iter()
+                .any(|preset| preset.id == SnoozePresetId::Evening),
+            "23:00 is behind 23:45, so this evening has passed"
+        );
+        let tomorrow = presets
+            .iter()
+            .find(|preset| preset.id == SnoozePresetId::Tomorrow)
+            .expect("tomorrow preset is always offered");
+        let landed = Civil::from_unix_ms(tomorrow.wake_at_ms as i64, 0);
+        assert_eq!(
+            (landed.year, landed.month, landed.day, landed.hour),
+            (2026, 3, 4, 23)
+        );
     }
 
     /// Snooze state is persisted between runs, so it has to survive a JSON

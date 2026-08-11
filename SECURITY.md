@@ -113,8 +113,8 @@ is in scope.
 that writes outside the install directory while unpacking, is in scope.
 
 Out of scope, besides execution you asked for: findings against
-`vendor/` or `vendor-pty/` that are upstream's and reproduce against
-upstream `dioxus-desktop` or `portable-pty` (report those upstream, and tell
-us so the fork can absorb the fix), issues in the system WebKit runtime,
+`vendor-pty/` or `vendor-ghostty-vt-sys/` that are upstream's and reproduce
+against upstream `portable-pty` or `libghostty-vt` (report those upstream, and
+tell us so the fork can absorb the fix), issues in the system GTK runtime,
 missing hardening that has no demonstrated impact, and reports produced by a
 scanner with no working path to abuse.

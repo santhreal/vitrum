@@ -1,7 +1,7 @@
 //! The whole client-side model, and the pure folds that move it.
 //!
-//! Everything here is deliberately free of Dioxus and of the JS bridge so it
-//! can be tested as plain data. There is no scrollback here at all: scrollback
+//! Everything here is deliberately free of the toolkit so it can be tested as
+//! plain data. There is no scrollback here at all: scrollback
 //! lives on the server, and the only bytes this process ever holds are the
 //! ones currently on a terminal grid.
 //!
@@ -29,9 +29,9 @@
 //! The split is designed so a [`WindowState`] never owns session data and
 //! never reaches for a copy: every derivation takes `&DaemonState` or
 //! `&mut DaemonState`, so N windows can read one value. The client does not
-//! currently exercise that, and the reason is Dioxus rather than this file. A
-//! `Signal<UiState>` belongs to exactly one VirtualDom and each desktop window
-//! gets its own, so window 2 cannot read window 1's signal at all. Each window
+//! currently exercise that, and the reason is the shell rather than this file.
+//! A `UiState` belongs to exactly one window, so window 2 cannot read window
+//! 1's state at all. Each window
 //! therefore holds a whole [`UiState`], keeps its own socket, and stays in
 //! agreement because the daemon broadcasts every change to all of them: the
 //! sharing happens over loopback instead of over a pointer, at the cost of one
@@ -136,6 +136,7 @@ pub const SIDEBAR_MAX_PX: f64 = 448.0;
 /// needs a human, and the strip's own overflow button, which lists exactly the
 /// sessions the strip could not hold. Nothing is ever hidden without a count
 /// saying how much.
+#[cfg(test)]
 pub const MAX_TABS: usize = 8;
 
 /// Default sidebar width, matching `--rg-sidebar-width` (16rem).
@@ -204,6 +205,7 @@ impl ConnState {
     }
 
     /// Modifier class for the sidebar banner.
+    #[cfg(test)]
     pub fn banner_class(&self) -> &'static str {
         match self {
             ConnState::Connecting => "rg-sidebar__status rg-sidebar__status--connecting",
@@ -992,12 +994,13 @@ impl DaemonState {
 
     /// The snooze choices to offer right now.
     ///
-    /// Straight from the model: "this evening" disappears once evening is less
-    /// than an hour away, and everything below the hour preset advances by
-    /// calendar days rather than by adding milliseconds, so a snooze set the
-    /// night before a clock change still lands at 9:00 on the intended date.
+    /// Straight from the model, with the two wake hours out of the document:
+    /// "this evening" disappears once the evening hour is less than an hour
+    /// away, and everything below the hour preset advances by calendar days
+    /// rather than by adding milliseconds, so a snooze set the night before a
+    /// clock change still lands at the morning hour on the intended date.
     pub fn snooze_presets(&self, clock: Clock) -> Vec<SnoozePreset> {
-        snooze_presets(clock)
+        snooze_presets(clock, self.settings.snooze.hours())
     }
 
     /// Replace the whole list from a snapshot, keeping the client-local facts.
@@ -1323,8 +1326,8 @@ pub struct WindowState {
     /// Which window this is, zero-based, in the order the process opened them.
     ///
     /// It is the window's slot in the persisted document. A window has to know
-    /// its own slot because nothing else can tell it: each desktop window runs
-    /// its own VirtualDom and cannot see another's state, so a save that did
+    /// its own slot because nothing else can tell it: each desktop window holds
+    /// its own state and cannot see another's, so a save that did
     /// not name a slot would write itself into slot 0 and delete every other
     /// window's saved layout.
     pub index: usize,
@@ -1901,6 +1904,7 @@ impl WindowState {
             self.preview_expanded(key),
             clock,
             policy,
+            daemon.settings.inbox.preview_limit(),
         )
     }
 
@@ -2006,7 +2010,10 @@ impl WindowState {
     /// preview cut all remove rows from this list, because none of them are on
     /// screen; [`WindowState::reveal`] is what a jump uses to bring one back.
     pub fn visible_ids(&self, daemon: &DaemonState, clock: Clock) -> Vec<SessionId> {
-        self.visible_ids_of(&self.tree(daemon, clock))
+        self.visible_ids_of(
+            &self.tree(daemon, clock),
+            daemon.settings.inbox.settled_limit(),
+        )
     }
 
     /// [`WindowState::visible_ids`] over an already-arranged tree.
@@ -2017,18 +2024,22 @@ impl WindowState {
     /// the tree three times is three times the work for an answer that cannot
     /// have changed between them. At thirty sessions on a daemon that pushes
     /// an update a second, that difference is most of the client's CPU.
-    pub fn visible_ids_of(&self, tree: &[SidebarGroup<'_>]) -> Vec<SessionId> {
+    pub fn visible_ids_of(
+        &self,
+        tree: &[SidebarGroup<'_>],
+        settled_limit: usize,
+    ) -> Vec<SessionId> {
         // An upper bound rather than an exact count: `len` includes the rows
         // the preview cut hid, which never reach the list. One allocation that
         // is sometimes too big beats a `flat_map` collect that doubles.
         let mut ids = Vec::with_capacity(tree.iter().map(SidebarGroup::len).sum());
-        ids.extend(self.visible_rows_of(tree).map(SessionView::id));
+        ids.extend(self.visible_rows_of(tree, settled_limit).map(SessionView::id));
         ids
     }
 
     /// How much of one band this window draws, as `(shown, deeper)`.
     ///
-    /// A Done shelf is capped at [`inbox::SETTLED_TAIL_LIMIT`] until the
+    /// A Done shelf is capped at `settings.inbox.settledRows` until the
     /// operator asks for the rest, because a month of finished work in one
     /// project is not a list and the question the shelf is opened for is what
     /// did I just finish. Every other band draws whole.
@@ -2037,11 +2048,21 @@ impl WindowState {
     /// button because a cut the panel applies alone is a row the attention
     /// count and the keyboard walk can still reach while nothing on screen
     /// shows it.
-    pub fn band_cut(&self, key: GroupKey, section: Section, rows: usize) -> (usize, usize) {
+    ///
+    /// `settled_limit` is carried in rather than read here because this is a
+    /// [`WindowState`] method and the document lives on [`DaemonState`].
+    /// [`UiState::band_cut`] is the call that has both.
+    pub fn band_cut(
+        &self,
+        key: GroupKey,
+        section: Section,
+        rows: usize,
+        settled_limit: usize,
+    ) -> (usize, usize) {
         if section != Section::Settled || self.settled_expanded(key) {
             return (rows, 0);
         }
-        let shown = rows.min(inbox::SETTLED_TAIL_LIMIT);
+        let shown = rows.min(settled_limit.max(1));
         (shown, rows - shown)
     }
 
@@ -2063,6 +2084,7 @@ impl WindowState {
     fn visible_rows_of<'t>(
         &'t self,
         tree: &'t [SidebarGroup<'t>],
+        settled_limit: usize,
     ) -> impl Iterator<Item = &'t SessionView> {
         tree.iter().flat_map(move |group| {
             let bucket_collapsed = group.collapsible() && self.collapsed.contains(&group.key);
@@ -2071,7 +2093,7 @@ impl WindowState {
                 .filter(move |section| !bucket_collapsed && self.section_open(group.key, *section))
                 .flat_map(move |section| {
                     let rows = group.section(section);
-                    let (shown, _) = self.band_cut(group.key, section, rows.len());
+                    let (shown, _) = self.band_cut(group.key, section, rows.len(), settled_limit);
                     rows[..shown].iter().copied()
                 })
         })
@@ -2106,7 +2128,7 @@ impl WindowState {
         let tree = self.tree(daemon, clock);
         let mut visible = Vec::with_capacity(tree.iter().map(SidebarGroup::len).sum());
         let mut wanted: BTreeSet<SessionId> = BTreeSet::new();
-        for row in self.visible_rows_of(&tree) {
+        for row in self.visible_rows_of(&tree, daemon.settings.inbox.settled_limit()) {
             if inbox::wants_operator(row, clock, policy) {
                 wanted.insert(row.id());
             }
@@ -2150,7 +2172,7 @@ impl WindowState {
         clock: Clock,
     ) -> usize {
         let policy = daemon.policy();
-        self.visible_rows_of(tree)
+        self.visible_rows_of(tree, daemon.settings.inbox.settled_limit())
             .filter(|row| inbox::wants_operator(row, clock, policy))
             .count()
     }
@@ -2213,7 +2235,7 @@ impl WindowState {
         self.touch(id);
         daemon.visit(id, now_ms);
         self.selection.select_one(id);
-        self.evict_stale_tabs();
+        self.evict_stale_tabs(daemon.settings.tab_capacity());
     }
 
     /// Record `id` as the most recently used tab.
@@ -2227,16 +2249,18 @@ impl WindowState {
         self.tab_mru.push(id);
     }
 
-    /// Drop least-recently-used tabs until the strip is back within [`MAX_TABS`].
-    fn evict_stale_tabs(&mut self) {
-        while self.tabs.len() > MAX_TABS {
+    /// Drop least-recently-used tabs until the strip is back within
+    /// `capacity`, which is `settings.maxTabs`.
+    fn evict_stale_tabs(&mut self, capacity: usize) {
+        while self.tabs.len() > capacity {
             let victim = self
                 .tab_mru
                 .iter()
                 .find(|t| self.tabs.contains(t) && Some(**t) != self.focused)
                 .copied();
-            // Unreachable while MAX_TABS >= 1, because at least one tab other
-            // than the focused one exists whenever the strip is over budget.
+            // Unreachable while the capacity is at least one, because at least
+            // one tab other than the focused one exists whenever the strip is
+            // over budget.
             // Breaking rather than looping forever is the safe answer anyway.
             let Some(victim) = victim else { break };
             self.tabs.retain(|t| *t != victim);
@@ -2745,6 +2769,25 @@ impl UiState {
         self.window.visible_ids(&self.daemon, clock)
     }
 
+    /// [`WindowState::band_cut`], with the Done shelf's depth out of the
+    /// document.
+    ///
+    /// The forward every surface should call. `WindowState` cannot reach the
+    /// settings, so a panel that called it directly would have to pass a
+    /// number it invented, which is how the count under a "show more" button
+    /// stops matching the rows behind it.
+    pub fn band_cut(&self, key: GroupKey, section: Section, rows: usize) -> (usize, usize) {
+        self.window
+            .band_cut(key, section, rows, self.daemon.settings.inbox.settled_limit())
+    }
+
+    /// [`WindowState::visible_ids_of`], over an already-arranged tree.
+    #[cfg(test)]
+    pub fn visible_ids_of(&self, tree: &[SidebarGroup<'_>]) -> Vec<SessionId> {
+        self.window
+            .visible_ids_of(tree, self.daemon.settings.inbox.settled_limit())
+    }
+
     pub fn attention_count(&self, clock: Clock) -> usize {
         self.window.attention_count(&self.daemon, clock)
     }
@@ -3055,6 +3098,11 @@ impl Persisted {
             .filter(|(w, _)| self.workspaces.contains(*w) && *w != window.workspace)
             .cloned()
             .collect();
+        // Arming a session for termination answers a question asked seconds
+        // ago. It is not in the snapshot and it must not survive one either:
+        // a window restored with a session already armed would take the next
+        // confirmation keystroke as an answer nobody gave.
+        window.armed_terminate.clear();
         true
     }
 }
@@ -3353,8 +3401,8 @@ pub fn startup_prefs() -> &'static (Persisted, Option<String>) {
 
 /// Write one window's slice of the document, keeping every other window's.
 ///
-/// Each desktop window has its own VirtualDom and therefore its own
-/// [`UiState`], so no window can see another's layout. A window that captured
+/// Each desktop window has its own [`UiState`], so no window can see
+/// another's layout. A window that captured
 /// the whole document would write itself into slot 0 and silently delete every
 /// other window's entry, which is a layout the operator loses on the next
 /// restart with nothing on screen to say why. This reads what is on disk,
@@ -3609,12 +3657,6 @@ impl Flash {
         }
     }
 
-    pub fn class(&self) -> &'static str {
-        match self.kind {
-            FlashKind::Error => "rg-flash rg-flash--error",
-            FlashKind::Notice => "rg-flash rg-flash--notice",
-        }
-    }
 }
 
 /// The one transient layer that can be open over the shell.
@@ -3662,8 +3704,8 @@ impl Layer {
 /// hits on screen".
 ///
 /// [`crate::ui::search::Options`] and [`crate::ui::search::Answer`] are reused
-/// rather than redeclared. Both are plain data — no Dioxus type reaches this
-/// file through them — and a second declaration of the same four fields would
+/// rather than redeclared. Both are plain data, no toolkit type reaches this
+/// file through them, and a second declaration of the same four fields would
 /// be one more thing to keep in agreement with the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SearchState {

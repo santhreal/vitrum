@@ -5,9 +5,8 @@ use super::*;
 
 /// A queue one producer posts to and one or more tasks drain.
 ///
-/// Hand-rolled, because there is no async channel in reach: the only executor
-/// in this process is Dioxus's, and nothing in the dependency tree exposes one
-/// of its channels. The contract is narrow enough to be worth the fifty lines.
+/// Hand-rolled, because there is no async channel in reach that both the GTK
+/// main loop and a foreign backend thread may touch. The contract is narrow enough to be worth the fifty lines.
 /// Several consumers may wait on the same queue, each item is handed to
 /// exactly one of them, and a consumer going away passes its place to another
 /// without dropping a queued item, because the queue outlives every consumer.
@@ -33,7 +32,7 @@ pub(crate) static ACTIVATIONS: Mailbox<Activation> = Mailbox::new();
 ///
 /// Installed on the process-wide notifier by [`ui::settings`], and called on the
 /// backend's own listener thread: on Linux the thread parked on `ActionInvoked`.
-/// It may therefore touch nothing Dioxus owns, which is why it does exactly one
+/// It may therefore touch no widget and no state, which is why it does one
 /// thing. Posting is the same cross-thread handoff `guard.listen` already uses
 /// for a second launch, and `Mailbox::post` wakes its wakers outside the lock,
 /// which is what makes a foreign thread safe here.

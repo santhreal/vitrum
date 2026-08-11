@@ -46,15 +46,19 @@
 //! [`crate::state::DaemonState::workspace_rows`], because that is the one
 //! number it draws. Nothing here runs while the window idles.
 
-use dioxus::prelude::*;
-use vitrum_model::{Clock, DispositionPolicy, ProjectRollup, SidebarStatus, rollup::rollup_rows};
+use vitrum_model::{ProjectRollup, SidebarStatus};
+#[cfg(test)]
+use vitrum_model::{Clock, DispositionPolicy, rollup::rollup_rows};
+#[cfg(test)]
 use vitrum_proto::ProjectId;
 
 use crate::inbox;
+#[cfg(test)]
 use crate::state::{UiState, WorkspaceId};
 
 /// One workspace as the bar draws it.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct Chip {
     pub id: WorkspaceId,
     pub name: String,
@@ -152,6 +156,7 @@ pub fn badge(rollup: &ProjectRollup) -> Option<Badge> {
 /// filtering of its own, which is precisely why `rollup_rows` exists as the
 /// unfiltered core under `rollup_project` — and nothing downstream reads it.
 #[must_use]
+#[cfg(test)]
 pub fn chips(state: &UiState, clock: Clock, policy: DispositionPolicy) -> Vec<Chip> {
     let workspaces = &state.daemon.workspaces;
     let mut buckets: Vec<(WorkspaceId, Vec<&vitrum_model::SessionView>)> =
@@ -194,6 +199,7 @@ pub fn chips(state: &UiState, clock: Clock, policy: DispositionPolicy) -> Vec<Ch
 /// and a number and the operator needs some way to find out which is which
 /// without expanding the bar and losing their place.
 #[must_use]
+#[cfg(test)]
 pub fn chip_title(chip: &Chip) -> String {
     let mut title = chip.name.clone();
     title.push_str(" \u{2014} ");
@@ -229,14 +235,9 @@ pub fn chip_title(chip: &Chip) -> String {
 /// names the current workspace, carries the attention badge that made a lit
 /// chip worth seeing, and one click opens the strip again.
 #[must_use]
+#[cfg(test)]
 pub fn strip_visible(open: bool) -> bool {
     open
-}
-
-#[derive(Props, Clone, PartialEq)]
-pub struct WorkspaceSwitcherProps {
-    pub state: Signal<UiState>,
-    pub clock: Clock,
 }
 
 /// The workspace control that lives in the titlebar.
@@ -258,203 +259,6 @@ pub struct WorkspaceSwitcherProps {
 #[must_use]
 pub fn names_the_workspace(total: usize) -> bool {
     total > 1
-}
-
-#[component]
-pub fn WorkspaceSwitcher(props: WorkspaceSwitcherProps) -> Element {
-    let mut state = props.state;
-    let (open, name, mark, total) = {
-        let read = state.read();
-        let id = read.window.workspace;
-        let name = read
-            .daemon
-            .workspaces
-            .iter()
-            .find(|w| w.id == id)
-            .map_or_else(|| "Workspace".to_string(), |w| w.display_name().to_string());
-        let rollup = rollup_rows(
-            ProjectId(id.0),
-            read.daemon.workspace_rows(id),
-            props.clock,
-            read.daemon.settings.policy,
-        );
-        (
-            read.window.workspace_bar_open,
-            name,
-            badge(&rollup),
-            read.daemon.workspaces.len(),
-        )
-    };
-    let hint = match (open, total) {
-        (true, _) => "Hide the workspace strip",
-        (false, 1) => "Workspaces \u{2014} show the strip to add another",
-        (false, _) => "Show the workspace strip",
-    };
-    let title = match &mark {
-        Some(mark) => format!("{name} \u{2014} {}\n{hint}", mark.title),
-        None => format!("{name} \u{2014} nothing running\n{hint}"),
-    };
-
-    rsx! {
-        button {
-            class: if open { "rg-wsw rg-wsw--open" } else { "rg-wsw" },
-            r#type: "button",
-            title: "{title}",
-            aria_expanded: if open { "true" } else { "false" },
-            aria_label: "Workspace: {name}",
-            // The titlebar is a drag region. Without this a press on the
-            // switcher hands the gesture to the window manager and the button
-            // never fires.
-            onmousedown: move |e| e.stop_propagation(),
-            onclick: move |_| {
-                {
-                    let mut write = state.write();
-                    write.window.workspace_bar_open = !write.window.workspace_bar_open;
-                }
-                crate::ui::settings::commit(&state.peek());
-            },
-            // The markup owns the glyph, as it does for the project chevron:
-            // disclosure state must not depend on a transform landing.
-            span { class: "rg-wsw__chevron", if open { "\u{25BE}" } else { "\u{25B8}" } }
-            // The NAME only when there is a choice to name.
-            //
-            // One workspace is not a workspace the operator picked, it is the
-            // one that had to exist, and printing "Default" beside the
-            // product name states a fact nobody chose and nobody can act on.
-            // Measured, it was the loudest text in the window: 14.43:1
-            // against 4.22:1 for the product's own name. The control stays,
-            // because it is also how the strip is opened to make a second
-            // one; only the word goes.
-            if names_the_workspace(total) {
-                span { class: "rg-wsw__name", "{name}" }
-            }
-            // And the COUNT only when there is a choice, for the same reason.
-            //
-            // With one workspace this badge and the sidebar's own attention
-            // chip are the same number about the same sessions, on screen at
-            // once: "1" here and "1 waiting" ten pixels below it. The sidebar's
-            // is the one worth keeping, because it is clickable, it says what
-            // the number means, and it sits beside the rows it counts. With
-            // two or more workspaces this one starts answering a different
-            // question -- how much is waiting in the one you are LOOKING at --
-            // and earns its place again.
-            if names_the_workspace(total)
-                && let Some(mark) = mark
-            {
-                span {
-                    class: if mark.urgent { "rg-wsw__count rg-wsw__count--urgent" } else { "rg-wsw__count" },
-                    "{mark.count}"
-                }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-pub struct WorkspaceBarProps {
-    pub state: Signal<UiState>,
-    pub clock: Clock,
-    /// Open `Settings > Workspaces`, where rename, delete, reorder and folders
-    /// live.
-    pub on_manage: EventHandler<()>,
-}
-
-#[component]
-pub fn WorkspaceBar(props: WorkspaceBarProps) -> Element {
-    let mut state = props.state;
-    let (open, policy) = {
-        let read = state.read();
-        (read.window.workspace_bar_open, read.daemon.settings.policy)
-    };
-    let entries = chips(&state.read(), props.clock, policy);
-    if !strip_visible(open) {
-        return rsx! {};
-    }
-
-    rsx! {
-        div {
-            class: if open { "rg-wsbar" } else { "rg-wsbar rg-wsbar--collapsed" },
-            role: "tablist",
-            aria_label: "Workspaces",
-
-            for chip in entries.iter() {
-                {
-                    let id = chip.id;
-                    let mark = badge(&chip.rollup);
-                    rsx! {
-                        button {
-                            class: if chip.active { "rg-wsbar__item rg-wsbar__item--active" } else { "rg-wsbar__item" },
-                            key: "{id.0}",
-                            r#type: "button",
-                            role: "tab",
-                            aria_selected: if chip.active { "true" } else { "false" },
-                            title: chip_title(chip),
-                            onclick: move |_| {
-                                let now = crate::tick().now_ms;
-                                let outcome = state.write().set_workspace(id, now);
-                                match outcome {
-                                    Ok(()) => crate::ui::settings::commit(&state.peek()),
-                                    Err(why) => {
-                                        state.write().window.flash = Some(crate::state::Flash::error(why.to_string()));
-                                    }
-                                }
-                            },
-                            // The name is never dropped, in either state. A
-                            // chip that is only a badge is a notification the
-                            // operator cannot read, which is precisely what
-                            // the collapsed bar used to be.
-                            span { class: "rg-wsbar__name", "{chip.name}" }
-                            if let Some(mark) = mark {
-                                span {
-                                    class: if mark.urgent { "rg-wsbar__count rg-wsbar__count--urgent" } else { "rg-wsbar__count" },
-                                    "{mark.count}"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Grouped with the chips, not thrown to the far edge. On a 3840px
-            // window an actions cluster pinned right is separated from the
-            // thing it acts on by two thousand pixels of nothing.
-            if open {
-                span { class: "rg-wsbar__rule" }
-                button {
-                    class: "rg-wsbar__add",
-                    r#type: "button",
-                    title: "Create a workspace. It starts empty; new sessions land in whichever workspace you are looking at.",
-                    onclick: move |_| {
-                        let name = state.peek().daemon.workspaces.suggested_name();
-                        let created = state.write().create_workspace(&name);
-                        match created {
-                            Ok(id) => {
-                                // Switch to it immediately. A workspace you
-                                // created and cannot see is indistinguishable
-                                // from a button that did nothing, and the
-                                // blank sidebar IS the confirmation.
-                                let now = crate::tick().now_ms;
-                                let _ = state.write().set_workspace(id, now);
-                                crate::ui::settings::commit(&state.peek());
-                            }
-                            Err(why) => {
-                                state.write().window.flash = Some(crate::state::Flash::error(why.to_string()));
-                            }
-                        }
-                    },
-                    span { class: "rg-wsbar__add-glyph", "+" }
-                    "New workspace"
-                }
-                button {
-                    class: "rg-wsbar__manage",
-                    r#type: "button",
-                    title: "Rename, delete, reorder and folders",
-                    onclick: move |_| props.on_manage.call(()),
-                    "Manage"
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

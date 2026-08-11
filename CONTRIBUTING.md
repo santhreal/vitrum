@@ -23,7 +23,7 @@ Read the [Code of Conduct](CODE_OF_CONDUCT.md) before you open anything.
   `crates/vitrum-search/`, `crates/vitrum-replay/`, `crates/vitrum-bench/` -
   the supporting crates: UI state, formatting, platform calls, scrollback
   search, recorded sessions, benchmarks.
-- `vendor/` and `vendor-pty/` - vendored forks. See the fork policy below.
+- `vendor-pty/` - a vendored fork. See the fork policy below.
 - `harness/` - the measurement scripts `docs/performance.md` reports.
 - `packaging/` - the release archive script CI runs on every push.
 
@@ -37,7 +37,7 @@ cargo test  --release --workspace
 The toolchain is pinned by `rust-toolchain.toml`. `rustup` reads it and
 installs the right nightly by itself, so you do not pick a version.
 
-Two system dependencies, not one. The client links the system webview, and
+Two system dependencies, not one. The client links GTK 3, and
 `docs/install.md` lists the package name for each platform.
 
 `vitrum-vt` also needs a **Zig toolchain, exactly 0.15.2**, because its default
@@ -109,17 +109,15 @@ back.
 
 ## Vendored forks
 
-`vendor/` is a fork of Dioxus desktop and `vendor-pty/` is a fork of
-`portable-pty`. Both are upstream's code, carried here under upstream's MIT
-license and upstream's copyright, and both keep the license file they arrived
-with.
+`vendor-pty/` is a fork of `portable-pty`. It is upstream's code, carried
+here under upstream's MIT license and upstream's copyright, and it keeps the
+license file it arrived with.
 
-The rule for both is the same: they track upstream and carry only the
-deliberate deviations that are written down. `vendor/` declares its
-divergence in `vendor/UPSTREAM.toml` and explains it in `vendor/README.md`,
-and `tools/upstream/check.sh` fails if the real divergence is not exactly the
-declared list. `vendor-pty/README.md` names its single divergence, in
-`src/win/psuedocon.rs`, and why it exists. So:
+The rule is that it tracks upstream and carries only the deliberate
+deviations that are written down. `vendor-pty/README.md` names its single
+divergence, in `src/win/psuedocon.rs`, and why it exists, and
+`tools/upstream/check.sh` fails if the real divergence is not exactly the
+declared list. So:
 
 - Do not fix an unrelated bug inside a vendored tree. Send it upstream.
 - Do not reformat, restructure, or tidy vendored files. Every diff against
@@ -162,5 +160,5 @@ vitrum is dual licensed under MIT or Apache-2.0, at your option. See
 
 Unless you say otherwise, any contribution you deliberately submit for
 inclusion in vitrum is dual licensed on those same terms, with no further
-conditions. The vendored trees under `vendor/` and `vendor-pty/` stay under
-their own upstream MIT license.
+conditions. The vendored tree under `vendor-pty/` stays under its own
+upstream MIT license.

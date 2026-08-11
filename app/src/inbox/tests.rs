@@ -151,9 +151,8 @@ fn an_inferred_status_is_marked_by_its_class_and_its_tooltip_not_by_a_glyph() {
     assert_eq!(pill.word, proven.word);
     assert_ne!(pill.class, proven.class);
 
-    let css = include_str!("../../assets/sidebar.css");
     assert!(
-        css.contains(".rg-pill--inferred .rg-pill__word"),
+        crate::shell::style::classes().contains(&"rg-pill--inferred"),
         "nothing styles the hedge, so an inferred row is indistinguishable"
     );
 }
@@ -228,8 +227,7 @@ fn a_codex_row_titled_action_required_shows_a_hedged_approval_pill() {
 
     // The hedge has to be a style that exists, or "we marked it" is a claim
     // about a class nobody paints.
-    let css = include_str!("../../assets/sidebar.css");
-    assert!(css.contains(".rg-pill--inferred .rg-pill__word"));
+    assert!(crate::shell::style::classes().contains(&"rg-pill--inferred"));
 
     // A hinted approval on the same row is NOT hedged: the two channels must
     // stay visually distinguishable, or the hedge says nothing.
@@ -431,6 +429,7 @@ fn rollup_chips_are_urgency_ordered_and_omit_empty_states() {
         false,
         clock(),
         policy(),
+        PREVIEW_LIMIT,
     );
     let rollup = group.rollup.expect("every bucket rolls up");
 
@@ -476,6 +475,7 @@ fn the_preview_cut_never_hides_the_focused_row() {
         false,
         clock(),
         policy(),
+        PREVIEW_LIMIT,
     );
     assert_eq!(cut.active.len(), PREVIEW_LIMIT + 1);
     assert_eq!(cut.hidden.len(), 12 - PREVIEW_LIMIT - 1);
@@ -497,6 +497,7 @@ fn the_preview_cut_never_hides_the_focused_row() {
         true,
         clock(),
         policy(),
+        PREVIEW_LIMIT,
     );
     assert_eq!(whole.active.len(), 12);
     assert!(whole.hidden.is_empty());
@@ -555,6 +556,7 @@ fn groups_split_into_three_bands_each_with_its_own_order() {
         false,
         clock(),
         policy(),
+        PREVIEW_LIMIT,
     );
 
     assert_eq!(
@@ -808,6 +810,7 @@ fn the_preview_cut_loses_nothing_and_reorders_nothing() {
             expanded,
             clock(),
             policy(),
+            PREVIEW_LIMIT,
         )
     };
 

@@ -84,20 +84,31 @@ const NET_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a running window waits between quiet update checks.
 ///
-/// Four hours. The rate this has to keep up with is the release rate, and this
-/// project publishes many times a day, so a daily check leaves an operator
-/// several builds behind for most of the day. Checking every few minutes would
-/// spend an API budget on an answer nobody asked for and would make polling
-/// the most frequent thing the program does. Four hours notices the same day's
-/// release without either.
+/// The rate this has to keep up with is the release rate, and this project
+/// publishes many times a day, so a daily check leaves an operator several
+/// builds behind for most of the day. Checking every few minutes would spend
+/// an API budget on an answer nobody asked for and would make polling the most
+/// frequent thing the program does. The default of four hours notices the same
+/// day's release without either.
+///
+/// `hours` comes from the profile and is clamped here rather than trusted: the
+/// watcher reads a live snapshot that a hand-edited `ui.json` can reach, and
+/// zero hours would turn the watcher into a busy loop against a release host.
 ///
 /// The first check is not on this schedule: it happens shortly after the
 /// window is up, so a launch also answers the question.
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+#[must_use]
+pub fn check_interval(hours: u8) -> Duration {
+    let hours = hours.clamp(
+        crate::state::UPDATE_CHECK_HOURS_MIN,
+        crate::state::UPDATE_CHECK_HOURS_MAX,
+    );
+    Duration::from_secs(u64::from(hours) * 60 * 60)
+}
 
 /// How often the window re-reads what is staged on disk.
 ///
-/// Separate from [`CHECK_INTERVAL`] and much shorter, because these answer
+/// Separate from [`check_interval`] and much shorter, because these answer
 /// different questions. Whether a newer release exists is a network question
 /// asked rarely; whether one is already staged is a single small file read,
 /// and it changes when `vitrum update` runs in a terminal beside the window or

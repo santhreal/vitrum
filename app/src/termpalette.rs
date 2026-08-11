@@ -11,14 +11,14 @@
 //!
 //! A palette is sixteen ANSI slots plus four surface colours, and it has to
 //! reach two consumers: the native renderer, which paints the cell matrix
-//! from these values directly, and the CSS behind the grid, which paints the
-//! letterboxing around the matrix and the empty state. Writing the numbers
-//! twice, once in a stylesheet and once in a Rust table, is how the two drift
+//! from these values directly, and the shell's own stylesheet, which borrows
+//! the palette's hues so the chrome agrees with the grid. Writing the numbers
+//! twice, once for the chrome and once in a Rust table, is how the two drift
 //! and how the pane ends up a different black from the cells inside it.
 //!
-//! So the table below is the only copy. [`css_tokens`] feeds the stylesheet
-//! through the app root's `style` attribute, and [`TermPalette::colours`]
-//! hands the renderer the same numbers.
+//! So the table below is the only copy. `shell::style` reads it through the
+//! live settings bus, and [`TermPalette::colours`] hands the renderer the
+//! same numbers.
 //!
 //! # Why these palettes
 //!
@@ -241,29 +241,6 @@ impl TermPalette {
     }
 }
 
-/// The `--rg-terminal-*` overrides for the app root's `style` attribute.
-///
-/// Empty for [`TermPalette::Inherit`], which is the whole mechanism: an empty
-/// string declares nothing, so the theme's own tokens win by simply not being
-/// overridden. There is no "reset to inherit" value to get wrong.
-///
-/// Only the three tokens the shell actually paints with are emitted. The ANSI
-/// sixteen are the renderer's business and no CSS rule reads them, so
-/// declaring them here would be twenty dead custom properties on the busiest
-/// element in the document.
-#[must_use]
-pub fn css_tokens(palette: TermPalette) -> String {
-    let Some(c) = palette.colours() else {
-        return String::new();
-    };
-    format!(
-        "--rg-terminal-bg:{bg};--rg-terminal-fg:{fg};--rg-terminal-selection:{sel};",
-        bg = c.background,
-        fg = c.foreground,
-        sel = c.selection,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,14 +304,13 @@ mod tests {
         assert_eq!(TermPalette::from_slug(""), TermPalette::Inherit);
     }
 
-    /// Inherit must emit nothing.
+    /// Inherit must contribute nothing.
     ///
-    /// This is the entire opt-out mechanism. If `css_tokens` ever returned a
-    /// literal dark colour for Inherit, light mode would ship a black terminal
-    /// again, which is a bug this codebase has already had once.
+    /// This is the entire opt-out mechanism. If Inherit ever answered with a
+    /// literal dark colour, light mode would ship a black terminal again,
+    /// which is a bug this codebase has already had once.
     #[test]
     fn following_the_app_theme_overrides_nothing() {
-        assert_eq!(css_tokens(TermPalette::Inherit), "");
         assert_eq!(TermPalette::Inherit.colours(), None);
     }
 
@@ -448,25 +424,5 @@ mod tests {
         let nord = TermPalette::Nord.colours().expect("Nord has colours");
         assert_eq!(nord.ansi[0], "#3b4252", "Nord slot 0 moved");
         assert_eq!(nord.ansi[15], "#eceff4", "Nord slot 15 moved");
-    }
-
-    /// The CSS fragment must be a valid declaration list, terminated.
-    ///
-    /// It is concatenated with the density and motion overrides into one
-    /// `style` attribute. A missing trailing semicolon would swallow whichever
-    /// declaration happened to follow it.
-    #[test]
-    fn the_css_fragment_is_a_terminated_declaration_list() {
-        let css = css_tokens(TermPalette::Dracula);
-        assert!(
-            css.ends_with(';'),
-            "{css} would swallow the next declaration"
-        );
-        assert_eq!(css.matches(';').count(), 3, "{css}");
-        assert!(css.contains("--rg-terminal-bg:#282a36;"), "{css}");
-        assert!(
-            !css.contains('\n'),
-            "an attribute value cannot be multi-line"
-        );
     }
 }

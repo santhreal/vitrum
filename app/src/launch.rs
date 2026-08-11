@@ -29,6 +29,8 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::state::LauncherPrefs;
+
 /// An agent command this machine actually has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Detected {
@@ -405,10 +407,14 @@ pub const LAUNCH_STORE_FILE: &str = "launch.json";
 /// looks empty after a downgrade and is intact when they go forward again.
 pub const LAUNCH_STORE_VERSION: u32 = 1;
 
-/// History entries that survive a save.
+/// History entries that survive a save, on a fresh profile.
 ///
 /// The list is ranked before it is truncated, so what falls off the end is
 /// what was least worth suggesting, not what happens to be oldest.
+///
+/// The number a save uses comes from `settings.launcher.historyLimit`, which
+/// defaults to this.
+#[cfg(test)]
 pub const HISTORY_MAX: usize = 60;
 
 /// A named command the operator saved.
@@ -459,11 +465,15 @@ pub struct HistoryEntry {
     pub icon: Option<String>,
 }
 
-/// Recent commands kept, at most.
+/// Recent commands kept, at most, on a fresh profile.
 ///
 /// Small on purpose. This list is meant to be read at a glance, and a
 /// twelfth row is already further away than typing the command; the ranked
 /// [`HISTORY_MAX`] list behind the launcher's query is where depth lives.
+///
+/// The number a save uses comes from `settings.launcher.recentRows`, which
+/// defaults to this.
+#[cfg(test)]
 pub const RECENTS_MAX: usize = 12;
 
 /// One command, in one directory, the last time it ran there.
@@ -909,7 +919,18 @@ pub fn ranked_history(store: &LaunchStore, now_ms: u64) -> Vec<&HistoryEntry> {
 /// and its arguments together: `claude` and `claude --permission-mode plan`
 /// are two different things to offer, and merging them would suggest a
 /// command the operator has never run.
-pub fn remember(store: &mut LaunchStore, command: &str, args: &[String], cwd: &str, now_ms: u64) {
+///
+/// `prefs` carries the two cuts the store is trimmed to. Both are trimmed
+/// here, where the vectors grow, so a session that launches four hundred
+/// commands holds the operator's limit and not four hundred rows.
+pub fn remember(
+    store: &mut LaunchStore,
+    command: &str,
+    args: &[String],
+    cwd: &str,
+    now_ms: u64,
+    prefs: LauncherPrefs,
+) {
     store.version = LAUNCH_STORE_VERSION;
     let cwd = cwd.trim();
     if !cwd.is_empty() {
@@ -932,14 +953,15 @@ pub fn remember(store: &mut LaunchStore, command: &str, args: &[String], cwd: &s
             icon: None,
         }),
     }
-    if store.history.len() > HISTORY_MAX {
+    let history_max = prefs.history_max();
+    if store.history.len() > history_max {
         store.history = ranked_history(store, now_ms)
             .into_iter()
-            .take(HISTORY_MAX)
+            .take(history_max)
             .cloned()
             .collect();
     }
-    remember_recent(store, command, args, cwd, now_ms);
+    remember_recent(store, command, args, cwd, now_ms, prefs.recents_limit());
 }
 
 /// Move one command to the top of the recents list, in memory.
@@ -957,6 +979,7 @@ fn remember_recent(
     args: &[String],
     cwd: &str,
     now_ms: u64,
+    recents_max: usize,
 ) {
     let cwd = tidy_dir(cwd);
     let existing = store
@@ -974,7 +997,7 @@ fn remember_recent(
     };
     entry.last_used_ms = now_ms;
     store.recents.insert(0, entry);
-    store.recents.truncate(RECENTS_MAX);
+    store.recents.truncate(recents_max);
 }
 
 /// The recents list, newest first.
@@ -1004,9 +1027,15 @@ pub fn recent_launch(entry: &RecentEntry) -> Result<Launch, String> {
 /// Best effort by design: a profile directory that cannot be written costs
 /// the operator their suggestions, not their session, so the caller reports
 /// the error and launches anyway.
-pub fn record_launch(command: &str, args: &[String], cwd: &str, now_ms: u64) -> Result<(), String> {
+pub fn record_launch(
+    command: &str,
+    args: &[String],
+    cwd: &str,
+    now_ms: u64,
+    prefs: LauncherPrefs,
+) -> Result<(), String> {
     let mut store = load_launch_store();
-    remember(&mut store, command, args, cwd, now_ms);
+    remember(&mut store, command, args, cwd, now_ms, prefs);
     save_launch_store(&store)
 }
 
@@ -1316,7 +1345,7 @@ pub fn preset_fault(preset: &SavedPreset) -> Option<PresetFault> {
 /// profile, so it has to survive somebody typing nonsense into it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Chord {
-    /// DOM key name, lowercased.
+    /// Key name, lowercased, in the same vocabulary `keymap` uses.
     pub key: String,
     pub ctrl: bool,
     pub alt: bool,
@@ -1394,7 +1423,7 @@ pub fn preset_for_chord<'a>(presets: &'a [SavedPreset], chord: &Chord) -> Option
 ///
 /// `bootstrap.js` matches the shell's own table on `window` in the capture
 /// phase and calls `stopPropagation`, so a chord in [`crate::keymap::CHORDS`]
-/// never reaches a Dioxus keydown handler at all. A preset bound to one would
+/// never reaches a preset's own handler at all. A preset bound to one would
 /// be a shortcut the editor displays and the product never fires, which is
 /// worse than refusing the binding, so the editor refuses it and says which
 /// action already owns the keys.

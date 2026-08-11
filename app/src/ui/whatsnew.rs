@@ -31,7 +31,6 @@
 //!   panicking. This is decoration, and decoration does not take the window
 //!   down with it.
 
-use dioxus::prelude::*;
 use semver::Version;
 
 /// The changelog, compiled in.
@@ -201,86 +200,6 @@ pub fn intro(releases: &[Release]) -> String {
 // ---------------------------------------------------------------------------
 // The component
 // ---------------------------------------------------------------------------
-
-#[derive(Props, Clone, PartialEq)]
-pub struct WhatsNewProps {
-    /// Sections to show, from [`whats_new`]. The caller renders nothing when
-    /// this is empty; that decision is data, so it does not need a component.
-    pub releases: Vec<Release>,
-    /// Dismissed. Recording the version so it does not return is the caller's
-    /// job.
-    pub on_dismiss: EventHandler<()>,
-}
-
-/// The post-update changelog sheet.
-#[component]
-pub fn WhatsNew(props: WhatsNewProps) -> Element {
-    let heading = title(&props.releases);
-    let intro_line = intro(&props.releases);
-
-    rsx! {
-        div {
-            class: "rg-layer rg-layer--dim",
-            onclick: move |_| props.on_dismiss.call(()),
-            div {
-                class: "rg-sheet rg-sheet--whatsnew",
-                role: "dialog",
-                aria_label: "What changed",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "rg-sheet__head",
-                    span { class: "rg-sheet__title", "{heading}" }
-                    // The same control, in the same corner, as the one on
-                    // the shortcuts, search and settings sheets, and it says
-                    // the same word. "Dismiss" here made this the one sheet
-                    // whose corner control was named differently, next to a
-                    // footer button that runs the same handler.
-                    button {
-                        class: "rg-btn-inline",
-                        r#type: "button",
-                        onclick: move |_| props.on_dismiss.call(()),
-                        "Close"
-                    }
-                }
-
-                div { class: "rg-sheet__body",
-                    p { class: "rg-whatsnew__intro", "{intro_line}" }
-                    for release in props.releases.iter() {
-                        div { class: "rg-whatsnew__release", key: "{release.version}",
-                            div { class: "rg-whatsnew__version",
-                                span { class: "rg-whatsnew__number", "{release.version}" }
-                                if !release.date.is_empty() {
-                                    span { class: "rg-whatsnew__date", "{release.date}" }
-                                }
-                            }
-                            for group in release.groups.iter() {
-                                div { class: "rg-whatsnew__group", key: "{group.heading}",
-                                    if !group.heading.is_empty() {
-                                        span { class: "rg-whatsnew__heading", "{group.heading}" }
-                                    }
-                                    ul { class: "rg-whatsnew__entries",
-                                        for entry in group.entries.iter() {
-                                            li { class: "rg-whatsnew__entry", key: "{entry}", "{entry}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                div { class: "rg-sheet__foot",
-                    button {
-                        class: "rg-btn rg-btn--primary",
-                        r#type: "button",
-                        onclick: move |_| props.on_dismiss.call(()),
-                        "Got it"
-                    }
-                }
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -499,38 +418,7 @@ Prose that belongs to no release.
         assert_eq!(intro(&[]), "");
     }
 
-    /// The sheet must expose a header dismiss control, and it must be named
-    /// the way every other sheet names that corner: "Close". Escape is
-    /// covered by `dismiss_persists`; the corner control is the
-    /// mouse-reachable equivalent, so an operator is not forced onto the
-    /// footer button alone.
-    #[test]
-    fn the_sheet_offers_a_header_dismiss() {
-        use dioxus::prelude::*;
-        #[component]
-        fn Harness() -> Element {
-            let releases = releases_since(THREE, Some(&v("0.1.1")), &v("0.2.0"));
-            rsx! {
-                WhatsNew {
-                    releases,
-                    on_dismiss: move |()| {},
-                }
-            }
-        }
-        let mut dom = VirtualDom::new(Harness);
-        dom.rebuild_in_place();
-        let html = dioxus_ssr::render(&dom);
-        assert!(
-            html.contains("rg-whatsnew__intro"),
-            "intro missing from {html}"
-        );
-        assert!(
-            html.contains("The notes for the update you just opened."),
-            "intro copy missing from {html}"
-        );
-        assert!(
-            html.contains("rg-btn-inline") && html.contains(">Close<"),
-            "header close missing from {html}"
-        );
-    }
 }
+
+/// The sheet itself, built as GTK widgets.
+pub mod native;

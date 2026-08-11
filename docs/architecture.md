@@ -1,7 +1,7 @@
 # Architecture
 
 vitrum is one process holding a window, talking to a second process holding the
-sessions. The window is a Dioxus shell around a native GPU terminal pane. There
+sessions. The window is a GTK 3 shell around a native GPU terminal pane. There
 is one escape-sequence parser, and it is in Rust.
 
 ## The tree
@@ -20,7 +20,6 @@ crates/
   vitrum-vt        the VT engine, backed by libghostty
   vitrum-replay    seekable replay over captured bytes, and the replay binary
   vitrum-bench     measurement harnesses
-vendor/            a patched dioxus-desktop; see Cargo.toml [patch.crates-io]
 vendor-pty/        a patched portable-pty
 vendor-ghostty-vt-sys/
                    a patched libghostty-vt-sys, pinning the instruction set
@@ -62,27 +61,28 @@ Three things follow from the parser being in the client's own address space:
 - A frame is scheduled against the swapchain rather than against a document
   layout pass.
 
-## No JavaScript
+## No JavaScript, and no webview
 
 The pane was an emulator written in JavaScript, running inside the WebKit view.
 That arrangement had two escape-sequence parsers for one product, held the
 working directory and the prompt boundary inside a renderer addon where nothing
 else could read them, and gave the frame budget to a DOM layout pass.
 
-Nothing in this repository is a script now, and nothing writes a script element
-into a document. `app/src/tests/no_javascript.rs` enumerates the tracked tree
-and fails on either. The shell is still drawn by the system webview, WebKitGTK
-on Linux and WebView2 on Windows, from markup and CSS the Rust in `app/`
-produces.
+The shell around it was a Dioxus document rendered by the same view. No pointer
+or keyboard event reached Rust through it, so the close glyph, the chords and
+the sidebar rows were inert, and the pane never painted because the callback
+that measures its rectangle never fired.
+
+Both are gone. Titlebar, sidebar, pane bar, settings, dialogs, launcher, menus
+and toasts are GTK 3 widgets in the same toplevel that owns the pane's
+subwindow. Nothing in this repository is a script, and nothing writes a script
+element into a document. `app/src/tests/no_javascript.rs` enumerates the
+tracked tree and fails on either.
+
+GTK 3 rather than GTK 4, because the pane's wgpu swapchain needs a native
+subwindow and GTK 4 removed them.
 
 ## The forks
-
-`vendor/` is why twenty windows share one web process. It exposes WebKit's
-`webkit_web_view_new_with_related_view`, which upstream wry has and
-dioxus-desktop did not. It also paints the window as soon as it is built rather
-than when the event loop starts, and hands WebKit its background colour through
-the call that takes 0.0 to 1.0 channels rather than the one that clamps 0-255
-to white.
 
 `vendor-ghostty-vt-sys/` is why a release runs on a pre-Haswell CPU. The
 upstream build script passes `-Dtarget` to zig only when cross-compiling, so a

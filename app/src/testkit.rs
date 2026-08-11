@@ -86,24 +86,6 @@ impl Row {
         self
     }
 
-    /// The branch the daemon resolved for the session's directory. `None` is
-    /// the default, because a directory outside a repository is a real and
-    /// common case and a builder that invented a branch would hide it.
-    pub fn branch(mut self, branch: Option<&str>) -> Self {
-        self.view.info.git_branch = branch.map(str::to_string);
-        self
-    }
-
-    /// The linked git worktree the session's directory is inside. `None` is
-    /// the default and means a main working tree, which is what most
-    /// sessions are.
-    ///
-    /// The value is git's own name for the worktree. It is never a path.
-    pub fn worktree(mut self, worktree: Option<&str>) -> Self {
-        self.view.info.worktree = worktree.map(str::to_string);
-        self
-    }
-
     /// The program behind the session, which is what resolves its agent
     /// identity. Defaults to `bash`, so a test that does not care gets the
     /// shell mark rather than the unknown one.

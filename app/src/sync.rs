@@ -4,59 +4,52 @@
 use super::*;
 
 /// First reconnect delay, in milliseconds.
+///
+/// Not a preference. It is sized against how long a daemon takes to bind its
+/// socket, and a shorter one turns the first two attempts into a busy loop
+/// against a port nothing is listening on. The ceiling and the attempt count
+/// are preferences and are read from the live settings bus.
 pub(crate) const RECONNECT_BASE_MS: u64 = 250;
-
-/// Longest reconnect delay, in milliseconds.
-pub(crate) const RECONNECT_MAX_MS: u64 = 30_000;
-
-/// How many times the schedule tries before it gives up and offers Retry.
-pub(crate) const RECONNECT_ATTEMPTS: u32 = 25;
 
 /// Make the server's attachment match the focused session.
 ///
 /// Every attach and detach in the program goes through here. Routing them
 /// through one function is what makes a reconnect indistinguishable from a tab
 /// click: both clear `attached` and let this reconcile.
-pub(crate) fn reconcile(
-    bridge: Bridge,
-    st: Signal<UiState>,
-    mut attached: Signal<Option<SessionId>>,
-    opts: Options,
-) {
-    let want = st.peek().window.focused;
-    let have = *attached.peek();
+pub(crate) fn reconcile(cx: &Rc<Ctx>) {
+    let want = cx.peek(|st| st.window.focused);
+    let have = cx.attached.get();
     if want == have {
         return;
     }
 
     if let Some(prev) = have
-        && !opts.fixture
+        && !cx.opts.fixture
     {
         // Detach, never close. The child keeps running and the server keeps
         // filling its ring, so nothing is lost by looking away.
-        bridge.msg(&ClientMsg::Detach { session: prev });
+        cx.bridge.msg(&ClientMsg::Detach { session: prev });
     }
 
     // Resets the screen and starts holding live frames until the backfill
     // lands, so history and live output cannot interleave.
-    bridge.focus(want);
+    cx.bridge.focus(want);
 
     if let Some(next) = want {
-        if opts.fixture {
-            if let Some(info) = st.peek().session(next) {
-                bridge.banner(&fixture::transcript(info));
+        if cx.opts.fixture {
+            if let Some(lines) = cx.peek(|r| r.session(next).map(fixture::transcript)) {
+                cx.bridge.banner(&lines);
             }
         } else {
-            let (cols, rows, scrollback_lines, intent) = {
-                let r = st.peek();
+            let (cols, rows, scrollback_lines, intent) = cx.peek(|r| {
                 (
                     r.window.cols,
                     r.window.rows,
                     r.daemon.settings.terminal.scrollback_lines,
                     r.window.history_intent,
                 )
-            };
-            bridge.msg(&ClientMsg::Attach {
+            });
+            cx.bridge.msg(&ClientMsg::Attach {
                 session: next,
                 cols,
                 rows,
@@ -79,7 +72,7 @@ pub(crate) fn reconcile(
                 state::HistoryIntent::Jump(seq) => seq.saturating_add(wire::JUMP_TAIL_BYTES),
                 _ => BEFORE_SEQ_HEAD,
             };
-            bridge.msg(&ClientMsg::Scrollback {
+            cx.bridge.msg(&ClientMsg::Scrollback {
                 session: next,
                 before_seq,
                 max_bytes: backfill_max_bytes(scrollback_lines),
@@ -87,7 +80,7 @@ pub(crate) fn reconcile(
         }
     }
 
-    attached.set(want);
+    cx.attached.set(want);
 }
 
 /// Ask the daemon for history older than what is painted, and repaint.
@@ -107,16 +100,15 @@ pub(crate) fn reconcile(
 /// arrival at the top is not a click: a screen that is reset and repainted
 /// arrives at the top again on its own, so a refusal that speaks every time it
 /// is asked never stops speaking. [`plan_page_back`] holds that rule.
-pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: SessionId) {
-    let (history, refused, scrollback_lines, focused) = {
-        let r = st.peek();
+pub(crate) fn page_back(cx: &Rc<Ctx>, session: SessionId) {
+    let (history, refused, scrollback_lines, focused) = cx.peek(|r| {
         (
             r.window.history,
             r.window.history_refused,
             r.daemon.settings.terminal.scrollback_lines,
             r.window.focused,
         )
-    };
+    });
     // The operator may have moved on while the event was in flight. Repainting
     // another session's history into this pane is the one outcome worse than
     // not paging.
@@ -126,10 +118,10 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
     match plan_page_back(history, refused, scrollback_lines) {
         // Already said, about this same window. Saying it again is the loop.
         PageBackPlan::Silent => {}
-        PageBackPlan::Refuse(text) => record_refusal(&mut st.write().window, text),
+        PageBackPlan::Refuse(text) => cx.edit(|st| record_refusal(&mut st.window, text)),
         PageBackPlan::Ask(max_bytes) => {
-            st.write().window.history_intent = state::HistoryIntent::PageBack;
-            bridge.msg(&ClientMsg::Scrollback {
+            cx.edit(|st| st.window.history_intent = state::HistoryIntent::PageBack);
+            cx.bridge.msg(&ClientMsg::Scrollback {
                 session,
                 before_seq: BEFORE_SEQ_HEAD,
                 max_bytes,
@@ -137,7 +129,7 @@ pub(crate) fn page_back(bridge: Bridge, mut st: Signal<UiState>, session: Sessio
             // Only now, and never before the request went out. Arming on the
             // gesture instead would leave the pane holding live output forever
             // for a request the plan declined to send.
-            bridge.arm_page_back();
+            cx.bridge.arm_page_back();
         }
     }
 }
@@ -308,22 +300,16 @@ pub(crate) fn plan_close(conn: &ConnState, detail: Option<String>) -> Option<Str
 /// anything else either, which is the honest outcome: there is nothing to open
 /// and inventing a substitute would put the user in a session they did not ask
 /// for.
-pub(crate) fn claim_link(
-    bridge: Bridge,
-    mut st: Signal<UiState>,
-    attached: Signal<Option<SessionId>>,
-    mut pending: Signal<Option<SessionId>>,
-    opts: Options,
-) {
-    let Some(id) = *pending.peek() else {
+pub(crate) fn claim_link(cx: &Rc<Ctx>) {
+    let Some(id) = cx.pending_link.get() else {
         return;
     };
-    if st.peek().row(id).is_none() {
+    if cx.peek(|st| st.row(id).is_none()) {
         return;
     }
-    pending.set(None);
-    st.write().open(id, tick().now_ms);
-    reconcile(bridge, st, attached, opts);
+    cx.pending_link.set(None);
+    cx.edit(|st| st.open(id, tick().now_ms));
+    reconcile(cx);
 }
 
 /// Open the session THIS window just asked the daemon to start.
@@ -341,29 +327,25 @@ pub(crate) fn claim_link(
 /// `SessionCreated` is broadcast to every window, so without a record of who
 /// asked, a window cannot tell its own launch from another's and focusing on
 /// receipt would yank nineteen operators into a session they did not start.
-pub(crate) fn claim_launch(
-    bridge: Bridge,
-    mut st: Signal<UiState>,
-    attached: Signal<Option<SessionId>>,
-    mut pending: Signal<Option<PendingLaunch>>,
-    opts: Options,
-) {
-    let Some(want) = pending.peek().clone() else {
+pub(crate) fn claim_launch(cx: &Rc<Ctx>) {
+    let Some(want) = cx.pending_open.borrow().clone() else {
         return;
     };
-    let found = st.peek().daemon.sessions.iter().find_map(|r| {
-        let i = &r.info;
-        (!want.before.contains(&i.id)
-            && i.cwd == want.cwd
-            && launch::join_command(&i.command, &i.args) == want.line)
-            .then_some(i.id)
+    let found = cx.peek(|st| {
+        st.daemon.sessions.iter().find_map(|r| {
+            let i = &r.info;
+            (!want.before.contains(&i.id)
+                && i.cwd == want.cwd
+                && launch::join_command(&i.command, &i.args) == want.line)
+                .then_some(i.id)
+        })
     });
     let Some(id) = found else {
         return;
     };
-    pending.set(None);
-    st.write().open(id, tick().now_ms);
-    reconcile(bridge, st, attached, opts);
+    *cx.pending_open.borrow_mut() = None;
+    cx.edit(|st| st.open(id, tick().now_ms));
+    reconcile(cx);
 }
 
 /// Raise a desktop notification for every session that just crossed a line
@@ -374,14 +356,19 @@ pub(crate) fn claim_launch(
 /// notifications on every snapshot. A session absent from `before` is never
 /// notable, which is what keeps a reconnect from emptying a whole day of
 /// failures onto the desktop at once.
-pub(crate) fn notify_transitions(st: Signal<UiState>, before: &[vitrum_model::SessionView]) {
-    let read = st.peek();
-    for notable in ui::settings::notable_transitions(before, &read.daemon.sessions) {
-        let focused = read.window.focused == Some(notable.session);
-        if ui::settings::should_notify(&read.daemon.settings.notifications, notable.kind, focused) {
-            ui::settings::notify_now(&notable.notification());
+pub(crate) fn notify_transitions(cx: &Rc<Ctx>, before: &[vitrum_model::SessionView]) {
+    cx.peek(|read| {
+        for notable in ui::settings::notable_transitions(before, &read.daemon.sessions) {
+            let focused = read.window.focused == Some(notable.session);
+            if ui::settings::should_notify(
+                &read.daemon.settings.notifications,
+                notable.kind,
+                focused,
+            ) {
+                ui::settings::notify_now(&notable.notification());
+            }
         }
-    }
+    });
 }
 
 /// Show whatever the pane needs the operator told.
@@ -395,15 +382,15 @@ pub(crate) fn notify_transitions(st: Signal<UiState>, before: &[vitrum_model::Se
 /// Only the FIRST is shown when several arrive at once. A flash is one line
 /// and the second notice would replace the first before it could be read; the
 /// rest go to the log, where a bug report can find them.
-pub(crate) fn flush_notices(bridge: Bridge, mut st: Signal<UiState>) {
-    let notices = bridge.notices();
+pub(crate) fn flush_notices(cx: &Rc<Ctx>) {
+    let notices = cx.bridge.notices();
     let Some(first) = notices.first() else {
         return;
     };
     for extra in &notices[1..] {
         tracing::warn!("pane: {extra}");
     }
-    st.write().window.flash = Some(Flash::error(first.clone()));
+    cx.flash(Flash::error(first.clone()));
 }
 
 /// Everything the session socket has to say, in the vocabulary the rest of the
@@ -414,63 +401,40 @@ pub(crate) fn flush_notices(bridge: Bridge, mut st: Signal<UiState>) {
 /// does not touch UI state, does not mark a signal dirty and does not cause a
 /// paint. Everything else is forwarded, because what a `Welcome` means to the
 /// client cannot depend on which part of the process observed it.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn on_socket_event(
-    ev: socket::SocketEvent,
-    bridge: Bridge,
-    st: Signal<UiState>,
-    attached: Signal<Option<SessionId>>,
-    opts: Options,
-    pending_terminate: Signal<Vec<SessionId>>,
-    pending_open: Signal<Option<PendingLaunch>>,
-    reconnect: Signal<u32>,
-) {
-    let forward = |ev: ClientEvent| {
-        on_client_event(
-            ev,
-            bridge,
-            st,
-            attached,
-            opts,
-            pending_terminate,
-            pending_open,
-            reconnect,
-        );
-    };
+pub(crate) fn on_socket_event(cx: &Rc<Ctx>, ev: socket::SocketEvent) {
     match ev {
         socket::SocketEvent::Output(frame) => {
-            bridge.output(frame);
-            flush_notices(bridge, st);
+            cx.bridge.output(frame);
+            flush_notices(cx);
         }
-        socket::SocketEvent::Server(msg) => forward(ClientEvent::Server { msg: *msg }),
-        socket::SocketEvent::Open => forward(ClientEvent::Conn {
-            state: ConnEvent::Open,
-            detail: None,
-        }),
-        socket::SocketEvent::Closed(detail) => forward(ClientEvent::Conn {
-            state: ConnEvent::Closed,
-            detail: Some(detail),
-        }),
-        socket::SocketEvent::Error(detail) => forward(ClientEvent::Conn {
-            state: ConnEvent::Error,
-            detail: Some(detail),
-        }),
-        socket::SocketEvent::Bad(detail) => forward(ClientEvent::Bad { detail }),
+        socket::SocketEvent::Server(msg) => on_client_event(cx, ClientEvent::Server { msg: *msg }),
+        socket::SocketEvent::Open => on_client_event(
+            cx,
+            ClientEvent::Conn {
+                state: ConnEvent::Open,
+                detail: None,
+            },
+        ),
+        socket::SocketEvent::Closed(detail) => on_client_event(
+            cx,
+            ClientEvent::Conn {
+                state: ConnEvent::Closed,
+                detail: Some(detail),
+            },
+        ),
+        socket::SocketEvent::Error(detail) => on_client_event(
+            cx,
+            ClientEvent::Conn {
+                state: ConnEvent::Error,
+                detail: Some(detail),
+            },
+        ),
+        socket::SocketEvent::Bad(detail) => on_client_event(cx, ClientEvent::Bad { detail }),
     }
 }
 
 /// The one reducer. Everything that can move the client's state arrives here.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn on_client_event(
-    ev: ClientEvent,
-    bridge: Bridge,
-    mut st: Signal<UiState>,
-    mut attached: Signal<Option<SessionId>>,
-    opts: Options,
-    pending_terminate: Signal<Vec<SessionId>>,
-    pending_open: Signal<Option<PendingLaunch>>,
-    mut reconnect: Signal<u32>,
-) {
+pub(crate) fn on_client_event(cx: &Rc<Ctx>, ev: ClientEvent) {
     match ev {
         ClientEvent::Server { msg } => {
             // The server starts a per-connection status watcher for every
@@ -506,24 +470,25 @@ pub(crate) fn on_client_event(
             );
             let before = moves_sessions
                 .then(|| {
-                    let read = st.peek();
-                    let want = &read.daemon.settings.notifications;
-                    (want.finished || want.needs_approval || want.failed)
-                        .then(|| read.daemon.sessions.clone())
+                    cx.peek(|read| {
+                        let want = &read.daemon.settings.notifications;
+                        (want.finished || want.needs_approval || want.failed)
+                            .then(|| read.daemon.sessions.clone())
+                    })
                 })
                 .flatten();
             let now = tick();
-            let reaction = st.write().apply(msg, now.now_ms);
+            let reaction = cx.edit(|st| st.apply(msg, now.now_ms));
             if let Some(before) = before {
-                notify_transitions(st, &before);
+                notify_transitions(cx, &before);
             }
             // The one number the dock, taskbar or launcher entry shows. Every
             // session the daemon holds, not this window's workspace: there is
             // one badge per process and the sessions it is most worth
             // reporting are the ones nobody has on screen.
-            badge::publish(st.peek().daemon.attention_total(now.model));
-            if welcome && !opts.fixture {
-                let plan = plan_welcome(&st.peek().daemon.conn);
+            badge::publish(cx.peek(|st| st.daemon.attention_total(now.model)));
+            if welcome && !cx.opts.fixture {
+                let plan = cx.peek(|st| plan_welcome(&st.daemon.conn));
                 match plan {
                     WelcomePlan::Subscribe => {
                         // The schedule starts from zero again, here and
@@ -541,8 +506,8 @@ pub(crate) fn on_client_event(
                         // accepted handshake keeps the blip case that this
                         // exists for, since a dropped link that comes back
                         // does reach Welcome.
-                        reconnect.set(0);
-                        bridge.msg(&ClientMsg::List);
+                        cx.reconnect.set(0);
+                        cx.bridge.msg(&ClientMsg::List);
                         // Subscribe, on every connect.
                         //
                         // The daemon holds no watcher, no thread and no watch
@@ -555,7 +520,8 @@ pub(crate) fn on_client_event(
                         // Measured cost on a 65-directory checkout with twenty
                         // sessions: 64 inotify watches, 612 KiB, no measurable
                         // CPU while nothing writes.
-                        bridge.msg(&ClientMsg::WatchCollisions { enabled: true });
+                        cx.bridge
+                            .msg(&ClientMsg::WatchCollisions { enabled: true });
                     }
                     WelcomePlan::HangUp => {
                         // A refused handshake. The daemon named the reason and
@@ -565,15 +531,15 @@ pub(crate) fn on_client_event(
                         // connected and answers nothing. Hanging up also means
                         // the close that follows is ours, so it cannot
                         // overwrite the reason.
-                        bridge.hang_up();
-                        attached.set(None);
-                        schedule_reconnect(bridge, st, reconnect, opts);
+                        cx.bridge.hang_up();
+                        cx.attached.set(None);
+                        schedule_reconnect(cx);
                         return;
                     }
                 }
             }
-            if membership && !opts.fixture && st.peek().daemon.collisions.watching {
-                bridge.msg(&ClientMsg::Collisions);
+            if membership && !cx.opts.fixture && cx.peek(|st| st.daemon.collisions.watching) {
+                cx.bridge.msg(&ClientMsg::Collisions);
             }
             match reaction {
                 Reaction::None => {}
@@ -591,16 +557,17 @@ pub(crate) fn on_client_event(
                     // only thing that reads it is `page_back` above. It is
                     // already recorded on `window.history` by `apply`.
                     let _ = more;
-                    bridge.backfill(session, from_seq, resume_seq, bytes, jump_seq, keep_view);
-                    flush_notices(bridge, st);
+                    cx.bridge
+                        .backfill(session, from_seq, resume_seq, bytes, jump_seq, keep_view);
+                    flush_notices(cx);
                 }
                 Reaction::Refill { .. } => {
                     // Full detach and re-attach. Splicing across a reported gap
                     // is exactly what the byte-offset seq exists to prevent.
-                    attached.set(None);
+                    cx.attached.set(None);
                 }
             }
-            reconcile(bridge, st, attached, opts);
+            reconcile(cx);
         }
 
         ClientEvent::Conn { state, detail } => match state {
@@ -610,7 +577,7 @@ pub(crate) fn on_client_event(
                 // so a reconnect after a daemon restart needs the token that
                 // daemon wrote, not the one that was on disk when this window
                 // opened.
-                let token = match plan_handshake(cli::resolve_token(opts)) {
+                let token = match plan_handshake(cli::resolve_token(cx.opts)) {
                     Handshake::Present(token) => token,
                     Handshake::Anonymous(why) => {
                         tracing::info!(
@@ -622,53 +589,51 @@ pub(crate) fn on_client_event(
                         // Nothing is sent. The daemon refuses every message
                         // before a hello, so holding the socket open would be
                         // a window that looks connected and answers nothing.
-                        bridge.hang_up();
-                        st.write().daemon.conn = ConnState::failed(detail);
-                        schedule_reconnect(bridge, st, reconnect, opts);
+                        cx.bridge.hang_up();
+                        cx.edit(|st| st.daemon.conn = ConnState::failed(detail));
+                        schedule_reconnect(cx);
                         return;
                     }
                 };
-                st.write().daemon.conn = ConnState::Connecting;
-                bridge.msg(&ClientMsg::Hello {
+                cx.edit(|st| st.daemon.conn = ConnState::Connecting);
+                cx.bridge.msg(&ClientMsg::Hello {
                     protocol: PROTOCOL_VERSION,
                     token,
                 });
-                bridge.msg(&ClientMsg::List);
+                cx.bridge.msg(&ClientMsg::List);
                 // A fresh socket knows nothing about our previous attachment.
-                attached.set(None);
-                reconcile(bridge, st, attached, opts);
+                cx.attached.set(None);
+                reconcile(cx);
             }
             ConnEvent::Closed | ConnEvent::Error => {
-                let reason = plan_close(&st.peek().daemon.conn, detail);
+                let reason = cx.peek(|st| plan_close(&st.daemon.conn, detail));
                 if let Some(reason) = reason {
-                    st.write().daemon.conn = ConnState::failed(reason);
+                    cx.edit(|st| st.daemon.conn = ConnState::failed(reason));
                 }
-                attached.set(None);
-                schedule_reconnect(bridge, st, reconnect, opts);
+                cx.attached.set(None);
+                schedule_reconnect(cx);
             }
         },
 
         ClientEvent::Resize { cols, rows } => {
-            // Guarded: writing an unchanged value would still mark the signal
-            // dirty and repaint the whole shell on every layout pass.
-            let changed = {
-                let r = st.peek();
-                r.window.cols != cols || r.window.rows != rows
-            };
+            // Guarded: writing an unchanged value would still repaint the
+            // whole shell on every layout pass.
+            let changed = cx.peek(|r| r.window.cols != cols || r.window.rows != rows);
             if changed {
-                let mut w = st.write();
-                w.window.cols = cols;
-                w.window.rows = rows;
+                cx.edit(|w| {
+                    w.window.cols = cols;
+                    w.window.rows = rows;
+                });
             }
             // Telling the daemon is this side's job. Only this side knows
             // which session the pane is attached to, and a resize addressed to
             // a session the pane stopped showing is a real way to reflow
             // somebody else's grid.
-            let focused = st.peek().window.focused;
+            let focused = cx.peek(|st| st.window.focused);
             if let Some(session) = focused
-                && !opts.fixture
+                && !cx.opts.fixture
             {
-                bridge.msg(&ClientMsg::Resize {
+                cx.bridge.msg(&ClientMsg::Resize {
                     session,
                     cols,
                     rows,
@@ -679,86 +644,117 @@ pub(crate) fn on_client_event(
         // Bytes the pane captured: a keystroke, a paste, or a raw 8-bit reply.
         // Addressed here for the same reason the resize above is.
         ClientEvent::Input { data } => {
-            let focused = st.peek().window.focused;
+            let focused = cx.peek(|st| st.window.focused);
             if let Some(session) = focused
-                && !opts.fixture
+                && !cx.opts.fixture
             {
-                bridge.msg(&ClientMsg::Input { session, data });
+                cx.bridge.msg(&ClientMsg::Input { session, data });
             }
         }
 
         // Unguarded on the pane's side by design: whether there is more
         // history, and whether a request is already in flight, are both known
         // here and nowhere else.
-        //
-        // The focus is READ OUT before the call, never held across it.
-        // `page_back` writes the state signal, and a read guard still alive
-        // over that write is a panic rather than a stale value.
         ClientEvent::PageBack => {
-            let focused = st.peek().window.focused;
+            let focused = cx.peek(|st| st.window.focused);
             if let Some(session) = focused {
-                page_back(bridge, st, session);
+                page_back(cx, session);
             }
         }
 
         // Already resolved against the live table by whichever surface took
         // the press, so there is nothing to match here and nothing that can
         // fail.
-        ClientEvent::Key { action } => {
-            on_key(
-                action,
-                bridge,
-                st,
-                attached,
-                opts,
-                pending_terminate,
-                pending_open,
-            );
-        }
+        ClientEvent::Key { action } => on_key(cx, action),
 
         // The operator's own binding, looked up again against this window's
         // profile at the moment it runs.
-        ClientEvent::CustomKey { chord } => {
-            dispatch_custom(
-                &chord,
-                bridge,
-                st,
-                attached,
-                opts,
-                pending_terminate,
-                pending_open,
-            );
-        }
+        ClientEvent::CustomKey { chord } => dispatch_custom(cx, &chord),
 
         ClientEvent::Copied { ok, text } => {
-            st.write().window.flash = Some(if ok {
+            cx.flash(if ok {
                 Flash::notice(format!("Copied {text}"))
             } else {
                 Flash::error(format!("Could not copy {text} to the clipboard"))
             });
         }
 
+        // A control-plane message a panel built for itself: the launcher's
+        // Start, the confirmation's Close, the search sweep. It goes through
+        // the reducer rather than through the socket because this is where a
+        // fixture window is kept off the wire, and a panel holding the socket
+        // would make a fixture dial a daemon.
+        ClientEvent::Msg { msg } => {
+            if !cx.opts.fixture {
+                cx.bridge.msg(&msg);
+            }
+        }
+
+        // A panel changed the strip and cannot know whether that moved the
+        // attachment. This is where the answer lives.
+        ClientEvent::Reconcile => reconcile(cx),
+
+        ClientEvent::Clipboard { text } => cx.bridge.clipboard(text),
+
+        ClientEvent::Start { project, launch } => {
+            crate::actions::start_session(cx, project, launch);
+            reconcile(cx);
+        }
+
+        ClientEvent::Duplicate { session } => {
+            crate::actions::duplicate_session(cx, session);
+            reconcile(cx);
+        }
+
+        ClientEvent::Terminate { targets } => {
+            crate::actions::request_terminate(cx, &targets);
+            reconcile(cx);
+        }
+
+        // Same path as startup, so a machine with no daemon gets one started
+        // rather than a button that can never work.
+        ClientEvent::Retry => crate::actions::retry(cx),
+
+        // No reconcile: the launch is not confirmed yet. `start_session`
+        // records it as pending and the arrival of the new session is what
+        // moves the attachment.
+        ClientEvent::LaunchNow { project } => crate::actions::launch_now(cx, project),
+
+        ClientEvent::Redial { url } => {
+            // The attachment goes with the socket. A session id minted by the
+            // old daemon means nothing to the new one, so holding it would
+            // address the next keystroke at a session that does not exist.
+            cx.bridge.connect(url);
+            cx.attached.set(None);
+        }
+
         ClientEvent::Bad { detail } => {
             tracing::warn!("client: {detail}");
-            st.write().window.flash = Some(Flash::error(detail));
+            cx.flash(Flash::error(detail));
         }
     }
 }
 
 /// How long to wait before reconnect attempt `n`, in milliseconds.
 ///
-/// Doubling from a quarter second to a ceiling of thirty. The early attempts
-/// are what recover a blip without the operator noticing; the ceiling is what
-/// stops a machine that has been asleep for a week from having spent the night
-/// dialling. Returns `None` once the schedule is exhausted, which is a real
-/// answer: the window then says the daemon is gone and offers Retry, rather
-/// than reconnecting silently forever.
+/// Doubling from a quarter second to the ceiling the operator set. The early
+/// attempts are what recover a blip without the operator noticing; the ceiling
+/// is what stops a machine that has been asleep for a week from having spent
+/// the night dialling. Returns `None` once the schedule is exhausted, which is
+/// a real answer: the window then says the daemon is gone and offers Retry,
+/// rather than reconnecting silently forever.
+///
+/// Both bounds come from [`crate::state::live::shell_settings`], which has
+/// already clamped them, so nothing here re-checks a range. Read per attempt
+/// rather than captured once, because an operator who lengthens the ceiling
+/// during an outage means it for the outage they are watching.
 #[must_use]
 pub(crate) fn reconnect_delay_ms(attempt: u32) -> Option<u64> {
-    (attempt < RECONNECT_ATTEMPTS).then(|| {
+    let live = crate::state::live::shell_settings();
+    (attempt < live.reconnect_attempts).then(|| {
         RECONNECT_BASE_MS
             .saturating_mul(1 << attempt.min(7))
-            .min(RECONNECT_MAX_MS)
+            .min(u64::from(live.reconnect_max_ms))
     })
 }
 
@@ -773,22 +769,18 @@ pub(crate) fn reconnect_delay_ms(attempt: u32) -> Option<u64> {
 ///
 /// The schedule ends. When it does the window keeps saying the connection
 /// failed and the Retry button is still the way back.
-pub(crate) fn schedule_reconnect(
-    bridge: Bridge,
-    st: Signal<UiState>,
-    mut reconnect: Signal<u32>,
-    opts: Options,
-) {
+pub(crate) fn schedule_reconnect(cx: &Rc<Ctx>) {
     // A window that never talks to a daemon has nothing to reconnect to.
-    if opts.fixture {
+    if cx.opts.fixture {
         return;
     }
-    let attempt = *reconnect.peek();
+    let attempt = cx.reconnect.get();
     let Some(delay) = reconnect_delay_ms(attempt) else {
         return;
     };
-    reconnect.set(attempt + 1);
-    spawn(async move {
+    cx.reconnect.set(attempt + 1);
+    let cx = Rc::clone(cx);
+    glib::MainContext::default().spawn_local(async move {
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         // The operator may have reconnected by hand, or pointed this window at
         // another daemon, while this was asleep. Re-read rather than acting on
@@ -798,14 +790,16 @@ pub(crate) fn schedule_reconnect(
         // THE BUG: this dialled the command line while the manual Retry button
         // dialled the setting, so a window pointed at another daemon through
         // Settings silently returned to the wrong one on the first blip.
-        if matches!(st.peek().daemon.conn, ConnState::Failed { .. }) {
-            let url = st
-                .peek()
-                .daemon
-                .settings
-                .resolved_daemon_url(opts.server)
-                .to_string();
-            bridge.connect(url);
+        let url = cx.peek(|st| {
+            matches!(st.daemon.conn, ConnState::Failed { .. }).then(|| {
+                st.daemon
+                    .settings
+                    .resolved_daemon_url(cx.opts.server)
+                    .to_string()
+            })
+        });
+        if let Some(url) = url {
+            cx.bridge.connect(url);
         }
     });
 }

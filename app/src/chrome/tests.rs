@@ -65,52 +65,7 @@ fn an_absolute_backdrop_path_survives() {
     assert!(backdrop_path(&format!("{url_root}/..hidden/wall.png")).is_some());
 }
 
-/// A round trip through the encoder and the decoder is the identity.
-///
-/// WHY: these two are written in different files by different halves of this
-/// feature, and a mismatch shows up as a backdrop that silently fails to load
-/// for anyone whose path is not pure ASCII.
-#[test]
-fn the_backdrop_url_round_trips() {
-    for path in [
-        "/home/you/wall.png",
-        "/home/you/My Pictures/wall paper.png",
-        "/home/you/\u{e5}rstid/v\u{e5}r.jpg",
-        "/home/you/100% done/x.gif",
-        "/home/you/a+b&c.png",
-    ] {
-        let url = crate::ui::settings::backdrop_url(path);
-        let encoded = url
-            .strip_prefix("vitrum-backdrop://local")
-            .expect("the encoder emits its own scheme and authority");
-        assert_eq!(
-            percent_decode(encoded).as_deref(),
-            Some(path),
-            "round trip failed for {path}"
-        );
-    }
-}
 
-/// A Windows path survives the encoder on every platform.
-///
-/// WHY: `C:\\Users\\you\\wall.png` does not begin with a slash, so without one
-/// grown for it the URL would read `vitrum-backdrop://localC%3A...` and the
-/// authority would swallow the drive letter. This half is pure string work, so
-/// Linux CI can and must catch it; the matching `is_absolute` handling is
-/// platform-dependent and is asserted separately below.
-#[test]
-fn a_windows_path_keeps_its_separator_from_the_authority() {
-    let url = crate::ui::settings::backdrop_url("C:\\Users\\you\\wall.png");
-    assert!(url.starts_with("vitrum-backdrop://local/"), "{url}");
-    let encoded = url
-        .strip_prefix("vitrum-backdrop://local")
-        .expect("the encoder emits its own scheme and authority");
-    assert_eq!(
-        percent_decode(encoded).as_deref(),
-        Some("/C:\\Users\\you\\wall.png"),
-        "the handler strips the grown slash back off on Windows"
-    );
-}
 
 /// A backslash traversal is refused on Windows.
 ///

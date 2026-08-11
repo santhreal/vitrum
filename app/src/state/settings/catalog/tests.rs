@@ -386,3 +386,93 @@ fn every_setting_is_in_the_manual() {
         );
     }
 }
+
+/// The `lo` and `hi` of a catalogued `integer, lo-hi` kind.
+fn declared_range(kind: &str) -> Option<(i64, i64)> {
+    let span = kind.strip_prefix("integer, ")?;
+    let (lo, hi) = span.split_once('-')?;
+    Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
+}
+
+/// Every catalogued range is the range the load path actually enforces.
+///
+/// THE BUG this stops: a bounded setting whose stated range is prose. The
+/// manual and the sheet both quote the catalogue, so a range with no clamp
+/// behind it invites an operator to hand-edit a value the product then paints
+/// with: a preview cut of zero hides every inbox row, a reconnect ceiling of
+/// one millisecond is a busy loop against a socket nothing is listening on.
+///
+/// The variant space is [`SETTINGS`] read at run time and filtered on the
+/// `kind` string, so a new bounded setting is in this test the moment it is
+/// catalogued. Adding one with a range and no clamp turns the suite red
+/// rather than shipping a number the file accepts and the product cannot
+/// survive.
+///
+/// Three things are asserted per setting: the shipped default is inside the
+/// stated range, both ends of the range survive the file unchanged, and a
+/// value one past each end comes back as that end rather than as itself or as
+/// the default. The last is what distinguishes a clamp from a reset: a load
+/// path that replaced an out-of-range document with `Settings::default` would
+/// pass a test that only checked the value was legal.
+///
+/// What this does NOT catch: a range that is enforced and badly chosen. That
+/// a ceiling of 200000 scrollback lines is a sensible ceiling is a judgement,
+/// and it is argued in the doc comment on the constant.
+#[test]
+fn every_catalogued_range_is_the_range_the_loader_enforces() {
+    let defaults = default_document();
+    let mut checked = 0;
+    for s in SETTINGS {
+        let Some((lo, hi)) = declared_range(s.kind) else {
+            continue;
+        };
+        assert!(lo < hi, "{}: {} is not a range", s.path, s.kind);
+        let shipped: i64 = s
+            .default
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: the default is not an integer: {e}", s.path));
+        assert!(
+            (lo..=hi).contains(&shipped),
+            "{}: the shipped default {shipped} is outside the stated range {lo}-{hi}",
+            s.path
+        );
+
+        // Both ends, and one step past each, through the real load path.
+        let mut cases = vec![(lo, lo), (hi, hi), (hi + 1, hi)];
+        if lo > 0 {
+            cases.push((lo - 1, lo));
+        }
+        for (wrote, want) in cases {
+            let mut doc = defaults.clone();
+            set_at(&mut doc, s.path, Value::from(wrote));
+            let settings: Settings = serde_json::from_value(doc).unwrap_or_else(|e| {
+                panic!("{}: {wrote} is not a value the field can hold: {e}", s.path)
+            });
+            let text = encode_ui_state(&Persisted {
+                version: UI_STATE_VERSION,
+                settings,
+                ..Persisted::default()
+            });
+            let back = match parse_ui_state(&text) {
+                UiStateLoad::Loaded(doc) => *doc,
+                other => panic!("{}: {wrote} made the profile unreadable: {other}", s.path),
+            };
+            let got = value_at(
+                &serde_json::to_value(&back.settings).expect("settings serialise"),
+                s.path,
+            )
+            .and_then(Value::as_i64);
+            assert_eq!(
+                got,
+                Some(want),
+                "{}: a document holding {wrote} loaded as {got:?}, not {want}",
+                s.path
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 20,
+        "only {checked} bounded settings were checked; the kind strings no longer parse"
+    );
+}

@@ -289,6 +289,18 @@ fn a_profile_written_before_these_settings_existed_still_loads() {
     assert_eq!(doc.settings.terminal.line_height_pct, fresh.terminal.line_height_pct);
     assert_eq!(doc.settings.terminal.wheel_lines, fresh.terminal.wheel_lines);
     assert!(!doc.settings.terminal.follow_host_terminal);
+
+    // The groups added with the adjustable limits are among the ones this
+    // document never had, and every one of them has to come back as the
+    // shipped default rather than as a zeroed struct: a zero preview cut
+    // hides every inbox row, a zero tab capacity opens no tab at all.
+    assert_eq!(doc.settings.inbox, fresh.inbox);
+    assert_eq!(doc.settings.launcher, fresh.launcher);
+    assert_eq!(doc.settings.snooze, fresh.snooze);
+    assert_eq!(doc.settings.connection, fresh.connection);
+    assert_eq!(doc.settings.search, fresh.search);
+    assert_eq!(doc.settings.max_tabs, fresh.max_tabs);
+    assert_eq!(doc.settings.update_check_hours, fresh.update_check_hours);
 }
 
 /// A hand-edited profile with values outside every range still opens a window
@@ -316,7 +328,14 @@ fn a_hand_edited_profile_is_clamped_on_the_way_in() {
             }},
             "appearance": {{ "opacityPct": 0, "backdropDimPct": 250 }},
             "notices": {{ "flashSeconds": 250, "noticeSeconds": 200 }},
-            "startup": {{ "splashAfterMs": 60000 }}
+            "startup": {{ "splashAfterMs": 60000 }},
+            "inbox": {{ "previewRows": 0, "settledRows": 250 }},
+            "launcher": {{ "recentRows": 0, "historyLimit": 65000 }},
+            "snooze": {{ "morningHour": 99, "eveningHour": 24 }},
+            "connection": {{ "reconnectMaxMs": 1, "reconnectAttempts": 0 }},
+            "search": {{ "contextLines": 9000, "maxHits": 1 }},
+            "maxTabs": 0,
+            "updateCheckHours": 0
           }},
           "workspaces": {{}},
           "windows": []
@@ -339,6 +358,24 @@ fn a_hand_edited_profile_is_clamped_on_the_way_in() {
     assert_eq!(s.notices.flash_seconds, crate::state::NOTICE_SECONDS_MAX);
     assert_eq!(s.notices.notice_seconds, crate::state::NOTICE_SECONDS_MAX);
     assert_eq!(s.startup.splash_after_ms, crate::state::SPLASH_AFTER_MAX_MS);
+    assert_eq!(s.inbox.preview_rows, crate::state::PREVIEW_ROWS_MIN);
+    assert_eq!(s.inbox.settled_rows, crate::state::SETTLED_ROWS_MAX);
+    assert_eq!(s.launcher.recent_rows, crate::state::RECENT_ROWS_MIN);
+    assert_eq!(s.launcher.history_limit, crate::state::HISTORY_LIMIT_MAX);
+    assert_eq!(s.snooze.morning_hour, crate::state::SNOOZE_HOUR_MAX);
+    assert_eq!(s.snooze.evening_hour, crate::state::SNOOZE_HOUR_MAX);
+    assert_eq!(s.connection.reconnect_max_ms, crate::state::RECONNECT_MAX_MS_MIN);
+    assert_eq!(
+        s.connection.reconnect_attempts,
+        crate::state::RECONNECT_ATTEMPTS_MIN
+    );
+    assert_eq!(s.search.context_lines, crate::state::CONTEXT_LINES_MAX);
+    assert_eq!(s.search.max_hits, crate::state::MAX_HITS_MIN);
+    assert_eq!(s.max_tabs, crate::state::MAX_TABS_MIN);
+    assert_eq!(
+        s.update_check_hours,
+        crate::state::UPDATE_CHECK_HOURS_MIN
+    );
 }
 
 /// The document a fresh profile writes reads back as itself.

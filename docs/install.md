@@ -42,19 +42,19 @@ the two installers stop agreeing.
 
 ## System dependencies
 
-vitrum draws its windows with a WebView, and the installer installs the one
+vitrum draws its windows with GTK 3, and the installer installs the one
 this machine is missing rather than naming it and stopping.
 
 | Platform | What it installs | Command |
 |---|---|---|
-| Debian, Ubuntu, Mint, Pop, Raspbian | `libwebkit2gtk-4.1-0` | `apt-get install -y` |
-| Fedora, RHEL, Rocky, Alma | `webkit2gtk4.1` | `dnf install -y` |
-| Arch, Manjaro, EndeavourOS | `webkit2gtk-4.1` | `pacman -S --noconfirm --needed` |
-| openSUSE, SLES | `libwebkit2gtk-4_1-0` | `zypper -n in` |
-| Alpine | `webkit2gtk-4.1` | `apk add` |
-| Void | `webkit2gtk` | `xbps-install -Sy` |
-| Gentoo | `net-libs/webkit-gtk:4.1` | `emerge` |
-| NixOS | `nixpkgs.webkitgtk_4_1` | `nix-env -iA` |
+| Debian, Ubuntu, Mint, Pop, Raspbian | `libgtk-3-0` | `apt-get install -y` |
+| Fedora, RHEL, Rocky, Alma | `gtk3` | `dnf install -y` |
+| Arch, Manjaro, EndeavourOS | `gtk3` | `pacman -S --noconfirm --needed` |
+| openSUSE, SLES | `libgtk-3-0` | `zypper -n in` |
+| Alpine | `gtk+3.0` | `apk add` |
+| Void | `gtk+3` | `xbps-install -Sy` |
+| Gentoo | `x11-libs/gtk+:3` | `emerge` |
+| NixOS | `nixpkgs.gtk3` | `nix-env -iA` |
 | Windows | WebView2 Evergreen runtime | the Microsoft bootstrapper, `/silent /install` |
 | macOS | nothing | |
 
@@ -73,7 +73,7 @@ The refusals that remain:
 | not root, and no sudo | `This is not root and there is no sudo on this machine, so no package can be installed from here.` |
 | a distribution with no entry above | `No package on this distribution is known to provide it.` |
 | the package manager exits non-zero | `the package manager could not install <package>`, with its status |
-| the package installs and the library is still absent | `<package> installed and libwebkit2gtk-4.1.so.0 is still not here` |
+| the package installs and the library is still absent | `<package> installed and libgtk-3.so.0 is still not here` |
 
 Pass `--no-deps` (`-NoDeps`) to install nothing. The installer then prints the
 command that installs the runtime and exits non-zero, which is what a
@@ -132,7 +132,7 @@ the exact commands that clear the mark by hand and try again.
 1. Checks this machine before downloading anything: the architecture and libc
    have a published build, the install directory can really be written to, no
    `vitrum` is running from it, there is something to download with, and the
-   WebKit or WebView2 runtime is present or can be installed.
+   GTK or WebView2 runtime is present or can be installed.
 2. Resolves the latest published release.
 3. Downloads the platform archive and the release `SHA256SUMS`.
 4. Checks the archive arrived whole, then compares digests. On a mismatch it
@@ -202,7 +202,7 @@ digest says.
 The install directory is `--install-dir=PATH` or `VITRUM_INSTALL_DIR`.
 
 The system packages the installer installs are not recorded and are not
-removed by `--uninstall`. A WebKit runtime and the WebView2 runtime are
+removed by `--uninstall`. A GTK runtime and the WebView2 runtime are
 shared with everything else on the machine.
 
 ## Options
@@ -214,6 +214,7 @@ sh install.sh --help
 | Option | Environment | Effect |
 |---|---|---|
 | `VERSION` | `VITRUM_VERSION` | install that version instead of the latest |
+| `--channel=CHANNEL` | `VITRUM_CHANNEL` | `stable`, the default, or `nightly` |
 | `--install-dir=PATH` | `VITRUM_INSTALL_DIR` | put the binaries elsewhere |
 | `--base-url=URL` | `VITRUM_BASE_URL` | take the archive and `SHA256SUMS` from a mirror or a local directory |
 | `--no-integrate` | `VITRUM_NO_INTEGRATE` | binaries only: skip steps 7 to 9 |
@@ -221,7 +222,7 @@ sh install.sh --help
 | `--no-runtime-check` | `VITRUM_NO_RUNTIME_CHECK` | install without checking the runtime this machine has |
 | `--uninstall` | | remove everything the installer wrote |
 
-PowerShell takes the same as `-Version`, `-InstallDir`, `-BaseUrl`,
+PowerShell takes the same as `-Version`, `-Channel`, `-InstallDir`, `-BaseUrl`,
 `-NoIntegrate`, `-NoDeps`, `-NoRuntimeCheck` and `-Uninstall`.
 
 `--no-integrate` is for images, provisioning scripts and headless hosts, where
@@ -256,7 +257,7 @@ having installed nothing.
 | the digest disagrees | `checksum mismatch for ...; nothing was installed` |
 | the install directory refuses a write | `<dir> cannot be written to` |
 | `vitrum` is running from there | `vitrum is running from <dir>/vitrum (pid N)` |
-| the WebKit runtime cannot be installed | `vitrum needs a WebKit runtime and this installer cannot install one`, with the reason |
+| the GTK runtime cannot be installed | `vitrum needs a GTK runtime and this installer cannot install one`, with the reason |
 | the WebView2 runtime cannot be installed | `the WebView2 runtime could not be installed: ...` |
 | an architecture with no build | `there is no published build for Linux on riscv64` |
 | a libc with no build | `there is no published build for Linux with musl libc` |
@@ -300,10 +301,31 @@ Stable is the default. A nightly carries the next patch version with a date
 and a commit, such as `0.1.1-nightly.20260809.f4f494e`, so `vitrum --version`
 names the build rather than repeating the last release.
 
+Install a nightly with one command, on a machine with nothing on it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh -s -- --channel=nightly
+```
+
+A nightly has no version to ask for. It is whatever the moving `nightly` tag
+holds when you run the command, so `--channel=nightly` with a version, or with
+`--base-url`, is refused rather than resolved to one of the two.
+
+That tag is replaced by every nightly build. A machine part way through an
+install when it moves takes the build that replaced it: the installer reads
+the release's `SHA256SUMS`, downloads the archive that file names, and asks
+the release again when that archive has already been superseded. A staged
+update needs nothing from the network at all, because the binaries are already
+on disk.
+
 Nightly moves forward onto a stable release once that release is newer than
 the nightly you are running. It is never rolled back to an older stable.
 
-To leave nightly for a specific stable build, install that version directly.
+To leave nightly, install a stable build over it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/santhreal/vitrum/main/install.sh | sh
+```
 
 ## Pinning a version, and rolling back
 
@@ -356,7 +378,7 @@ directory: `sh install.sh --uninstall --install-dir=PATH`. Uninstalling
 something that is not there is an error rather than a silent success.
 
 What remains is config and state, listed in
-[configuration.md](configuration.md), and the WebKit or WebView2 runtime,
+[configuration.md](configuration.md), and the GTK or WebView2 runtime,
 which is shared with the rest of the machine.
 
 Building from source is in [CONTRIBUTING.md](../CONTRIBUTING.md).

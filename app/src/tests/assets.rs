@@ -40,13 +40,17 @@ use std::path::{Path, PathBuf};
 
 /// Directories whose contents this repository does not publish as its own.
 ///
-/// `vendor/` carries forks with their own images, which are not ours to
-/// describe or to delete. A picture parked there is out of scope here, which
+/// The vendored forks carry upstream's own images, which are not ours to
+/// describe or to delete. A picture parked in one is out of scope here, which
 /// is why the README may not point at one — see
 /// [`every_reference_resolves_to_something_we_publish`]. Build output, caches
 /// and scratch need no entry: the tree is what git tracks, so nothing that was
 /// never committed can reach these guards.
-const SKIP: [&str; 1] = ["vendor"];
+///
+/// Named per fork rather than by a `vendor` prefix, because a prefix rule
+/// would silently start skipping any future directory that happens to begin
+/// with it.
+const SKIP: [&str; 2] = ["vendor-pty", "vendor-ghostty-vt-sys"];
 
 /// The one host allowed to serve an image into a document.
 ///
@@ -486,8 +490,8 @@ fn no_picture_is_described_through_a_shell() {
 ///
 /// Two escapes meet here. A remote `<img>` puts the banned picture at the top
 /// of the page with the tree still clean, so only badges may be remote. A local
-/// one pointed into `vendor/` does the same from inside the repository:
-/// `vendor/` is skipped precisely because its contents are not ours to
+/// one pointed into a vendored fork does the same from inside the repository:
+/// a fork is skipped precisely because its contents are not ours to
 /// describe, which made it the one directory a picture could sit in undeclared
 /// and still render on the front page. Both land as "the target is not a
 /// picture this walker enumerates".

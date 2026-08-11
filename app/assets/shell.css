@@ -1,0 +1,2175 @@
+/* The structural stylesheet for the native window.
+ *
+ * Every value in this file is a token placeholder resolved by
+ * `app/src/shell/style.rs`. Writing a colour or a length here directly is
+ * refused by `the_template_declares_no_literal_value`, because a number in a
+ * stylesheet is a number outside the design system, and the design system is
+ * the only reason the product looks like one product.
+ *
+ * Motion is not here. Every `transition` the product declares lives in
+ * `shell-motion.css`, which is appended only when the reader has not asked for
+ * reduced motion.
+ *
+ * GTK dialect notes, so nobody wonders what was lost:
+ *
+ * - There is no `letter-spacing` and no `line-height`. Tracking and leading
+ *   are Pango attributes and the values are published as consts in style.rs.
+ * - There is no `display`. An element is hidden by the widget, not by a rule,
+ *   which is why the reserved strips below carry a height that no state
+ *   changes: the sheet cannot stop a widget hiding, so it makes hiding
+ *   unnecessary.
+ * - Sizes are `min-width` and `min-height`. GTK grows a box past them for its
+ *   content and never shrinks below them.
+ */
+
+/* ── The window ──────────────────────────────────────────────────────────── */
+
+.rg-root {
+  background-color: $surface$;
+  color: $fg$;
+  font-family: $font-ui$;
+  font-size: $text-13$;
+  font-weight: $weight-normal$;
+}
+
+.rg-root label {
+  color: $fg$;
+}
+
+/* ── Titlebar ────────────────────────────────────────────────────────────── */
+
+/* A reserved strip. The height is stated once and no state changes it, so the
+ * pane below never gains or loses a line when the title text arrives. */
+.rg-titlebar {
+  min-height: $titlebar-h$;
+  padding-left: $space-3$;
+  padding-right: $space-2$;
+  background-color: $surface$;
+  border-bottom: $hairline$ solid $border$;
+  color: $fg-muted$;
+}
+
+.rg-titlebar__brand {
+  font-size: $text-13$;
+  font-weight: $weight-semibold$;
+  color: $fg-strong$;
+  padding-right: $space-3$;
+}
+
+.rg-titlebar__primary {
+  font-size: $text-13$;
+  color: $fg$;
+}
+
+.rg-titlebar__secondary {
+  font-size: $text-12$;
+  color: $fg-subtle$;
+  padding-left: $space-2$;
+}
+
+.rg-titlebar__context {
+  font-family: $font-mono$;
+  font-size: $text-12$;
+  color: $fg-muted$;
+  padding-left: $space-2$;
+}
+
+.rg-titlebar__actions {
+  padding-left: $space-2$;
+}
+
+.rg-titlebar__action {
+  min-width: $control-h$;
+  min-height: $control-h$;
+  border-radius: $radius-sm$;
+  color: $fg-muted$;
+  background-color: transparent;
+  border: none;
+}
+
+.rg-titlebar__action:hover {
+  background-color: $row-hover$;
+  color: $fg-strong$;
+}
+
+.rg-titlebar__action:active {
+  background-color: $row-active$;
+}
+
+.rg-window-controls {
+  padding-left: $space-2$;
+}
+
+.rg-window-control {
+  min-width: $close-w$;
+  min-height: $close-w$;
+  border-radius: $radius-sm$;
+  background-color: transparent;
+  border: none;
+  color: $fg-muted$;
+}
+
+.rg-window-control:hover {
+  background-color: $row-hover$;
+  color: $fg-strong$;
+}
+
+.rg-window-control.rg-window-control--close:hover {
+  background-color: $hue-del$;
+  color: $surface$;
+}
+
+.rg-window-control__glyph {
+  font-size: $text-glyph$;
+}
+
+/* ── The split ───────────────────────────────────────────────────────────── */
+
+.rg-paned {
+  background-color: $surface$;
+}
+
+/* The drag handle between the sidebar and the content. GTK draws the separator
+ * itself, so the whole rule is the width the operator has to hit and the
+ * colour of the line inside it. */
+.rg-paned separator {
+  min-width: $resizer-w$;
+  background-color: $border$;
+  background-image: none;
+}
+
+.rg-paned separator:hover {
+  background-color: $accent$;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+
+.rg-sidebar {
+  min-width: $sidebar-width-min$;
+  background-color: $surface$;
+  border-right: $hairline$ solid $border$;
+}
+
+.rg-sidebar.rg-sidebar--collapsed {
+  min-width: $sidebar-width-collapsed$;
+}
+
+.rg-sidebar__toolbar {
+  min-height: $toolbar-h$;
+  padding-left: $content-inset$;
+  padding-right: $content-inset$;
+  background-color: $surface$;
+}
+
+.rg-sidebar__action {
+  min-width: $control-h$;
+  min-height: $control-h$;
+  border-radius: $radius-sm$;
+  background-color: transparent;
+  border: none;
+  color: $fg-muted$;
+}
+
+.rg-sidebar__action:hover {
+  background-color: $row-hover$;
+  color: $fg-strong$;
+}
+
+.rg-sidebar__search {
+  min-height: $search-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  margin-left: $content-inset$;
+  margin-right: $content-inset$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border$;
+  background-color: $fill-rest$;
+  color: $fg$;
+}
+
+.rg-sidebar__search:focus-within {
+  border-color: $accent$;
+  box-shadow: 0 0 0 $focus-ring-w$ $focus-halo$;
+}
+
+.rg-sidebar__search-icon {
+  min-width: $icon-sm$;
+  color: $fg-subtle$;
+}
+
+.rg-sidebar__search-input {
+  font-size: $text-13$;
+  color: $fg$;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+}
+
+.rg-sidebar__search-kbd {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-sidebar__body {
+  background-color: $surface$;
+  padding-bottom: $space-2$;
+}
+
+.rg-sidebar__empty {
+  padding: $space-6$;
+  color: $fg-subtle$;
+  font-size: $text-13$;
+}
+
+/* A reserved strip: the connection state, the restart prompt and the counts
+ * all land here and all arrive late. */
+.rg-sidebar__floor {
+  min-height: $footer-h$;
+  padding-left: $content-inset$;
+  padding-right: $content-inset$;
+  border-top: $hairline$ solid $border$;
+  background-color: $surface$;
+}
+
+.rg-sidebar__floor-label {
+  font-size: $text-11$;
+  font-weight: $weight-medium$;
+  color: $fg-muted$;
+}
+
+.rg-sidebar__floor-hint {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-sidebar__footer {
+  min-height: $footer-h$;
+  padding-left: $content-inset$;
+  padding-right: $content-inset$;
+}
+
+.rg-sidebar__status-text {
+  font-size: $text-11$;
+  color: $fg-subtle$;
+}
+
+.rg-sidebar__restart {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  background-color: $hue-approval-soft$;
+  color: $hue-approval$;
+}
+
+.rg-sidebar__restart-dot {
+  min-width: $dot-size$;
+  min-height: $dot-size$;
+  border-radius: $radius-full$;
+  background-color: $hue-approval$;
+}
+
+.rg-sidebar__restart-line {
+  font-size: $text-11$;
+}
+
+.rg-sidebar__resizer {
+  min-width: $resizer-w$;
+  background-color: transparent;
+}
+
+/* ── Projects and sessions ───────────────────────────────────────────────── */
+
+.rg-project__header {
+  min-height: $row-h-project$;
+  padding-left: $row-inset$;
+  padding-right: $row-inset$;
+  border-radius: $radius-sm$;
+  color: $fg-muted$;
+}
+
+.rg-project__header:hover {
+  background-color: $row-hover$;
+}
+
+.rg-project__chevron {
+  min-width: $chevron-w$;
+  color: $fg-faint$;
+}
+
+.rg-project__name {
+  font-size: $text-12$;
+  font-weight: $weight-semibold$;
+  color: $fg-strong$;
+}
+
+.rg-project__more {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-project__tip {
+  font-size: $text-11$;
+  color: $fg-faint$;
+  padding-left: $row-inset$;
+}
+
+.rg-project__empty {
+  font-size: $text-12$;
+  color: $fg-faint$;
+  padding-left: $row-inset$;
+  min-height: $row-h$;
+}
+
+.rg-project__sessions {
+  padding-left: $space-1$;
+}
+
+.rg-project__section-head {
+  min-height: $section-h$;
+  padding-left: $row-inset$;
+  padding-right: $row-inset$;
+}
+
+.rg-project__section-label {
+  font-size: $text-label$;
+  font-weight: $weight-medium$;
+  color: $fg-faint$;
+}
+
+.rg-project__section-count {
+  font-size: $text-label$;
+  color: $fg-faint$;
+}
+
+.rg-project__section-rule {
+  min-height: $hairline$;
+  background-color: $border$;
+}
+
+/* The card. One height, whatever it carries.
+ *
+ * This is the defining layout defect of an earlier build: row pitch alternated
+ * down the list because line three rendered only when a disposition or a badge
+ * earned it. A hard height is the fix, and a minimum that the content can
+ * exceed is not a constraint, it is a comment. GTK has no maximum, so the
+ * height is pinned with `min-height` and every element inside it is given a
+ * reserved box of its own below, which is what actually stops the growth. */
+.rg-session {
+  min-height: $card-h$;
+  margin-left: $space-1$;
+  margin-right: $space-1$;
+  margin-bottom: $row-gap$;
+  padding-left: $row-inset$;
+  padding-right: $row-inset$;
+  border-radius: $radius-md$;
+  background-color: transparent;
+}
+
+.rg-session:hover {
+  background-color: $row-hover$;
+}
+
+.rg-session.rg-session--picked {
+  background-color: $row-selected$;
+}
+
+.rg-session.rg-session--active {
+  background-color: $row-active$;
+}
+
+.rg-session.rg-session--slim {
+  min-height: $slim-h$;
+}
+
+.rg-session.rg-session--collapsed {
+  min-height: $row-collapsed-h$;
+}
+
+.rg-session__title {
+  font-size: $text-13$;
+  font-weight: $weight-medium$;
+  color: $fg-strong$;
+  min-height: $line-head$;
+}
+
+.rg-session__line {
+  min-height: $line-head$;
+}
+
+.rg-session__slot {
+  min-width: $slot-min$;
+}
+
+/* Four late facts. Each is present and empty from the first frame, so the row
+ * does not reflow when git, the daemon or the model answers. */
+.rg-session__branch {
+  min-height: $line-head$;
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-subtle$;
+}
+
+.rg-session__branch.rg-session__branch--empty {
+  min-height: $line-head$;
+  color: transparent;
+}
+
+.rg-session__place {
+  min-height: $line-head$;
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-session__place.rg-session__place--empty {
+  min-height: $line-head$;
+  color: transparent;
+}
+
+.rg-session__worktree {
+  min-height: $line-head$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-session__worktree.rg-session__worktree--empty {
+  min-height: $line-head$;
+  color: transparent;
+}
+
+.rg-session__time {
+  min-height: $line-head$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-session__time.rg-session__time--empty {
+  min-height: $line-head$;
+  color: transparent;
+}
+
+.rg-session__agent {
+  min-width: $glyph-w$;
+  min-height: $glyph-w$;
+  font-size: $text-glyph$;
+  color: $fg-muted$;
+}
+
+.rg-session__actions {
+  padding-left: $space-1$;
+}
+
+.rg-session__close {
+  min-width: $close-w$;
+  min-height: $close-w$;
+  border-radius: $radius-sm$;
+  background-color: transparent;
+  border: none;
+  color: $fg-faint$;
+}
+
+.rg-session__close:hover {
+  background-color: $row-hover$;
+  color: $hue-del$;
+}
+
+.rg-session__contest {
+  min-height: $row-h$;
+  padding-left: $space-1$;
+  padding-right: $space-1$;
+  border-radius: $radius-sm$;
+  background-color: $hue-approval-soft$;
+  color: $hue-approval$;
+  font-size: $text-11$;
+}
+
+.rg-session__contest-count {
+  font-weight: $weight-semibold$;
+}
+
+.rg-session__contest-mark {
+  min-width: $icon-sm$;
+}
+
+.rg-session__tip {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+/* The attention rail down the left edge of a card.
+ *
+ * Four tiers and not a status ladder. `state::attention_modifier` resolves
+ * exactly one of failed, blocked reading input, bell, and idle past its
+ * threshold, in that order, so these are the only four a row can carry. The
+ * pill beside it states what the session is doing, which is a different fact
+ * and a different vocabulary. */
+.rg-session__rail {
+  min-width: $rail-w$;
+  border-radius: $radius-full$;
+  background-color: transparent;
+}
+
+.rg-session__rail.rg-session__rail--failed {
+  background-color: $hue-failed$;
+}
+
+.rg-session__rail.rg-session__rail--waiting {
+  background-color: $hue-input$;
+}
+
+.rg-session__rail.rg-session__rail--bell {
+  background-color: $hue-approval$;
+}
+
+.rg-session__rail.rg-session__rail--idle {
+  background-color: $hue-ready$;
+}
+
+/* ── The status pill ─────────────────────────────────────────────────────── */
+
+.rg-pill {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-full$;
+  background-color: $hue-ready-soft$;
+  color: $hue-ready$;
+}
+
+.rg-pill__word {
+  min-height: $row-h$;
+  font-size: $text-11$;
+  font-weight: $weight-medium$;
+}
+
+/* Empty before the daemon says what the session is doing. Same box, no ink. */
+.rg-pill__word.rg-pill__word--empty {
+  min-height: $row-h$;
+  color: transparent;
+}
+
+.rg-pill__aux {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-pill.rg-pill--working {
+  background-color: $hue-working-soft$;
+  color: $hue-working$;
+}
+
+.rg-pill.rg-pill--approval {
+  background-color: $hue-approval-soft$;
+  color: $hue-approval$;
+}
+
+.rg-pill.rg-pill--input {
+  background-color: $hue-input-soft$;
+  color: $hue-input$;
+}
+
+.rg-pill.rg-pill--failed {
+  background-color: $hue-failed-soft$;
+  color: $hue-failed$;
+}
+
+.rg-pill.rg-pill--done {
+  background-color: $hue-done-soft$;
+  color: $hue-done$;
+}
+
+.rg-pill.rg-pill--snoozed {
+  background-color: $hue-snoozed-soft$;
+  color: $hue-snoozed$;
+}
+
+.rg-pill.rg-pill--woke {
+  background-color: $hue-woke-soft$;
+  color: $hue-woke$;
+}
+
+/* An inferred disposition is hedged rather than stated: the model guessed, and
+ * a guess that looks like a reading is the worst of the two. */
+.rg-pill.rg-pill--inferred .rg-pill__word {
+  color: $fg-muted$;
+  font-weight: $weight-normal$;
+}
+
+/* ── Rollups and counts ──────────────────────────────────────────────────── */
+
+.rg-rollup {
+  padding-left: $space-1$;
+}
+
+.rg-rollup__chip {
+  min-height: $row-h$;
+  padding-left: $space-1$;
+  padding-right: $space-1$;
+  border-radius: $radius-full$;
+  font-size: $text-11$;
+  color: $fg-muted$;
+  background-color: $fill-rest$;
+}
+
+.rg-rollup__dot {
+  min-width: $dot-size$;
+  min-height: $dot-size$;
+  border-radius: $radius-full$;
+  background-color: $hue-ready$;
+}
+
+.rg-attn-count {
+  min-height: $row-h$;
+  padding-left: $space-1$;
+  padding-right: $space-1$;
+  border-radius: $radius-full$;
+  background-color: $hue-approval-soft$;
+  color: $hue-approval$;
+}
+
+.rg-attn-count__n {
+  font-size: $text-11$;
+  font-weight: $weight-semibold$;
+}
+
+.rg-attn-count__word {
+  font-size: $text-11$;
+}
+
+/* ── The workspace bar ───────────────────────────────────────────────────── */
+
+.rg-wsbar {
+  min-height: $wsbar-h$;
+  padding-left: $content-inset$;
+  padding-right: $content-inset$;
+  background-color: $surface$;
+  border-bottom: $hairline$ solid $border$;
+}
+
+.rg-wsbar__item {
+  min-height: $wsbar-item-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  color: $fg-muted$;
+  background-color: transparent;
+  border: none;
+}
+
+.rg-wsbar__item:hover {
+  background-color: $row-hover$;
+}
+
+.rg-wsbar__item.rg-wsbar__item--active {
+  background-color: $row-active$;
+  color: $fg$;
+}
+
+.rg-wsbar__name {
+  font-size: $text-12$;
+}
+
+.rg-wsbar__add {
+  min-width: $control-h$;
+  min-height: $control-h$;
+  border-radius: $radius-sm$;
+  background-color: transparent;
+  border: none;
+  color: $fg-muted$;
+}
+
+.rg-wsbar__add:hover {
+  color: $accent-text$;
+  background-color: $row-hover$;
+}
+
+.rg-wsbar__add-glyph {
+  font-size: $text-13$;
+}
+
+.rg-wsbar__manage {
+  font-size: $text-11$;
+  color: $fg-subtle$;
+}
+
+.rg-wsbar__rule {
+  min-width: $hairline$;
+  background-color: $border$;
+  margin-left: $space-2$;
+  margin-right: $space-2$;
+}
+
+/* The workspace switcher control in the bar. */
+.rg-wsw {
+  min-height: $control-h-sm$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  border: none;
+  background-color: transparent;
+}
+
+.rg-wsw:hover {
+  background-color: $row-hover$;
+}
+
+.rg-wsw__name {
+  font-size: $text-12$;
+  color: $fg$;
+}
+
+.rg-wsw__chevron {
+  min-width: $chevron-w$;
+  color: $fg-faint$;
+}
+
+.rg-wsw__count {
+  min-width: $wsbar-count-min$;
+  min-height: $row-h$;
+  border-radius: $radius-full$;
+  font-size: $text-11$;
+  font-weight: $weight-semibold$;
+  background-color: $hue-approval-soft$;
+  color: $hue-approval$;
+}
+
+/* ── The content column and the pane ─────────────────────────────────────── */
+
+.rg-content {
+  background-color: $terminal-bg$;
+}
+
+/* The terminal's allocation. The grid paints itself on a native subwindow, so
+ * the only thing this rule owns is the letterbox around the cell matrix, and
+ * it is the grid's own background so the seam is invisible. */
+.rg-pane {
+  background-color: $terminal-bg$;
+  padding: $pane-pad$;
+}
+
+.rg-terminal {
+  background-color: $terminal-bg$;
+  color: $terminal-fg$;
+}
+
+.rg-terminal__empty {
+  background-color: $terminal-bg$;
+  padding: $space-8$;
+}
+
+.rg-terminal__empty-title {
+  font-size: $text-15$;
+  font-weight: $weight-medium$;
+  color: $terminal-fg$;
+}
+
+.rg-terminal__empty-hint {
+  font-size: $text-13$;
+  color: $fg-subtle$;
+  padding-top: $space-2$;
+}
+
+/* A reserved strip, and the one that matters most.
+ *
+ * The bar under the terminal states the agent, the branch, the place and the
+ * exit code, and every one of those arrives after the session is already
+ * running. A bar that appeared when the first of them landed would take a line
+ * from the pty, resize it, and make the agent inside repaint its whole screen.
+ * So the height is fixed here and no state changes it. */
+.rg-panebar {
+  min-height: $panebar-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  background-color: $surface$;
+  border-top: $hairline$ solid $border$;
+  color: $fg-subtle$;
+  font-size: $text-11$;
+}
+
+.rg-panebar__grid {
+  min-height: $panebar-h$;
+}
+
+.rg-panebar__key {
+  font-size: $text-11$;
+  color: $fg-faint$;
+  padding-right: $space-1$;
+}
+
+/* Every value in the bar is a late fact and every one of them keeps its box
+ * while it is empty. */
+.rg-panebar__value {
+  min-height: $panebar-h$;
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-muted$;
+}
+
+.rg-panebar__value.rg-panebar__value--empty {
+  min-height: $panebar-h$;
+  color: transparent;
+}
+
+.rg-panebar__agent {
+  min-height: $panebar-h$;
+  color: $fg-muted$;
+}
+
+.rg-panebar__branch {
+  min-height: $panebar-h$;
+  font-family: $font-mono$;
+  color: $fg-subtle$;
+}
+
+.rg-panebar__place {
+  min-height: $panebar-h$;
+  font-family: $font-mono$;
+  color: $fg-faint$;
+}
+
+.rg-panebar__worktree {
+  min-height: $panebar-h$;
+  color: $fg-faint$;
+}
+
+.rg-panebar__state {
+  min-height: $panebar-h$;
+  color: $hue-ready$;
+}
+
+.rg-panebar__exit {
+  min-height: $panebar-h$;
+  color: $hue-failed$;
+}
+
+.rg-panebar__gap {
+  min-width: $space-3$;
+}
+
+/* ── The scrim and the dialog it carries ─────────────────────────────────── */
+
+.rg-scrim {
+  background-color: $scrim$;
+}
+
+.rg-dialog-slot {
+  background-color: transparent;
+}
+
+.rg-sheet {
+  background-color: $surface-overlay$;
+  border: $hairline$ solid $border-strong$;
+  border-radius: $radius-lg$;
+  box-shadow: $shadow-2$;
+  color: $fg$;
+}
+
+.rg-sheet__head {
+  min-height: $set-head-h$;
+  padding-left: $space-5$;
+  padding-right: $space-3$;
+  border-bottom: $hairline$ solid $border$;
+}
+
+.rg-sheet__title {
+  font-size: $text-15$;
+  font-weight: $weight-semibold$;
+  color: $fg-strong$;
+}
+
+.rg-sheet__body {
+  padding: $space-5$;
+}
+
+.rg-sheet__panel {
+  padding-left: $space-5$;
+  padding-right: $space-5$;
+}
+
+.rg-sheet__tabs {
+  min-width: $set-rail-w$;
+  padding: $space-2$;
+  border-right: $hairline$ solid $border$;
+  background-color: $surface$;
+}
+
+.rg-sheet__foot {
+  min-height: $band-h$;
+  padding-left: $space-5$;
+  padding-right: $space-5$;
+  border-top: $hairline$ solid $border$;
+}
+
+.rg-sheet__note {
+  font-size: $text-12$;
+  color: $fg-subtle$;
+}
+
+.rg-sheet__warn {
+  font-size: $text-12$;
+  color: $hue-approval$;
+  background-color: $hue-approval-soft$;
+  border-radius: $radius-sm$;
+  padding: $space-2$;
+}
+
+.rg-sheet__error {
+  font-size: $text-12$;
+  color: $hue-failed$;
+  background-color: $hue-failed-soft$;
+  border-radius: $radius-sm$;
+  padding: $space-2$;
+}
+
+/* ── The settings sheet ──────────────────────────────────────────────────── */
+
+.rg-settings {
+  min-width: $set-sheet-w$;
+  min-height: $set-sheet-h$;
+}
+
+.rg-settings__tab {
+  min-height: $set-tab-h$;
+  padding-left: $space-3$;
+  padding-right: $space-3$;
+  border-radius: $radius-sm$;
+  background-color: transparent;
+  border: none;
+  color: $fg-muted$;
+  font-size: $text-13$;
+}
+
+.rg-settings__tab:hover {
+  background-color: $row-hover$;
+}
+
+.rg-settings__tab.rg-settings__tab--active {
+  background-color: $row-active$;
+  color: $fg-strong$;
+}
+
+.rg-settings__group {
+  padding-top: $space-5$;
+}
+
+.rg-settings__group-title {
+  font-size: $text-11$;
+  font-weight: $weight-semibold$;
+  color: $fg-faint$;
+  padding-bottom: $space-2$;
+}
+
+.rg-field {
+  min-height: $set-control-h$;
+  padding-top: $space-2$;
+  padding-bottom: $space-2$;
+}
+
+.rg-field__label {
+  font-size: $text-13$;
+  color: $fg$;
+}
+
+.rg-field__desc {
+  font-size: $text-12$;
+  color: $fg-subtle$;
+}
+
+.rg-field__hint {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-field__control {
+  min-width: $set-measure$;
+}
+
+.rg-field__input {
+  min-height: $control-h$;
+  padding-left: $control-pad-x-lg$;
+  padding-right: $control-pad-x-lg$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-raised$;
+  color: $fg$;
+  font-size: $text-13$;
+}
+
+.rg-field__input:focus {
+  border-color: $accent$;
+  box-shadow: 0 0 0 $focus-ring-w$ $focus-halo$;
+}
+
+.rg-field__input:disabled {
+  color: $fg-faint$;
+}
+
+/* Rows with no label column. The control spends the whole width instead of
+ * sitting in the measure a labelled row reserves for it. */
+.rg-field--editor .rg-field__control,
+.rg-field--keybind .rg-field__control,
+.rg-field--preset .rg-field__control,
+.rg-field--preset-new .rg-field__control,
+.rg-field--ws .rg-field__control {
+  min-width: 0;
+}
+
+/* The row that creates a preset closes the list, so it is ruled off from the
+ * ones that already exist. */
+.rg-field--preset-new {
+  border-top: $hairline$ solid $border$;
+  padding-top: $space-3$;
+}
+
+/* Every workspace row carries the mark and only the viewed one colours it, so
+ * changing workspace cannot shift the names beside it. */
+.rg-field--ws {
+  border-left: $rail-w$ solid transparent;
+  padding-left: $space-3$;
+}
+
+.rg-field--ws.rg-field--ws-active {
+  border-left-color: $accent$;
+}
+
+/* ── Controls ────────────────────────────────────────────────────────────── */
+
+.rg-btn {
+  min-height: $control-h$;
+  padding-left: $control-pad-x-lg$;
+  padding-right: $control-pad-x-lg$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-raised$;
+  background-image: none;
+  color: $fg$;
+  font-size: $text-13$;
+  font-weight: $weight-medium$;
+}
+
+.rg-btn:hover {
+  background-color: $surface-overlay$;
+}
+
+.rg-btn:active {
+  background-color: $surface$;
+}
+
+.rg-btn:focus {
+  box-shadow: 0 0 0 $focus-ring-w$ $focus-halo$;
+}
+
+.rg-btn:disabled {
+  color: $fg-faint$;
+  border-color: $border$;
+}
+
+.rg-btn.rg-btn--primary {
+  background-color: $accent$;
+  border-color: $accent-strong$;
+  color: $surface-overlay$;
+}
+
+.rg-btn.rg-btn--primary:hover {
+  background-color: $accent-strong$;
+}
+
+.rg-btn.rg-btn--danger {
+  color: $hue-del$;
+  border-color: $hue-del$;
+  background-color: transparent;
+}
+
+/* A toggle that reads as a tag. The border is on both states and only its
+ * colour and fill change, so turning one on cannot move the ones after it. */
+.rg-chip {
+  min-height: $control-h-sm$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-full$;
+  border: $hairline$ solid $border$;
+  background-color: transparent;
+  color: $fg-muted$;
+  font-size: $text-12$;
+}
+
+.rg-chip:hover {
+  background-color: $row-hover$;
+}
+
+.rg-chip:checked {
+  border-color: $accent$;
+  background-color: $accent-wash$;
+  color: $accent-text$;
+}
+
+.rg-btn-inline {
+  min-height: $control-h-sm$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  border: none;
+  background-color: transparent;
+  color: $accent-text$;
+  font-size: $text-12$;
+}
+
+.rg-btn-inline:hover {
+  background-color: $row-hover$;
+}
+
+.rg-btn-inline.rg-btn-inline--danger {
+  color: $hue-del$;
+}
+
+.rg-select {
+  min-height: $control-h$;
+  padding-left: $control-pad-x-lg$;
+  padding-right: $control-pad-x-lg$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-raised$;
+  background-image: none;
+  color: $fg$;
+  font-size: $text-13$;
+}
+
+.rg-select:hover {
+  border-color: $border-strong$;
+  background-color: $surface-overlay$;
+}
+
+.rg-select:focus {
+  box-shadow: 0 0 0 $focus-ring-w$ $focus-halo$;
+}
+
+.rg-switch {
+  min-width: $switch-w$;
+  min-height: $switch-h$;
+  padding: $switch-pad$;
+  border-radius: $radius-full$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $fill-rest$;
+  background-image: none;
+}
+
+.rg-switch:checked {
+  background-color: $accent$;
+  border-color: $accent-strong$;
+}
+
+.rg-switch:focus {
+  box-shadow: 0 0 0 $focus-ring-w$ $focus-halo$;
+}
+
+.rg-switch__knob {
+  min-width: $switch-knob-size$;
+  min-height: $switch-knob-size$;
+  border-radius: $radius-full$;
+  background-color: $fg-strong$;
+  background-image: none;
+}
+
+.rg-icon {
+  min-width: $icon-sm$;
+  min-height: $icon-sm$;
+  color: $fg-muted$;
+}
+
+.rg-iconpick {
+  min-width: $slot-min$;
+  min-height: $slot-min$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border$;
+  background-color: $fill-rest$;
+}
+
+.rg-iconpick:hover {
+  border-color: $accent$;
+}
+
+.rg-iconpick__glyph {
+  font-size: $text-15$;
+  color: $fg$;
+}
+
+/* ── Menus ───────────────────────────────────────────────────────────────── */
+
+.rg-menu {
+  min-width: $menu-w$;
+  padding: $space-1$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-overlay$;
+  box-shadow: $shadow-2$;
+}
+
+.rg-menu__item {
+  min-height: $menu-item-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  color: $fg$;
+  font-size: $text-13$;
+  background-color: transparent;
+}
+
+.rg-menu__item:hover {
+  background-color: $row-hover$;
+}
+
+.rg-menu__item:disabled {
+  color: $fg-faint$;
+}
+
+.rg-menu__item.rg-menu__item--danger {
+  color: $hue-del$;
+}
+
+/* A caption is a heading inside the menu, not a target. It keeps the item's
+ * height so the rows below it sit on the same rhythm. */
+.rg-menu__item.rg-menu__item--caption {
+  color: $fg-faint$;
+  font-size: $text-11$;
+}
+
+.rg-menu__caption {
+  min-height: $section-h$;
+  padding-left: $space-2$;
+  font-size: $text-label$;
+  font-weight: $weight-semibold$;
+  color: $fg-faint$;
+}
+
+.rg-menu__label {
+  font-size: $text-13$;
+  color: $fg$;
+}
+
+.rg-menu__hint {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+/* ── Cross-session search ────────────────────────────────────────────────── */
+
+.rg-search-layer {
+  background-color: $scrim$;
+}
+
+.rg-search {
+  min-width: $set-sheet-w$;
+  border-radius: $radius-lg$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-overlay$;
+  box-shadow: $shadow-2$;
+}
+
+.rg-search__head {
+  min-height: $band-h$;
+  padding-left: $space-4$;
+  padding-right: $space-4$;
+  border-bottom: $hairline$ solid $border$;
+}
+
+.rg-search__input {
+  min-height: $control-h$;
+  font-size: $text-15$;
+  color: $fg$;
+  background-color: transparent;
+  border: none;
+}
+
+.rg-search__opts {
+  padding-left: $space-2$;
+}
+
+.rg-search__summary {
+  min-height: $section-h$;
+  padding-left: $space-4$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-search__results {
+  padding: $space-2$;
+}
+
+.rg-search__group {
+  padding-bottom: $space-2$;
+}
+
+.rg-search__group-head {
+  min-height: $section-h$;
+  padding-left: $space-2$;
+}
+
+.rg-search__group-name {
+  font-size: $text-11$;
+  font-weight: $weight-semibold$;
+  color: $fg-muted$;
+}
+
+.rg-search__group-count {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-search__hit {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+}
+
+.rg-search__hit:hover {
+  background-color: $row-hover$;
+}
+
+.rg-search__line {
+  font-family: $font-mono$;
+  font-size: $text-12$;
+  color: $fg-muted$;
+}
+
+.rg-search__pre {
+  color: $fg-faint$;
+}
+
+.rg-search__post {
+  color: $fg-faint$;
+}
+
+.rg-search__mark {
+  background-color: $accent-wash$;
+  color: $fg-strong$;
+  border-radius: $radius-sm$;
+}
+
+/* ── The launcher ────────────────────────────────────────────────────────── */
+
+.rg-launch {
+  min-width: $set-sheet-w$;
+  border-radius: $radius-lg$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-overlay$;
+  box-shadow: $shadow-2$;
+}
+
+/* The bottom rule spans the whole sheet, so the inset lives on the line
+ * inside rather than on the box that carries the border. */
+.rg-launch__field {
+  min-height: $band-h$;
+  border-bottom: $hairline$ solid $border$;
+}
+
+.rg-launch__line {
+  padding-left: $space-4$;
+  padding-right: $space-4$;
+}
+
+.rg-launch__query {
+  font-size: $text-15$;
+  color: $fg$;
+  background-color: transparent;
+  border: none;
+}
+
+.rg-launch__label {
+  font-size: $text-11$;
+  font-weight: $weight-medium$;
+  color: $fg-faint$;
+}
+
+.rg-launch__list {
+  padding: $space-2$;
+}
+
+.rg-launch__dirs {
+  padding: $space-2$;
+}
+
+.rg-launch__dir {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  font-family: $font-mono$;
+  font-size: $text-12$;
+  color: $fg-muted$;
+}
+
+.rg-launch__dir:hover {
+  background-color: $row-hover$;
+}
+
+.rg-launch__diropt {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  font-family: $font-mono$;
+  font-size: $text-12$;
+  color: $fg-muted$;
+}
+
+.rg-launch__diropt:hover {
+  background-color: $row-hover$;
+}
+
+.rg-launch__diropt.rg-launch__diropt--on {
+  background-color: $row-selected$;
+  color: $fg-strong$;
+}
+
+/* A drawn glyph, sized in Rust from the type scale. It reads only its
+ * foreground, so a length here would fight the size the widget already has. */
+.rg-launch__agent {
+  color: $fg$;
+}
+
+.rg-launch__branch {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-subtle$;
+}
+
+.rg-launch__place {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-launch__text {
+  font-size: $text-13$;
+  color: $fg$;
+}
+
+.rg-launch__key {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-launch__note {
+  font-size: $text-11$;
+  color: $fg-faint$;
+  padding: $space-2$;
+}
+
+/* The band stack under the list. Reserved so an empty presets band and an
+ * empty recents band leave the same box as full ones. */
+.rg-launch__bands {
+  min-height: $band-h$;
+}
+
+.rg-launch__row-body {
+  padding-left: $space-2$;
+}
+
+.rg-launch__save {
+  min-height: $control-h-sm$;
+  color: $accent-text$;
+  font-size: $text-12$;
+}
+
+.rg-newbar__pick {
+  min-height: $control-h$;
+  color: $fg$;
+}
+
+.rg-newbar__what {
+  font-size: $text-12$;
+  color: $fg-subtle$;
+}
+
+.rg-newbar__go {
+  min-height: $control-h$;
+  color: $accent-text$;
+}
+
+/* ── Presets and recents ─────────────────────────────────────────────────── */
+
+.rg-presets {
+  padding: $space-2$;
+}
+
+.rg-presets__head {
+  min-height: $section-h$;
+  font-size: $text-label$;
+  font-weight: $weight-semibold$;
+  color: $fg-faint$;
+}
+
+.rg-presets__list {
+  padding-top: $space-1$;
+}
+
+.rg-presets__chip {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-full$;
+  background-color: $fill-rest$;
+  color: $fg$;
+  font-size: $text-12$;
+}
+
+.rg-presets__chip:hover {
+  background-color: $row-hover$;
+}
+
+.rg-presets__chord {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+/* Drawn glyphs. Sized in Rust from the type scale, so the sheet gives them
+ * a foreground and nothing that could disagree with that size. */
+.rg-presets__icon {
+  color: $fg-muted$;
+}
+
+.rg-presets__text {
+  font-size: $text-12$;
+  color: $fg$;
+}
+
+.rg-presets__note {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-recents {
+  padding: $space-2$;
+}
+
+.rg-recents__list {
+  padding-top: $space-1$;
+}
+
+.rg-recents__row {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+}
+
+.rg-recents__row:hover {
+  background-color: $row-hover$;
+}
+
+.rg-recents__icon {
+  color: $fg-muted$;
+}
+
+.rg-recents__text {
+  font-size: $text-12$;
+  color: $fg$;
+}
+
+.rg-recents__place {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-recents__key {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-recents__note {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+/* ── Keyboard surfaces ───────────────────────────────────────────────────── */
+
+.rg-keys {
+  padding: $space-4$;
+}
+
+.rg-keys__group {
+  padding-bottom: $space-4$;
+}
+
+.rg-keys__heading {
+  font-size: $text-11$;
+  font-weight: $weight-semibold$;
+  color: $fg-faint$;
+  min-height: $section-h$;
+}
+
+.rg-keys__row {
+  min-height: $row-h$;
+}
+
+.rg-keys__chord {
+  min-width: $set-rail-w$;
+  font-family: $font-mono$;
+  font-size: $text-12$;
+  color: $fg-strong$;
+}
+
+.rg-keys__what {
+  font-size: $text-13$;
+  color: $fg-muted$;
+}
+
+.rg-keybinds__heading {
+  font-size: $text-13$;
+  font-weight: $weight-semibold$;
+  color: $fg-strong$;
+}
+
+.rg-keybinds__branch {
+  font-family: $font-mono$;
+  font-size: $text-12$;
+  color: $fg-muted$;
+}
+
+.rg-keybinds__record {
+  min-height: $control-h$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $accent$;
+  background-color: $accent-wash$;
+  color: $fg-strong$;
+}
+
+.rg-keybinds__steps {
+  padding-top: $space-2$;
+}
+
+.rg-keybinds__step {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-subtle$;
+}
+
+/* ── First run, onboarding and empty states ──────────────────────────────── */
+
+.rg-first {
+  padding: $space-8$;
+}
+
+.rg-first__headline {
+  font-size: $text-17$;
+  font-weight: $weight-semibold$;
+  color: $fg-strong$;
+}
+
+.rg-first__blurb {
+  font-size: $text-13$;
+  color: $fg-muted$;
+  padding-top: $space-2$;
+}
+
+.rg-first__caption {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-first__agents {
+  padding-top: $space-4$;
+}
+
+.rg-first__name {
+  font-size: $text-13$;
+  color: $fg$;
+}
+
+.rg-first__note {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-first__nothing {
+  font-size: $text-13$;
+  color: $fg-subtle$;
+}
+
+.rg-first__pick {
+  min-height: $control-h$;
+}
+
+.rg-first__go {
+  min-height: $control-h$;
+  color: $accent-text$;
+}
+
+.rg-onboard__intro {
+  font-size: $text-13$;
+  color: $fg-muted$;
+}
+
+.rg-onboard__steps {
+  padding-top: $space-4$;
+}
+
+/* Every step carries the mark, and only its colour changes with the tier.
+ * A border that appears with the state would move the text beside it each
+ * time a step completed. */
+.rg-onboard__step {
+  min-height: $row-h$;
+  padding-left: $space-3$;
+  border-left: $rail-w$ solid transparent;
+}
+
+.rg-onboard__step.rg-onboard__step--done {
+  border-left-color: $hue-ready$;
+}
+
+.rg-onboard__step.rg-onboard__step--todo {
+  border-left-color: $border-strong$;
+}
+
+.rg-onboard__step.rg-onboard__step--info {
+  border-left-color: $accent$;
+}
+
+.rg-onboard__step-title {
+  font-size: $text-13$;
+  font-weight: $weight-medium$;
+  color: $fg-strong$;
+}
+
+.rg-onboard__step-body {
+  font-size: $text-12$;
+  color: $fg-muted$;
+}
+
+.rg-onboard__dots {
+  padding-top: $space-3$;
+}
+
+.rg-onboard__dot {
+  min-width: $dot-size$;
+  min-height: $dot-size$;
+  border-radius: $radius-full$;
+  background-color: $border-strong$;
+}
+
+.rg-onboard__dot.rg-onboard__dot--on {
+  background-color: $accent$;
+}
+
+.rg-onboard__foot {
+  min-height: $band-h$;
+}
+
+.rg-empty__title {
+  font-size: $text-15$;
+  font-weight: $weight-medium$;
+  color: $fg-muted$;
+}
+
+.rg-empty__hint {
+  font-size: $text-12$;
+  color: $fg-faint$;
+  padding-top: $space-2$;
+}
+
+/* ── What's new ──────────────────────────────────────────────────────────── */
+
+.rg-whatsnew__intro {
+  font-size: $text-13$;
+  color: $fg-muted$;
+}
+
+.rg-whatsnew__release {
+  padding-top: $space-4$;
+}
+
+.rg-whatsnew__version {
+  font-size: $text-15$;
+  font-weight: $weight-semibold$;
+  color: $fg-strong$;
+}
+
+.rg-whatsnew__date {
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+.rg-whatsnew__heading {
+  font-size: $text-11$;
+  font-weight: $weight-semibold$;
+  color: $fg-muted$;
+  min-height: $section-h$;
+}
+
+.rg-whatsnew__group {
+  padding-bottom: $space-2$;
+}
+
+.rg-whatsnew__entries {
+  padding-left: $space-3$;
+}
+
+.rg-whatsnew__entry {
+  font-size: $text-12$;
+  color: $fg$;
+  min-height: $line-head$;
+}
+
+.rg-whatsnew__number {
+  font-family: $font-mono$;
+  font-size: $text-11$;
+  color: $fg-faint$;
+}
+
+/* ── The update prompt ───────────────────────────────────────────────────── */
+
+.rg-update {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  background-color: $hue-snoozed-soft$;
+  color: $hue-snoozed$;
+  font-size: $text-11$;
+}
+
+.rg-update__open {
+  color: $accent-text$;
+  font-weight: $weight-medium$;
+}
+
+.rg-update__dismiss {
+  color: $fg-faint$;
+}
+
+/* ── The daemon banner ───────────────────────────────────────────────────── */
+
+.rg-conn {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  background-color: $hue-ready-soft$;
+  color: $hue-ready$;
+}
+
+.rg-conn__dot {
+  min-width: $dot-size$;
+  min-height: $dot-size$;
+  border-radius: $radius-full$;
+  background-color: $hue-ready$;
+}
+
+/* Present and empty until the socket answers. */
+.rg-conn__word {
+  min-height: $row-h$;
+  font-size: $text-11$;
+  font-weight: $weight-medium$;
+}
+
+.rg-conn__word.rg-conn__word--empty {
+  min-height: $row-h$;
+  color: transparent;
+}
+
+.rg-conn.rg-conn--ok {
+  background-color: $hue-done-soft$;
+  color: $hue-done$;
+}
+
+.rg-conn.rg-conn--connecting {
+  background-color: $hue-approval-soft$;
+  color: $hue-approval$;
+}
+
+.rg-conn.rg-conn--failed {
+  background-color: $hue-failed-soft$;
+  color: $hue-failed$;
+}
+
+.rg-conn.rg-conn--fixture {
+  background-color: $hue-input-soft$;
+  color: $hue-input$;
+}
+
+/* ── Transient notices ───────────────────────────────────────────────────── */
+
+.rg-toast {
+  padding: $space-3$;
+  border-radius: $radius-md$;
+  border: $hairline$ solid $border-strong$;
+  background-color: $surface-overlay$;
+  box-shadow: $shadow-1$;
+}
+
+.rg-toast__text {
+  font-size: $text-12$;
+  color: $fg$;
+}
+
+/* ── Badges and agent marks ──────────────────────────────────────────────── */
+
+.rg-badge__icon {
+  min-width: $icon-sm$;
+  min-height: $icon-sm$;
+  color: $fg-muted$;
+}
+
+.rg-badge.rg-badge--done {
+  color: $hue-done$;
+}
+
+.rg-badge.rg-badge--snoozed {
+  color: $hue-snoozed$;
+}
+
+.rg-badge.rg-badge--woke {
+  color: $hue-woke$;
+  background-color: $hue-woke-soft$;
+}
+
+.rg-mark {
+  min-width: $glyph-w$;
+  min-height: $glyph-w$;
+  border-radius: $radius-sm$;
+  font-size: $text-glyph$;
+  font-weight: $weight-semibold$;
+  color: $fg-muted$;
+  background-color: $fill-rest$;
+}
+
+.rg-diff__add {
+  color: $hue-add$;
+}
+
+.rg-diff__del {
+  color: $hue-del$;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+.rg-root scrollbar {
+  background-color: transparent;
+  border: none;
+}
+
+.rg-root scrollbar slider {
+  min-width: $space-1-5$;
+  min-height: $space-6$;
+  border-radius: $radius-full$;
+  background-color: $scroll-thumb$;
+  border: none;
+}
+
+.rg-root scrollbar slider:hover {
+  background-color: $scroll-thumb-hover$;
+}
+
+/* ── Selection and text entry, everywhere ────────────────────────────────── */
+
+.rg-root selection {
+  background-color: $accent$;
+  color: $surface-overlay$;
+}
+
+.rg-root entry {
+  caret-color: $accent$;
+}
+
+.rg-root tooltip {
+  background-color: $surface-overlay$;
+  border: $hairline$ solid $border-strong$;
+  border-radius: $radius-sm$;
+  color: $fg$;
+}
+
+/* ── Transient notices, by severity ──────────────────────────────────────── */
+
+.rg-toast.rg-toast--notice {
+  border-color: $border-strong$;
+  color: $fg$;
+}
+
+.rg-toast.rg-toast--error {
+  border-color: $hue-failed$;
+  background-color: $hue-failed-soft$;
+  color: $hue-failed$;
+}
+
+/* ── Menus, remaining parts ──────────────────────────────────────────────── */
+
+.rg-menu__sep {
+  min-height: $hairline$;
+  background-color: $border$;
+  margin-top: $space-1$;
+  margin-bottom: $space-1$;
+}
+
+/* ── The launcher's rows ─────────────────────────────────────────────────── */
+
+.rg-launch__row {
+  min-height: $row-h$;
+  padding-left: $space-2$;
+  padding-right: $space-2$;
+  border-radius: $radius-sm$;
+  color: $fg$;
+}
+
+.rg-launch__row:hover {
+  background-color: $row-hover$;
+}
+
+.rg-launch__row.rg-launch__row--on {
+  background-color: $row-selected$;
+  color: $fg-strong$;
+}
+
+/* ── What's new, the sheet itself ────────────────────────────────────────── */
+
+.rg-whatsnew {
+  padding: $space-5$;
+}
+
+/* ── Projects: the containers and their states ───────────────────────────── */
+
+.rg-project {
+  padding-bottom: $space-2$;
+}
+
+.rg-project--current .rg-project__name {
+  color: $accent-text$;
+}
+
+.rg-project--collapsed {
+  padding-bottom: $space-1$;
+}
+
+/* A header that is not a control. It still reads as the group's name, so it
+ * keeps the type and loses the hover the operator would otherwise aim at. */
+.rg-project__header--static {
+  background-color: transparent;
+}
+
+.rg-project__section {
+  padding-top: $space-1$;
+}
+
+.rg-project__section-head--static {
+  color: $fg-faint$;
+}
+
+/* The band a group of rows sits in, tinted by what the group is doing. The
+ * tint is the soft fill, never the solid hue: a band is the backdrop for rows
+ * that state their own status, and two statements of the same fact in two
+ * strengths is how a list stops being scannable. */
+.rg-project__section--active .rg-project__section-label {
+  color: $hue-working$;
+}
+
+.rg-project__section--snoozed .rg-project__section-label {
+  color: $hue-snoozed$;
+}
+
+.rg-project__section--settled .rg-project__section-label {
+  color: $hue-done$;
+}
+
+.rg-project__section--collapsed {
+  padding-top: 0;
+}
+
+/* ── Sessions: shape and state ───────────────────────────────────────────── */
+
+/* The two-line shape. Same box the base rule declares, stated here so the
+ * modifier is not a class with no rule behind it. */
+.rg-session--card {
+  min-height: $card-h$;
+}
+
+.rg-session__line--title {
+  min-height: $line-head$;
+}
+
+.rg-session__line--tail {
+  min-height: $line-head$;
+}
+
+/* Three row states, each one class deep so the selected and active rows,
+ * which are two deep, win wherever they overlap. */
+.rg-session--recede {
+  color: $fg-muted$;
+  font-weight: $weight-normal$;
+}
+
+.rg-session--inflight {
+  opacity: $recede-opacity$;
+}
+
+.rg-session--unread .rg-session__title {
+  color: $fg-strong$;
+  font-weight: $weight-semibold$;
+}
+
+.rg-session--woke .rg-session__title {
+  color: $hue-woke$;
+}
+
+/* The agent's own mark, hued by what its process is doing rather than by what
+ * the agent is waiting for. Those are different facts and the pill states the
+ * other one. */
+.rg-session__agent--starting {
+  color: $hue-approval$;
+}
+
+.rg-session__agent--running {
+  color: $hue-done$;
+}
+
+.rg-session__agent--exited {
+  color: $hue-ready$;
+}
+
+.rg-session__agent--exited-error {
+  color: $hue-failed$;
+}
+
+/* ── Rollup chips, by what they are counting ─────────────────────────────── */
+
+.rg-rollup__chip--woke {
+  background-color: $hue-woke-soft$;
+  color: $hue-woke$;
+}
+
+.rg-rollup__chip--snoozed {
+  background-color: $hue-snoozed-soft$;
+  color: $hue-snoozed$;
+}
+
+/* ── The sidebar at its narrowest, and its empty states ──────────────────── */
+
+/* Below this width the title box on a dense row collapses to a bare ellipsis,
+ * so the row drops everything but the title and the status. */
+.rg-sidebar--narrow .rg-session__place,
+.rg-sidebar--narrow .rg-session__worktree,
+.rg-sidebar--narrow .rg-session__time {
+  color: transparent;
+}
+
+.rg-sidebar__empty--no-matches {
+  color: $fg-faint$;
+}
+
+/* ── The new-session bar ─────────────────────────────────────────────────── */
+
+.rg-newbar {
+  min-height: $control-h$;
+  padding-left: $content-inset$;
+  padding-right: $content-inset$;
+}
+
+.rg-newbar--solo {
+  min-height: $band-h$;
+}

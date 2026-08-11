@@ -7,13 +7,14 @@
 //! an argument, which is where all the behaviour worth proving lives.
 
 use super::*;
+use crate::state::LauncherPrefs;
 
 const NOW: u64 = 1_700_000_000_000;
 const MINUTE: u64 = 60_000;
 
 fn run(store: &mut LaunchStore, line: &str, cwd: &str, at: u64) {
     let (command, args) = split_command(line).expect("a fixture line has a program");
-    remember(store, &command, &args, cwd, at);
+    remember(store, &command, &args, cwd, at, LauncherPrefs::default());
 }
 
 /// A profile written by a build without icons or recents must load whole. A

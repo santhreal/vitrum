@@ -32,7 +32,7 @@
 
 use vitrum_model::{
     Clock, Disposition, DispositionPolicy, Section, SessionView, SettleOverride, SidebarStatus,
-    Snooze, SnoozePresetId, snooze_presets, wake_countdown_label,
+    Snooze, SnoozeHours, SnoozePresetId, snooze_presets, wake_countdown_label,
 };
 use vitrum_proto::{
     AgentHint, Attention, HintState, ProjectId, SessionId, SessionInfo, SessionStatus,
@@ -719,7 +719,7 @@ fn every_disposition_has_a_reproducible_row() {
 #[test]
 fn the_shortest_park_a_hand_can_make_is_one_hour() {
     let clock = Clock::utc(NOW);
-    let presets = snooze_presets(clock);
+    let presets = snooze_presets(clock, SnoozeHours::default());
     let soonest = presets
         .iter()
         .min_by_key(|preset| preset.wake_at_ms)

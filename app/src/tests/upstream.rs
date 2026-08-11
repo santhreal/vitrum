@@ -13,8 +13,8 @@
 //! nonsense, or reporting clean while the fork sat on something else entirely.
 //!
 //! Every guard below runs over every fork rather than over one of them. The
-//! previous version of this file read `vendor/` by name. That was the whole
-//! set when it was written and stopped being it, and both of the forks it
+//! previous version of this file read the dioxus fork by name. That was the
+//! whole set when it was written and stopped being it, and both of the forks it
 //! stopped covering were carrying a defect of their own by the time anyone
 //! looked: `vendor-ghostty-vt-sys/` holds the only escape-sequence parser in
 //! the product and the pin that decides which CPUs a release runs on, and was
@@ -267,7 +267,7 @@ fn the_fork_readme_names_every_divergence() {
 /// failure surfaces only when someone finally tries to absorb a release. A fork
 /// the scheduled job does not name is a fork nothing asks about at all: that
 /// was true of `vendor-ghostty-vt-sys` while the weekly workflow ran the check
-/// for `vendor/` alone, and it is the fork whose upstream fix would let this
+/// for that one fork alone, and it is the fork whose upstream fix would let this
 /// repository drop the fork entirely.
 #[test]
 fn the_absorption_procedure_is_runnable() {

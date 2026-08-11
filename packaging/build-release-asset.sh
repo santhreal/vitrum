@@ -53,7 +53,7 @@ case "$target" in
       exit 2
     }
     # Two link flags the client cannot be built without, both a consequence of
-    # linking against the host's GTK and WebKit while targeting an older glibc:
+    # linking against the host's GTK while targeting an older glibc:
     #
     #   -L native=... : zig searches its own sysroot and the cargo output
     #   directories, and nothing else, so `-lgtk-3` and the rest are simply not

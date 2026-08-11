@@ -489,3 +489,128 @@ fn a_theme_change_reaches_the_shell_without_a_restart() {
         "an unrelated commit put a desktop round trip on the commit path"
     );
 }
+
+/// Every adjustable limit defaults to the number the product used before it
+/// was adjustable.
+///
+/// THE BUG this stops: promoting a hardcoded constant to a setting and picking
+/// a different default while doing it. That is a silent behaviour change for
+/// every existing profile, arriving in a release whose notes say a preference
+/// was added. The assertions are the literals the code carried, not the
+/// constants, so a default that moves has to move here too and a reviewer sees
+/// the number change.
+///
+/// Asserted through the accessors rather than the fields, because the
+/// accessors are what the sidebar, launcher, tab strip and snooze menu call.
+/// A field that kept its default while its accessor gained an off-by-one is
+/// the same defect from the operator's side.
+#[test]
+fn every_adjustable_limit_defaults_to_the_value_it_replaced() {
+    let s = Settings::default();
+    assert_eq!(s.inbox.preview_limit(), 8);
+    assert_eq!(s.inbox.settled_limit(), 10);
+    assert_eq!(s.launcher.recents_limit(), 12);
+    assert_eq!(s.launcher.history_max(), 60);
+    assert_eq!(s.tab_capacity(), 8);
+    assert_eq!(s.snooze.hours().morning, 9);
+    assert_eq!(s.snooze.hours().evening, 18);
+    assert_eq!(s.search.context_lines, 2);
+    assert_eq!(s.search.max_hits, 500);
+    assert_eq!(s.connection.reconnect_max_ms, 30_000);
+    assert_eq!(s.connection.reconnect_attempts, 25);
+    assert_eq!(
+        crate::update::check_interval(s.update_check_hours),
+        std::time::Duration::from_secs(4 * 60 * 60)
+    );
+}
+
+/// The limits a running window reads arrive on the bus, not on the next
+/// launch.
+///
+/// THE BUG this stops: a limit that is persisted and never derived into the
+/// snapshot the reconnect schedule, the search sheet and the update loop read.
+/// Those three do not hold a `Settings`; they call
+/// [`super::shell_settings`] on the spot, so a value missing from
+/// [`ShellSettings::derive`] is a control that writes to disk and changes
+/// nothing until a restart.
+///
+/// The subscriber is here as well as the getter because the window frame
+/// rebuilds on the callback: a value that only appears in the getter reaches
+/// the next reader and leaves whatever is already on screen stale.
+#[test]
+fn a_changed_limit_reaches_the_shell_before_the_next_launch() {
+    let _lock = exclusive();
+    let seen: Arc<Mutex<Vec<(u32, u32, u16, u32, u8)>>> = Arc::new(Mutex::new(Vec::new()));
+    let mine = Arc::clone(&seen);
+    let sub = subscribe_shell(move |s| {
+        mine.lock().push((
+            s.reconnect_max_ms,
+            s.reconnect_attempts,
+            s.search_context_lines,
+            s.search_max_hits,
+            s.update_check_hours,
+        ));
+    });
+
+    let mut settings = Settings::default();
+    settings.connection.reconnect_max_ms = 90_000;
+    settings.connection.reconnect_attempts = 7;
+    settings.search.context_lines = 5;
+    settings.search.max_hits = 1_200;
+    settings.update_check_hours = 24;
+    publish(&settings);
+
+    let want = (90_000, 7, 5, 1_200, 24);
+    let live = shell_settings();
+    assert_eq!(
+        (
+            live.reconnect_max_ms,
+            live.reconnect_attempts,
+            live.search_context_lines,
+            live.search_max_hits,
+            live.update_check_hours,
+        ),
+        want,
+        "the getter is still serving the previous document"
+    );
+    assert_eq!(
+        seen.lock().last().copied(),
+        Some(want),
+        "no subscriber was told, so anything already drawn stays stale"
+    );
+    drop(sub);
+}
+
+/// A hand-edited limit outside its range is repaired before the bus carries
+/// it.
+///
+/// THE BUG this stops: the load path clamps the document, and something later
+/// writes a raw value into the same field and publishes it. The bus is the
+/// last thing between a number and the code that acts on it, so it clamps
+/// again rather than trusting its caller. A reconnect ceiling of zero is a
+/// busy loop, and a hit cap of four billion is a sweep that never reports
+/// itself truncated.
+#[test]
+fn the_bus_repairs_a_limit_its_caller_did_not() {
+    let _lock = exclusive();
+    let mut settings = Settings::default();
+    settings.connection.reconnect_max_ms = 0;
+    settings.connection.reconnect_attempts = u32::MAX;
+    settings.search.context_lines = u16::MAX;
+    settings.search.max_hits = 0;
+    settings.update_check_hours = 0;
+    publish(&settings);
+
+    let live = shell_settings();
+    assert_eq!(live.reconnect_max_ms, crate::state::RECONNECT_MAX_MS_MIN);
+    assert_eq!(
+        live.reconnect_attempts,
+        crate::state::RECONNECT_ATTEMPTS_MAX
+    );
+    assert_eq!(live.search_context_lines, crate::state::CONTEXT_LINES_MAX);
+    assert_eq!(live.search_max_hits, crate::state::MAX_HITS_MIN);
+    assert_eq!(
+        live.update_check_hours,
+        crate::state::UPDATE_CHECK_HOURS_MIN
+    );
+}

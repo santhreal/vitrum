@@ -65,42 +65,17 @@ fn a_direct_load_still_reads_the_file() {
 ///
 /// Twenty windows drew twenty identical 128x128 rasters, each one on the main
 /// thread in the middle of building that window. The raster is cached rather
-/// than the `tao` `Icon` because the raster is plain bytes that can cross to
-/// the prewarm thread.
+/// than the toolkit's icon object because the raster is plain bytes that can
+/// cross to the prewarm thread.
 #[test]
 fn the_window_mark_is_rasterised_once_for_the_process() {
     for _ in 0..8 {
-        assert!(
-            chrome::window_icon().is_some(),
-            "the rasteriser handed back a buffer tao rejected"
-        );
+        chrome::warm_window_icon();
     }
     assert_eq!(
         chrome::mark_rasterisations(),
         1,
         "the window mark was drawn more than once"
-    );
-}
-
-/// The document head is one string, built once, whoever asks first.
-///
-/// It is built on the prewarm thread while the main thread brings up the
-/// toolkit. Both call the same one-shot cache, so the guarantee that matters
-/// is that a second caller gets the same bytes and pays nothing: a per-window
-/// rebuild would copy every stylesheet again for every window that opens.
-#[test]
-fn the_document_head_is_built_once_and_shared() {
-    let first = chrome::document_head();
-    let second = chrome::document_head();
-    assert!(
-        std::ptr::eq(first, second),
-        "the document head was rebuilt for a second caller"
-    );
-    assert!(
-        !first.contains("__vitrum_boot"),
-        "a boot splash is back in the document; the mark is the window's to \
-         draw, on a surface that exists hundreds of milliseconds before the \
-         shell's view has one"
     );
 }
 
@@ -162,26 +137,34 @@ fn a_window_is_not_created_before_its_stylesheets_are_built() {
 /// The pane is installed with the window, not when the shell mounts it.
 ///
 /// A pane that waits for its mount starts parsing output hundreds of
-/// milliseconds late and drops everything that arrived in between. Both the
-/// shell and the pane therefore hang off `window.created`, and neither is
-/// allowed to precede it.
+/// milliseconds late and drops everything that arrived in between. The pane
+/// therefore hangs off `window.created` directly. The shell hangs off
+/// `frame.realized`, which hangs off `window.created` in turn: the native
+/// widget tree has to exist before anything can be mounted into it, and that
+/// is one more link in the same chain rather than a second thing to wait for.
+/// Neither branch waits on the other.
 #[test]
 fn the_shell_and_the_pane_both_wait_on_the_window_and_not_on_each_other() {
-    for phase in ["shell.mounted", "pane.first-paint"] {
-        assert!(
-            boot::out_of_order(&["window.created", phase]).is_empty(),
-            "{phase} after the window was rejected"
-        );
+    assert!(
+        boot::out_of_order(&["window.created", "frame.realized", "shell.mounted"]).is_empty(),
+        "the shell's own chain was rejected by the guard that enforces it"
+    );
+    assert!(
+        boot::out_of_order(&["window.created", "pane.first-paint"]).is_empty(),
+        "the pane is required to wait for the shell to mount, which is the \
+         ordering this build exists to remove"
+    );
+    for phase in ["frame.realized", "pane.first-paint"] {
         assert_eq!(
             boot::out_of_order(&[phase]).len(),
             1,
             "{phase} was accepted before the window it is painted on existed"
         );
     }
-    assert!(
-        boot::out_of_order(&["window.created", "pane.first-paint"]).is_empty(),
-        "the pane is required to wait for the shell to mount, which is the \
-         ordering this build exists to remove"
+    assert_eq!(
+        boot::out_of_order(&["window.created", "shell.mounted"]).len(),
+        1,
+        "a shell mounted into a frame that was never realized was accepted"
     );
 }
 

@@ -16,10 +16,12 @@
 
 use super::*;
 use crate::state::{
-    DaemonState, Grouping, Persisted, SettingsTab, UiStateLoad, WindowState, encode_ui_state,
-    parse_ui_state,
+    DaemonState, Density, Grouping, Persisted, SettingsTab, UiStateLoad, WindowState,
+    encode_ui_state, parse_ui_state,
 };
-use crate::termpalette::{TermPalette, css_tokens};
+use crate::shell::style::Scheme;
+use crate::state::live::ShellSettings;
+use crate::termpalette::TermPalette;
 use vitrum_model::{Clock, Disposition, SessionView};
 use vitrum_proto::{Attention, ProjectId, SessionId, SessionInfo, SessionStatus};
 
@@ -74,7 +76,7 @@ fn info(id: u64, cwd: &str) -> SessionInfo {
 
 // -- Appearance ---------------------------------------------------------
 
-/// Theme changes the attribute the stylesheet selects on, and the choice
+/// Theme changes the ramp the sheet is generated from, and the choice
 /// survives a restart.
 #[test]
 fn theme() {
@@ -85,16 +87,15 @@ fn theme() {
     // System, which resolves through the desktop, so comparing against it
     // asserts what the machine running the test happens to be set to: on a
     // light desktop it reads "light" and the comparison is against itself.
-    assert_ne!(theme_attr(&light), theme_attr(&dark));
-    assert_eq!(theme_attr(&light), "light");
-    assert_eq!(theme_attr(&dark), "dark");
+    assert_eq!(Scheme::resolve(light.theme), Scheme::Light);
+    assert_eq!(Scheme::resolve(dark.theme), Scheme::Dark);
 
     let restored = after_restart(|s| s.theme = ThemePref::Light);
     assert_eq!(restored.theme, ThemePref::Light);
-    assert_eq!(theme_attr(&restored), "light");
+    assert_eq!(Scheme::resolve(restored.theme), Scheme::Light);
 }
 
-/// Density changes the row geometry the shell hands down, and survives.
+/// Density reaches the sheet generator, and survives.
 #[test]
 fn density() {
     let before = Settings::default();
@@ -102,16 +103,15 @@ fn density() {
         density: Density::Compact,
         ..before.clone()
     };
-    assert_eq!(root_style(&before), "");
-    assert!(root_style(&compact).contains("--rg-card-h:3.75rem;"));
+    assert_eq!(ShellSettings::derive(&before).density, Density::Comfortable);
+    assert_eq!(ShellSettings::derive(&compact).density, Density::Compact);
 
     let restored = after_restart(|s| s.density = Density::Compact);
     assert_eq!(restored.density, Density::Compact);
-    assert!(root_style(&restored).contains("--rg-card-h:3.75rem;"));
+    assert_eq!(ShellSettings::derive(&restored).density, Density::Compact);
 }
 
-/// Text scale changes the root font size the shell paints at, and
-/// survives.
+/// Text scale reaches the sheet generator, and survives.
 #[test]
 fn text_scale() {
     let before = Settings::default();
@@ -119,21 +119,21 @@ fn text_scale() {
         text_scale_pct: 150,
         ..before.clone()
     };
-    assert_eq!(ui_scale_px(before.text_scale_pct), "16px");
-    assert_eq!(ui_scale_px(big.text_scale_pct), "24px");
+    assert_eq!(ShellSettings::derive(&before).text_scale_pct, 100);
+    assert_eq!(ShellSettings::derive(&big).text_scale_pct, 150);
 
     let restored = after_restart(|s| s.set_text_scale(150));
     assert_eq!(restored.text_scale_pct, 150);
-    assert_eq!(ui_scale_px(restored.text_scale_pct), "24px");
+    assert_eq!(ShellSettings::derive(&restored).text_scale_pct, 150);
 }
 
-/// Reduced motion zeroes both duration tokens, and survives.
+/// Reduced motion reaches the sheet generator, and survives.
 #[test]
 fn reduce_motion() {
-    assert!(!root_style(&Settings::default()).contains("--rg-t-fast"));
+    assert!(!ShellSettings::derive(&Settings::default()).reduce_motion);
     let restored = after_restart(|s| s.reduce_motion = true);
     assert!(restored.reduce_motion);
-    assert!(root_style(&restored).contains("--rg-t-fast:0s;"));
+    assert!(ShellSettings::derive(&restored).reduce_motion);
 }
 
 // -- Sidebar ------------------------------------------------------------
@@ -252,13 +252,13 @@ fn the_settle_menu_can_express_the_shipped_default() {
 /// tokens the grid paints with.
 #[test]
 fn terminal_controls() {
-    let base = css_tokens(Settings::default().terminal.palette);
+    let base = Settings::default().terminal.palette.colours();
+    assert!(base.is_none(), "the shipped default no longer inherits");
 
     let palette = after_restart(|s| s.terminal.palette = TermPalette::Nord);
     assert_eq!(palette.terminal.palette, TermPalette::Nord);
-    let tokens = css_tokens(palette.terminal.palette);
-    assert_ne!(tokens, base);
-    assert!(tokens.contains("--rg-terminal-bg:#2e3440;"), "{tokens}");
+    let colours = palette.terminal.palette.colours().expect("Nord has colours");
+    assert_eq!(colours.background, "#2e3440");
 
     let font = after_restart(|s| {
         s.terminal.font_family = "\"Fira Code\", ui-monospace, monospace".to_string();

@@ -1,6 +1,6 @@
 use super::*;
 use vitrum_model::SessionView;
-use vitrum_proto::{Attention, SessionInfo, SessionStatus};
+use vitrum_proto::{Attention, ProjectId, SessionId, SessionInfo, SessionStatus};
 
 fn session(id: u64, cwd: &str, command: &str, branch: Option<&str>) -> SessionView {
     SessionView::new(SessionInfo {
@@ -801,28 +801,6 @@ fn only_an_unusual_state_earns_a_line() {
     );
 }
 
-/// No caption may explain daemon mechanics. These three sentences were on
-/// the old dialog permanently and each one described how the server names
-/// or groups a session rather than anything the operator could change.
-#[test]
-fn the_daemon_mechanics_captions_are_gone() {
-    let src = include_str!("../dialog.rs");
-    let markup = src
-        .split_once("#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
-    for gone in [
-        "Joins project",
-        "No launch history yet, so these are the agents found on PATH.",
-        "Left blank, the daemon names it after the command.",
-        "Starts a new project rooted here.",
-        "Ranked by what you launch most, and most recently.",
-    ] {
-        assert!(
-            !markup.contains(gone),
-            "the launcher still carries the caption {gone:?}"
-        );
-    }
-}
 
 /// A preset that cannot run must say so in its tooltip rather than
 /// advertising a command line that will fail at spawn.
@@ -887,407 +865,14 @@ fn a_malformed_code_is_not_a_row_number() {
     assert_eq!(digit_of("Digit"), None);
 }
 
-/// Does `css` carry a rule for exactly this class?
-///
-/// Boundary-checked, never a bare substring test, and that distinction is
-/// not pedantry: `css.contains(".rg-launch__branch")` is ALSO satisfied by
-/// a rule for `.rg-launch__branch2`. Found by mutation. Renaming the rule
-/// out from under live markup, which is the exact regression this guard
-/// exists to catch, left the naive check passing.
-fn styled(css: &str, class: &str) -> bool {
-    let needle = format!(".{class}");
-    css.match_indices(&needle).any(|(at, _)| {
-        css[at + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-    })
-}
-
-/// Every class this file emits must have a rule.
-///
-/// An unstyled class is not an error anywhere: the element renders with no
-/// padding, no colour and no box, and reads as a layout bug rather than a
-/// missing rule. The names are read out of the markup rather than a
-/// hand-kept list, because a list is exactly the thing that silently stops
-/// matching what is drawn.
-#[test]
-fn every_class_the_launcher_emits_is_styled() {
-    let src = include_str!("../dialog.rs");
-    let launcher = include_str!("../../../assets/parts/22-launcher.css");
-    let app = include_str!("../../app.css");
-    let markup = src
-        .split_once("#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
-
-    let mut seen: Vec<&str> = Vec::new();
-    for (at, _) in markup.match_indices("class: \"") {
-        let rest = &markup[at + 8..];
-        let Some(end) = rest.find('"') else { continue };
-        for token in rest[..end].split_whitespace() {
-            if token.starts_with("rg-") && !token.contains('{') {
-                seen.push(token);
-            }
-        }
-    }
-    seen.sort_unstable();
-    seen.dedup();
-    assert!(
-        seen.len() >= 12,
-        "only found {} classes; the extraction broke rather than the markup",
-        seen.len()
-    );
-    for class in &seen {
-        assert!(
-            styled(launcher, class) || styled(app, class),
-            "the launcher emits .{class} and no stylesheet has a rule for it"
-        );
-    }
-    // The ones the launcher owns must be in the launcher's own sheet, not
-    // borrowed from a rule somebody else may delete.
-    for class in [
-        "rg-launch__query",
-        "rg-launch__list",
-        "rg-launch__row",
-        "rg-launch__row--on",
-        "rg-launch__key",
-        "rg-launch__text",
-        "rg-launch__place",
-        "rg-launch__branch",
-        "rg-launch__note",
-        "rg-sheet--launcher",
-    ] {
-        assert!(
-            styled(launcher, class),
-            "22-launcher.css has no rule for .{class}"
-        );
-    }
-}
-
-/// The stylesheet with its comments removed.
-///
-/// Every guard below reads CODE. The prose in this file argues about
-/// transitions, animation and pixel counts, so a guard matching bare words
-/// against the raw text would fail on its own documentation.
-fn code_only(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
-    let mut rest = css;
-    while let Some(open) = rest.find("/*") {
-        out.push_str(&rest[..open]);
-        match rest[open + 2..].find("*/") {
-            Some(close) => rest = &rest[open + 2 + close + 2..],
-            None => return out,
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Every row element must be able to give way, or the longest realistic
-/// agent name, project and branch together push each other out of the row.
-///
-/// The requirement is zero overlap, not unlikely overlap. A flex
-/// child with `min-width: 0` and an ellipsis cannot overlap its neighbours
-/// at any width; one without them can and does.
-///
-/// Derived from the stylesheet, NOT from a list. The version before this
-/// walked the three parts that existed when it was written, so a fourth
-/// row part added later was invisible to it: found by mutation, a new
-/// `.rg-launch__tag` with no `min-width` passed. Declaring `flex-shrink`
-/// is the honest trigger, because that is a box saying it will be squeezed,
-/// and a box that will be squeezed has to be able to elide.
-#[test]
-fn every_row_part_can_yield_before_it_overlaps() {
-    let css = code_only(include_str!("../../../assets/parts/22-launcher.css"));
-    let mut checked: Vec<&str> = Vec::new();
-    for (at, _) in css.match_indices(".rg-launch__") {
-        let rest = &css[at + 1..];
-        let Some(head) = rest.find(" {") else {
-            continue;
-        };
-        let class = &rest[..head];
-        if class.contains([' ', ',', ':', '.']) {
-            continue;
-        }
-        let Some((_, body)) = rest.split_once(" {") else {
-            continue;
-        };
-        let Some((rule, _)) = body.split_once('}') else {
-            continue;
-        };
-        if !rule.contains("flex-shrink") {
-            continue;
-        }
-        checked.push(class);
-        assert!(
-            rule.contains("min-width: 0"),
-            ".{class} declares flex-shrink but cannot shrink below its text, \
-             so a long one pushes its neighbours out"
-        );
-        assert!(
-            rule.contains("text-overflow: ellipsis"),
-            ".{class} declares flex-shrink but clips mid-glyph instead of eliding"
-        );
-    }
-    checked.sort_unstable();
-    assert_eq!(
-        checked,
-        ["rg-launch__branch", "rg-launch__place", "rg-launch__text"],
-        "the row's shrinkable parts have changed; the three that carry a \
-         row's meaning must all still be here"
-    );
-}
-
-/// Nothing on this surface may animate. Idle CPU is the product's headline
-/// number and a launcher is opened dozens of times an hour.
-///
-/// Matched on the property PREFIX, not on the shorthand spelling. The
-/// version before this looked for `animation:` and `transition:`, so
-/// `transition-property` and `animation-name` walked straight past it:
-/// found by mutation, both longhands passed.
-///
-/// The list is still hand-kept, which is the shape that has cost this
-/// channel most of its escapes today, so it names every way CSS can move
-/// something rather than the two anybody remembers: `scroll-behavior:
-/// smooth` and `@starting-style` are motion the earlier list would have
-/// waved through.
-#[test]
-fn the_launcher_stylesheet_has_no_motion() {
-    let css = code_only(include_str!("../../../assets/parts/22-launcher.css"));
-    for banned in [
-        "@keyframes",
-        "@starting-style",
-        "animation",
-        "transition",
-        "infinite",
-        "will-change",
-        "scroll-behavior",
-        "view-transition",
-        "offset-path",
-    ] {
-        assert!(
-            !css.contains(banned),
-            "22-launcher.css declares {banned:?}, which the motion budget does not allow here"
-        );
-    }
-}
-
-/// Every length in the launcher's sheet lands on the 4px grid.
-///
-/// Both units, and that is the repair. The version before this read `rem`
-/// and nothing else, so `padding: 0 6px` and `height: 37px` were invisible
-/// to a guard whose whole subject is the grid: found by mutation, both
-/// passed. A rem value is authored at 1x, so any multiple of 0.25rem is on
-/// the grid; a px literal must be a multiple of 4, except the 1px hairline
-/// and the 2px focus outline, which 10-spacing.css documents as
-/// device-resolution artefacts rather than design measurements.
-///
-/// The UNIT SET is derived, not listed. Checking two units and ignoring
-/// the rest is the same hole one step out: `padding: 0.4em` is off the
-/// grid and neither branch above would ever see it. So every number
-/// followed by letters is collected and the set of units found must be
-/// exactly the two this design system authors in. A percentage carries no
-/// letters and is not a grid length, so `width: 100%` is untouched.
-#[test]
-fn every_length_in_the_launcher_is_on_the_four_pixel_grid() {
-    let css = code_only(include_str!("../../../assets/parts/22-launcher.css"));
-    let bytes = css.as_bytes();
-    let mut units: Vec<(String, usize)> = Vec::new();
-    for (n, line) in css.lines().enumerate() {
-        let at_line = line.as_ptr() as usize - css.as_ptr() as usize;
-        let mut i = 0usize;
-        while i < line.len() {
-            if !line.as_bytes()[i].is_ascii_alphabetic() {
-                i += 1;
-                continue;
-            }
-            let start = i;
-            while i < line.len() && line.as_bytes()[i].is_ascii_alphabetic() {
-                i += 1;
-            }
-            // Only a letter run glued to the end of a number is a unit.
-            if start == 0 || !bytes[at_line + start - 1].is_ascii_digit() {
-                continue;
-            }
-            let unit = &line[start..i];
-            let head = &line[..start];
-            let num_at = head
-                .rfind(|c: char| !(c.is_ascii_digit() || c == '.'))
-                .map_or(0, |k| k + 1);
-            let Ok(value) = head[num_at..].parse::<f64>() else {
-                continue;
-            };
-            units.push((unit.to_string(), n + 1));
-            let px = match unit {
-                "rem" => value * 16.0,
-                // The hairline and the focus ring are not measurements.
-                "px" if value == 1.0 || value == 2.0 => continue,
-                "px" => value,
-                other => panic!(
-                    "line {}: {value}{other} uses a unit this design system does not \
-                     author in; every length here is rem, or px for a hairline",
-                    n + 1
-                ),
-            };
-            assert!(
-                (px / 4.0 - (px / 4.0).round()).abs() < 1e-9,
-                "line {}: {value}{unit} is {px}px, which is off the 4px grid",
-                n + 1
-            );
-        }
-    }
-    let mut kinds: Vec<&str> = units.iter().map(|(u, _)| u.as_str()).collect();
-    kinds.sort_unstable();
-    kinds.dedup();
-    assert_eq!(
-        kinds,
-        ["px", "rem"],
-        "the units in this stylesheet have changed; found {kinds:?}"
-    );
-    assert!(
-        units.len() >= 8,
-        "only {} lengths scanned; the extraction broke",
-        units.len()
-    );
-}
-
-/// Every ranked row reaches the markup. The list may not silently render
-/// a subset of what it ranked.
-///
-/// This closes the one gap the pure tests above cannot see. `ranked` and
-/// `intents` are asserted on their exact contents, so a truncation THERE
-/// fails several tests; a `.take(1)` on the rsx loop that draws them fails
-/// none of them, and the operator gets one row under a launcher that
-/// ranked nine. That is the shape SearchUi found in the search results and
-/// TabIcons found in a mark that stayed inside its box: a semantic
-/// degradation every structural check passes.
-///
-/// Asserted on the source because rendering this component needs a
-/// VirtualDom, three signals and two worker threads, and a guard that
-/// heavy for ten lines of markup is its own failure surface. What it
-/// checks is exact: the loop walks the whole of `views`, and nothing
-/// between the ranking and the DOM narrows it.
-#[test]
-fn every_ranked_row_reaches_the_markup() {
-    let src = include_str!("../dialog.rs");
-    let markup = src
-        .split_once("#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
-    let (_, after) = markup
-        .split_once("class: \"rg-launch__list\"")
-        .expect("the launcher's list element");
-    let loop_head = after
-        .lines()
-        .find(|l| l.trim_start().starts_with("for "))
-        .expect("the list draws its rows in a loop");
-    assert_eq!(
-        loop_head.trim(),
-        "for (i, v) in views.iter().enumerate() {",
-        "the row loop no longer walks the whole of `views`; anything that \
-         narrows it here renders fewer rows than the launcher ranked, and \
-         every other test in this file still passes"
-    );
-    // `views` is a one-for-one map over the ranked rows: every pick the
-    // ranking produced becomes exactly one `RowView`, with nothing dropped
-    // between the two.
-    assert!(
-        markup.contains("(rows.len(), rows.iter().map(|p| view(p, &home_now)).collect())"),
-        "`views` is no longer a one-for-one map over the ranked rows"
-    );
-    for narrowing in ["rows.iter().take(", "rows.iter().filter(", "views.truncate("] {
-        assert!(
-            !markup.contains(narrowing),
-            "`{narrowing}` narrows the rows between the ranking and the markup, \
-             so the launcher would draw fewer rows than it ranked"
-        );
-    }
-}
-
-/// Nothing on the open path may block, and nothing may run per keystroke
-/// that runs per open.
-///
-/// Asserted on the source rather than on a stopwatch, because a timing
-/// assertion on a shared machine is a flake and this is a claim about
-/// STRUCTURE, not about a number. Four rules, each one a regression this
-/// surface has already shipped once:
-///
-/// 1. The `PATH` walk is five lookups across every directory in `PATH`,
-///    measured at 44.5us warm and unbounded on an automounted share. It
-///    may appear exactly once, handed to `off_thread`.
-/// 2. `read_dir` on a wedged network mount blocks in the kernel for as
-///    long as the mount wants. Same rule.
-/// 3. The profile is read once when the launcher opens, never per render.
-/// 4. `launch::validate` is one `stat` plus one `PATH` walk. The dialog
-///    this replaced called it in its render body, so every keystroke paid
-///    for both; it is now reached only through `attempt`, on a click.
-#[test]
-fn the_open_path_never_walks_path_or_the_filesystem() {
-    let src = include_str!("../dialog.rs");
-    let markup = src
-        .split_once("#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
-    // CODE only. The comments below this component explain what
-    // `off_thread` is for and name every function this test counts, so
-    // scanning them would make the prose fail the test.
-    let body: String = markup
-        .split_once("pub fn NewSessionDialog(")
-        .expect("the launcher component")
-        .1
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = body.as_str();
-
-    assert_eq!(
-        body.matches("detected_agents").count(),
-        1,
-        "the PATH walk appears more than once in the launcher"
-    );
-    assert!(
-        body.contains("off_thread(launch::detected_agents)"),
-        "the PATH walk is on the UI thread; it must go through off_thread"
-    );
-
-    assert_eq!(
-        body.matches("list_dirs").count(),
-        1,
-        "the directory walk appears more than once in the launcher"
-    );
-    assert!(
-        body.contains("off_thread(move || launch::list_dirs("),
-        "read_dir is on the UI thread; it must go through off_thread"
-    );
-
-    assert_eq!(
-        body.matches("load_launch_store").count(),
-        1,
-        "the profile is read more than once; it belongs in a use_signal \
-         initialiser and nowhere else"
-    );
-    assert!(
-        !body.contains("launch::validate("),
-        "validate is a stat plus a PATH walk and must not be reachable \
-         from a render; it belongs behind `attempt`, on a click"
-    );
-
-    // Ranking is built once per open; a keystroke re-runs the filter only.
-    assert_eq!(
-        body.matches("intents(").count(),
-        1,
-        "the ranking is rebuilt somewhere other than its own memo, so a \
-         keystroke pays for it"
-    );
-}
-
 /// The one-click control must actually launch.
 ///
 /// Every other test in this file proves the DECISION is right:
 /// `primary_of` returns Ready or a concrete Choose, `intents` ranks, the
 /// list draws what it ranked. Not one of them can see whether anything
-/// calls it. Rewire `on_launch_now` to `open_new_session` and the launcher
-/// silently becomes the two-click form this whole ticket replaced, with
-/// all 39 tests green and the button still reading `+ claude`.
+/// calls it. Rewire the sidebar's `Act::LaunchNow` to `open_new_session` and
+/// the launcher silently becomes the two-click form this whole ticket
+/// replaced, with all 39 tests green and the button still reading `+ claude`.
 ///
 /// That is the defect this ticket exists to fix, restored one layer up and
 /// invisible to the suite written to prevent it. ScrollbackTruth found the
@@ -1295,13 +880,17 @@ fn the_open_path_never_walks_path_or_the_filesystem() {
 /// NotifyActivation in a handler installed by a function nobody calls.
 /// Main asked for exactly this not to happen and said so in writing.
 ///
-/// Reads the shipped `main.rs`, which this module does not own, because a
+/// Reads the shipped shell, which this module does not own, because a
 /// guard belongs with the contract it defends rather than with the code it
 /// reads. Anchored on tokens, never on quote pairing, which is how source
 /// scans in this codebase go wrong.
 #[test]
 fn the_one_click_control_actually_launches() {
-    let main = crate::testkit::shell();
+    let main = format!(
+        "{}\n{}",
+        crate::testkit::shell(),
+        include_str!("../sidebar/widgets.rs"),
+    );
     let main = main.as_str();
     // Anchored on the test MODULE, not on the first `#[cfg(test)]`.
     // main.rs carries `#[cfg(test)] mod testkit;` at the top of the file,
@@ -1328,24 +917,33 @@ fn the_one_click_control_actually_launches() {
 
     // 1. The sidebar's primary half reaches the launch, not the layer.
     let (_, wired) = code
-        .split_once("on_launch_now:")
-        .expect("main.rs does not wire the sidebar's primary half at all");
+        .split_once("Act::LaunchNow =>")
+        .expect("the sidebar does not wire its primary half at all");
     let handler = wired.lines().next().unwrap_or_default();
     assert!(
-        handler.contains("launch_now("),
-        "on_launch_now is wired to {handler:?}, which never reaches \
+        handler.contains("ClientEvent::LaunchNow"),
+        "Act::LaunchNow is wired to {handler:?}, which never reaches \
          dialog::primary_launch, so the primary control opens a layer and \
          the product is back to two clicks"
     );
     assert!(
         !handler.contains("open_new_session"),
-        "on_launch_now opens the ranked list; that is the caret half's job"
+        "Act::LaunchNow opens the ranked list; that is the caret half's job"
     );
 
-    // 2. The handler decides with `primary_launch`.
+    // 2. The reducer turns that event into the launch decision.
+    let (_, routed) = code
+        .split_once("ClientEvent::LaunchNow { project } =>")
+        .expect("the reducer does not route the sidebar's launch intent");
+    assert!(
+        routed.lines().next().unwrap_or_default().contains("launch_now("),
+        "the LaunchNow arm does not call launch_now, so the intent is dropped"
+    );
+
+    // 3. The handler decides with `primary_launch`.
     let (_, rest) = code
         .split_once("fn launch_now(")
-        .expect("main.rs does not define launch_now");
+        .expect("the shell does not define launch_now");
     let body = rest.split_once("\nfn ").map_or(rest, |(b, _)| b);
     assert!(
         body.contains("dialog::primary_launch("),
@@ -1353,7 +951,7 @@ fn the_one_click_control_actually_launches() {
          starts is not the ranked intent this file computed"
     );
 
-    // 3. Ready SENDS and Choose OPENS. Swapping them is the silent
+    // 4. Ready SENDS and Choose OPENS. Swapping them is the silent
     //    two-click regression with the decision still correct.
     let (_, ready) = body
         .split_once("Primary::Ready(")

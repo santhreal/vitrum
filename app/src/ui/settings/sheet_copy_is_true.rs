@@ -21,6 +21,20 @@ fn code_only(src: &str) -> String {
         .join("\n")
 }
 
+/// The reducer's shipped source, by name.
+///
+/// [`crate::testkit::shell`] joins every root file, so a guard written
+/// against it stays green when a link moves to a file that has nothing to do
+/// with the claim. The paging guard below is about one arm in one reducer, so
+/// it reads that file and blames it by name.
+fn reducer_source() -> &'static str {
+    crate::testkit::SHELL_FILES
+        .iter()
+        .find(|(name, _)| *name == "sync.rs")
+        .map(|(_, src)| *src)
+        .expect("sync.rs is not in the shell scan any more")
+}
+
 /// The shipped half of this file: code only, every test module cut off.
 ///
 /// A guard that counts call sites has to stop where the assertions begin.
@@ -28,24 +42,46 @@ fn code_only(src: &str) -> String {
 /// module too and reports two delivery paths where there is one.
 ///
 /// The cut is asserted, not assumed. `split_once("#[cfg(test)]")` truncates
-/// at the FIRST such attribute, so one early `#[cfg(test)] mod testkit;`
+/// at the FIRST such attribute, and the file now carries `#[cfg(test)]` on
+/// individual items that only its tests reach, so the bare attribute
 /// collapses the scan to a few lines. Every guard below then fails on an
 /// `expect` and blames a rename that never happened, which is a wrong
 /// diagnosis rather than a false pass, and still an hour of somebody's day.
+/// The anchor is the test module declarations at the foot of the file.
 fn shipped() -> String {
     let src = code_only(include_str!("../settings.rs"));
-    let out = match src.split_once("#[cfg(test)]") {
+    let out = match src.split_once("\n#[cfg(test)]\nmod ") {
         Some((before, _)) => before.to_string(),
         None => src,
     };
     assert!(
-        out.contains("fn NotificationsPanel") && out.contains("static NOTIFIER"),
+        out.contains("pub fn notify_now") && out.contains("static NOTIFIER"),
         "the shipped scan collapsed to {} bytes: an early #[cfg(test)] item now \
          precedes the code these guards read, so cut on the test module's own \
          opener instead",
         out.len()
     );
     out
+}
+
+/// The Notifications note as the sheet declares it, whitespace and string
+/// continuations removed.
+///
+/// A guard on this note has to read the literal rather than a rendered label,
+/// because building the sheet needs a live GTK display and the claim is about
+/// what the source says.
+fn note_of(src: &str) -> Option<String> {
+    let at = src.find("if tab == SettingsTab::Notifications {")?;
+    let rest = &src[at..];
+    let open = rest.find("let note = wrapped(")? + "let note = wrapped(".len();
+    let note = &rest[open..];
+    let end = note.find("\n            );")?;
+    Some(
+        note[..end]
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '\\')
+            .collect(),
+    )
 }
 
 /// The Scrollback caption may claim only what `wire::backfill_max_bytes`
@@ -73,10 +109,9 @@ fn shipped() -> String {
 /// with the ceiling that actually stops them.
 #[test]
 fn the_scrollback_caption_matches_what_the_client_actually_fetches() {
-    let settings = code_only(include_str!("../settings.rs"));
+    let settings = code_only(include_str!("spec.rs"));
     let main_src = crate::testkit::shell();
     let main_src = main_src.as_str();
-
 
     let at = settings
         .find("label: \"Scrollback\"")
@@ -138,14 +173,18 @@ fn the_scrollback_caption_matches_what_the_client_actually_fetches() {
          needs its own request, so the caption's instruction to scroll to \
          the top fetches nothing"
     );
+    // Named file rather than the concatenated shell, because the reducer is
+    // where the arm lives and a guard that scans everything cannot say which
+    // file lost the link.
+    let reducer = reducer_source();
     assert!(
-        main_src.contains("ClientEvent::PageBack"),
-        "nothing in the shell handles the pane's arrival at the top, so the \
+        reducer.contains("ClientEvent::PageBack"),
+        "nothing in the reducer handles the pane's arrival at the top, so the \
          caption's instruction to scroll up there fetches nothing"
     );
     assert!(
-        main_src.contains("page_back(bridge, st, session)"),
-        "the shell hears the pane reach the top and does not ask for a page"
+        reducer.contains("page_back(cx, session)"),
+        "the reducer hears the pane reach the top and does not ask for a page"
     );
     assert!(
         caption.contains("8 MiB"),
@@ -248,16 +287,7 @@ fn every_advertised_notification_action_has_somewhere_to_go() {
 /// note would be understating what a click does.
 #[test]
 fn the_notification_note_matches_what_a_click_actually_does() {
-    let settings = shipped();
-    let main_src = crate::testkit::shell();
-    let main_src = main_src.as_str();
-
-    let at = settings
-        .find("fn NotificationsPanel")
-        .expect("the Notifications panel was renamed");
-    let rest = &settings[at..];
-    let end = rest.find("#[component]").unwrap_or(rest.len());
-    let panel = &rest[..end];
+    let sheet = include_str!("sheet.rs");
 
     // The note's exact content, whitespace collapsed so the literal may be
     // reflowed and may not be reworded. A phrase blacklist is what let this
@@ -265,22 +295,11 @@ fn the_notification_note_matches_what_a_click_actually_does() {
     // version used different words. Hunted for and confirmed: a note that
     // keeps the true sentence and adds "brings the session to the front of
     // the window you are already in" passed the blacklist.
-    let at = panel
-        .find("class: \"rg-sheet__note\"")
-        .expect("the Notifications note was restructured");
-    let note = &panel[at..];
-    let end = note
-        .find("\n        }")
-        .expect("the note div is no longer closed at its own indentation");
-    let squashed: String = note[..end]
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '\\')
-        .collect();
+    let squashed = note_of(sheet).expect("the Notifications note was restructured");
     let want: String = concat!(
-        "class: \"rg-sheet__note\",",
         "\"Clicking a notification opens the session it is about in a new window, ",
         "through the same vitrum://session/<id> handoff a link from a browser takes. ",
-        "The window you are in is left where it is.\""
+        "The window you are in is left where it is.\","
     )
     .chars()
     .filter(|c| !c.is_whitespace())
@@ -288,18 +307,19 @@ fn the_notification_note_matches_what_a_click_actually_does() {
     assert_eq!(
         squashed, want,
         "the Notifications note says something other than what a click does: \
-         a click posts Activation::Open into the queue and the consumer calls \
-         open_window, so it opens a session in a NEW window and leaves the \
+         a click posts Activation::Open into the queue and the consumer opens \
+         a window, so it opens a session in a NEW window and leaves the \
          current one alone. Change the code first, then this string, then this \
          expectation, in that order"
     );
 
-    let at = main_src
+    let runner = include_str!("../../shell/run.rs");
+    let at = runner
         .find("ACTIVATIONS.next()")
         .expect("nothing consumes the activation queue any more");
-    let consumer = &main_src[at..(at + 200).min(main_src.len())];
+    let consumer = &runner[at..(at + 200).min(runner.len())];
     assert!(
-        consumer.contains("open_window("),
+        consumer.contains("open(opts,"),
         "an activation no longer opens a window; the Notifications note has \
          to say what a click does now"
     );
@@ -335,24 +355,8 @@ fn each_guard_fails_on_the_regression_it_names() {
         body[..end].contains("set_activation_handler(Arc::new(crate::activate_session))")
     }
 
-    /// The note guard's own logic, likewise.
-    fn note_of(src: &str) -> Option<String> {
-        let at = src.find("fn NotificationsPanel")?;
-        let rest = &src[at..];
-        let end = rest.find("#[component]").unwrap_or(rest.len());
-        let panel = &rest[..end];
-        let at = panel.find("class: \"rg-sheet__note\"")?;
-        let note = &panel[at..];
-        let end = note.find("\n        }")?;
-        Some(
-            note[..end]
-                .chars()
-                .filter(|c| !c.is_whitespace() && *c != '\\')
-                .collect(),
-        )
-    }
-
-    let real_note = note_of(&settings).expect("the shipped note");
+    let sheet = include_str!("sheet.rs");
+    let real_note = note_of(sheet).expect("the shipped note");
     assert!(
         installs_in_the_initialiser(&settings),
         "the real file must pass"
@@ -404,10 +408,10 @@ fn each_guard_fails_on_the_regression_it_names() {
     // ESCAPE, now closed: the note KEEPS the true sentence and adds a false
     // one in different words. A phrase blacklist passed this, which is
     // exactly how the scrollback caption in this file shipped wrong twice.
-    let broken = settings.replace(
-        "The window you are \\\n             in is left where it is.",
-        "It also brings the session to the front of the window you are \\\n             \
-         already in.",
+    let broken = sheet.replace(
+        "you are in is left where it is.",
+        "you are in is left where it is. It also brings the session to the front of the window \
+         you are already in.",
     );
     let mutant_note = note_of(&broken).expect("the doctored note");
     assert_ne!(

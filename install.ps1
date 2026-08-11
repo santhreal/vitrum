@@ -6,6 +6,7 @@
 #
 #   .\install.ps1                     install the latest release
 #   .\install.ps1 -Version 0.1.0      install a specific version
+#   .\install.ps1 -Channel nightly    install the current nightly build
 #   .\install.ps1 -InstallDir C:\bin  install somewhere else
 #   .\install.ps1 -NoIntegrate        binaries only: no PATH, shortcut or `vu`
 #   .\install.ps1 -NoDeps             do not install the WebView2 runtime
@@ -27,6 +28,7 @@
 #
 # Env overrides:
 #   $env:VITRUM_VERSION       same as -Version
+#   $env:VITRUM_CHANNEL       same as -Channel
 #   $env:VITRUM_INSTALL_DIR   same as -InstallDir
 #   $env:VITRUM_BASE_URL      same as -BaseUrl
 #   $env:VITRUM_NO_INTEGRATE  same as -NoIntegrate
@@ -36,6 +38,8 @@
 [CmdletBinding()]
 param(
     [string]$Version = $env:VITRUM_VERSION,
+    [ValidateSet('stable', 'nightly')]
+    [string]$Channel = $(if ($env:VITRUM_CHANNEL) { $env:VITRUM_CHANNEL } else { 'stable' }),
     [string]$InstallDir = $(if ($env:VITRUM_INSTALL_DIR) { $env:VITRUM_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'vitrum\bin' }),
     [string]$BaseUrl = $env:VITRUM_BASE_URL,
     [switch]$NoIntegrate = [bool]$env:VITRUM_NO_INTEGRATE,
@@ -51,6 +55,10 @@ $Manifest = Join-Path $DataRoot 'install-manifest'
 $BlockBegin = '# >>> vitrum >>>'
 $BlockEnd = '# <<< vitrum <<<'
 $Written = New-Object System.Collections.Generic.List[string]
+# The one tag the nightly channel ever resolves. It moves to the commit each
+# nightly was built from, holds one build at a time, and is marked prerelease
+# so the latest-release lookup walks past it.
+$NightlyTag = 'nightly'
 
 # ============================================================
 # output
@@ -545,10 +553,32 @@ function Invoke-GitHubApi {
 
 $BaseUrl = $BaseUrl.TrimEnd('/')
 
+# A nightly is whatever the moving `nightly` tag holds right now. Naming a
+# version or a mirror alongside it asks for two different builds at once, and
+# the installer would have to pick one silently.
+if ($Channel -eq 'nightly') {
+    if ($Version) {
+        Fail "-Channel nightly and version $Version name two different builds" @(
+            'A nightly has no version to ask for: it is whatever the nightly tag',
+            'holds now. Install the nightly with ".\install.ps1 -Channel nightly",',
+            "or that exact version with `".\install.ps1 -Version $Version`"."
+        )
+    }
+    if ($BaseUrl) {
+        Fail '-Channel nightly and -BaseUrl name two different builds' @(
+            'A mirror holds the archives that were copied into it, so install from',
+            "it by version: `".\install.ps1 -Version X.Y.Z -BaseUrl $BaseUrl`"."
+        )
+    }
+}
+
 # The tag carries a leading `v`; the version inside the asset name does not.
 # Accepting either spelling is what keeps `-Version v0.1.0` and
 # `-Version 0.1.0` from building two different URLs.
-if ($Version) {
+if ($Channel -eq 'nightly') {
+    # Resolved from the release's own checksum file, below.
+    $Version = $null
+} elseif ($Version) {
     $Version = $Version.TrimStart('v')
 } elseif ($BaseUrl) {
     Fail '-BaseUrl needs an explicit version' @(
@@ -590,18 +620,14 @@ if ($Version) {
     }
 }
 
-$Archive = "vitrum-$Version-$Target.tar.gz"
-$Base = if ($BaseUrl) { $BaseUrl } else { "https://github.com/$Repo/releases/download/v$Version" }
-
-Say ''
-Say "  version      v$Version"
-Say "  target       $Target"
-Say "  archive      $Archive"
-Say "  install to   $InstallDir"
-Say '  binaries     vitrum.exe, vitrum-server.exe'
-if ($Previous) { Say "  replacing    $Previous" }
-if ($script:Proxy) { Say "  proxy        $script:Proxy" }
-Say ''
+$Base = $null
+$Archive = $null
+if ($Channel -eq 'nightly') {
+    $Base = "https://github.com/$Repo/releases/download/$NightlyTag"
+} else {
+    $Archive = "vitrum-$Version-$Target.tar.gz"
+    $Base = if ($BaseUrl) { $BaseUrl } else { "https://github.com/$Repo/releases/download/v$Version" }
+}
 
 # ============================================================
 # download and verify
@@ -647,19 +673,101 @@ function Archive-Shape {
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("vitrum-install-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
+$sumsPath = Join-Path $work 'SHA256SUMS'
 
+# The release's checksum file, refused unless it is one. Both channels need
+# it, and the nightly channel needs it before it knows what to download.
+function Get-Sums {
+    Say 'Downloading SHA256SUMS.'
+    try {
+        Get-Asset -Uri "$Base/SHA256SUMS" -OutFile $sumsPath
+    } catch {
+        FailNet "could not download $Base/SHA256SUMS" @(
+            'Every vitrum release publishes it, so a release without one is',
+            'incomplete and must not be installed. Report it at',
+            "https://github.com/$Repo/issues"
+        )
+    }
+    $lines = @(Get-Content -Path $sumsPath)
+    if ($lines.Count -eq 0 -or $lines[0] -notmatch '^[0-9a-fA-F]{64}[ *]') {
+        FailNet 'what came back for SHA256SUMS is not a checksum file' @(
+            'Its first line is not a digest and a filename, so something answered on the',
+            "release's behalf: a proxy, a captive portal, or a sign-in page.",
+            'Nothing was installed.'
+        )
+    }
+    return $lines
+}
+
+# The nightly tag names no version, so the version is read out of the release:
+# its SHA256SUMS carries one line per platform, and the line for this target
+# names the archive and with it the build. Reading it from the checksum file
+# means the name that is downloaded and the name that is verified come from
+# one source.
+function Resolve-Nightly {
+    $lines = Get-Sums
+    foreach ($line in $lines) {
+        if ($line -match "^[0-9a-fA-F]{64}\s+\*?(vitrum-.+-$([regex]::Escape($Target))\.tar\.gz)\s*$") {
+            $script:Archive = $matches[1]
+            $script:Version = $script:Archive.Substring(7, $script:Archive.Length - 7 - ($Target.Length + 8))
+            return $lines
+        }
+    }
+    Fail "the nightly release has no archive for $Target" @(
+        'Its SHA256SUMS lists: ' + (($lines | ForEach-Object { ($_ -split '\s+')[-1] }) -join ' '),
+        "Report it at https://github.com/$Repo/issues, or install a stable",
+        'release instead: .\install.ps1'
+    )
+}
+
+$sums = $null
 try {
+    if ($Channel -eq 'nightly') {
+        Say "Resolving the current nightly build of $Repo."
+        $sums = Resolve-Nightly
+    }
+
+    Say ''
+    Say "  channel      $Channel"
+    Say "  version      v$Version"
+    Say "  target       $Target"
+    Say "  archive      $Archive"
+    Say "  install to   $InstallDir"
+    Say '  binaries     vitrum.exe, vitrum-server.exe'
+    if ($Previous) { Say "  replacing    $Previous" }
+    if ($script:Proxy) { Say "  proxy        $script:Proxy" }
+    Say ''
+
     $archivePath = Join-Path $work $Archive
-    $sumsPath = Join-Path $work 'SHA256SUMS'
 
     Say "Downloading $Archive."
     try {
         Get-Asset -Uri "$Base/$Archive" -OutFile $archivePath
     } catch {
-        FailNet "could not download $Base/$Archive" @(
-            "Check that v$Version is published and carries an asset for ${Target}:",
-            "  https://github.com/$Repo/releases/tag/v$Version"
-        )
+        # One re-resolve, on the nightly channel only, because that is the one
+        # channel whose release is replaced while people are installing from
+        # it. Every build has its own archive name, so a nightly published
+        # between the checksum file and the archive takes the name that was
+        # just resolved with it.
+        if ($Channel -eq 'nightly') {
+            Say 'That archive is gone; a new nightly landed while this was running.'
+            $sums = Resolve-Nightly
+            $archivePath = Join-Path $work $Archive
+            Say "Downloading $Archive."
+            try {
+                Get-Asset -Uri "$Base/$Archive" -OutFile $archivePath
+            } catch {
+                FailNet "could not download $Base/$Archive" @(
+                    "Check that the release is published and carries an asset for ${Target}:",
+                    "  https://github.com/$Repo/releases"
+                )
+            }
+        } else {
+            FailNet "could not download $Base/$Archive" @(
+                "Check that v$Version is published and carries an asset for ${Target}:",
+                "  https://github.com/$Repo/releases/tag/v$Version"
+            )
+        }
     }
 
     $shape = Archive-Shape $archivePath
@@ -672,26 +780,10 @@ try {
         )
     }
 
-    Say 'Downloading SHA256SUMS.'
-    try {
-        Get-Asset -Uri "$Base/SHA256SUMS" -OutFile $sumsPath
-    } catch {
-        FailNet "could not download $Base/SHA256SUMS" @(
-            'Every vitrum release publishes it, so a release without one is',
-            'incomplete and must not be installed. Report it at',
-            "https://github.com/$Repo/issues"
-        )
-    }
-
-    $sums = @(Get-Content -Path $sumsPath)
-    if ($sums.Count -eq 0 -or $sums[0] -notmatch '^[0-9a-fA-F]{64}[ *]') {
-        FailNet 'what came back for SHA256SUMS is not a checksum file' @(
-            'Its first line is not a digest and a filename, so something answered on the',
-            "release's behalf: a proxy, a captive portal, or a sign-in page.",
-            'Nothing was installed.'
-        )
-    }
-
+    # Already in hand on the nightly channel, which had to read it to learn
+    # what to download. Fetching it twice would also let the two halves come
+    # from different builds of a tag that moves.
+    if (-not $sums) { $sums = Get-Sums }
     $expected = $null
     foreach ($line in $sums) {
         if ($line -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($Archive))\s*$") {

@@ -44,7 +44,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// without also being placed. A new phase added with the wrong prerequisite,
 /// or none, turns the suite red rather than quietly widening what a start is
 /// allowed to do.
-pub(crate) const PHASES: [(&str, Option<&str>); 10] = [
+pub(crate) const PHASES: [(&str, Option<&str>); 11] = [
     // The first line of `main`, before the logging subscriber is built: the
     // subscriber parses a filter and constructs a writer, and on a cold start
     // that is not free.
@@ -57,8 +57,13 @@ pub(crate) const PHASES: [(&str, Option<&str>); 10] = [
     ("styles.built", Some("instance.claimed")),
     // The OS window exists and the pane is installed on it.
     ("window.created", Some("styles.built")),
-    // The shell's root component ran for the first time.
-    ("shell.mounted", Some("window.created")),
+    // The window's widget tree is realized: the toplevel, the paned, the
+    // sidebar, the titlebar, the bar, and the container the pane presents in.
+    // This is what replaced a document being mounted, and it is the mark the
+    // startup claim is measured against.
+    ("frame.realized", Some("window.created")),
+    // The shell's panels are mounted and have seen the state once.
+    ("shell.mounted", Some("frame.realized")),
     // The profile has been folded into this window's state.
     ("settings.restored", Some("shell.mounted")),
     // The daemon has been asked for a connection.

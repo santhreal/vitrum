@@ -5,6 +5,7 @@
 //! a way nobody writes them.
 
 use super::*;
+use vitrum_proto::ProjectId;
 
 /// Home is written `~`, never `home/someone`.
 ///

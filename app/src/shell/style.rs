@@ -456,6 +456,9 @@ const LENGTHS: &[(&str, f64)] = &[
     ("group-gap", 8.0 * U),
     ("band-gap", 4.0 * U),
     ("glyph-w", 5.0 * U),
+    // The mark's box plus the title's own margin: the column every line of a
+    // card starts in, so line two is under the title and not under the glyph.
+    ("title-gutter", 6.0 * U),
     ("icon-sm", 4.0 * U),
     ("chevron-w", 3.0 * U),
     ("close-w", 6.0 * U),

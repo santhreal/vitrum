@@ -477,7 +477,7 @@
  * two values printed as one word.
  *
  * The gap is on the follower rather than split across both, so the line still
- * starts flush with the mark above it and the last element still ends flush
+ * starts flush with the title above it and the last element still ends flush
  * with the row's right inset. It does not stand down when the fact before it
  * is empty: those elements hold their box precisely so the row does not move
  * when git or the daemon answers, and a gap that appeared with the ink would
@@ -2236,8 +2236,16 @@
   min-height: $line-head$;
 }
 
+/* Under the title, not under the mark.
+ *
+ * The glyph is a gutter and the title is the text column; a second line that
+ * starts at the glyph hangs four characters to the left of the sentence it
+ * belongs to, and down a list of eight that reads as two ragged columns
+ * rather than one. `title-gutter` is the mark's box plus the title's margin,
+ * so the two lines share a left edge whatever the glyph is. */
 .rg-session__line--tail {
   min-height: $line-head$;
+  padding-left: $title-gutter$;
 }
 
 /* Three row states, each one class deep so the selected and active rows,

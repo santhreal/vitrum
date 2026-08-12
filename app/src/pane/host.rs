@@ -529,11 +529,22 @@ impl PaneHost {
         };
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Opened here and closed by the thread, so the wait for a core is
+        // named rather than counted against the build.
+        let start = crate::boot::span("pane.spawn");
         if let Err(e) = std::thread::Builder::new()
             .name("vitrum-pane-gpu".to_owned())
             .spawn(move || {
-                let _span = crate::boot::span("pane.build");
-                let _ = tx.send(PaneSurface::build(&target));
+                drop(start);
+                let built = {
+                    let _span = crate::boot::span("pane.build");
+                    PaneSurface::build(&target)
+                };
+                // The span crosses with the surface and is dropped by the
+                // receiver, so the wait for the main loop to notice the send
+                // is attributed instead of landing in the unexplained
+                // remainder before first paint.
+                let _ = tx.send((built, crate::boot::span("pane.handoff")));
             })
         {
             // A machine that cannot spawn a thread is a machine in trouble,
@@ -544,9 +555,10 @@ impl PaneHost {
         let this = self.clone();
         let area = area.clone();
         glib::MainContext::default().spawn_local(async move {
-            let Some(built) = rx.recv().await else {
+            let Some((built, handoff)) = rx.recv().await else {
                 return;
             };
+            drop(handoff);
             match built {
                 Ok(surface) => this.adopt(surface),
                 Err(e) => this.refuse(&area, e),

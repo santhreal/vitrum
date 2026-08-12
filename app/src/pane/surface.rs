@@ -238,6 +238,23 @@ impl PaneSurface {
         // every expose would race the swapchain and flicker.
         area.set_app_paintable(true);
 
+        // And GTK must not put its own buffer on that window either. A
+        // double-buffered widget has GDK begin a paint frame on the widget's
+        // window before the draw handler runs and blit that buffer back when
+        // it returns. The handler here draws nothing once a swapchain is
+        // attached, so what gets blitted is a buffer the renderer never wrote,
+        // over the image the GPU presented: one frame of the pane replaced by
+        // toolkit scratch, on every expose the shell causes. That is the
+        // flicker. GTK 3 keeps the switch for exactly this case, a widget that
+        // renders its window itself.
+        //
+        // SAFETY: the pointer comes from a live gtk-rs widget the caller owns
+        // for the duration of the call.
+        let widget: *mut gtk::ffi::GtkWidget = area.upcast_ref::<gtk::Widget>().to_glib_none().0;
+        unsafe {
+            gtk::ffi::gtk_widget_set_double_buffered(widget, glib::ffi::GFALSE);
+        }
+
         let gdk_window = area
             .window()
             .ok_or_else(|| anyhow!("pane widget has no GdkWindow; realize it before attaching"))?;

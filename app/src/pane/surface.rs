@@ -16,10 +16,13 @@
 //! remedy rather than leaving a blank widget behind.
 
 use std::ffi::c_void;
+use std::sync::Once;
+use std::sync::mpsc::Receiver;
 
 use anyhow::{Context, Result, anyhow};
 use glib::translate::ToGlibPtr;
 use gtk::prelude::*;
+use parking_lot::Mutex;
 use vitrum_grid::font::FontConfig;
 use vitrum_grid::{CellGrid, FontStack, GridRenderer, RendererConfig};
 
@@ -190,6 +193,117 @@ pub(crate) struct Still {
     pub(crate) pixels: Vec<u8>,
 }
 
+/// A GPU handshake carried out before any pane asked for one.
+///
+/// Instance, adapter and device, in that order, are the three slowest things
+/// on the path between the operator opening the program and the first glyph:
+/// measured on the capture rig they are 109 ms, 4 ms and 71 ms, and every one
+/// of them was spent after the window existed, on the thread that also has to
+/// paint it. None of them needs a window, a surface or a size.
+///
+/// So they are done on a worker thread the moment the program knows it is
+/// going to open a window, and the pane collects the result.
+///
+/// # It is collected, not raced
+///
+/// The slot holds the channel rather than the answer, and
+/// [`PaneSurface::attach`] blocks on it. Letting a pane that arrives early
+/// build its own instead was measured and is worse: on a two-core machine it
+/// puts two Vulkan instances and two device creations on the box at once, and
+/// the toolkit's own startup — which is on the critical path in front of the
+/// pane — slows by more than the pane saves. Waiting costs at most what the
+/// cold path cost, because it is the same work, once.
+///
+/// # Why this one may leave the toolkit's thread when the pane may not
+///
+/// The instance is created with no display handle and the adapter with no
+/// compatible surface, so nothing here calls into Xlib and there is no second
+/// thread on GTK's display connection. The handle is only consulted when a
+/// surface is created from a bare window handle, and the pane passes the
+/// display explicitly instead.
+///
+/// That is also why the prewarm asks for Vulkan alone. On GLES the display
+/// handle is not optional — presentation needs it — so a GLES machine gets no
+/// prewarm and the cold path it always had.
+static WARM: Mutex<Option<Receiver<Option<Warm>>>> = Mutex::new(None);
+
+/// The objects a pane would otherwise build for itself.
+struct Warm {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+/// Limits the pane asks for, which the prewarm has to ask for identically or
+/// its device is not the device the pane would have made.
+fn pane_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
+}
+
+/// The device descriptor, in one place for the same reason.
+fn pane_device() -> wgpu::DeviceDescriptor<'static> {
+    wgpu::DeviceDescriptor {
+        label: Some("vitrum.pane.device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }
+}
+
+/// The handshake itself, off the toolkit's thread.
+///
+/// `None` for anything that did not work out, including a machine whose best
+/// adapter is not Vulkan. A miss is not a failure: the caller does what it
+/// did before this existed.
+fn handshake() -> Option<Warm> {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle().with_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        force_fallback_adapter: false,
+        compatible_surface: None,
+    }))
+    .ok()?;
+    if adapter.get_info().backend != wgpu::Backend::Vulkan {
+        return None;
+    }
+    let mut want = pane_device();
+    want.required_limits = pane_limits(&adapter);
+    let (device, queue) = pollster::block_on(adapter.request_device(&want)).ok()?;
+    Some(Warm {
+        instance,
+        adapter,
+        device,
+        queue,
+    })
+}
+
+/// Start the handshake on a worker thread.
+///
+/// Idempotent through [`Once`]: a second speculative device answers a
+/// question the first one already answered.
+pub(crate) fn prewarm_gpu() {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("vitrum-gpu".into())
+            .spawn(move || {
+                let _ = tx.send(handshake());
+            })
+            .is_ok();
+        // The receiver is published only if there is a thread to fill it.
+        // Publishing it either way would have the pane wait on a channel
+        // whose sender was never created.
+        if spawned {
+            *WARM.lock() = Some(rx);
+        }
+    });
+}
+
 /// A swapchain on a widget's own X window.
 pub(crate) struct PaneSurface {
     device: wgpu::Device,
@@ -290,14 +404,36 @@ impl PaneSurface {
             ));
         }
 
-        let instance = {
-            let _span = crate::boot::span("wgpu.instance");
-            wgpu::Instance::new(
-                wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(XDisplay {
-                    ptr: xdisplay,
-                    screen: 0,
-                })),
-            )
+        // A surface has to come from the instance that owns the adapter it
+        // will be presented on, so the prewarm is taken or refused as one
+        // piece: instance, adapter and device together, or all three built
+        // here.
+        //
+        // The wait is the point. The worker is already doing this work and
+        // doing it twice is slower than doing it once late.
+        let warm = {
+            let waiting = WARM.lock().take();
+            match waiting {
+                Some(rx) => {
+                    let _span = crate::boot::span("wgpu.collect");
+                    rx.recv().ok().flatten()
+                }
+                None => None,
+            }
+        };
+        let instance = match &warm {
+            Some(warm) => warm.instance.clone(),
+            None => {
+                let _span = crate::boot::span("wgpu.instance");
+                wgpu::Instance::new(
+                    wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
+                        XDisplay {
+                            ptr: xdisplay,
+                            screen: 0,
+                        },
+                    )),
+                )
+            }
         };
 
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -318,29 +454,39 @@ impl PaneSurface {
         }
         .with_context(|| format!("create wgpu surface on XID {xid:#x}"))?;
 
-        let adapter = {
-            let _span = crate::boot::span("wgpu.adapter");
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: Some(&surface),
-            }))
-        }
-        .map_err(|e| anyhow!("no GPU adapter can present to the pane's window: {e}"))?;
+        // The prewarmed adapter was chosen with no surface in hand, so
+        // whether it can present to this window is a question that can only
+        // be asked now. An adapter that cannot is not an error: it is a miss,
+        // and the cold path answers it.
+        let warm = warm.filter(|w| w.adapter.is_surface_supported(&surface));
+        tracing::debug!(
+            prewarmed = warm.is_some(),
+            "the pane's GPU handshake"
+        );
 
-        let limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
-        let (device, queue) = {
-            let _span = crate::boot::span("wgpu.device");
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("vitrum.pane.device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: limits,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            }))
-        }
-        .map_err(|e| anyhow!("request GPU device for the pane: {e}"))?;
+        let adapter = match &warm {
+            Some(warm) => warm.adapter.clone(),
+            None => {
+                let _span = crate::boot::span("wgpu.adapter");
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    force_fallback_adapter: false,
+                    compatible_surface: Some(&surface),
+                }))
+                .map_err(|e| anyhow!("no GPU adapter can present to the pane's window: {e}"))?
+            }
+        };
+
+        let (device, queue) = match warm {
+            Some(warm) => (warm.device, warm.queue),
+            None => {
+                let _span = crate::boot::span("wgpu.device");
+                let mut want = pane_device();
+                want.required_limits = pane_limits(&adapter);
+                pollster::block_on(adapter.request_device(&want))
+                    .map_err(|e| anyhow!("request GPU device for the pane: {e}"))?
+            }
+        };
 
         let caps = surface.get_capabilities(&adapter);
         // Terminal colours are already sRGB byte values. An `*_srgb` swapchain

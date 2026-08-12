@@ -263,6 +263,18 @@ pub(crate) fn launch(opts: Options, link: Option<DeepLink>) -> ! {
         let theme = crate::pane::theme_from(&crate::state::live::pane_settings());
         vitrum_grid::prewarm_font_stack(theme.font_config(scale));
     }
+
+    // The same trade for the GPU: an instance, an adapter and a device, none
+    // of which needs a window, a surface or a size, and all three of which
+    // the pane used to build after the window existed and on the thread that
+    // paints it. Ninety milliseconds of the ninety-odd between the shell
+    // appearing and the pane's first glyph was this. A pane that attaches
+    // before the thread finishes builds its own.
+    #[cfg(target_os = "linux")]
+    {
+        let _span = boot::span("gpu.prewarm");
+        crate::pane::surface::prewarm_gpu();
+    }
     {
         let _span = boot::span("geometry.load");
         seed_book(load_geometry(&monitor_rects(primary.as_ref(), &all)));

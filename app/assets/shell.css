@@ -179,12 +179,16 @@
   background-color: $surface$;
 }
 
-/* The drag handle between the sidebar and the content. GTK draws the separator
- * itself, so the whole rule is the width the operator has to hit and the
- * colour of the line inside it. */
+/* The drag handle between the sidebar and the content. Eight pixels of target
+ * and NO paint: the sidebar's own right border is already the line, and a
+ * handle filled in $border$ put an eight pixel bar of light grey down the
+ * middle of the window beside it. A boundary is one hairline. The band is
+ * still there and still grabbable; it is the colour of what it sits between
+ * until the pointer is on it, and then it is the accent, which is the only
+ * moment the operator is asking where it is. */
 .rg-paned separator {
   min-width: $resizer-w$;
-  background-color: $border$;
+  background-color: $surface$;
   background-image: none;
 }
 

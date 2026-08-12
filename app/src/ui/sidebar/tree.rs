@@ -134,6 +134,28 @@ pub(crate) enum Kind {
     Scroller,
 }
 
+/// Which end of a label the toolkit sacrifices when the text will not fit.
+///
+/// A path and a sentence do not degrade the same way, and treating them alike
+/// is how a row comes to say `/src/…/hi…`. The sidebar already shortens a path
+/// to a column budget before it ever reaches a widget, keeping the first
+/// component and the leaf; a widget narrower than that budget then elides a
+/// SECOND time, and cutting the tail throws away the leaf the first pass was
+/// written to preserve. The remainder is not a shorter answer, it is no
+/// answer: `hi…` names nothing and cost the same pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Elide {
+    /// Never elide. The label widens or the box does.
+    Off,
+    /// Sacrifice the end. For prose, where the first words identify it: a
+    /// session title, a branch, a hover detail.
+    Tail,
+    /// Sacrifice the beginning. For a path, where the LAST component
+    /// identifies it and the ancestors are context the group header usually
+    /// repeats anyway.
+    Head,
+}
+
 /// One widget, with the classes it wears and the text it says.
 ///
 /// `PartialEq` is the memoization: two folds that compare equal describe the
@@ -168,13 +190,13 @@ pub(crate) struct Node {
     /// the branch has a name in it yet. Exactly one child of a box should set
     /// it; two make the space split and the right edge move.
     pub(crate) grow: bool,
-    /// Whether this label elides its middle rather than widening its box.
+    /// Which end of this label is sacrificed when the text outruns its column.
     ///
     /// Only for text that can legitimately be longer than its column: a
     /// title, a path, a branch, a hover detail. A count or a glyph must not
     /// set it, because an elidable label asks for the width of an ellipsis
     /// and will be squeezed to one under pressure.
-    pub(crate) eliding: bool,
+    pub(crate) elide: Elide,
     /// The width this label holds, in characters, whatever it currently says.
     ///
     /// Zero is natural width. Anything above it is a label whose VALUE changes
@@ -193,6 +215,14 @@ pub(crate) struct Node {
     /// badge comes out as a thirty-two-pixel slab. Set it on the element that
     /// states its own height and means it.
     pub(crate) centred: bool,
+    /// Whether this node's CONTENTS sit at the centre of its width.
+    ///
+    /// Distinct from `centred`, which is the cross axis. GTK3's stylesheet
+    /// has no horizontal alignment, so this is the only way to say it, and
+    /// only a control that spans a region says it: a full-width press whose
+    /// label hugs the left edge reads as a label that happens to be
+    /// clickable, which is what the bottom of the session list read as.
+    pub(crate) mid: bool,
     pub(crate) children: Vec<Node>,
 }
 
@@ -207,9 +237,10 @@ impl Node {
             children: Vec::new(),
             enabled: true,
             grow: false,
-            eliding: false,
+            elide: Elide::Off,
             chars: 0,
             centred: false,
+            mid: false,
         }
     }
 
@@ -232,9 +263,10 @@ impl Node {
             name: String::new(),
             enabled: true,
             grow: false,
-            eliding: false,
+            elide: Elide::Off,
             chars: 0,
             centred: false,
+            mid: false,
             children: Vec::new(),
         }
     }
@@ -259,9 +291,10 @@ impl Node {
             name: String::new(),
             enabled: true,
             grow: false,
-            eliding: false,
+            elide: Elide::Off,
             chars: 0,
             centred: false,
+            mid: false,
             children: Vec::new(),
         }
     }
@@ -282,6 +315,13 @@ impl Node {
         self.centred = true;
         self
     }
+
+    /// Put this node's contents at the centre of its width.
+    pub(crate) fn mid(mut self) -> Self {
+        self.mid = true;
+        self
+    }
+
     /// A control that raises `act` when it is pressed.
     pub(crate) fn press(class: &str, act: Act) -> Self {
         Node::new(Kind::Press(act), class)
@@ -305,9 +345,15 @@ impl Node {
         self
     }
 
-    /// Elide rather than widen when the text outruns the column.
+    /// Elide the END rather than widen when the text outruns the column.
     pub(crate) fn eliding(mut self) -> Self {
-        self.eliding = true;
+        self.elide = Elide::Tail;
+        self
+    }
+
+    /// Elide the BEGINNING, keeping the leaf. For a path and nothing else.
+    pub(crate) fn eliding_leaf(mut self) -> Self {
+        self.elide = Elide::Head;
         self
     }
 

@@ -300,10 +300,13 @@
   background-color: $surface$;
 }
 
+/* The accent is the only thing in the panel that says "pressing this does
+ * something". Without it a centred grey sentence at the end of a list is
+ * indistinguishable from a caption, and the region is a control. */
 .rg-sidebar__floor-label {
   font-size: $text-11$;
   font-weight: $weight-medium$;
-  color: $fg-muted$;
+  color: $accent-text$;
 }
 
 .rg-sidebar__floor-hint {
@@ -627,13 +630,21 @@
 /* Twenty pixels in a thirty-two pixel row, centred by `Node::centred`. A
  * capsule the height of its row is not a badge on the row, it is the row: at
  * eight sessions the list reads as a column of coloured slabs with titles
- * beside them, and the thing the operator came to scan is the title. */
+ * beside them, and the thing the operator came to scan is the title.
+ *
+ * Fill is reserved for a session that WANTS something. The panel exists to
+ * answer one question — which of these needs me — and a fill on every row
+ * makes that eight reads instead of one glance: five tinted capsules of equal
+ * weight are five things shouting, which is the same as none of them
+ * shouting. So `Approval`, `Input`, `Failed` and `Woke` keep the wash behind
+ * them and every other state says its hue in ink alone. The hue is not lost,
+ * only the claim on the eye, and the padding stays so the reserved widths in
+ * `reserve_width` do not move when a row changes state. */
 .rg-pill {
   min-height: $badge-h$;
   padding-left: $space-2$;
   padding-right: $space-2$;
   border-radius: $radius-full$;
-  background-color: $hue-ready-soft$;
   color: $hue-ready$;
 }
 
@@ -654,11 +665,20 @@
   color: $fg-faint$;
 }
 
+/* At rest: the hue in ink, nothing behind it. */
 .rg-pill.rg-pill--working {
-  background-color: $hue-working-soft$;
   color: $hue-working$;
 }
 
+.rg-pill.rg-pill--done {
+  color: $hue-done$;
+}
+
+.rg-pill.rg-pill--snoozed {
+  color: $hue-snoozed$;
+}
+
+/* Wanting the operator: the wash is the claim, and only these four make it. */
 .rg-pill.rg-pill--approval {
   background-color: $hue-approval-soft$;
   color: $hue-approval$;
@@ -672,16 +692,6 @@
 .rg-pill.rg-pill--failed {
   background-color: $hue-failed-soft$;
   color: $hue-failed$;
-}
-
-.rg-pill.rg-pill--done {
-  background-color: $hue-done-soft$;
-  color: $hue-done$;
-}
-
-.rg-pill.rg-pill--snoozed {
-  background-color: $hue-snoozed-soft$;
-  color: $hue-snoozed$;
 }
 
 .rg-pill.rg-pill--woke {
@@ -892,10 +902,6 @@
   border-top: $hairline$ solid $border$;
   color: $fg-subtle$;
   font-size: $text-11$;
-}
-
-.rg-panebar__grid {
-  min-height: $panebar-h$;
 }
 
 .rg-panebar__key {

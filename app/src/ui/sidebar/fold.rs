@@ -39,8 +39,8 @@ use vitrum_proto::{Attention, SessionId};
 use super::tree::{Act, Kind, Node};
 use super::{
     CHEVRON, GEAR_ICON, GROUP_LABEL_COLUMNS, RowFields, RowState, SEARCH_ICON, agent_class,
-    completion_shown, contest_title, draws_card, empty_bucket_hint, in_flight, place_label,
-    recedes, row_clock, row_tooltip, row_variant, section_class,
+    branch_label, completion_shown, contest_title, draws_card, empty_bucket_hint, in_flight,
+    place_label, recedes, row_clock, row_tooltip, row_variant, section_class,
 };
 use crate::agent::AgentMarks;
 use crate::clock::age;
@@ -389,6 +389,7 @@ fn census_words(st: &UiState, clock: Clock) -> (String, String) {
 fn floor(st: &UiState) -> Node {
     let ready = st.server_ready();
     Node::press("rg-sidebar__floor", Act::NewSession)
+        .mid()
         .refusing(!ready)
         .named(if ready {
             "Start a session"
@@ -855,15 +856,6 @@ fn fold_row(
         always_slim: fields.always_slim,
     });
 
-    // Always emitted, empty when the server has not resolved a branch or the
-    // operator switched branches off. It is the flexible box on the tail line,
-    // so dropping the element would let the timestamp and the badges slide
-    // left into the middle of the row on half the rows.
-    let branch = if fields.branch {
-        info.git_branch.as_deref().unwrap_or_default()
-    } else {
-        ""
-    };
     // The linked worktree this session is in, or empty for a main working
     // tree. Resolved by the daemon, because only the daemon has the session's
     // filesystem: a linked worktree's `.git` is a FILE pointing into
@@ -875,6 +867,16 @@ fn fold_row(
     } else {
         String::new()
     };
+    // Always emitted, empty when the server has not resolved a branch, when
+    // the operator switched branches off, or when it would only repeat the
+    // worktree chip. It is the flexible box on the tail line, so dropping the
+    // element would let the timestamp and the badges slide left into the
+    // middle of the row on half the rows.
+    let branch = if fields.branch {
+        branch_label(info.git_branch.as_deref().unwrap_or_default(), &worktree)
+    } else {
+        ""
+    };
     // The working directory, drawn wherever it says something the bucket
     // header above does not, and on a root row where nothing else on the line
     // says it either, where the alternative is a blank line.
@@ -883,6 +885,7 @@ fn fold_row(
             &info.cwd,
             root,
             home,
+            &worktree,
             !branch.is_empty() || !worktree.is_empty(),
         )
     } else {
@@ -963,7 +966,9 @@ fn fold_row(
                                 files.to_string(),
                             ))
                     }))
-                    .with(Node::reserved("rg-session__place", place).eliding())
+                    // A path, so the leaf survives the squeeze: `…/hint-parser`
+                    // and not `/src/…/hi…`.
+                    .with(Node::reserved("rg-session__place", place).eliding_leaf())
                     .with(Node::reserved("rg-session__worktree", worktree).eliding())
                     .with(Node::reserved("rg-session__branch", branch).growing().eliding())
                     .maybe(disposition.map(badge_node))

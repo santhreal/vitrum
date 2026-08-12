@@ -13,8 +13,10 @@
 //!   could not be asked where anything was. Nothing computes it now, which is
 //!   why a dialog opening no longer resizes a pty.
 //! - **The bar under it.** [`pane_bar`] resolves what the strip below the pane
-//!   says: where the agent is working, on which branch, in which worktree, how
-//!   large its grid is, and what state it is in.
+//!   says: where the agent is working, on which branch, in which worktree, and
+//!   what state it is in. Not how large the grid is: that was a number the
+//!   window already knew and no reader had a use for, printed permanently
+//!   beside facts that answer a question.
 //! - **The states over it.** Nothing focused, nothing at all, a child that
 //!   exited, a socket that went away. Each is a sibling of the reserved box,
 //!   never a child of it.
@@ -127,8 +129,6 @@ pub struct PaneBar {
     pub branch: Option<String>,
     /// Linked worktree name, when the directory is one.
     pub worktree: Option<String>,
-    /// Grid size as the daemon has it, `columns x rows`.
-    pub grid: Option<String>,
     /// The state word, from the same resolution the sidebar row uses.
     pub state: Option<Pill>,
     /// How the child ended, when it has.
@@ -166,7 +166,6 @@ pub fn pane_bar(st: &UiState, home: &str, server: &str) -> PaneBar {
             place_full: String::new(),
             branch: None,
             worktree: None,
-            grid: None,
             state: None,
             exit: None,
         };
@@ -194,7 +193,6 @@ pub fn bar_of(row: &SessionView, home: &str) -> PaneBar {
             .filter(|b| !b.is_empty())
             .map(|b| path::shorten(b, BAR_BRANCH_COLUMNS)),
         worktree: worktree_of(row),
-        grid: Some(format!("{}\u{00d7}{}", info.cols, info.rows)),
         state: Some(Pill::of(row)),
         exit: match info.status {
             SessionStatus::Exited { code } => Some(exit_line(code)),
@@ -250,11 +248,6 @@ pub fn bar_title(bar: &PaneBar) -> String {
     if let Some(b) = &bar.branch {
         text.push_str("\nbranch ");
         text.push_str(b);
-    }
-    if let Some(g) = &bar.grid {
-        text.push('\n');
-        text.push_str(g);
-        text.push_str(" cells");
     }
     if let Some(e) = &bar.exit {
         text.push('\n');

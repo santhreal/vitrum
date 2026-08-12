@@ -678,10 +678,16 @@ pub fn disposition_badge(
 /// constantly and wants nothing; a session that FINISHED while nobody was
 /// looking is the row the operator opened the sidebar to find, and collapsing
 /// the two loses exactly that row in the noise.
+///
+/// No mark, by the same rule [`parked_label`] states: a glyph in front of a
+/// word that already says the thing is a second mark saying what the first
+/// already said. The star this badge used to carry meant favourite everywhere
+/// else a reader has met one, and nothing at all here — it had to be learned
+/// from the word beside it, which is the word it was decorating.
 pub fn completion_badge(row: &SessionView) -> Option<Badge> {
     row.has_unseen_completion().then(|| Badge {
         class: "rg-badge rg-badge--done".to_string(),
-        icon: Some("\u{2605}"),
+        icon: None,
         text: status_word(StateWord::Done).to_string(),
         title: "Finished while you were not looking".to_string(),
     })

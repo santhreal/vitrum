@@ -27,7 +27,7 @@ fn only_a_failed_row_suppresses_the_completion_badge() {
     let badge = || {
         Some(crate::inbox::Badge {
             class: "rg-badge rg-badge--done".to_string(),
-            icon: Some("\u{2605}"),
+            icon: None,
             text: "Done".to_string(),
             title: "Finished while you were not looking".to_string(),
         })
@@ -715,7 +715,7 @@ fn an_empty_bucket_says_how_to_fill_it() {
 #[test]
 fn a_row_at_the_project_root_on_a_branch_draws_no_working_directory() {
     assert_eq!(
-        place_label("/src/vitrum", "/src/vitrum", "/home/mk", true),
+        place_label("/src/vitrum", "/src/vitrum", "/home/mk", "", true),
         ""
     );
 }
@@ -735,13 +735,13 @@ fn a_row_at_the_project_root_on_a_branch_draws_no_working_directory() {
 #[test]
 fn a_row_at_the_project_root_with_no_branch_still_says_where_it_is() {
     assert_eq!(
-        place_label("/home/mk", "/home/mk", "/home/mk", false),
+        place_label("/home/mk", "/home/mk", "/home/mk", "", false),
         "~",
         "an agent in a home directory the client made a project of must still \
          say it is there"
     );
     assert_eq!(
-        place_label("/src/notes", "/src/notes", "/home/mk", false),
+        place_label("/src/notes", "/src/notes", "/home/mk", "", false),
         "/src/notes",
         "a project root outside any repository must still name itself"
     );
@@ -755,12 +755,13 @@ fn a_row_inside_the_project_draws_the_remainder() {
             "/src/vitrum/crates/vitrum-fmt",
             "/src/vitrum",
             "/home/mk",
+            "",
             true
         ),
         "crates/vitrum-fmt"
     );
     assert_eq!(
-        place_label("/src/vitrum/app", "/src/vitrum", "/home/mk", true),
+        place_label("/src/vitrum/app", "/src/vitrum", "/home/mk", "", true),
         "app"
     );
 }
@@ -774,9 +775,97 @@ fn a_row_inside_the_project_draws_the_remainder() {
 #[test]
 fn a_worktree_beside_the_project_draws_its_own_path() {
     assert_eq!(
-        place_label("/home/mk/worktrees/topic", "/src/vitrum", "/home/mk", true),
+        place_label(
+            "/home/mk/worktrees/topic",
+            "/src/vitrum",
+            "/home/mk",
+            "",
+            true
+        ),
         "~/worktrees/topic"
     );
+}
+
+/// A directory whose leaf IS the worktree name yields to the chip.
+///
+/// WHY: this is the shape that made a row unreadable rather than merely
+/// redundant. A linked worktree's directory is named after the worktree, so
+/// the row carried `…/hint-parser` and a chip reading `hint-parser` — one
+/// fact twice — and the pair overran the tail line, so the directory was
+/// elided by the toolkit down to `… int-parser`, a string that names nothing
+/// and reads as a different word. Dropping the duplicate buys the rest of the
+/// line back and loses no fact.
+///
+/// The match is exact and the negative case is the point: a path that
+/// CONTINUES past the worktree still says which crate the agent is in, so it
+/// survives. What this does not catch is a row whose line is over budget for
+/// any other reason; that is the toolkit's elision and is bounded, not
+/// eliminated.
+#[test]
+fn a_directory_that_repeats_the_worktree_chip_yields_to_it() {
+    assert_eq!(
+        place_label(
+            "/home/mk/worktrees/hint-parser",
+            "/src/vitrum",
+            "/home/mk",
+            "hint-parser",
+            true
+        ),
+        "",
+        "the directory said the worktree's name a second time"
+    );
+    assert_eq!(
+        place_label(
+            "/home/mk/worktrees/hint-parser/crates/core",
+            "/src/vitrum",
+            "/home/mk",
+            "hint-parser",
+            true
+        ),
+        "~/…/crates/core",
+        "a path that continues past the worktree still says which crate"
+    );
+    // With the chip switched off in Settings the caller passes no name, and
+    // the directory is the only thing left that can say where the files are.
+    assert_eq!(
+        place_label(
+            "/home/mk/worktrees/hint-parser",
+            "/src/vitrum",
+            "/home/mk",
+            "",
+            true
+        ),
+        "~/…/hint-parser"
+    );
+}
+
+/// A branch that only repeats the worktree chip yields to it.
+///
+/// WHY: `git worktree add -b <name> <dir>` names the branch, the directory
+/// and the worktree with one word, so the standard way of making a worktree
+/// produced a row reading `hint-parser hint-parser Done 7s ago`. Both
+/// duplications are closed here and in [`place_label`]; this is the second,
+/// and it only appeared once the first was fixed and the fixture was made to
+/// stage a real linked worktree instead of a repository sitting at the path.
+///
+/// The negative cases are the point: a branch that differs survives whatever
+/// the worktree says, and a row with no worktree is untouched, which is every
+/// row in a main working tree.
+#[test]
+fn a_branch_that_repeats_the_worktree_yields_to_it() {
+    assert_eq!(branch_label("hint-parser", "hint-parser"), "");
+    assert_eq!(
+        branch_label("main", "hint-parser"),
+        "main",
+        "a branch that says something else must survive"
+    );
+    assert_eq!(
+        branch_label("hint-parser", ""),
+        "hint-parser",
+        "a main working tree has no chip to yield to"
+    );
+    assert_eq!(branch_label("", "hint-parser"), "");
+    assert_eq!(branch_label("", ""), "");
 }
 
 /// A long remainder is elided in the middle, keeping the leaf.
@@ -789,6 +878,7 @@ fn a_long_remainder_keeps_its_leaf() {
         "/src/vitrum/crates/vitrum-core/src/session",
         "/src/vitrum",
         "/home/mk",
+        "",
         true,
     );
     assert!(
@@ -808,11 +898,11 @@ fn a_long_remainder_keeps_its_leaf() {
 #[test]
 fn an_unfiled_row_draws_its_own_path() {
     assert_eq!(
-        place_label("/home/mk/scratch", "", "/home/mk", true),
+        place_label("/home/mk/scratch", "", "/home/mk", "", true),
         "~/scratch"
     );
     assert_eq!(
-        place_label("/home/mk/scratch", "", "/home/mk", false),
+        place_label("/home/mk/scratch", "", "/home/mk", "", false),
         "~/scratch"
     );
 }

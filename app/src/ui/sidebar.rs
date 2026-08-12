@@ -273,17 +273,47 @@ const PLACE_COLUMNS: usize = 18;
 /// decides which of them is present; the rule is that the line is never
 /// silent on all three at once.
 ///
+/// `worktree` is read a second way, and this is the case that made the row
+/// illegible. A linked worktree's directory IS its name, so a row in one
+/// carried `…/hint-parser` beside a chip reading `hint-parser`: one fact
+/// twice, and the pair overran the line's budget so the directory elided to
+/// `… int-parser`, which names nothing. A directory whose leaf is the
+/// worktree tells the reader what the chip beside it already told them, so it
+/// yields — and only on an exact match, because `…/hint-parser/crates/core`
+/// still says which crate.
+///
 /// The `Outside` arm is the case the element was added for. A git worktree
 /// lives beside its project rather than inside it, on another branch, and a
 /// row for one used to show a branch with no hint that the files were
 /// somewhere else. So does an agent that moved itself: sessions follow OSC 7,
 /// so a row's directory is where the agent is now, not where it was launched.
-fn place_label(cwd: &str, root: &str, home: &str, line_says_more: bool) -> String {
+fn place_label(cwd: &str, root: &str, home: &str, worktree: &str, line_says_more: bool) -> String {
+    if !worktree.is_empty() && path::base_name(cwd) == worktree {
+        return String::new();
+    }
     match path::under(cwd, root) {
         Place::At if line_says_more => String::new(),
         Place::At | Place::Outside => path::shorten_home_relative(cwd, home, PLACE_COLUMNS),
         Place::Under(rest) => path::shorten(rest, PLACE_COLUMNS),
     }
+}
+
+/// What a row draws for its git branch, given the worktree beside it.
+///
+/// Empty when there is no branch, when the operator switched branches off, or
+/// when the branch and the worktree are the same word. That last case is the
+/// common one and not a coincidence: `git worktree add -b <name> <dir>` is how
+/// a worktree is made, so the branch, the directory and the worktree name are
+/// one string three times, and the row spent three of its four tail elements
+/// saying it. The directory yields in [`place_label`] and the branch yields
+/// here; the chip is what remains, because it is the only one of the three
+/// that says the files are somewhere other than the project.
+///
+/// The element is still EMITTED when this returns empty — it is the tail
+/// line's flexible box, and dropping it would let the badges and the
+/// timestamp slide into the middle of the row.
+fn branch_label<'a>(branch: &'a str, worktree: &str) -> &'a str {
+    if branch == worktree { "" } else { branch }
 }
 
 /// Everything about a row that changes its class list.

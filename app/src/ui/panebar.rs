@@ -76,17 +76,14 @@ pub(crate) fn strip(st: &UiState, home: &str, server: &str) -> Node {
         // Never empty: with nothing focused the place says whether the daemon
         // answered, which is the only fact a window with no session has and is
         // worth the line the bar is already paying for.
-        .with(Node::label("rg-panebar__place", bar.place.clone()).eliding())
+        // A path, so the leaf survives the squeeze.
+        .with(Node::label("rg-panebar__place", bar.place.clone()).eliding_leaf())
         .with(worktree(&bar))
         .with(
             Node::reserved("rg-panebar__branch", bar.branch.clone().unwrap_or_default()).eliding(),
         )
         .with(Node::new(Kind::Row, "rg-panebar__gap").growing())
         .with(exit(&bar))
-        .with(Node::reserved(
-            "rg-panebar__grid",
-            bar.grid.clone().unwrap_or_default(),
-        ))
         .with(state_chip(&bar))
 }
 

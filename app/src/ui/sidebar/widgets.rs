@@ -36,7 +36,7 @@ use vitrum_proto::SessionId;
 
 use super::fold::{self, Context, Fold};
 use super::rows::{RowView, Rows};
-use super::tree::{Act, Kind, Node};
+use super::tree::{Act, Elide, Kind, Node};
 use crate::shell::{self, Shell};
 use crate::state::{Layer, MenuState, SettingsTab, UiState};
 use crate::ui::sheet;
@@ -337,8 +337,10 @@ fn build(
         Kind::Label => {
             let label = gtk::Label::new(Some(&node.text));
             label.set_xalign(0.0);
-            if node.eliding {
-                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            match node.elide {
+                Elide::Off => {}
+                Elide::Tail => label.set_ellipsize(gtk::pango::EllipsizeMode::End),
+                Elide::Head => label.set_ellipsize(gtk::pango::EllipsizeMode::Start),
             }
             reserve_width(&label, node.chars);
             (label.upcast(), None)
@@ -357,12 +359,16 @@ fn build(
         Kind::Press(initial) => {
             let button = gtk::Button::new();
             button.set_relief(gtk::ReliefStyle::None);
-            // A control is the height its rule states, not the height of the
-            // row it happens to sit in. Filling made the footer's buttons 48px
-            // tall against a stated 32, so their bottom edge went off the
-            // window and their top edge drew a line across the sidebar.
-            button.set_valign(gtk::Align::Center);
             let inner = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            // A press that spans a region centres what it says, so it reads as
+            // the region's action instead of as a label pinned to the left of
+            // a wide empty box. Everything else starts at the text column the
+            // rest of the panel is aligned to.
+            inner.set_halign(if node.mid {
+                gtk::Align::Center
+            } else {
+                gtk::Align::Fill
+            });
             button.add(&inner);
             let held = Rc::new(Cell::new(*initial));
             act = Some(Rc::clone(&held));
@@ -475,7 +481,13 @@ fn dress(rendered: &Rendered, node: &Node, settling: &Rc<Cell<bool>>) {
     }
     sheet::set_classes(&widget.style_context(), &node.class);
     widget.set_sensitive(node.enabled);
-    widget.set_valign(if node.centred {
+    // A control is the height its rule states, not the height of the row it
+    // happens to sit in: filling made the footer's buttons 48px tall against a
+    // stated 32, so their bottom edge went off the window and their top edge
+    // drew a line across the sidebar. `Kind::Press` set that itself at build
+    // and this line then overwrote it on the same pass, so the rule held only
+    // for as long as nobody dressed the widget. It is stated once, here.
+    widget.set_valign(if node.centred || matches!(node.kind, Kind::Press(_)) {
         gtk::Align::Center
     } else {
         gtk::Align::Fill

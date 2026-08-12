@@ -313,18 +313,11 @@ pub fn host_palette_note(prefs: &TerminalPrefs) -> String {
 
 /// Scan this machine for a terminal palette.
 ///
-/// The environment and the filesystem, read here rather than in
-/// [`crate::state::hostterm`], which takes both as arguments so its own tests
-/// can run against fixtures without touching either.
+/// One line, because the scan itself belongs beside the parser it feeds and
+/// the first run reaches for the same function before any sheet exists.
 fn import_host_palette()
 -> Result<crate::state::hostterm::HostPalette, crate::state::hostterm::ImportError> {
-    let env = std::env::vars().collect();
-    // Annotated rather than passed by name. `read_to_string` is generic over
-    // `AsRef<Path>`, so handing it over directly makes the compiler pick one
-    // concrete lifetime, and `import` needs a reader good for any.
-    crate::state::hostterm::import(&env, |path: &std::path::Path| {
-        std::fs::read_to_string(path)
-    })
+    crate::state::hostterm::import_from_machine()
 }
 
 /// Client-side scrollback choices, in lines, with what each one costs.

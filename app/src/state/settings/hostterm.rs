@@ -343,6 +343,19 @@ pub fn import(
     }
 }
 
+/// [`import`] against this machine: the real environment, the real files.
+///
+/// The one impure entry point, so the scan has a single owner. Settings calls
+/// it when the operator presses Import, and the first run calls it before
+/// anything is on screen.
+pub fn import_from_machine() -> Result<HostPalette, ImportError> {
+    let env = std::env::vars().collect();
+    // Annotated rather than passed by name. `read_to_string` is generic over
+    // `AsRef<Path>`, so handing it over directly makes the compiler pick one
+    // concrete lifetime, and `import` needs a reader good for any.
+    import(&env, |path: &Path| std::fs::read_to_string(path))
+}
+
 /// Read one named file, whatever format it turns out to be.
 ///
 /// The operator's escape hatch for a terminal the scan does not know: the

@@ -3339,11 +3339,67 @@ pub fn save_ui_state(path: &Path, doc: &Persisted) -> std::io::Result<()> {
 /// defaults plus a reason, and the reason is returned rather than swallowed so
 /// the caller can flash it. The caller then applies the document with
 /// [`Persisted::restore_daemon`] and [`Persisted::restore_window`].
+///
+/// A first launch also adopts the colours the operator's own terminal is
+/// configured with. Shipping a scheme nobody chose and offering an Import
+/// button in a sheet they have not opened yet means the first thing they see
+/// is somebody else's palette, and the one place this product can read theirs
+/// costs a handful of small file reads, once, on the run where there is no
+/// profile to honour instead.
 pub fn load_prefs() -> (Persisted, Option<String>) {
     PREFS_LOADS.fetch_add(1, Ordering::Relaxed);
-    match ui_state_path() {
-        Ok(path) => load_ui_state(&path).or_default(),
-        Err(e) => (Persisted::default(), Some(e.to_string())),
+    let path = match ui_state_path() {
+        Ok(path) => path,
+        Err(e) => return (Persisted::default(), Some(e.to_string())),
+    };
+    let read = load_ui_state(&path);
+    let adopt = adopts_host_palette(&read);
+    let (mut doc, why) = read.or_default();
+    if adopt {
+        adopt_host_palette(
+            &mut doc.settings,
+            settings::hostterm::import_from_machine(),
+        );
+    }
+    (doc, why)
+}
+
+/// Whether this reading of the profile is the run that adopts the host's
+/// colours.
+///
+/// Only a run with no profile at all. A corrupt or future-version file is a
+/// profile the operator HAS: it is archived rather than deleted, the settings
+/// in it are theirs, and overwriting their palette because this build could
+/// not read the document would be the second thing to go wrong in one launch.
+pub(crate) fn adopts_host_palette(read: &UiStateLoad) -> bool {
+    match read {
+        UiStateLoad::Missing => true,
+        UiStateLoad::Loaded(_)
+        | UiStateLoad::Corrupt { .. }
+        | UiStateLoad::Stale { .. }
+        | UiStateLoad::Unsupported { .. }
+        | UiStateLoad::Unreadable { .. } => false,
+    }
+}
+
+/// Take the host terminal's colours, if this machine states them anywhere.
+///
+/// Silent on failure and deliberately so: a machine with no terminal
+/// configuration to read is the common case, not a fault, and the built-in
+/// scheme is a good answer for it. The switch is left off in that case, so
+/// Settings shows the truth rather than an import that is on and empty.
+pub(crate) fn adopt_host_palette(
+    settings: &mut Settings,
+    found: Result<settings::hostterm::HostPalette, settings::hostterm::ImportError>,
+) {
+    match found {
+        Ok(found) if found.is_complete() => {
+            tracing::info!(from = %found.origin, "adopted the host terminal's palette");
+            settings.terminal.host_palette = found;
+            settings.terminal.follow_host_terminal = true;
+        }
+        Ok(_) => {}
+        Err(why) => tracing::debug!("no host terminal palette to adopt: {why}"),
     }
 }
 

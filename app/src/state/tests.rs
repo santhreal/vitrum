@@ -4790,3 +4790,103 @@ fn an_update_never_moves_a_row_that_stayed_in_the_inbox() {
         "a row moved in the inbox because its activity or its badge changed"
     );
 }
+
+/// The first launch paints with the operator's own terminal colours.
+///
+/// # The class this closes
+///
+/// Every colour the grid drew came from a built-in scheme, and the one path to
+/// the operator's own was an Import button inside a settings sheet. A terminal
+/// that ships somebody else's palette and waits to be asked has already made
+/// its first impression by the time anyone finds the button.
+///
+/// Three outcomes, all of them pinned: a complete import is adopted and turns
+/// the switch on; an import that yielded only some of the twenty slots is
+/// discarded whole, because a palette half from one terminal and half from a
+/// scheme is a palette nobody has looked at; a machine that states its colours
+/// nowhere keeps the built-in scheme and leaves the switch off, so Settings
+/// says "nothing imported" rather than showing a follow that follows nothing.
+///
+/// Red before the fix: `follow_host_terminal` was false in every arm and
+/// nothing wrote `host_palette`.
+#[test]
+fn a_first_launch_adopts_the_host_terminals_colours() {
+    use crate::state::hostterm::{HostPalette, HostSource, ImportError};
+
+    let whole = HostPalette {
+        source: HostSource::Flat,
+        origin: "/src/kitty.conf".to_string(),
+        background: "#101010".to_string(),
+        foreground: "#d0d0d0".to_string(),
+        cursor: "#ffcc00".to_string(),
+        selection: String::new(),
+        ansi: (0..16).map(|i| format!("#0000{i:02x}")).collect(),
+    };
+    assert!(whole.is_complete(), "the fixture is not a whole palette");
+
+    let mut adopted = Settings::default();
+    crate::state::adopt_host_palette(&mut adopted, Ok(whole.clone()));
+    assert!(adopted.terminal.follow_host_terminal);
+    assert_eq!(adopted.terminal.host_palette, whole);
+
+    let mut partial = Settings::default();
+    let mut half = whole.clone();
+    half.ansi.truncate(9);
+    assert!(!half.is_complete());
+    crate::state::adopt_host_palette(&mut partial, Ok(half));
+    assert!(
+        !partial.terminal.follow_host_terminal,
+        "an incomplete import was adopted"
+    );
+    assert_eq!(partial.terminal.host_palette, HostPalette::default());
+
+    let mut bare = Settings::default();
+    crate::state::adopt_host_palette(&mut bare, Err(ImportError::NoCandidate));
+    assert!(!bare.terminal.follow_host_terminal);
+    assert_eq!(bare.terminal.host_palette, HostPalette::default());
+}
+
+/// Only a run with no profile at all adopts. Every other reading is a profile
+/// the operator already has.
+///
+/// # The class this closes
+///
+/// A corrupt or future-version document is archived and replaced by defaults,
+/// and adopting on that path would repaint the terminal of an operator whose
+/// only fault was running a newer build once. The match inside
+/// `adopts_host_palette` is exhaustive, so a sixth reading of the profile
+/// stops this file compiling rather than silently joining the wrong arm.
+#[test]
+fn only_a_missing_profile_adopts() {
+    let readings = [
+        (UiStateLoad::Missing, true),
+        (UiStateLoad::Loaded(Box::new(Persisted::default())), false),
+        (
+            UiStateLoad::Corrupt {
+                detail: "expected value".to_string(),
+            },
+            false,
+        ),
+        (UiStateLoad::Stale { version: 0 }, false),
+        (
+            UiStateLoad::Unsupported {
+                version: UI_STATE_VERSION + 1,
+            },
+            false,
+        ),
+        (
+            UiStateLoad::Unreadable {
+                detail: "permission denied".to_string(),
+            },
+            false,
+        ),
+    ];
+    for (read, want) in readings {
+        assert_eq!(
+            crate::state::adopts_host_palette(&read),
+            want,
+            "{} took the wrong branch",
+            read.reason()
+        );
+    }
+}

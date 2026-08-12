@@ -15,6 +15,7 @@
 //! which needs a daemon and belongs to the server's seam suites.
 
 use super::*;
+use crate::testkit::NOW;
 use vitrum_proto::{PROTOCOL_VERSION, ServerMsg, SessionStatus};
 
 /// The reconnect schedule must grow, stop growing, and end.
@@ -145,7 +146,7 @@ fn a_protocol_mismatch_names_the_restart_and_stops_using_the_socket() {
         daemon.apply(ServerMsg::Welcome {
             protocol,
             server_version: "0.2.9".to_string(),
-        });
+        }, NOW);
         let ConnState::Failed { detail } = &daemon.conn else {
             panic!("protocol {protocol} was accepted by a client speaking {PROTOCOL_VERSION}");
         };
@@ -170,7 +171,7 @@ fn a_protocol_mismatch_names_the_restart_and_stops_using_the_socket() {
     daemon.apply(ServerMsg::Welcome {
         protocol: PROTOCOL_VERSION,
         server_version: "0.3.1".to_string(),
-    });
+    }, NOW);
     assert_eq!(plan_welcome(&daemon.conn), WelcomePlan::Subscribe);
 }
 
@@ -294,12 +295,12 @@ fn a_session_that_exits_unobserved_is_still_marked_exited() {
     let mut daemon = state::DaemonState::default();
     daemon.apply(ServerMsg::Sessions {
         sessions: vec![crate::testkit::info(4), crate::testkit::info(5)],
-    });
+    }, NOW);
 
     daemon.apply(ServerMsg::Exited {
         session: SessionId(5),
         code: Some(1),
-    });
+    }, NOW);
 
     let five = daemon.row(SessionId(5)).expect("the row is still listed");
     assert_eq!(five.info.status, SessionStatus::Exited { code: Some(1) });

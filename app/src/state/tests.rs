@@ -2310,7 +2310,7 @@ fn one_broadcast_reaches_every_window_and_only_one_paints() {
         from_seq: 100,
         data: b"hello".to_vec(),
         more: false,
-    });
+    }, NOW);
     assert_eq!(
         left.receive(&mut daemon, &broadcast, NOW),
         Reaction::Backfill {
@@ -2340,7 +2340,7 @@ fn a_session_error_flashes_only_where_the_session_is_visible() {
     let mut here = window_on(DEFAULT_WORKSPACE);
     let mut elsewhere = window_on(other);
 
-    let broadcast = daemon.apply(ServerMsg::error(Some(SessionId(10)), "spawn failed"));
+    let broadcast = daemon.apply(ServerMsg::error(Some(SessionId(10)), "spawn failed"), NOW);
     here.receive(&mut daemon, &broadcast, NOW);
     elsewhere.receive(&mut daemon, &broadcast, NOW);
 
@@ -2366,7 +2366,7 @@ fn an_unscoped_error_flashes_in_every_window() {
     let other = daemon.workspaces.create("Other").unwrap();
     let mut here = window_on(DEFAULT_WORKSPACE);
     let mut elsewhere = window_on(other);
-    let broadcast = daemon.apply(ServerMsg::error(None, "socket closed"));
+    let broadcast = daemon.apply(ServerMsg::error(None, "socket closed"), NOW);
     here.receive(&mut daemon, &broadcast, NOW);
     elsewhere.receive(&mut daemon, &broadcast, NOW);
     assert!(here.flash.is_some());
@@ -2405,7 +2405,7 @@ fn a_daemon_snapshot_replaces_daemon_state_without_clobbering_the_window() {
                 .info
         })
         .collect();
-    let broadcast = daemon.apply(ServerMsg::Sessions { sessions: fresh });
+    let broadcast = daemon.apply(ServerMsg::Sessions { sessions: fresh }, NOW);
     assert_eq!(broadcast, Broadcast::SessionsChanged);
     window.receive(&mut daemon, &broadcast, NOW);
 
@@ -2692,7 +2692,7 @@ fn unfiled_sessions_do_not_follow_the_intake_workspace() {
 
     // A session the daemon reports AFTER the switch lands in intake.
     let fresh = row(12).project(1).created_at_ms(NOW).build().info;
-    daemon.apply(ServerMsg::SessionCreated(fresh));
+    daemon.apply(ServerMsg::SessionCreated(fresh), NOW);
     assert_eq!(daemon.workspace_of(SessionId(12)), Some(scratch));
     assert_eq!(there.visible_ids(&daemon, clock()), vec![SessionId(12)]);
 }
@@ -2712,7 +2712,7 @@ fn a_recycled_session_id_does_not_inherit_the_old_placement() {
     let recycled = row(10).project(1).created_at_ms(NOW + HOUR).build().info;
     daemon.apply(ServerMsg::Sessions {
         sessions: vec![recycled],
-    });
+    }, NOW);
     assert_eq!(
         daemon.workspace_of(SessionId(10)),
         Some(daemon.workspaces.intake()),
@@ -2732,7 +2732,7 @@ fn a_removed_session_releases_its_workspace_placement() {
 
     let broadcast = daemon.apply(ServerMsg::SessionRemoved {
         session: SessionId(10),
-    });
+    }, NOW);
     assert_eq!(broadcast, Broadcast::SessionsChanged);
     assert_eq!(daemon.workspaces.session_count(scratch), 0);
     assert_eq!(daemon.workspaces.delete(scratch), Ok(()));
@@ -4123,7 +4123,7 @@ fn absorb(
     clock: Clock,
     fold: Fold,
 ) -> usize {
-    let broadcast = daemon.apply(ServerMsg::SessionUpdated(info));
+    let broadcast = daemon.apply(ServerMsg::SessionUpdated(info), NOW);
     let mut sink = 0;
     for window in windows.iter_mut() {
         window.receive(daemon, &broadcast, clock.now_ms);
@@ -4445,7 +4445,7 @@ fn the_memo_and_a_full_re_derivation_agree_at_every_step() {
 
     for i in 0..LOAD {
         let update = bench_update(&daemon, i, NOW);
-        daemon.apply(ServerMsg::SessionUpdated(update));
+        daemon.apply(ServerMsg::SessionUpdated(update), NOW);
         agree(&daemon, &window, clock, "after an update");
     }
 
@@ -4461,10 +4461,10 @@ fn the_memo_and_a_full_re_derivation_agree_at_every_step() {
     });
     daemon.apply(ServerMsg::Projects {
         projects: projects.clone(),
-    });
+    }, NOW);
     let mut orphan = daemon.sessions[LOAD - 3].info.clone();
     orphan.project_id = ProjectId(2000);
-    daemon.apply(ServerMsg::SessionUpdated(orphan));
+    daemon.apply(ServerMsg::SessionUpdated(orphan), NOW);
     let adopted = agree(&daemon, &window, clock, "after a project was registered");
     assert!(
         adopted
@@ -4478,7 +4478,7 @@ fn the_memo_and_a_full_re_derivation_agree_at_every_step() {
     projects[0].name = "renamed".to_string();
     daemon.apply(ServerMsg::Projects {
         projects: projects.clone(),
-    });
+    }, NOW);
     let renamed = agree(&daemon, &window, clock, "after a project was renamed");
     assert!(
         renamed.iter().any(|g| g.label == "renamed"),
@@ -4490,18 +4490,18 @@ fn the_memo_and_a_full_re_derivation_agree_at_every_step() {
     projects[0].root = roots[REPOS + 1].clone();
     daemon.apply(ServerMsg::Projects {
         projects: projects.clone(),
-    });
+    }, NOW);
     agree(&daemon, &window, clock, "after a root moved under one id");
 
     // Projects removed, down to none at all.
     projects.truncate(2);
     daemon.apply(ServerMsg::Projects {
         projects: projects.clone(),
-    });
+    }, NOW);
     agree(&daemon, &window, clock, "after projects were dropped");
     daemon.apply(ServerMsg::Projects {
         projects: Vec::new(),
-    });
+    }, NOW);
     let none = agree(&daemon, &window, clock, "with no projects at all");
     assert!(
         none.iter().all(|g| g.project.is_none()),
@@ -4510,7 +4510,7 @@ fn the_memo_and_a_full_re_derivation_agree_at_every_step() {
 
     // A filter, which cuts rows before bucketing, and the other grouping
     // mode, which does not consult the fold at all.
-    daemon.apply(ServerMsg::Projects { projects });
+    daemon.apply(ServerMsg::Projects { projects }, NOW);
     window.filter = "pass 0".to_string();
     agree(&daemon, &window, clock, "under a filter");
     window.filter.clear();
@@ -4565,7 +4565,7 @@ fn a_session_that_moves_to_an_unresolved_directory_re_keys_its_bucket() {
     let mut moved = daemon.sessions[LOAD - 3].info.clone();
     assert_eq!(moved.cwd, roots[REPOS + 2]);
     moved.cwd = format!("{}/", roots[REPOS]);
-    daemon.apply(ServerMsg::SessionUpdated(moved));
+    daemon.apply(ServerMsg::SessionUpdated(moved), NOW);
 
     let fresh = DaemonState {
         projects: daemon.projects.clone(),
@@ -4781,7 +4781,7 @@ fn an_update_never_moves_a_row_that_stayed_in_the_inbox() {
         info.unread = i % 2 == 0;
         info.attention.bell = i % 3 == 0;
         info.attention.idle_ms = (6 - i) * 10_000;
-        daemon.apply(ServerMsg::SessionUpdated(info));
+        daemon.apply(ServerMsg::SessionUpdated(info), NOW);
     }
 
     assert_eq!(

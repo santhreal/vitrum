@@ -92,7 +92,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 use vitrum_model::{
-    Clock, Disposition, DispositionPolicy, Section, Selection, SelectionFacts, SessionView,
+    Clock, Disposition, DispositionPolicy, HeldClaim, Section, Selection, SelectionFacts,
+    SessionView,
     SettleOverride, Snooze, SnoozePreset, SnoozePresetId,
     snooze::snooze_presets,
     traversal::{Direction, Wrap, adjacent_matching},
@@ -351,9 +352,21 @@ pub enum Broadcast {
     },
 }
 
-/// The three client-local facts a daemon snapshot must not destroy: whether
-/// the operator has a row parked, has ruled on it, and when they last looked.
-type OperatorAxis = (Option<Snooze>, Option<SettleOverride>, Option<u64>);
+/// The client-local facts a daemon snapshot must not destroy: whether the
+/// operator has a row parked, has ruled on it, when they last looked, and any
+/// declaration this window is still holding.
+///
+/// The hold is in here for the same reason the others are. A reconnect
+/// replaces every row wholesale, and dropping the hold at that moment would
+/// flap every gated session back to `Working` for one push — the exact defect
+/// the hold exists to close, arriving at the exact moment the operator is
+/// least able to tell it from a real change.
+type OperatorAxis = (
+    Option<Snooze>,
+    Option<SettleOverride>,
+    Option<u64>,
+    Option<HeldClaim>,
+);
 
 /// A value derived from a [`DaemonState`], held beside the facts it comes from.
 ///
@@ -676,7 +689,12 @@ impl Default for DaemonState {
 
 impl DaemonState {
     /// Fold the daemon-shaped half of one control-plane message.
-    pub fn apply(&mut self, msg: ServerMsg) -> Broadcast {
+    ///
+    /// `now_ms` is here for [`SessionView::settle_declaration`] and nothing
+    /// else. The declaration hold is advanced by new information rather than
+    /// by the clock, so every path that replaces a row's projection has to
+    /// take the reading that goes with it.
+    pub fn apply(&mut self, msg: ServerMsg, now_ms: u64) -> Broadcast {
         match msg {
             ServerMsg::Welcome {
                 protocol,
@@ -712,7 +730,7 @@ impl DaemonState {
                 Broadcast::None
             }
             ServerMsg::Sessions { sessions } => {
-                self.replace_sessions(sessions);
+                self.replace_sessions(sessions, now_ms);
                 let live: BTreeSet<SessionKey> = self
                     .sessions
                     .iter()
@@ -735,12 +753,17 @@ impl DaemonState {
                 // to prune. Returning `SessionsChanged` here would put a full
                 // re-prune on the once-a-second update path for nothing.
                 self.workspaces.adopt(core::iter::once(&info));
-                self.upsert(info);
+                self.upsert(info, now_ms);
                 Broadcast::None
             }
             ServerMsg::Exited { session, code } => {
                 if let Some(row) = self.row_mut(session) {
                     row.info.status = SessionStatus::Exited { code };
+                    // The exit is new information about this row, so the hold
+                    // is taken forward with it. `resolve_status` refuses a
+                    // hold on a dead child anyway; clearing it here means the
+                    // stored state agrees with what is drawn.
+                    row.settle_declaration(now_ms);
                 }
                 Broadcast::None
             }
@@ -1009,14 +1032,19 @@ impl DaemonState {
     /// snoozes, settles or what has been looked at. Taking the snapshot
     /// wholesale would silently un-snooze every parked row the first time the
     /// client reconnected, which is the worst possible moment to lose them.
-    fn replace_sessions(&mut self, sessions: Vec<SessionInfo>) {
+    fn replace_sessions(&mut self, sessions: Vec<SessionInfo>, now_ms: u64) {
         let local: BTreeMap<SessionId, OperatorAxis> = self
             .sessions
             .iter()
             .map(|row| {
                 (
                     row.id(),
-                    (row.snooze, row.settle_override, row.last_visited_ms),
+                    (
+                        row.snooze,
+                        row.settle_override,
+                        row.last_visited_ms,
+                        row.held_claim,
+                    ),
                 )
             })
             .collect();
@@ -1024,11 +1052,15 @@ impl DaemonState {
             .into_iter()
             .map(|info| {
                 let mut row = SessionView::new(info);
-                if let Some((snooze, settle_override, last_visited_ms)) = local.get(&row.id()) {
+                if let Some((snooze, settle_override, last_visited_ms, held_claim)) =
+                    local.get(&row.id())
+                {
                     row.snooze = *snooze;
                     row.settle_override = *settle_override;
                     row.last_visited_ms = *last_visited_ms;
+                    row.held_claim = *held_claim;
                 }
+                row.settle_declaration(now_ms);
                 row
             })
             .collect();
@@ -1040,10 +1072,17 @@ impl DaemonState {
     /// In-place matters twice. The sidebar's static order is derived from
     /// creation time, and remove-then-push would drop the operator's snooze
     /// every time the daemon pushed an update for a parked row.
-    fn upsert(&mut self, info: SessionInfo) {
+    fn upsert(&mut self, info: SessionInfo, now_ms: u64) {
         match self.sessions.iter_mut().find(|row| row.id() == info.id) {
-            Some(row) => row.info = info,
-            None => self.sessions.push(SessionView::new(info)),
+            Some(row) => {
+                row.info = info;
+                row.settle_declaration(now_ms);
+            }
+            None => {
+                let mut row = SessionView::new(info);
+                row.settle_declaration(now_ms);
+                self.sessions.push(row);
+            }
         }
     }
 
@@ -2741,7 +2780,7 @@ impl UiState {
     /// here so the fold stays a pure function and a test can put the clock
     /// exactly where a boundary is.
     pub fn apply(&mut self, msg: ServerMsg, now_ms: u64) -> Reaction {
-        let broadcast = self.daemon.apply(msg);
+        let broadcast = self.daemon.apply(msg, now_ms);
         self.window.receive(&mut self.daemon, &broadcast, now_ms)
     }
 

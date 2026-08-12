@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentKind;
 use crate::disposition::SettleOverride;
 use crate::snooze::Snooze;
-use crate::status::{SidebarStatus, StatusResolution, resolve_status};
+use crate::status::{
+    DECLARATION_DWELL_MS, HeldClaim, SidebarStatus, StatusResolution, resolve_status,
+};
 
 /// The current instant and the operator's UTC offset.
 ///
@@ -59,6 +61,14 @@ pub struct SessionView {
     /// When this operator last had the row focused. `None` means never, which
     /// is different from "long ago".
     pub last_visited_ms: Option<u64>,
+    /// A declared block this window is still showing after the declaration
+    /// stopped arriving. See [`crate::status::DECLARATION_DWELL_MS`].
+    ///
+    /// `#[serde(default)]` because a snapshot written before the field existed
+    /// must still load, and because a hold is worthless across a restart: the
+    /// first push after one re-derives it.
+    #[serde(default)]
+    pub held_claim: Option<HeldClaim>,
 }
 
 impl SessionView {
@@ -69,6 +79,7 @@ impl SessionView {
             snooze: None,
             settle_override: None,
             last_visited_ms: None,
+            held_claim: None,
         }
     }
 
@@ -81,7 +92,8 @@ impl SessionView {
     }
 
     /// Status and the signal that produced it. See [`resolve_status`] for the
-    /// precedence rules.
+    /// precedence rules, and [`Self::settle_declaration`] for the one thing
+    /// this adds to them.
     ///
     /// The title claim is resolved here rather than by the caller so that every
     /// consumer of a row — the pill, the sort, the project rollup — sees the
@@ -93,7 +105,31 @@ impl SessionView {
     /// strings: the name is stable and may be the operator's, while the title
     /// bar is rewritten every turn. Reading the name here would let a session
     /// renamed `[ ! ] Action Required` claim to be blocked forever.
+    ///
+    /// A live hold wins over the fresh resolution, and is the only thing that
+    /// does. It cannot invent a state: a hold is only ever set from a
+    /// resolution that already said `Approval` or `Input`, so this reports
+    /// something the agent declared, a moment later than it declared it.
     pub fn resolve_status(&self) -> StatusResolution {
+        let fresh = self.raw_status();
+        match self.held_claim {
+            // A dead child is never held. Precedence rule 1 in
+            // [`resolve_status`] says the exit wins over everything, and a
+            // stale "act now" on a session that has already gone is the exact
+            // thing that rule exists to prevent.
+            Some(held) if self.info.status.is_live() && !fresh.status.requires_declaration() => {
+                held.resolution
+            }
+            _ => fresh,
+        }
+    }
+
+    /// The resolution from the daemon's projection alone, ignoring any hold.
+    ///
+    /// The input to [`Self::settle_declaration`], and what a caller wants when
+    /// it is asking what the agent is saying right now rather than what the
+    /// operator is being shown.
+    pub fn raw_status(&self) -> StatusResolution {
         resolve_status(
             &self.info.status,
             &self.info.attention,
@@ -103,6 +139,36 @@ impl SessionView {
                 .as_deref()
                 .and_then(|title| AgentKind::of(&self.info.command).title_claim(title)),
         )
+    }
+
+    /// Take the hold forward one ingest.
+    ///
+    /// Called once per message that changes a row's daemon projection, and
+    /// nowhere else: the hold is advanced by new information, never by the
+    /// passage of time alone. A session the daemon has stopped talking about
+    /// keeps whatever it was last showing, which is the last thing anybody
+    /// knew about it.
+    ///
+    /// Three cases, and the asymmetry between the first two is the point:
+    ///
+    /// - The agent is declaring a block. Adopt it and renew the hold. This
+    ///   arm runs on every push while the gate is up, so the hold expires
+    ///   [`DECLARATION_DWELL_MS`] after the LAST declaration, not after the
+    ///   first.
+    /// - It is not, and a hold is still live. Leave it. This is the arm that
+    ///   swallows the dropped frame.
+    /// - It is not, and the hold has lapsed. Drop it and let the fresh
+    ///   resolution through.
+    pub fn settle_declaration(&mut self, now_ms: u64) {
+        let fresh = self.raw_status();
+        if fresh.status.requires_declaration() {
+            self.held_claim = Some(HeldClaim {
+                resolution: fresh,
+                until_ms: now_ms.saturating_add(DECLARATION_DWELL_MS),
+            });
+        } else if self.held_claim.is_some_and(|held| now_ms >= held.until_ms) {
+            self.held_claim = None;
+        }
     }
 
     /// Status alone, for callers that do not care where it came from.
@@ -789,5 +855,164 @@ mod tests {
             row.resolve_status(),
             StatusResolution::new(SidebarStatus::Ready, StatusSource::Waiting)
         );
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // The declaration hold
+    //
+    // WHY: a row that changes its mind while you are reading it is not a fast
+    // row, it is an unreliable one. Both states that need a declaration are
+    // scraped off a string the agent rewrites constantly, so a TUI redrawing
+    // its frame dropped the banner for one push and the row resolved
+    // Approval, Working, Approval, once a second, for as long as the gate was
+    // up.
+    //
+    // What these do NOT catch: a flap between two states that BOTH require a
+    // declaration (Approval to Input and back), which the hold does not damp
+    // because each arrival is a fresh declaration and adopting it instantly is
+    // the rule. Nothing observed has ever produced that pair.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// A codex session mid-gate, whose title carries the approval banner.
+    fn gated() -> ViewBuilder {
+        ViewBuilder::new(1)
+            .command("codex")
+            .running()
+            .term_title("[ ! ] Action Required")
+    }
+
+    /// The reproduction, as a sequence. Fails on the pre-hold code at the
+    /// second assertion, which is the frame the banner is missing from.
+    #[test]
+    fn a_dropped_declaration_does_not_end_a_declared_block() {
+        let mut row = gated().build();
+        row.settle_declaration(NOW);
+        assert_eq!(row.status(), SidebarStatus::Approval);
+
+        // The agent redraws and the banner is gone for one push.
+        row.info.term_title = Some("codex".to_string());
+        row.settle_declaration(NOW + 900);
+        assert_eq!(
+            row.status(),
+            SidebarStatus::Approval,
+            "one push without the banner ended the block"
+        );
+        assert_eq!(
+            row.resolve_status().source,
+            StatusSource::Title,
+            "the held row must replay the source too, or its hedge flickers \
+             instead of its word"
+        );
+
+        // The banner comes back, as it does on the next frame.
+        row.info.term_title = Some("[ ! ] Action Required".to_string());
+        row.settle_declaration(NOW + 1_800);
+        assert_eq!(row.status(), SidebarStatus::Approval);
+    }
+
+    /// The hold is bounded. An agent that genuinely moved on is reported so,
+    /// and this is the assertion that stops the fix becoming a lie: without
+    /// it, "never flaps" is satisfiable by never changing at all.
+    #[test]
+    fn a_declaration_that_stays_gone_lapses() {
+        let mut row = gated().waiting(Some(true)).build();
+        row.settle_declaration(NOW);
+        assert_eq!(row.status(), SidebarStatus::Approval);
+
+        row.info.term_title = Some("codex".to_string());
+        row.settle_declaration(NOW + DECLARATION_DWELL_MS - 1);
+        assert_eq!(row.status(), SidebarStatus::Approval, "lapsed early");
+
+        row.settle_declaration(NOW + DECLARATION_DWELL_MS);
+        assert_eq!(
+            row.status(),
+            SidebarStatus::Ready,
+            "the hold outlived its own bound"
+        );
+        assert_eq!(row.held_claim, None, "a lapsed hold must be dropped");
+    }
+
+    /// The dwell counts from the LAST declaration, not the first. A gate held
+    /// for a minute must not lapse two seconds into it.
+    #[test]
+    fn every_declaration_renews_the_hold() {
+        let mut row = gated().build();
+        for step in 0..60 {
+            row.settle_declaration(NOW + step * 1_000);
+        }
+        row.info.term_title = Some("codex".to_string());
+        row.settle_declaration(NOW + 59_500);
+        assert_eq!(row.status(), SidebarStatus::Approval);
+    }
+
+    /// Escalation is never delayed. The asymmetry is the design: you are told
+    /// late that you are no longer needed, never that you are.
+    #[test]
+    fn a_block_is_adopted_the_instant_it_arrives() {
+        let mut row = ViewBuilder::new(1).command("codex").running().build();
+        row.settle_declaration(NOW);
+        assert_eq!(row.status(), SidebarStatus::Working);
+
+        row.info.term_title = Some("[ ! ] Action Required".to_string());
+        row.settle_declaration(NOW + 1);
+        assert_eq!(
+            row.status(),
+            SidebarStatus::Approval,
+            "a declaration waited for a dwell it must never wait for"
+        );
+    }
+
+    /// Precedence rule 1 outranks the hold: the exit wins over everything.
+    /// A stale "act now" on a session that has already gone is exactly what
+    /// that rule exists to prevent, and a hold must not smuggle one back.
+    #[test]
+    fn an_exit_ends_a_held_block_immediately() {
+        for (code, expected) in [(0, SidebarStatus::Ready), (2, SidebarStatus::Failed)] {
+            let mut row = gated().build();
+            row.settle_declaration(NOW);
+            assert_eq!(row.status(), SidebarStatus::Approval);
+
+            row.info.status = vitrum_proto::SessionStatus::Exited { code: Some(code) };
+            row.info.attention.failed = code != 0;
+            assert_eq!(
+                row.status(),
+                expected,
+                "a hold outlived the child that declared it"
+            );
+        }
+    }
+
+    /// A hold can only ever replay a state the agent declared. It has no way
+    /// to reach `Working`, `Ready` or `Failed`, so it cannot invent a reading
+    /// the resolver would not have produced.
+    #[test]
+    fn a_hold_never_holds_an_observed_state() {
+        for title in ["codex", "[ ! ] Action Required"] {
+            let mut row = ViewBuilder::new(1)
+                .command("codex")
+                .running()
+                .term_title(title)
+                .waiting(Some(true))
+                .build();
+            row.settle_declaration(NOW);
+            if let Some(held) = row.held_claim {
+                assert!(
+                    held.resolution.status.requires_declaration(),
+                    "held an observed state: {held:?}"
+                );
+            }
+        }
+    }
+
+    /// `raw_status` is what the agent is saying right now, and stays visible
+    /// through a hold. Without it there is no way to ask the question the
+    /// hold's own bookkeeping needs answered.
+    #[test]
+    fn the_raw_resolution_is_reachable_through_a_hold() {
+        let mut row = gated().waiting(Some(true)).build();
+        row.settle_declaration(NOW);
+        row.info.term_title = Some("codex".to_string());
+        assert_eq!(row.status(), SidebarStatus::Approval);
+        assert_eq!(row.raw_status().status, SidebarStatus::Ready);
     }
 }

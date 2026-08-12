@@ -96,8 +96,8 @@ pub use snooze::{
     wake_description,
 };
 pub use status::{
-    ALL_STATUS_SOURCES, ALL_STATUSES, SidebarStatus, StatusResolution, StatusSource, TitleClaim,
-    resolve_status,
+    ALL_STATUS_SOURCES, ALL_STATUSES, DECLARATION_DWELL_MS, HeldClaim, SidebarStatus,
+    StatusResolution, StatusSource, TitleClaim, resolve_status,
 };
 pub use traversal::{Direction, Wrap, adjacent, adjacent_matching};
 pub use tree::{PreviewSplit, ProjectGroup, preview_sessions, visible_session_ids};

@@ -80,6 +80,52 @@
 use vitrum_proto::{Attention, HintState, IDLE_ATTENTION_MS, SessionStatus};
 use serde::{Deserialize, Serialize};
 
+/// How long a declared block outlives the declaration that produced it.
+///
+/// A row that changes its mind while you are reading it is not a fast row,
+/// it is an unreliable one, and this is the only place the sidebar could
+/// produce that. Both states that need a declaration are read off a string
+/// the agent rewrites constantly: [`StatusSource::Title`] scrapes the
+/// terminal title, and a TUI redrawing its frame drops the banner for one
+/// push and puts it back on the next. The row resolved `Approval`, then
+/// `Working`, then `Approval` again, once a second, for as long as the agent
+/// held the gate.
+///
+/// So the transition is asymmetric, which is the whole design: a declaration
+/// is adopted the instant it arrives, and its disappearance is not believed
+/// until it has been gone this long. You are never told late that you are
+/// needed, and never told you are not needed by a frame that will take it
+/// back.
+///
+/// Two seconds against a daemon that pushes about once a second: long enough
+/// that a single dropped push cannot end the state, short enough that a row
+/// whose agent genuinely moved on is stale for less time than it takes to
+/// read it.
+pub const DECLARATION_DWELL_MS: u64 = 2_000;
+
+/// A declared block, and when the client stops believing it without renewal.
+///
+/// Client-local, exactly like a snooze: it is a fact about what this window
+/// has shown the operator, not a fact about the session, and a second window
+/// may legitimately be a beat behind or ahead.
+///
+/// It holds the whole [`StatusResolution`] and not just the status, because
+/// the source is on screen too. A title claim renders hedged through
+/// [`StatusSource::is_inferred`] and a hint claim does not, so a hold that
+/// synthesised its own source would keep the WORD steady and let its weight
+/// flicker instead — the same defect one layer down. Replaying the exact
+/// resolution is what makes the held row pixel-identical to the row that
+/// declared it, which is the entire point of holding it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldClaim {
+    /// The resolution being replayed. Its status is always one for which
+    /// [`SidebarStatus::requires_declaration`] is true.
+    pub resolution: StatusResolution,
+    /// The instant after which the hold lapses.
+    pub until_ms: u64,
+}
+
 /// What the sidebar says a session is doing.
 ///
 /// Deliberately not `Ord`: two orderings are meaningful (urgency for the

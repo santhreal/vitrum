@@ -186,6 +186,13 @@ pub(crate) struct Node {
     /// ever say, so the title beside it keeps one ellipsis point for the life
     /// of the row.
     pub(crate) chars: u16,
+    /// Whether this node sits at its band's centre rather than filling it.
+    ///
+    /// A box that is shorter than the row it is in fills the row by default,
+    /// so its background paints the row's full height and a twenty-pixel
+    /// badge comes out as a thirty-two-pixel slab. Set it on the element that
+    /// states its own height and means it.
+    pub(crate) centred: bool,
     pub(crate) children: Vec<Node>,
 }
 
@@ -202,6 +209,7 @@ impl Node {
             grow: false,
             eliding: false,
             chars: 0,
+            centred: false,
         }
     }
 
@@ -226,6 +234,7 @@ impl Node {
             grow: false,
             eliding: false,
             chars: 0,
+            centred: false,
             children: Vec::new(),
         }
     }
@@ -252,6 +261,7 @@ impl Node {
             grow: false,
             eliding: false,
             chars: 0,
+            centred: false,
             children: Vec::new(),
         }
     }
@@ -264,6 +274,12 @@ impl Node {
     /// stolen from the title on a 224px row.
     pub(crate) fn wide(mut self, chars: u16) -> Self {
         self.chars = chars;
+        self
+    }
+
+    /// Sit at the centre of the band rather than filling it.
+    pub(crate) fn centred(mut self) -> Self {
+        self.centred = true;
         self
     }
     /// A control that raises `act` when it is pressed.

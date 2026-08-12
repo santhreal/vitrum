@@ -475,6 +475,11 @@ fn dress(rendered: &Rendered, node: &Node, settling: &Rc<Cell<bool>>) {
     }
     sheet::set_classes(&widget.style_context(), &node.class);
     widget.set_sensitive(node.enabled);
+    widget.set_valign(if node.centred {
+        gtk::Align::Center
+    } else {
+        gtk::Align::Fill
+    });
     match &node.kind {
         Kind::Label => {
             if let Some(label) = widget.downcast_ref::<gtk::Label>() {

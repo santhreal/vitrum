@@ -608,10 +608,14 @@
   background-color: $hue-ready$;
 }
 
-/* ── The status pill ─────────────────────────────────────────────────────── */
+/* ── The status badge ────────────────────────────────────────────────────── */
 
+/* Twenty pixels in a thirty-two pixel row, centred by `Node::centred`. A
+ * capsule the height of its row is not a badge on the row, it is the row: at
+ * eight sessions the list reads as a column of coloured slabs with titles
+ * beside them, and the thing the operator came to scan is the title. */
 .rg-pill {
-  min-height: $row-h$;
+  min-height: $badge-h$;
   padding-left: $space-2$;
   padding-right: $space-2$;
   border-radius: $radius-full$;
@@ -620,14 +624,14 @@
 }
 
 .rg-pill__word {
-  min-height: $row-h$;
+  min-height: $badge-h$;
   font-size: $text-11$;
   font-weight: $weight-medium$;
 }
 
 /* Empty before the daemon says what the session is doing. Same box, no ink. */
 .rg-pill__word.rg-pill__word--empty {
-  min-height: $row-h$;
+  min-height: $badge-h$;
   color: transparent;
 }
 

@@ -449,6 +449,7 @@ const LENGTHS: &[(&str, f64)] = &[
     ("row-h", 8.0 * U),
     ("row-h-project", 8.0 * U),
     ("row-collapsed-h", 8.0 * U),
+    ("badge-h", 5.0 * U),
     ("section-h", 5.0 * U),
     ("line-head", 5.0 * U),
     ("row-gap", 2.0 * U),
@@ -587,7 +588,7 @@ pub(crate) const RESERVED_SLOTS: &[(&str, &str)] = &[
     ("rg-session__time", "line-head"),
     ("rg-session__place", "line-head"),
     ("rg-session__worktree", "line-head"),
-    ("rg-pill__word", "row-h"),
+    ("rg-pill__word", "badge-h"),
     ("rg-panebar__value", "panebar-h"),
     ("rg-conn__word", "row-h"),
 ];

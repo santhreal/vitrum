@@ -1020,6 +1020,7 @@ fn fold_row(
 /// so the state is never lost to a screen reader, only to the column.
 fn pill_node(pill: &Pill, word: bool, aux: Option<String>) -> Node {
     Node::row(&pill.class)
+        .centred()
         .named(pill.word)
         .with(if word {
             Node::reserved("rg-pill__word", pill.word).wide(inbox::state_word_chars())

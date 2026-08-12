@@ -175,6 +175,17 @@ pub(crate) struct Node {
     /// set it, because an elidable label asks for the width of an ellipsis
     /// and will be squeezed to one under pressure.
     pub(crate) eliding: bool,
+    /// The width this label holds, in characters, whatever it currently says.
+    ///
+    /// Zero is natural width. Anything above it is a label whose VALUE changes
+    /// while the row is on screen: a status word, an elapsed counter, a
+    /// countdown. `--empty` holds a box that has not been filled yet; this
+    /// holds a box that will be filled again with something a different length,
+    /// which is the same reflow arriving once a second instead of once a
+    /// session. The width is reserved for the widest string the element can
+    /// ever say, so the title beside it keeps one ellipsis point for the life
+    /// of the row.
+    pub(crate) chars: u16,
     pub(crate) children: Vec<Node>,
 }
 
@@ -190,6 +201,7 @@ impl Node {
             enabled: true,
             grow: false,
             eliding: false,
+            chars: 0,
         }
     }
 
@@ -213,6 +225,7 @@ impl Node {
             enabled: true,
             grow: false,
             eliding: false,
+            chars: 0,
             children: Vec::new(),
         }
     }
@@ -238,8 +251,20 @@ impl Node {
             enabled: true,
             grow: false,
             eliding: false,
+            chars: 0,
             children: Vec::new(),
         }
+    }
+
+    /// Hold this label at `chars` characters whatever it says.
+    ///
+    /// See [`Node::chars`]. Applied to an element whose value changes under a
+    /// reader, never to one that is merely long: a title that wants more room
+    /// elides, and an element that reserves room it does not need is width
+    /// stolen from the title on a 224px row.
+    pub(crate) fn wide(mut self, chars: u16) -> Self {
+        self.chars = chars;
+        self
     }
     /// A control that raises `act` when it is pressed.
     pub(crate) fn press(class: &str, act: Act) -> Self {

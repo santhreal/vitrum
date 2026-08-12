@@ -184,6 +184,34 @@ pub fn status_word(state: StateWord) -> &'static str {
     }
 }
 
+/// How many characters a state word may need.
+///
+/// Derived from the vocabulary rather than written down, so a longer word
+/// widens the reservation the day it is added instead of being clipped by a
+/// constant nobody revisited. The pill holds this width whatever it currently
+/// says: `Ready` becoming `Approval` must not move the title beside it.
+pub fn state_word_chars() -> u16 {
+    ALL_STATE_WORDS
+        .iter()
+        .map(|state| status_word(*state).chars().count() as u16)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Every word in the vocabulary.
+///
+/// Kept honest by `every_state_word_is_in_the_roster`, whose exhaustive match
+/// stops compiling when a variant is added and left out.
+pub const ALL_STATE_WORDS: [StateWord; 7] = [
+    StateWord::Approval,
+    StateWord::Input,
+    StateWord::Working,
+    StateWord::Failed,
+    StateWord::Ready,
+    StateWord::Woke,
+    StateWord::Done,
+];
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Project identity
 // ═══════════════════════════════════════════════════════════════════════════

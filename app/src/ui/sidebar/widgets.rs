@@ -340,6 +340,7 @@ fn build(
             if node.eliding {
                 label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             }
+            reserve_width(&label, node.chars);
             (label.upcast(), None)
         }
         Kind::Dot | Kind::Rule => {
@@ -449,6 +450,21 @@ fn attach(parent: &Rendered, child: &Rendered, index: usize, hovers: &mut Hovers
     holder.add(&child.widget);
 }
 
+/// Hold a label at a fixed character width, or release it.
+///
+/// `set_width_chars` is a MINIMUM in the font's average character width, which
+/// is what a reservation wants: the box stops shrinking when the word does,
+/// and a word wider than the reservation still fits. Centred, because the
+/// reserved elements are a pill's word and the counters beside it, and a short
+/// word left-aligned in a box sized for a long one reads as a mistake.
+fn reserve_width(label: &gtk::Label, chars: u16) {
+    if chars == 0 {
+        return;
+    }
+    label.set_width_chars(i32::from(chars));
+    label.set_xalign(0.5);
+}
+
 /// Give a widget the classes, text, name and sensitivity its node asks for.
 fn dress(rendered: &Rendered, node: &Node, settling: &Rc<Cell<bool>>) {
     let widget = &rendered.widget;
@@ -461,10 +477,11 @@ fn dress(rendered: &Rendered, node: &Node, settling: &Rc<Cell<bool>>) {
     widget.set_sensitive(node.enabled);
     match &node.kind {
         Kind::Label => {
-            if let Some(label) = widget.downcast_ref::<gtk::Label>()
-                && label.text() != node.text.as_str()
-            {
-                label.set_text(&node.text);
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                if label.text() != node.text.as_str() {
+                    label.set_text(&node.text);
+                }
+                reserve_width(label, node.chars);
             }
         }
         Kind::Field { placeholder } => {

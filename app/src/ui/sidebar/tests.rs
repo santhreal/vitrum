@@ -984,3 +984,125 @@ fn a_jump_past_the_settled_tail_puts_the_row_on_screen() {
         seated.len()
     );
 }
+
+/// Every label in `node` whose class contains `class`, with the width it holds.
+fn reserved_labels(node: &super::tree::Node, class: &str, out: &mut Vec<(String, u16)>) {
+    if node.class.split_whitespace().any(|c| c == class) {
+        out.push((node.text.clone(), node.chars));
+    }
+    for child in &node.children {
+        reserved_labels(child, class, out);
+    }
+}
+
+/// A row that changes state must not change the width of anything on it.
+///
+/// # The class this closes
+///
+/// The status word runs from five characters to eight. The pill is the last
+/// element on line one and the title before it is the element that grows, so a
+/// row moving from `Ready` to `Approval` widened the pill, shrank the title's
+/// box, and re-elided the title at a new character. The operator sees a row
+/// that reflows every time an agent changes what it is doing, which is exactly
+/// when they are reading it.
+///
+/// The width is derived from the vocabulary at run time, so a longer word
+/// added later widens the reservation instead of reintroducing the reflow.
+///
+/// What it does not catch: a word wider than the reservation would still fit
+/// and still push, because `set_width_chars` is a minimum. Nothing can produce
+/// one while the width comes from the vocabulary itself.
+#[test]
+fn the_status_pill_holds_one_width_across_every_state() {
+    let reserve = crate::inbox::state_word_chars();
+    for word in crate::inbox::ALL_STATE_WORDS {
+        let said = crate::inbox::status_word(word);
+        assert!(
+            said.chars().count() as u16 <= reserve,
+            "{said:?} is wider than the reservation of {reserve}"
+        );
+    }
+
+    let mut seen = 0usize;
+    for status in vitrum_model::ALL_STATUSES {
+        let mut st = UiState::default();
+        st.daemon.projects = vec![crate::testkit::project(1, "vitrum")];
+        // Fresh and unseen, so every one of them lands in the open inbox band
+        // rather than on a shelf this test would then have to unfold.
+        let base = || row(1).last_activity_ms(NOW - 1_000).unread(true);
+        st.daemon.sessions = vec![match status {
+            SidebarStatus::Approval => base()
+                .running()
+                .hint(HintState::Approval, Some("approve this write?"), NOW - 1_000)
+                .build(),
+            SidebarStatus::Input => base()
+                .running()
+                .hint(HintState::Input, Some("which file?"), NOW - 1_000)
+                .build(),
+            SidebarStatus::Working => base().running().waiting(Some(false)).build(),
+            SidebarStatus::Ready => base().running().waiting(Some(true)).build(),
+            SidebarStatus::Failed => base().exited(Some(1)).build(),
+        }];
+
+        let fold = folded(&st);
+        let row = fold.rows.first().expect("one row was seated");
+        let mut words = Vec::new();
+        reserved_labels(&row.node, "rg-pill__word", &mut words);
+        assert!(!words.is_empty(), "{status:?} folded no status word");
+        for (said, chars) in words {
+            assert_eq!(
+                chars, reserve,
+                "the pill saying {said:?} for {status:?} holds {chars} characters, \
+                 not the {reserve} every state has to fit in"
+            );
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, vitrum_model::ALL_STATUSES.len(), "a state folded twice");
+}
+
+/// The counter beside the status word ticks without moving the row.
+///
+/// # The class this closes
+///
+/// `format_duration_label` is two characters at nine seconds and three at ten,
+/// so an agent that has just started widens its own pill once a second for the
+/// first minute of every turn. The reservation covers the whole range in which
+/// the number moves at that rate; past an hour the label changes at most once
+/// every ten minutes and is documented as widening then.
+#[test]
+fn the_live_counter_reserves_every_label_it_ticks_through() {
+    for seconds in 0..3_600u64 {
+        let label = vitrum_model::format_duration_label(seconds * 1_000);
+        assert!(
+            label.chars().count() as u16 <= super::fold::AUX_CHARS,
+            "{label:?} at {seconds}s overruns the {} characters the pill reserves",
+            super::fold::AUX_CHARS
+        );
+    }
+}
+
+/// The row's right-hand slot is one width whatever it is saying.
+///
+/// # The class this closes
+///
+/// The slot holds a timestamp or a snooze ticket, and the tail line's branch
+/// is the element that grows into what the slot does not take. `just now`
+/// becoming `4m ago` moved the branch's ellipsis. Every relative label the
+/// clock produces below the point where it switches to a calendar date is
+/// checked, because that is the range in which the value still changes.
+#[test]
+fn the_slot_reserves_every_relative_label() {
+    let fmt = crate::clock::render_clock(NOW as i64, 0);
+    let mut ladder: Vec<u64> = (0..600).collect();
+    ladder.extend((0..48).map(|h| h * 3_600));
+    ladder.extend((0..7).map(|d| d * 86_400));
+    for secs in ladder {
+        let label = crate::clock::age(fmt, NOW.saturating_sub(secs * 1_000));
+        assert!(
+            label.chars().count() as u16 <= super::fold::SLOT_CHARS,
+            "{label:?} at {secs}s overruns the {} characters the slot reserves",
+            super::fold::SLOT_CHARS
+        );
+    }
+}

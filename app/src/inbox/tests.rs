@@ -843,3 +843,41 @@ fn the_preview_cut_loses_nothing_and_reorders_nothing() {
     assert_eq!(rescued.active.len(), PREVIEW_LIMIT + 1);
     assert_eq!(rescued.hidden.len(), 12 - PREVIEW_LIMIT - 1);
 }
+
+/// The roster the pill's width is measured from covers the whole vocabulary.
+///
+/// # The class this closes
+///
+/// [`state_word_chars`] is a maximum over [`ALL_STATE_WORDS`], and a variant
+/// missing from that array is a word the pill reserves no room for: the box
+/// grows the first time a session reaches that state and every row on the
+/// panel reflows. The match below is exhaustive on purpose. Adding a variant
+/// and forgetting the array stops this file compiling rather than shipping a
+/// reservation that is quietly one word short.
+#[test]
+fn every_state_word_is_in_the_roster() {
+    for word in ALL_STATE_WORDS {
+        match word {
+            StateWord::Approval
+            | StateWord::Input
+            | StateWord::Working
+            | StateWord::Failed
+            | StateWord::Ready
+            | StateWord::Woke
+            | StateWord::Done => {}
+        }
+        assert!(
+            !status_word(word).is_empty(),
+            "{word:?} has no word to reserve room for"
+        );
+    }
+    assert_eq!(
+        state_word_chars(),
+        ALL_STATE_WORDS
+            .iter()
+            .map(|w| status_word(*w).chars().count() as u16)
+            .max()
+            .unwrap(),
+        "the reservation is not the widest word in the vocabulary"
+    );
+}

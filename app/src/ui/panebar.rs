@@ -152,10 +152,12 @@ fn exit(bar: &PaneBar) -> Node {
 /// The state word, in the hue the sidebar row gives the same session.
 fn state_chip(bar: &PaneBar) -> Node {
     match &bar.state {
-        Some(pill) => Node::row(&format!("rg-panebar__state {}", pill.class))
-            .with(Node::reserved("rg-pill__word", pill.word.to_string())),
+        Some(pill) => Node::row(&format!("rg-panebar__state {}", pill.class)).with(
+            Node::reserved("rg-pill__word", pill.word.to_string())
+                .wide(crate::inbox::state_word_chars()),
+        ),
         None => Node::row("rg-panebar__state rg-panebar__state--empty")
-            .with(Node::reserved("rg-pill__word", "")),
+            .with(Node::reserved("rg-pill__word", "").wide(crate::inbox::state_word_chars())),
     }
 }
 

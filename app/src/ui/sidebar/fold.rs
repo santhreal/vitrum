@@ -22,6 +22,14 @@
 //! rest of the line sideways under a reader who is in the middle of it.
 //! [`Node::reserved`] is that rule and the sheet's `--empty` modifiers are its
 //! other half.
+//!
+//! **An element whose VALUE changes holds one width.** The rule above is about
+//! a fact arriving; this is about a fact moving. A counter reading `9s` and
+//! then `10s`, a pill reading `Ready` and then `Approval`, a slot reading
+//! `just now` and then `4m ago` each take a different amount of room for the
+//! same element, and the title beside them re-elides at a new point every
+//! time. [`Node::wide`] holds those boxes at the widest string they can say,
+//! so a row that changes state changes only its state.
 
 use std::rc::Rc;
 
@@ -39,6 +47,23 @@ use crate::clock::age;
 use crate::inbox::{self, Pill};
 use crate::state::{ConnState, UiState, attention_label, attention_modifier};
 use crate::update::Standing;
+
+/// Width of the row's right-hand slot, in characters.
+///
+/// `just now` is the longest label either occupant of that cell can hold at
+/// the second and minute scales where the value actually moves; a calendar
+/// date is wider and never changes again once a row is that old. Both the
+/// timestamp and the return ticket take it, so the cell is one width whichever
+/// of them a row is showing.
+pub(super) const SLOT_CHARS: u16 = 8;
+
+/// Width of the pill's live counter, in characters.
+///
+/// `59s` and `59m` are the widest labels `format_duration_label` produces
+/// below one hour, which is the whole range in which the number ticks under a
+/// reader. The hour form is wider, arrives once, and then holds its width for
+/// the next ten hours.
+pub(super) const AUX_CHARS: u16 = 3;
 
 /// One session row, folded.
 ///
@@ -943,7 +968,7 @@ fn fold_row(
                     .maybe(completion.map(badge_node))
                     .with(
                         Node::new(Kind::Stack, "rg-session__slot")
-                            .with(Node::reserved("rg-session__time", time))
+                            .with(Node::reserved("rg-session__time", time).wide(SLOT_CHARS))
                             .with(close_actions(id)),
                     ),
             )
@@ -960,8 +985,8 @@ fn fold_row(
                     Node::new(Kind::Stack, "rg-session__slot")
                         .with(match parked {
                             Some(ticket) => Node::row(&ticket.class)
-                                .with(Node::reserved("rg-pill__word", ticket.text)),
-                            None => Node::reserved("rg-session__time", time),
+                                .with(Node::reserved("rg-pill__word", ticket.text).wide(SLOT_CHARS)),
+                            None => Node::reserved("rg-session__time", time).wide(SLOT_CHARS),
                         })
                         .with(close_actions(id)),
                 ),
@@ -996,11 +1021,15 @@ fn fold_row(
 fn pill_node(pill: &Pill, word: bool, aux: Option<String>) -> Node {
     Node::row(&pill.class)
         .named(pill.word)
-        .with(Node::reserved(
-            "rg-pill__word",
-            if word { pill.word } else { "" },
-        ))
-        .maybe(aux.map(|aux| Node::label("rg-pill__aux", aux)))
+        .with(if word {
+            Node::reserved("rg-pill__word", pill.word).wide(inbox::state_word_chars())
+        } else {
+            // No reservation with the word off: the box is empty on purpose,
+            // and holding eight transparent characters there would spend the
+            // width the narrow layout exists to give back.
+            Node::reserved("rg-pill__word", "")
+        })
+        .maybe(aux.map(|aux| Node::label("rg-pill__aux", aux).wide(AUX_CHARS)))
 }
 
 fn badge_node(badge: inbox::Badge) -> Node {

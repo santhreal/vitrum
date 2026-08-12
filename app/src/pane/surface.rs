@@ -259,20 +259,35 @@ fn pane_device() -> wgpu::DeviceDescriptor<'static> {
 /// adapter is not Vulkan. A miss is not a failure: the caller does what it
 /// did before this existed.
 fn handshake() -> Option<Warm> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle().with_env());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        force_fallback_adapter: false,
-        compatible_surface: None,
-    }))
-    .ok()?;
+    let instance = {
+        let _span = crate::boot::span("wgpu.instance");
+        // Vulkan alone, because a prewarm that produced anything else is
+        // thrown away four lines below: the handle-free instance cannot
+        // present on GLES, so a GLES machine takes the cold path either way.
+        // Enumerating the other backends to reject them cost 106 ms of the
+        // start on the capture rig, which was the largest single item in it.
+        let mut want = wgpu::InstanceDescriptor::new_without_display_handle();
+        want.backends = wgpu::Backends::VULKAN;
+        wgpu::Instance::new(want.with_env())
+    };
+    let adapter = {
+        let _span = crate::boot::span("wgpu.adapter");
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))
+        .ok()?
+    };
     if adapter.get_info().backend != wgpu::Backend::Vulkan {
         return None;
     }
     let mut want = pane_device();
     want.required_limits = pane_limits(&adapter);
-    let (device, queue) = pollster::block_on(adapter.request_device(&want)).ok()?;
+    let (device, queue) = {
+        let _span = crate::boot::span("wgpu.device");
+        pollster::block_on(adapter.request_device(&want)).ok()?
+    };
     Some(Warm {
         instance,
         adapter,

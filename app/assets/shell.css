@@ -934,8 +934,12 @@
   color: $fg-faint$;
 }
 
+/* A badge in the strip, not the strip. Left at panebar-h it was a filled
+ * capsule the full height of the bar, hard against the window's bottom right
+ * corner, and the loudest thing on a surface whose job is to be read past.
+ * The bar keeps its own height; this states its own. */
 .rg-panebar__state {
-  min-height: $panebar-h$;
+  min-height: $badge-h$;
   color: $hue-ready$;
 }
 

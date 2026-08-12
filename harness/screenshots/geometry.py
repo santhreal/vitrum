@@ -73,17 +73,28 @@ def main() -> int:
         return 1
     rows_shown = box_h // pitch
     slack = box_h - rows_shown * pitch
-    cell_w = box_w / want_cols
+    # The horizontal claim, in the shape the vertical one already has. The
+    # advance is a font metric and is fractional (8.007 px for this face at
+    # this size), and the grid is centred in its box, so the box is a whole
+    # number of columns plus a letterbox of under one cell. Asking instead
+    # that box_w / cols land on an integer asks the sidebar beside it never to
+    # change width by a pixel, which is a claim about the chrome and not about
+    # the pane.
+    advance = round(box_w / want_cols)
+    letterbox = box_w - want_cols * advance
     print(f"rows that fit {rows_shown}, slack {slack} px")
-    print(f"grid claimed {want_cols}x{want_rows}, cell {cell_w:.3f}x{pitch}")
+    print(f"grid claimed {want_cols}x{want_rows}, cell {advance}x{pitch}, letterbox {letterbox} px")
     if slack >= pitch:
         print("FAIL: a whole row fits in the slack")
         return 1
     if rows_shown != want_rows:
         print(f"FAIL: {rows_shown} rows fit but the pane says {want_rows}")
         return 1
-    if abs(cell_w - round(cell_w)) > 1.0 / want_cols:
-        print("FAIL: the columns do not divide the box into whole pixels")
+    if letterbox < 0:
+        print(f"FAIL: {want_cols} columns of {advance} px do not fit in {box_w} px")
+        return 1
+    if letterbox >= advance:
+        print("FAIL: a whole column fits in the letterbox")
         return 1
     print("ok: the pane's own grid is the grid that fits, with less than a cell to spare")
     return 0

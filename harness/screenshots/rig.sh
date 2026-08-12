@@ -46,14 +46,25 @@ OPEN=${OPEN:-}
 # stages the shipped defaults, which is what the README's pictures show.
 SETTINGS=${SETTINGS:-}
 
-# project root -> branch. A worktree of the first, so one row carries a branch
-# that is not the project's own.
+# project root -> branch.
 declare -A BRANCHES=(
   [/src/vitrum]=main
   [/src/veyyon]=theme-contrast
   [/src/keyhog]=main
-  [/src/worktrees/hint-parser]=hint-parser
 )
+# A LINKED worktree of the first project, so one row carries a branch that is
+# not the project's own AND reports a worktree name.
+#
+# It has to be a real `git worktree add` and not a repository that happens to
+# sit at that path. A linked worktree's `.git` is a FILE holding `gitdir:`,
+# which is the only thing the daemon can read to resolve a worktree name; a
+# standalone `git init` at the same path has a `.git` DIRECTORY and reports no
+# worktree at all. The fixture claimed to stage a worktree and staged the
+# second shape, so every rule keyed on a worktree went unexercised in every
+# picture this harness has ever produced.
+WORKTREE=/src/worktrees/hint-parser
+WORKTREE_OF=/src/vitrum
+WORKTREE_BRANCH=hint-parser
 SUBDIRS="/src/vitrum/crates/vitrum-core /src/veyyon/crates/tui /src/keyhog/fuzz /src/keyhog/docs"
 
 die() { echo "rig.sh: $*" >&2; exit 1; }
@@ -73,6 +84,14 @@ make_tree() {
       || git -c user.email=rig@invalid -c user.name=rig branch "$branch" >/dev/null 2>&1
       git symbolic-ref HEAD "refs/heads/$branch" ) || die "cannot put $root on $branch"
   done
+  # After the loop: the worktree needs its parent repository to exist and to
+  # have the commit that `git worktree add` checks out.
+  if [ ! -e "$WORKTREE/.git" ]; then
+    mkdir -p "$(dirname "$WORKTREE")" || die "cannot create $(dirname "$WORKTREE")"
+    ( cd "$WORKTREE_OF" \
+      && git worktree add -q -B "$WORKTREE_BRANCH" "$WORKTREE" \
+    ) || die "cannot add a worktree at $WORKTREE"
+  fi
   for dir in $SUBDIRS; do mkdir -p "$dir" || die "cannot create $dir"; done
 }
 

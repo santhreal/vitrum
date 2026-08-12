@@ -106,19 +106,25 @@
   padding-right: $space-3$;
 }
 
+/* The session's own title, in the interface face.
+ *
+ * A window title set in a monospace face reads as a log line rather than as
+ * the name of what is on screen. The face belongs to the facts that are
+ * quoted from a machine, which on this line are the project, the branch and
+ * the state, and those are the secondary label. */
 .rg-titlebar__primary {
   font-size: $text-13$;
   color: $fg$;
 }
 
 .rg-titlebar__secondary {
+  font-family: $font-mono$;
   font-size: $text-12$;
   color: $fg-subtle$;
   padding-left: $space-2$;
 }
 
 .rg-titlebar__context {
-  font-family: $font-mono$;
   font-size: $text-12$;
   color: $fg-muted$;
   padding-left: $space-2$;

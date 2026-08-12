@@ -64,8 +64,8 @@
 //! Typing must not mark the one global signal dirty, or every keystroke
 //! re-diffs the sidebar, the tab strip and the flash strip.
 //!
-//! Escape is not handled here. `bootstrap.js` matches the shell's chord table
-//! on `window` in the capture phase and calls `stopPropagation`, so Escape is
+//! Escape is not handled here. The shell matches its chord table on the
+//! toplevel window before the focused widget sees the press, so Escape is
 //! claimed by [`crate::keymap::KeyAction::Dismiss`] before any handler in this
 //! file could run. That is also why a preset chord must clear
 //! [`launch::chord_conflict`] before it is stored.

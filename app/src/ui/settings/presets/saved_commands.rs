@@ -153,8 +153,8 @@ fn a_shortcut_the_matcher_cannot_match_is_refused_rather_than_stored() {
 }
 
 /// Locks out: a preset bound over a chord the shell already claims.
-/// `bootstrap.js` listens on window in the capture phase and calls
-/// stopPropagation, so the dialog's keydown never runs for one of those
+/// The shell matches its table on the toplevel window before the focused
+/// widget sees the press, so the dialog's handler never runs for one of those
 /// and the shortcut would be a key this tab displays and the product never
 /// fires. Alt+1 is the shell's "focus tab 1".
 #[test]

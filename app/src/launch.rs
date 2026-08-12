@@ -1421,10 +1421,11 @@ pub fn preset_for_chord<'a>(presets: &'a [SavedPreset], chord: &Chord) -> Option
 
 /// The shell action that would swallow `chord` before a preset ever saw it.
 ///
-/// `bootstrap.js` matches the shell's own table on `window` in the capture
-/// phase and calls `stopPropagation`, so a chord in [`crate::keymap::CHORDS`]
-/// never reaches a preset's own handler at all. A preset bound to one would
-/// be a shortcut the editor displays and the product never fires, which is
+/// The shell's key handler on the toplevel window matches its own table
+/// before the focused widget sees the press, so a chord in
+/// [`crate::keymap::CHORDS`] never reaches a preset's own handler at all. A
+/// preset bound to one would be a shortcut the editor displays and the
+/// product never fires, which is
 /// worse than refusing the binding, so the editor refuses it and says which
 /// action already owns the keys.
 ///

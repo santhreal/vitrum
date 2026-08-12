@@ -752,9 +752,10 @@ fn an_unparseable_shortcut_never_fires() {
 }
 
 /// A chord the shell already claims must be refused, and the refusal must
-/// name what owns it. `bootstrap.js` captures on `window` and calls
-/// `stopPropagation`, so a preset bound to Ctrl+Shift+N would be a
-/// shortcut the settings panel displays and the product never fires.
+/// name what owns it. The shell matches its table on the toplevel window
+/// before the focused widget sees the press, so a preset bound to
+/// Ctrl+Shift+N would be a shortcut the settings panel displays and the
+/// product never fires.
 #[test]
 fn a_chord_the_shell_already_owns_is_reported_with_its_owner() {
     let taken = parse_chord("Ctrl+Shift+N").expect("valid");

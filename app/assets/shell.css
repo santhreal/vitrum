@@ -1998,8 +1998,17 @@
   background-color: $hue-ready$;
 }
 
+/* Nothing, while the socket is fine.
+ *
+ * The same rule the waiting count follows: the honest answer to "is the
+ * daemon answering" when it is is silence, not a lit indicator. A working
+ * connection is the state the window is in for its whole life, so a mark for
+ * it is a permanent bright green pixel in the chrome that never means
+ * anything and is the first thing the eye lands on. The box is still held, so
+ * a socket that goes away lights this one rather than moving the actions
+ * beside it, and the state stays on the mark's tooltip either way. */
 .rg-conn--ok .rg-conn__dot {
-  background-color: $hue-done$;
+  background-color: transparent;
 }
 
 .rg-conn--connecting .rg-conn__dot {

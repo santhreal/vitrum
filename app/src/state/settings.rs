@@ -209,10 +209,21 @@ pub const CURSOR_SHAPES: [CursorShape; 3] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PresentMode {
-    /// `Fifo`. Always supported.
-    #[default]
+    /// `Fifo`. Always supported, and what an adapter without `Mailbox` gets
+    /// anyway.
     Vsync,
     /// `Mailbox`. Offered only when the adapter reports it.
+    ///
+    /// The default. It has the same frame rate ceiling and the same freedom
+    /// from tearing as `Vsync`, and it differs in one thing: a finished frame
+    /// replaces the one already queued instead of waiting behind it. With
+    /// `Vsync` a frame drawn just after a vertical blank waits out the whole
+    /// interval, so a keystroke can cost a frame of latency for no reason
+    /// other than when in the cycle it arrived. The pane draws on the
+    /// compositor's own clock, so this never asks the GPU for more frames
+    /// than the panel can show; it only stops the ones it does draw from
+    /// queueing.
+    #[default]
     Adaptive,
     /// `Immediate`. Offered only when the adapter reports it.
     Immediate,

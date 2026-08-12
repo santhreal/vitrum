@@ -497,7 +497,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         path: "terminal.presentMode",
         kind: "vsync | adaptive | immediate",
-        default: "\"vsync\"",
+        default: "\"adaptive\"",
         applies: "Terminal pane",
         live: Live::Immediately,
         alt: "\"immediate\"",

@@ -367,7 +367,14 @@ impl PaneSurface {
             width: size.0,
             height: size.1,
             present_mode: chosen,
-            desired_maximum_frame_latency: 2,
+            // One frame, not two. This is how many frames the driver may let
+            // the CPU run ahead of the display, and every one of them is a
+            // whole refresh interval between a keystroke being drawn and
+            // being seen. The pane draws at most one frame per compositor
+            // tick and never polls the device to completion, so there is no
+            // pipeline here for a second queued frame to keep full: it would
+            // only be 16 ms of latency held on the operator's behalf.
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };

@@ -120,11 +120,16 @@ impl Default for Palette {
 pub(crate) enum Present {
     /// Wait for the compositor. No tearing, and the frame rate is the
     /// panel's.
-    #[default]
     Vsync,
     /// Present the newest finished frame and discard the rest. No tearing, and
     /// a frame that finishes late is dropped rather than delaying the next
     /// one. This is the lowest latency a composited desktop can offer.
+    ///
+    /// The default here as well as in the setting. A pane attaches before the
+    /// settings file has been read, and a swapchain configured one way and
+    /// reconfigured the other a moment later is a rebuild the operator sees
+    /// at startup.
+    #[default]
     Newest,
     /// Present immediately. Tears, and exists because measuring the render
     /// path without the compositor's clock in the way is the only way to know

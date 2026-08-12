@@ -229,20 +229,27 @@
   color: $fg-strong$;
 }
 
+/* A search field, at the height of a control rather than of a card. GTK's
+ * stock entry asks for thirty-four pixels of its own before this row's
+ * padding, so the field came out forty-eight tall: taller than the titlebar
+ * above it, for a control that holds one line of text. The entry's request
+ * is overridden here and the height is the row's to state.
+ *
+ * No border. A filled well on a darker surface is the affordance; a hairline
+ * around it as well draws the box twice, and at this size the box was the
+ * most emphatic rectangle in the sidebar. The focus ring still lands. */
 .rg-sidebar__search {
-  min-height: $search-h$;
+  min-height: $control-h$;
   padding-left: $space-2$;
   padding-right: $space-2$;
   margin-left: $content-inset$;
   margin-right: $content-inset$;
   border-radius: $radius-md$;
-  border: $hairline$ solid $border$;
   background-color: $fill-rest$;
   color: $fg$;
 }
 
 .rg-sidebar__search:focus-within {
-  border-color: $accent$;
   box-shadow: 0 0 0 $focus-ring-w$ $focus-halo$;
 }
 
@@ -252,6 +259,7 @@
 }
 
 .rg-sidebar__search-input {
+  min-height: 0;
   font-size: $text-13$;
   color: $fg$;
   background-color: transparent;

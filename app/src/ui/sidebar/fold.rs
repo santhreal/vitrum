@@ -204,6 +204,7 @@ fn toolbar(st: &UiState, collapsed: bool, narrow: bool, attention: usize) -> Nod
         );
     }
     let mut search = Node::row("rg-sidebar__search")
+        .centred()
         .growing()
         .with(Node::label("rg-sidebar__search-icon", SEARCH_ICON))
         .with(

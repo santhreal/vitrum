@@ -123,9 +123,15 @@ pub(crate) fn panel(shell: &Shell) -> Rc<dyn Panel> {
     secondary.style_context().add_class("rg-titlebar__secondary");
     secondary.set_ellipsize(gtk::pango::EllipsizeMode::End);
     ctx.pack_start(&secondary, false, false, 0);
-    // The context line takes the slack, so the actions stay pinned to the
-    // right edge and do not move when a session title arrives.
-    bar.pack_start(&ctx, true, true, 0);
+    // THE TITLE IS THE BAR'S CENTRE WIDGET, not a child that grew.
+    //
+    // Packed to expand it took the slack and its labels sat at the left of
+    // it, so the window's title started against the sidebar's right edge with
+    // thirteen hundred pixels of empty bar after it. A centre widget is
+    // measured against the bar rather than against whatever is beside it, so
+    // the title is in the middle of the window and stays there when the
+    // actions on the right change width.
+    bar.set_center_widget(Some(&ctx));
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     actions.style_context().add_class("rg-titlebar__actions");
@@ -133,7 +139,6 @@ pub(crate) fn panel(shell: &Shell) -> Rc<dyn Panel> {
     // a pill drawn at the bar's full height loses its rounded ends to the
     // bar's edges.
     actions.set_valign(gtk::Align::Center);
-    bar.pack_start(&actions, false, false, 0);
 
     // A quiet chip, not a modal. About owns Install; this only says a newer
     // release exists. It sits before the connection mark so the corner
@@ -200,8 +205,12 @@ pub(crate) fn panel(shell: &Shell) -> Rc<dyn Panel> {
                 _ => button.connect_clicked(move |_| toggle_maximize(&window)),
             };
         }
-        bar.pack_start(&controls, false, false, 0);
+        // From the edge inwards: `pack_end` fills right to left, so the
+        // window controls are packed before the actions to end up outside
+        // them.
+        bar.pack_end(&controls, false, false, 0);
     }
+    bar.pack_end(&actions, false, false, 0);
 
     {
         let window = shell.window();

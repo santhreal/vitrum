@@ -232,6 +232,7 @@ fn toolbar(st: &UiState, collapsed: bool, narrow: bool, attention: usize) -> Nod
     if attention > 0 {
         bar = bar.with(
             Node::press("rg-attn-count", Act::Jump)
+                .centred()
                 .named("Jump to the next session waiting on you")
                 .with(Node::label("rg-attn-count__n", attention.to_string()))
                 .with(Node::label("rg-attn-count__word", "waiting")),

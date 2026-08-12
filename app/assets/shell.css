@@ -705,8 +705,15 @@
   background-color: $hue-ready$;
 }
 
+/* A count, at the same height as the badges it is counting. It was row-h
+ * tall on space-1 of side padding, which is not a capsule but a filled
+ * ellipse with the word crowding both ends, and the loudest object in the
+ * window for a fact that is passive. The padding stays at space-1: the
+ * sidebar's floor width is its top bar's natural width, so widening the
+ * count moves the pane's left edge and stops the grid dividing into whole
+ * pixels. */
 .rg-attn-count {
-  min-height: $row-h$;
+  min-height: $badge-h$;
   padding-left: $space-1$;
   padding-right: $space-1$;
   border-radius: $radius-full$;

@@ -495,7 +495,22 @@ impl PaneHost {
 // ---------------------------------------------------------------------------
 
 impl PaneHost {
-    /// Build the swapchain, now that there is a window to present to.
+    /// Start the swapchain, now that there is a window to present to.
+    ///
+    /// # Why this returns before the pane can paint
+    ///
+    /// The GPU half of an attach is a swapchain configuration, a shader
+    /// compile and a glyph atlas: a hundred milliseconds on the capture rig,
+    /// and it used to run here, on the thread that services every keystroke,
+    /// every expose and every frame in the process. For that whole interval
+    /// the shell was on screen and dead to the operator. A window that does
+    /// not answer is not slow because of what it is computing; it is slow
+    /// because it is not answering.
+    ///
+    /// So the toolkit's part is done here, in four calls that cost nothing,
+    /// and the rest is handed to a thread. Until it lands the pane draws its
+    /// own background through `draw_fallback`, which is what it already did
+    /// while the handshake ran, and the main loop keeps running.
     fn realize(&self, area: &gtk::DrawingArea) {
         let (font, present) = {
             let inner = self.inner.borrow();
@@ -504,55 +519,86 @@ impl PaneHost {
             (theme.font_config(scale), theme.present)
         };
 
-        // The borrow is dropped across `attach`, which runs a GPU handshake
-        // and pumps the main loop.
-        let attached = {
-            let _span = crate::boot::span("pane.attach");
-            let mut inner = self.inner.borrow_mut();
-            let Inner { session, .. } = &mut *inner;
-            PaneSurface::attach(area, font, present, session.grid_mut())
+        let target = {
+            let _span = crate::boot::span("pane.target");
+            PaneSurface::target(area, font, present)
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(e) => return self.refuse(area, e),
         };
 
-        let mut inner = self.inner.borrow_mut();
-        match attached {
-            Ok(surface) => {
-                // The first frame is painted inside `attach`, so the tick
-                // below never sees it and the boot timeline would say the
-                // pane never appeared. The mark belongs where the pixels
-                // reached the screen.
-                if surface.has_presented() && !inner.first_paint {
-                    inner.first_paint = true;
-                    crate::boot::mark("pane.first-paint");
-                }
-                let cell = surface.cell_size();
-                let (cols, rows) = surface.cells_for(surface.size().0, surface.size().1);
-                if let Err(e) = inner.session.resize(cols, rows, cell) {
-                    tracing::error!("the pane's terminal refused {cols}x{rows}: {e}");
-                }
-                inner.surface = Some(surface);
-                inner.fault = None;
-                if inner.frozen.is_some() {
-                    // A sheet went up before the GPU handshake finished, so
-                    // this pane has never presented and must not start now:
-                    // the toolkit owns these pixels until the sheet closes.
-                    inner.freeze();
-                } else {
-                    inner.pacer.mark();
-                }
-                drop(inner);
-                self.report(PaneReport::Resize { cols, rows });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        if let Err(e) = std::thread::Builder::new()
+            .name("vitrum-pane-gpu".to_owned())
+            .spawn(move || {
+                let _span = crate::boot::span("pane.build");
+                let _ = tx.send(PaneSurface::build(&target));
+            })
+        {
+            // A machine that cannot spawn a thread is a machine in trouble,
+            // and the pane says so rather than staying blank forever.
+            return self.refuse(area, anyhow::anyhow!("no thread for the pane's GPU: {e}"));
+        }
+
+        let this = self.clone();
+        let area = area.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let Some(built) = rx.recv().await else {
+                return;
+            };
+            match built {
+                Ok(surface) => this.adopt(surface),
+                Err(e) => this.refuse(&area, e),
             }
-            Err(e) => {
-                // Named, drawn and logged. A pane that cannot reach a GPU is a
-                // pane the operator has to be told about, and the one thing it
-                // may not do is show a black rectangle and say nothing.
-                let why = format!("{e:#}");
-                tracing::error!("no GPU surface for this pane: {why}");
-                inner.fault = Some(why);
-                drop(inner);
-                area.queue_draw();
+        });
+    }
+
+    /// Take a built swapchain and paint the first frame from it.
+    fn adopt(&self, mut surface: PaneSurface) {
+        let mut inner = self.inner.borrow_mut();
+        {
+            let Inner { session, .. } = &mut *inner;
+            if let Err(e) = surface.adopt(session.grid_mut()) {
+                tracing::error!("the pane's first frame was refused: {e:#}");
             }
         }
+        // The first frame is painted in `adopt`, so the tick below never sees
+        // it and the boot timeline would say the pane never appeared. The mark
+        // belongs where the pixels reached the screen.
+        if surface.has_presented() && !inner.first_paint {
+            inner.first_paint = true;
+            crate::boot::mark("pane.first-paint");
+        }
+        let cell = surface.cell_size();
+        let (cols, rows) = surface.cells_for(surface.size().0, surface.size().1);
+        if let Err(e) = inner.session.resize(cols, rows, cell) {
+            tracing::error!("the pane's terminal refused {cols}x{rows}: {e}");
+        }
+        inner.surface = Some(surface);
+        inner.fault = None;
+        if inner.frozen.is_some() {
+            // A sheet went up before the GPU handshake finished, so this pane
+            // has never presented and must not start now: the toolkit owns
+            // these pixels until the sheet closes.
+            inner.freeze();
+        } else {
+            inner.pacer.mark();
+        }
+        drop(inner);
+        self.report(PaneReport::Resize { cols, rows });
+    }
+
+    /// Say why there is no pane, in the pane.
+    ///
+    /// Named, drawn and logged. A pane that cannot reach a GPU is a pane the
+    /// operator has to be told about, and the one thing it may not do is show
+    /// a black rectangle and say nothing.
+    fn refuse(&self, area: &gtk::DrawingArea, why: anyhow::Error) {
+        let why = format!("{why:#}");
+        tracing::error!("no GPU surface for this pane: {why}");
+        self.inner.borrow_mut().fault = Some(why);
+        area.queue_draw();
     }
 
     /// Paint when there is no swapchain, and note the exposure when there is.

@@ -304,6 +304,20 @@ pub(crate) fn prewarm_gpu() {
     });
 }
 
+/// A realized widget's window, named the way a thread that has never heard of
+/// GTK can use it.
+///
+/// Numbers only, so it is `Send` without an unsafe promise: the X window is an
+/// id and the display connection an integer this converts back for wgpu. See
+/// [`PaneSurface::target`] for who fills it and why the split exists.
+pub(crate) struct Target {
+    xid: core::ffi::c_ulong,
+    xdisplay: usize,
+    size: (u32, u32),
+    font: FontConfig,
+    present: Present,
+}
+
 /// A swapchain on a widget's own X window.
 pub(crate) struct PaneSurface {
     device: wgpu::Device,
@@ -319,34 +333,31 @@ pub(crate) struct PaneSurface {
     size: (u32, u32),
     /// Whether a frame has ever reached the screen from this surface.
     ///
-    /// The first one is painted in [`PaneSurface::attach`] rather than on the
+    /// The first one is painted in [`PaneSurface::adopt`] rather than on the
     /// first tick, so the host cannot learn when the pane first appeared by
     /// watching its own frame clock. This is what it reads instead.
     presented: bool,
 }
 
 impl PaneSurface {
-    /// Take over `area`'s drawing, present `grid` once, and return the surface.
+    /// What the toolkit has to answer before a swapchain can be built.
+    ///
+    /// Everything in it is a number, so it crosses a thread on its own. That
+    /// is the point: the GTK half of an attach is four calls on the widget and
+    /// costs nothing, and the GPU half is a hundred milliseconds that used to
+    /// run on the thread the operator's keystrokes arrive on.
     ///
     /// `area` must already be realized: the X window only exists after that,
     /// and there is no XID to present to before it does.
     ///
-    /// The first frame is painted here rather than left to the first tick.
-    /// A freshly created X window shows whatever was in that framebuffer,
-    /// which on this stack is black, and a pane that waits for its first
-    /// output before painting shows black until the child says something.
-    /// That is one of the two causes of a pane the operator sees as black.
-    ///
     /// # Errors
     ///
-    /// The backend is not X11, the widget has no window, no adapter can
-    /// present to it, or the first frame could not be drawn.
-    pub(crate) fn attach(
+    /// The backend is not X11, or the widget has no window.
+    pub(crate) fn target(
         area: &gtk::DrawingArea,
         font: FontConfig,
         present: Present,
-        grid: &mut CellGrid,
-    ) -> Result<Self> {
+    ) -> Result<Target> {
         // GTK must not paint a background into this widget's window: the X11
         // window under it belongs to the GPU, and a themed background drawn on
         // every expose would race the swapchain and flicker.
@@ -404,6 +415,43 @@ impl PaneSurface {
             ));
         }
 
+        Ok(Target {
+            xid,
+            // As an integer, not a pointer. The display connection outlives
+            // every pane in the process, the builder only hands it back to
+            // wgpu, and a raw pointer in this struct would make it a type no
+            // thread could take.
+            xdisplay: xdisplay as usize,
+            size,
+            font,
+            present,
+        })
+    }
+
+    /// Build the swapchain and the renderer for `target`.
+    ///
+    /// Runs anywhere. Nothing here touches GTK, GDK or the widget: the window
+    /// is named by an XID and the display by an integer, both of which the
+    /// toolkit resolved before this was called.
+    ///
+    /// The first frame is NOT painted here. It needs the cell grid, which
+    /// belongs to the session on the thread that owns the pane, and that
+    /// thread paints it the moment this lands.
+    ///
+    /// # Errors
+    ///
+    /// No adapter can present to the window, or no device can be had from it.
+    pub(crate) fn build(target: &Target) -> Result<Self> {
+        let Target {
+            xid,
+            xdisplay,
+            size,
+            font,
+            present,
+        } = target;
+        let (xid, size, present) = (*xid, *size, *present);
+        let xdisplay = *xdisplay as *mut c_void;
+        let font = font.clone();
         // A surface has to come from the instance that owns the adapter it
         // will be presented on, so the prewarm is taken or refused as one
         // piece: instance, adapter and device together, or all three built
@@ -543,7 +591,7 @@ impl PaneSurface {
             )
         };
 
-        let mut this = Self {
+        Ok(Self {
             device,
             queue,
             surface,
@@ -552,19 +600,31 @@ impl PaneSurface {
             offered,
             size,
             presented: false,
-        };
+        })
+    }
 
-        let (cols, rows) = this.cells_for(size.0, size.1);
+    /// Size `grid` to this surface and paint the first frame.
+    ///
+    /// The counterpart to [`PaneSurface::build`], on the thread that owns the
+    /// grid. A freshly created X window shows whatever was in that
+    /// framebuffer, which on this stack is black, and a pane that waits for
+    /// its first output before painting shows black until the child says
+    /// something.
+    ///
+    /// # Errors
+    ///
+    /// The grid refused the size, or the first frame could not be drawn.
+    pub(crate) fn adopt(&mut self, grid: &mut CellGrid) -> Result<()> {
+        let (cols, rows) = self.cells_for(self.size.0, self.size.1);
         if (cols, rows) != (grid.cols(), grid.rows()) {
             grid.resize(cols, rows)
                 .map_err(|e| anyhow!("size the pane's cell grid to {cols}x{rows}: {e}"))?;
         }
         grid.mark_all_damaged();
-        {
-            let _span = crate::boot::span("pane.present");
-            this.present(grid).context("paint the pane's first frame")?;
-        }
-        Ok(this)
+        let _span = crate::boot::span("pane.present");
+        self.present(grid)
+            .context("paint the pane's first frame")
+            .map(drop)
     }
 
     /// Columns and rows that fit a pixel size.

@@ -111,18 +111,30 @@ pub(crate) struct Look {
     /// The hues the operator's terminal is painting with, when it is painting
     /// with any. `None` leaves the chrome on the theme's own hues.
     pub(crate) hues: Option<ChromeHues>,
+    /// What the grid actually clears to, and the ink on it.
+    ///
+    /// Not a taste and not a fallback: [`crate::pane::theme_from`] is the
+    /// function the pane itself paints from, so this is the same two colours
+    /// the GPU is about to write. A chrome constant beside it was a near miss
+    /// of the real one — the ramp said `#08080a` while an unconfigured grid
+    /// cleared to `#14161c` — and a letterbox a shade off the grid it frames
+    /// is a seam around the terminal on every window.
+    pub(crate) terminal: (Rgb, Rgb),
 }
 
 impl Look {
     /// What the two live snapshots add up to.
     pub(crate) fn from_live(shell: &ShellSettings, pane: &PaneSettings) -> Look {
         let scheme = Scheme::resolve(shell.theme);
+        let painted = crate::pane::theme_from(pane).palette;
+        let rgb = |c: vitrum_grid::Rgba| Rgb(c.r, c.g, c.b);
         Look {
             scheme,
             density: shell.density,
             text_scale_pct: shell.text_scale_pct,
             reduce_motion: shell.reduce_motion,
             hues: pane.palette.map(|p| ChromeHues::from_palette(&p, scheme)),
+            terminal: (rgb(painted.background), rgb(painted.foreground)),
         }
     }
 }
@@ -151,10 +163,6 @@ pub(crate) struct ChromeHues {
     pub(crate) snoozed: Rgb,
     pub(crate) add: Rgb,
     pub(crate) del: Rgb,
-    /// What the pane letterboxes to, so the frame around the grid is the
-    /// grid's own background and not a near miss of it.
-    pub(crate) terminal_bg: Rgb,
-    pub(crate) terminal_fg: Rgb,
 }
 
 /// One opaque colour.
@@ -252,19 +260,9 @@ impl ChromeHues {
             snoozed: legible(slot(4)),
             add: legible(slot(2)),
             del: legible(slot(1)),
-            // Not run through the contrast clamp. This one is the grid's own
-            // background, and the whole point is that the letterbox matches
-            // the cells exactly.
-            terminal_bg: Rgb(
-                palette.background[0],
-                palette.background[1],
-                palette.background[2],
-            ),
-            terminal_fg: Rgb(
-                palette.foreground[0],
-                palette.foreground[1],
-                palette.foreground[2],
-            ),
+            // The letterbox is not here: it is not a hue that carries a
+            // meaning, it is the colour the GPU clears to, and `Look` reads
+            // it from the same resolver the pane paints from.
         }
     }
 }
@@ -322,8 +320,6 @@ struct Ramp {
     snoozed: Rgb,
     add: Rgb,
     del: Rgb,
-    terminal_bg: Rgb,
-    terminal_fg: Rgb,
     /// Alpha the soft status fills and the row states are laid on at.
     wash: f64,
     /// Alpha of a hairline border.
@@ -363,8 +359,6 @@ const RAMP: [Ramp; 2] = [
         snoozed: Rgb(0x51, 0xa2, 0xff),
         add: Rgb(0x00, 0xd4, 0x92),
         del: Rgb(0xff, 0x64, 0x67),
-        terminal_bg: Rgb(0x08, 0x08, 0x0a),
-        terminal_fg: Rgb(0xf2, 0xf3, 0xf6),
         wash: 0.15,
         hairline: 0.09,
         hairline_strong: 0.16,
@@ -393,8 +387,6 @@ const RAMP: [Ramp; 2] = [
         snoozed: Rgb(0x15, 0x5d, 0xfc),
         add: Rgb(0x00, 0x99, 0x66),
         del: Rgb(0xe7, 0x00, 0x0b),
-        terminal_bg: Rgb(0xff, 0xff, 0xff),
-        terminal_fg: Rgb(0x27, 0x27, 0x2a),
         wash: 0.12,
         hairline: 0.10,
         hairline_strong: 0.20,
@@ -717,10 +709,10 @@ fn tokens(look: &Look) -> Vec<(String, String)> {
         put(&soft, colour.rgba(ramp.wash));
     }
 
-    // The terminal's own surfaces, so the letterbox is the grid's background
-    // and not a near miss of it.
-    let term_bg = hues.map_or(ramp.terminal_bg, |h| h.terminal_bg);
-    let term_fg = hues.map_or(ramp.terminal_fg, |h| h.terminal_fg);
+    // The terminal's own surfaces, straight off the resolver the pane paints
+    // from, so the letterbox is the grid's background and not a near miss of
+    // it whichever palette is in force.
+    let (term_bg, term_fg) = look.terminal;
     put("terminal-bg", term_bg.hex());
     put("terminal-fg", term_fg.hex());
     put("terminal-selection", accent.rgba(0.34));
@@ -814,12 +806,31 @@ fn wanted(shell: &ShellSettings, pane: &PaneSettings) -> bool {
 
 /// The look in force, or the default one before anything has published.
 fn current() -> Look {
-    WANTED.lock().clone().unwrap_or(Look {
-        scheme: Scheme::Dark,
-        density: Density::Comfortable,
-        text_scale_pct: 100,
-        reduce_motion: false,
-        hues: None,
+    WANTED.lock().clone().unwrap_or_else(|| {
+        // Before any settings have been published the pane is painting
+        // `PaneTheme::default()`, so that is what the chrome around it says
+        // the terminal is. Anything else is a seam for the length of the
+        // first frame.
+        let painted = crate::pane::theme::Palette::DEFAULT;
+        Look {
+            scheme: Scheme::Dark,
+            density: Density::Comfortable,
+            text_scale_pct: 100,
+            reduce_motion: false,
+            hues: None,
+            terminal: (
+                Rgb(
+                    painted.background.r,
+                    painted.background.g,
+                    painted.background.b,
+                ),
+                Rgb(
+                    painted.foreground.r,
+                    painted.foreground.g,
+                    painted.foreground.b,
+                ),
+            ),
+        }
     })
 }
 

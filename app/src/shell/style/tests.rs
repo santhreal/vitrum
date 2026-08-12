@@ -10,6 +10,20 @@
 use super::*;
 use crate::state::Settings;
 
+/// The two colours an unconfigured grid paints, for the looks these tests
+/// build by hand.
+///
+/// Read from the pane's own default rather than written out, so a change to
+/// what the terminal clears to cannot leave these fixtures describing a
+/// colour nothing paints.
+const TEST_TERMINAL: (Rgb, Rgb) = {
+    let p = crate::pane::theme::Palette::DEFAULT;
+    (
+        Rgb(p.background.r, p.background.g, p.background.b),
+        Rgb(p.foreground.r, p.foreground.g, p.foreground.b),
+    )
+};
+
 /// Every look the generator has to be correct for.
 ///
 /// The product of the four preferences, not a hand-picked sample, so a rule
@@ -31,6 +45,7 @@ fn every_look() -> Vec<Look> {
                             text_scale_pct: pct,
                             reduce_motion,
                             hues,
+                            terminal: TEST_TERMINAL,
                         });
                     }
                 }
@@ -301,6 +316,7 @@ fn every_font_size_comes_from_the_type_scale() {
         text_scale_pct: 100,
         reduce_motion: false,
         hues: None,
+        terminal: TEST_TERMINAL,
     });
     let mut seen = 0usize;
     for block in css.split('}') {
@@ -594,6 +610,7 @@ fn switching_the_theme_repaints() {
         text_scale_pct: 100,
         reduce_motion: false,
         hues: None,
+        terminal: TEST_TERMINAL,
     };
     let dark = stylesheet(&look(Scheme::Dark));
     let light = stylesheet(&look(Scheme::Light));
@@ -615,6 +632,7 @@ fn switching_the_density_repaints_the_rhythm_only() {
         text_scale_pct: 100,
         reduce_motion: false,
         hues: None,
+        terminal: TEST_TERMINAL,
     };
     let comfortable = tokens(&look(Density::Comfortable));
     let compact = tokens(&look(Density::Compact));
@@ -650,6 +668,7 @@ fn switching_the_text_scale_repaints_every_length() {
         text_scale_pct: pct,
         reduce_motion: false,
         hues: None,
+        terminal: TEST_TERMINAL,
     };
     let of = |pct: u16, name: &str| -> f64 {
         tokens(&look(pct))
@@ -687,9 +706,13 @@ fn switching_the_terminal_palette_repaints_the_chrome() {
         text_scale_pct: 100,
         reduce_motion: false,
         hues: None,
+        terminal: TEST_TERMINAL,
     };
     let borrowed = Look {
         hues: Some(ChromeHues::from_palette(&fixture(), Scheme::Dark)),
+        // The fixture's own background and foreground: with a palette in
+        // force the grid clears to them, so the chrome around it must say so.
+        terminal: (Rgb(1, 2, 3), Rgb(250, 251, 252)),
         ..base.clone()
     };
     assert_ne!(stylesheet(&base), stylesheet(&borrowed));
@@ -910,7 +933,7 @@ fn the_host_terminals_colours_reach_the_chrome() {
     );
     let hues = look.hues.expect("the import did not reach the chrome");
     assert_eq!(
-        hues.terminal_bg,
+        look.terminal.0,
         Rgb(0x10, 0x10, 0x10),
         "the pane letterboxes to something other than the imported background"
     );
@@ -918,6 +941,40 @@ fn the_host_terminals_colours_reach_the_chrome() {
         stylesheet(&look).contains(&hues.failed.hex()),
         "the imported red is not in the sheet"
     );
+}
+
+/// The letterbox token is the colour the grid clears to, for every palette.
+///
+/// WHY: the chrome used to carry its own pair of terminal colours, so an
+/// unconfigured install put `#08080a` in the sheet while the GPU cleared to
+/// `#14161c`. That is a seam around the terminal on the default install, and
+/// it was invisible to a test that only checked an imported palette, because
+/// the imported case was the one branch that read the real colours.
+///
+/// The variant space is [`crate::termpalette::ALL`] read at run time, so a
+/// palette added later is covered without anyone remembering to add it here.
+#[test]
+fn the_letterbox_is_the_colour_the_grid_clears_to_for_every_palette() {
+    for palette in crate::termpalette::ALL {
+        let mut settings = Settings::default();
+        settings.terminal.palette = palette;
+        let pane = PaneSettings::derive(&settings);
+        let painted = crate::pane::theme_from(&pane).palette.background;
+        let want = Rgb(painted.r, painted.g, painted.b);
+
+        let look = Look::from_live(&ShellSettings::derive(&settings), &pane);
+        assert_eq!(
+            look.terminal.0,
+            want,
+            "{} letterboxes to something the grid does not paint",
+            palette.slug()
+        );
+        assert!(
+            stylesheet(&look).contains(&want.hex()),
+            "{} does not put the grid's own background in the sheet",
+            palette.slug()
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

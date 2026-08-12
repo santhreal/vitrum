@@ -60,12 +60,17 @@ pub(crate) struct Palette {
     pub current_match_bg: Rgba,
 }
 
-impl Default for Palette {
+impl Palette {
     /// The colours a pane paints before settings have been read.
     ///
     /// These are seen: a window opens and paints before the settings file has
     /// been parsed, so a default of black on black is a pane that flashes.
-    fn default() -> Self {
+    ///
+    /// A constant rather than only a `Default` body because the chrome has to
+    /// name the same two surfaces at compile time: the letterbox around the
+    /// grid is this background, and a second copy of it written out somewhere
+    /// else is the seam this closes.
+    pub(crate) const DEFAULT: Self = {
         const fn c(r: u8, g: u8, b: u8) -> Rgba {
             Rgba::rgb(r, g, b)
         }
@@ -96,6 +101,12 @@ impl Default for Palette {
             match_bg: c(0x4a, 0x40, 0x1c),
             current_match_bg: c(0x8a, 0x6d, 0x1c),
         }
+    };
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 

@@ -919,12 +919,16 @@ mod provider {
     /// a different product; keeping the last sheet that parsed keeps the
     /// window readable while the log says what broke.
     fn apply(look: &Look) {
-        let css = stylesheet(look);
+        let css = {
+            let _span = crate::boot::span("style.compose");
+            stylesheet(look)
+        };
         PROVIDER.with(|slot| {
             let slot = slot.borrow();
             let Some(provider) = slot.as_ref() else {
                 return;
             };
+            let _span = crate::boot::span("style.parse");
             if let Err(err) = provider.load_from_data(css.as_bytes()) {
                 tracing::error!(%err, "the stylesheet did not parse; keeping the last one");
             }

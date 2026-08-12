@@ -322,14 +322,20 @@ impl PaneHost {
 
         // Realize: the X window exists from here, and so can a swapchain.
         //
-        // Building it here, inline, is what a realize handler is for and it is
-        // wrong. `realize` runs inside `show_all`, so the instance, the
-        // adapter, the device, the swapchain and the shader pipeline all get
-        // between the operator and the first frame: the whole window waits on
-        // a GPU handshake to draw a sidebar that does not use one. The work is
-        // therefore queued at `DEFAULT_IDLE`, which is below GDK's redraw
-        // priority, so the frame the window already has goes out first and the
-        // pane attaches against a window that is on screen.
+        // Started here, inline, because the toolkit's share of an attach is
+        // now four calls that cost a tenth of a millisecond and the GPU's
+        // share is on a thread. What used to be here was the whole handshake
+        // — instance, adapter, device, swapchain, shader pipeline — and it
+        // ran inside `show_all`, so the window waited on a GPU to draw a
+        // sidebar that does not use one. The answer then was to queue it at
+        // `DEFAULT_IDLE`, below GDK's redraw priority, and let the chrome go
+        // out first.
+        //
+        // That queue cost 150 ms of the start on the capture rig: the idle
+        // runs after the toolkit has finished everything it wanted to do with
+        // a newly mapped window, and the GPU thread cannot begin until it
+        // does. With nothing expensive left on this side there is nothing to
+        // defer, and the thread starts while the shell is still settling.
         //
         // Until it attaches the pane draws its own background through
         // `draw_fallback`, which is the same thing it shows when a GPU is
@@ -339,15 +345,11 @@ impl PaneHost {
             let im = im.clone();
             area.connect_realize(move |area| {
                 im.set_client_window(area.window().as_ref());
-                let this = this.clone();
-                let area = area.clone();
-                glib::idle_add_local_once(move || {
-                    // The window can be gone, or a second realize can have
-                    // already attached one. Either way there is nothing to do.
-                    if area.is_realized() && this.inner.borrow().surface.is_none() {
-                        this.realize(&area);
-                    }
-                });
+                // A second realize on a pane that already has one has nothing
+                // to do; building another would strand the first.
+                if this.inner.borrow().surface.is_none() {
+                    this.realize(area);
+                }
             });
         }
 
@@ -567,8 +569,18 @@ impl PaneHost {
     }
 
     /// Take a built swapchain and paint the first frame from it.
+    ///
+    /// The size in the [`super::surface::Target`] is the widget's allocation
+    /// at the moment it was realized, which is inside `show_all` and before
+    /// the paned has divided the window. By the time this runs the layout has
+    /// settled and `inner.rect` is the pane's real box, so the swapchain is
+    /// sized to that before it paints: configured at the stale size the first
+    /// acquire comes back Outdated and there is no first frame at all.
     fn adopt(&self, mut surface: PaneSurface) {
         let mut inner = self.inner.borrow_mut();
+        if inner.rect.width > 0 && inner.rect.height > 0 {
+            surface.resize(inner.rect.width, inner.rect.height);
+        }
         {
             let Inner { session, .. } = &mut *inner;
             if let Err(e) = surface.adopt(session.grid_mut()) {

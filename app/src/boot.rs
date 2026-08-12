@@ -75,10 +75,10 @@ pub(crate) const PHASES: [(&str, Option<&str>); 11] = [
     // merely after the window exists: building a swapchain means an instance,
     // an adapter, a device, a surface configuration and a shader pipeline, and
     // done inside the realize handler all of that lands between `show_all` and
-    // the window's first frame. The pane attaches from an idle below GDK's
-    // redraw priority instead, so the chrome is on screen first and this mark
-    // cannot precede `shell.mounted` without the handshake having moved back
-    // in front of it.
+    // the window's first frame. It is built on a worker thread instead and
+    // adopted from the main loop, which cannot run until `open_on` has
+    // returned, so this mark cannot precede `shell.mounted` without the
+    // handshake having moved back onto the toolkit's thread.
     ("pane.first-paint", Some("shell.mounted")),
     // History for the focused session reached the pane.
     ("scrollback.restored", Some("daemon.dialled")),

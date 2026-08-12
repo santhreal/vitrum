@@ -207,8 +207,10 @@ impl Ctx {
 ///
 /// # Ordering, which is the whole of this function
 ///
-/// The toolkit comes up first because the monitor list does not exist until it
-/// has. The window is created from that list, so a restored window opens at
+/// The GPU handshake is started before anything else, because it needs none of
+/// what follows and the driver can do it while the toolkit comes up. The
+/// toolkit is next, because the monitor list does not exist until it has.
+/// The window is created from that list, so a restored window opens at
 /// the size and scale of the panel it will actually appear on rather than at a
 /// nominal 1280x800 corrected after the first paint. The pane is installed
 /// before the panels are mounted, so it is parsing and holding a grid for the
@@ -216,6 +218,22 @@ impl Ctx {
 /// because a window shown first presents an empty frame and then fills it,
 /// which is one visible reflow on every launch.
 pub(crate) fn launch(opts: Options, link: Option<DeepLink>) -> ! {
+    // The GPU handshake: an instance, an adapter and a device, none of which
+    // needs a window, a surface, a size or a display connection, and all
+    // three of which the pane used to build after the window existed and on
+    // the thread that paints it. Ninety milliseconds of the ninety-odd
+    // between the shell appearing and the pane's first glyph was this.
+    //
+    // FIRST, before the toolkit. Nothing above it is a dependency, so every
+    // millisecond spent bringing up GTK, the runtime, the monitor list and
+    // the font stack is a millisecond the driver spends in parallel, and
+    // `attach` waits for what is left rather than for all of it.
+    #[cfg(target_os = "linux")]
+    {
+        let _span = boot::span("gpu.prewarm");
+        crate::pane::surface::prewarm_gpu();
+    }
+
     {
         let _span = boot::span("gtk.init");
         if let Err(e) = gtk::init() {
@@ -264,17 +282,6 @@ pub(crate) fn launch(opts: Options, link: Option<DeepLink>) -> ! {
         vitrum_grid::prewarm_font_stack(theme.font_config(scale));
     }
 
-    // The same trade for the GPU: an instance, an adapter and a device, none
-    // of which needs a window, a surface or a size, and all three of which
-    // the pane used to build after the window existed and on the thread that
-    // paints it. Ninety milliseconds of the ninety-odd between the shell
-    // appearing and the pane's first glyph was this. A pane that attaches
-    // before the thread finishes builds its own.
-    #[cfg(target_os = "linux")]
-    {
-        let _span = boot::span("gpu.prewarm");
-        crate::pane::surface::prewarm_gpu();
-    }
     {
         let _span = boot::span("geometry.load");
         seed_book(load_geometry(&monitor_rects(primary.as_ref(), &all)));

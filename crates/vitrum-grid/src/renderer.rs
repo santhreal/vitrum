@@ -117,6 +117,12 @@ struct Globals {
     /// the caret scales with the font instead of being a fixed number of
     /// pixels that vanishes at 24 px and swallows the glyph at 8 px.
     cursor_px: [f32; 2],
+    /// Where cell (0, 0) starts inside the viewport. See [`origin_px`].
+    origin_px: [f32; 2],
+    /// A uniform block is laid out in 16-byte units and this one is 40 bytes
+    /// of content. Named rather than implied so `bytemuck` has no hole to
+    /// refuse and the shader's struct is the same size as this one.
+    _pad: [f32; 2],
 }
 
 /// What one call to [`GridRenderer::render`] actually did.
@@ -530,7 +536,7 @@ impl GridRenderer {
         let full_rebuild = self.last != Some(key);
         if full_rebuild {
             self.ensure_capacity(device, grid.len());
-            self.write_globals(queue, viewport);
+            self.write_globals(queue, viewport, (grid.cols(), grid.rows()));
             grid.mark_all_damaged();
         }
 
@@ -710,16 +716,44 @@ impl GridRenderer {
         self.scratch.reserve(cells);
     }
 
-    fn write_globals(&self, queue: &wgpu::Queue, viewport: (u32, u32)) {
+    fn write_globals(&self, queue: &wgpu::Queue, viewport: (u32, u32), grid: (u16, u16)) {
         let m = self.fonts.metrics();
+        let extent = self.pixel_size_for(grid.0, grid.1);
         let globals = Globals {
             viewport_px: [viewport.0 as f32, viewport.1 as f32],
             cell_px: [m.width as f32, m.height as f32],
             underline: [m.underline_y as f32, m.underline_thickness as f32],
             cursor_px: [caret_bar_px(m.width), m.underline_thickness as f32],
+            origin_px: [
+                origin_px(viewport.0, extent.0) as f32,
+                origin_px(viewport.1, extent.1) as f32,
+            ],
+            _pad: [0.0; 2],
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
     }
+}
+
+/// Where a grid `extent` pixels across starts inside a viewport `viewport`
+/// pixels across.
+///
+/// A box is rarely a whole number of cells, and the remainder used to sit
+/// entirely at the right and the bottom: the text was pinned to the top-left
+/// corner with a band of background down two edges, which reads as a terminal
+/// that is not aligned with its own window. Half the remainder on each side
+/// puts it in the middle.
+///
+/// Integer division, so an odd remainder leaves the extra pixel on the far
+/// edge: half a pixel cannot be drawn, and rounding up would push the last
+/// column past the edge of the target.
+///
+/// This is the only definition of the grid's origin. The renderer offsets
+/// every cell by it and the pointer subtracts it before dividing into cells;
+/// a second one would be a click that lands a column away from the glyph it
+/// was on.
+#[must_use]
+pub const fn origin_px(viewport: u32, extent: u32) -> u32 {
+    viewport.saturating_sub(extent) / 2
 }
 
 /// Width of a bar caret, in pixels, for a cell `width` pixels wide.

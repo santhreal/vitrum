@@ -101,6 +101,19 @@ impl PaneRect {
             self.height.saturating_sub(u32::from(rows) * cell.1),
         )
     }
+
+    /// Where the grid's top-left corner sits inside this rectangle.
+    ///
+    /// [`vitrum_grid::origin_px`] is the definition; this applies it to both
+    /// axes of a pane. The renderer offsets every cell by the same number, so
+    /// a pointer position minus this is the pixel the glyph under it occupies.
+    pub(crate) fn inset(self, cell: (u32, u32)) -> (u32, u32) {
+        let (cols, rows) = self.grid(cell);
+        (
+            vitrum_grid::origin_px(self.width, u32::from(cols) * cell.0),
+            vitrum_grid::origin_px(self.height, u32::from(rows) * cell.1),
+        )
+    }
 }
 
 /// Whole cells that fit along one axis.
@@ -281,6 +294,45 @@ mod tests {
                 assert_eq!(u32::from(rows) * ch + sy, h, "height does not account");
                 assert!(sx < cw, "{sx}px of horizontal slack is a whole {cw}px cell");
                 assert!(sy < ch, "{sy}px of vertical slack is a whole {ch}px cell");
+            }
+        }
+    }
+
+    /// WHY: the grid is centred, so the slack is split between the two edges
+    /// of each axis. Half of it going one way and the pointer subtracting the
+    /// other half is a click that lands a column off, so the invariant is
+    /// stated against the slack rather than recomputed from the box.
+    ///
+    /// The odd pixel goes to the far edge. That is a choice, not a rounding
+    /// accident, and it is asserted so a later "fix" to round the other way
+    /// has to argue with a test: rounding up puts the last column past the
+    /// edge of the surface.
+    #[test]
+    fn the_inset_is_half_the_slack_and_never_pushes_a_cell_out_of_the_box() {
+        for &(w, h) in BOXES {
+            for &(cw, ch) in CELLS {
+                let rect = PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                };
+                let (cols, rows) = rect.grid((cw, ch));
+                let (sx, sy) = rect.slack((cw, ch));
+                let (ix, iy) = rect.inset((cw, ch));
+
+                assert_eq!(ix, sx / 2, "the horizontal inset is not half the slack");
+                assert_eq!(iy, sy / 2, "the vertical inset is not half the slack");
+                assert!(
+                    ix + u32::from(cols) * cw <= w,
+                    "{cols} columns of {cw}px offset by {ix}px leave {w}px"
+                );
+                assert!(
+                    iy + u32::from(rows) * ch <= h,
+                    "{rows} rows of {ch}px offset by {iy}px leave {h}px"
+                );
+                assert!(sx - ix >= ix, "the odd pixel is not on the far edge");
+                assert!(sy - iy >= iy, "the odd pixel is not on the far edge");
             }
         }
     }

@@ -136,4 +136,4 @@ pub use grid::{
     CellGrid, DamageSpan, GridError, MAX_CELLS, MAX_COLS, MAX_ROWS, Region, WriteError,
 };
 pub use headless::{HeadlessTarget, Image};
-pub use renderer::{FrameStats, GridRenderer, RenderError, RendererConfig};
+pub use renderer::{FrameStats, GridRenderer, RenderError, RendererConfig, origin_px};

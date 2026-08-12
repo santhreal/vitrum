@@ -1478,11 +1478,18 @@ impl Inner {
     }
 
     /// A widget-space pointer position as the grid sees it.
+    ///
+    /// The grid is centred in the pane, so the pixel the pointer is over is
+    /// its position minus the inset. Without that subtraction every click
+    /// below and right of the middle of the pane reads a cell too far, by up
+    /// to half a cell, which is the difference between selecting a word and
+    /// selecting the one beside it.
     fn position(&self, at: (f64, f64)) -> Position {
         let scale = f64::from(self.scale.max(1));
         let cell = self.cell_px();
-        let px = (at.0.max(0.0) * scale) as u32;
-        let py = (at.1.max(0.0) * scale) as u32;
+        let inset = self.rect.inset(cell);
+        let px = ((at.0.max(0.0) * scale) as u32).saturating_sub(inset.0);
+        let py = ((at.1.max(0.0) * scale) as u32).saturating_sub(inset.1);
         let cols = self.session.grid().cols();
         let rows = self.session.grid().rows();
         Position {

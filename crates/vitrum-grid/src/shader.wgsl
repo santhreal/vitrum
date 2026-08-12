@@ -20,6 +20,12 @@ struct Globals {
     underline: vec2<f32>,
     // Caret geometry: bar width, then rule thickness. Both in pixels.
     cursor_px: vec2<f32>,
+    // Where cell (0, 0) starts inside the viewport: the slack a box of whole
+    // cells cannot cover, halved, so it sits on both edges instead of one.
+    origin_px: vec2<f32>,
+    // The block is laid out in 16-byte units and the content above is 40
+    // bytes. Declared so this struct is the size the uniform buffer is.
+    pad: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -73,7 +79,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
 
     let size = vec2<f32>(globals.cell_px.x * span, globals.cell_px.y * min(span, 1.0));
-    let origin = vec2<f32>(f32(input.cell.x), f32(input.cell.y)) * globals.cell_px;
+    let origin = globals.origin_px + vec2<f32>(f32(input.cell.x), f32(input.cell.y)) * globals.cell_px;
     let offset = corner * size;
     let px = origin + offset;
 

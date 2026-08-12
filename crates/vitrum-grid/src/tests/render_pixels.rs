@@ -723,3 +723,65 @@ fn the_software_adapter_produces_identical_pixels() {
          first at {first:?}"
     );
 }
+
+/// A grid that cannot fill its target is drawn in the middle of it.
+///
+/// WHY: a pane is a box of pixels and a grid is a whole number of cells, so
+/// the two almost never agree. The remainder used to sit entirely at the
+/// right and the bottom, which put the text hard against the top-left corner
+/// with a band of background down two edges. The rule is
+/// [`crate::origin_px`], and the assertion below is on the pixel where the
+/// first cell begins, not on "some band exists": the clear colour and the
+/// cell colour differ, so the boundary is exact and a one-pixel drift fails.
+///
+/// What it does not catch: the pointer's half of the same rule. That lives in
+/// the app's `PaneRect::inset`, which calls the same function.
+#[test]
+fn a_grid_smaller_than_its_target_is_centred_in_it() {
+    const PAD: Rgba = Rgba::rgb(0x02, 0x03, 0x04);
+    const CELL: Rgba = Rgba::rgb(0x40, 0x50, 0x60);
+
+    let mut renderer = renderer();
+    let (cw, ch) = renderer.cell_size();
+    let (cols, rows) = (4u16, 2u16);
+    let extent = (cw * u32::from(cols), ch * u32::from(rows));
+
+    // The clear colour is the grid's default background and the cells carry
+    // their own, so the letterbox and the grid are two different colours.
+    let mut g = grid(cols, rows, Style::new(FG, PAD));
+    for row in 0..rows {
+        for col in 0..cols {
+            g.write_char(col, row, ' ', Style::new(FG, CELL))
+                .expect("a blank cell inside the grid");
+        }
+    }
+
+    // Both parities on both axes, and the exact-fit case, which must not move.
+    for (px, py) in [(0u32, 0u32), (1, 1), (6, 4), (7, 5)] {
+        let target = HeadlessTarget::new(gpu().device(), extent.0 + px, extent.1 + py);
+        let image = draw(&mut renderer, &mut g, &target);
+        let (w, h) = (target.width(), target.height());
+        let ox = crate::origin_px(w, extent.0);
+        let oy = crate::origin_px(h, extent.1);
+        let label = &format!("padded by {px}x{py}");
+
+        assert_eq!((ox, oy), (px / 2, py / 2), "{label}: origin");
+
+        // The four bands are the clear colour and nothing else.
+        assert_rect_exact(&image, label, 0, 0, ox, h, PAD);
+        assert_rect_exact(&image, label, ox + extent.0, 0, w, h, PAD);
+        assert_rect_exact(&image, label, 0, 0, w, oy, PAD);
+        assert_rect_exact(&image, label, 0, oy + extent.1, w, h, PAD);
+
+        // And the grid starts exactly at the origin, on both axes.
+        assert_rect_exact(
+            &image,
+            label,
+            ox,
+            oy,
+            ox + extent.0,
+            oy + extent.1,
+            CELL,
+        );
+    }
+}

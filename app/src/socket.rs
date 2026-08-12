@@ -704,6 +704,37 @@ impl Net {
     }
 }
 
+/// Open the WebSocket with Nagle's algorithm off.
+///
+/// A keystroke is a WebSocket frame of a few bytes and it is the whole of
+/// what the operator is waiting on. Nagle holds a small write back until the
+/// last one is acknowledged, so a burst of typing is delivered as one
+/// coalesced segment a round trip late, and the echo the terminal draws is
+/// late by the same amount. The daemon already turns it off on its side of
+/// every accepted connection; this is the other side of the same socket.
+///
+/// `connect_async` opens the stream itself and never exposes it, so the
+/// stream is opened here and handed to the handshake instead.
+async fn dial(
+    url: &str,
+) -> anyhow::Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+> {
+    // There is no TLS in this build's tungstenite, so a `wss://` URL could
+    // only be answered with a cleartext handshake against a TLS port. Refuse
+    // it by name rather than fail inside the handshake.
+    if url.starts_with("wss://") {
+        anyhow::bail!("wss:// is not supported: this build speaks ws:// only");
+    }
+    let authority = crate::launch::ws_authority(url).map_err(|e| anyhow::anyhow!(e))?;
+    let tcp = tokio::net::TcpStream::connect(&authority).await?;
+    if let Err(e) = tcp.set_nodelay(true) {
+        tracing::debug!(error = %e, "could not disable Nagle");
+    }
+    let (ws, _) = tokio_tungstenite::client_async(url, tokio_tungstenite::MaybeTlsStream::Plain(tcp)).await?;
+    Ok(ws)
+}
+
 /// Own one socket until it dies or is superseded.
 async fn run(
     url: String,
@@ -713,8 +744,8 @@ async fn run(
 ) {
     let say = |event| events.send((epoch, event)).is_ok();
 
-    let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
-        Ok((ws, _)) => ws,
+    let ws = match dial(&url).await {
+        Ok(ws) => ws,
         Err(e) => {
             say(SocketEvent::Error(format!(
                 "cannot reach {url}: {e}. Start vitrum-server, or point this \

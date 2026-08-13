@@ -594,6 +594,26 @@ fn frame_timing_for_a_full_redraw_and_a_no_change_frame() {
         assert_eq!(stats.glyphs_added, 0);
     }
 
+    // One cell changes: a cursor blink, or a character arriving. This is the
+    // case a terminal is in almost all the time, and it is the one that
+    // distinguishes an O(damage) renderer from an O(visible) one, so it is
+    // reported alongside the two extremes rather than inferred from them.
+    let mut one_cell_cpu = Vec::with_capacity(ITERATIONS as usize);
+    for i in 0..ITERATIONS {
+        let col = (i % u32::from(COLS)) as u16;
+        g.write_char(col, 0, 'x', style)
+            .expect("writing one cell must succeed");
+        let start = Instant::now();
+        let stats = render(&mut g);
+        one_cell_cpu.push(start.elapsed());
+        assert!(stats.gpu_work);
+        assert_eq!(
+            stats.cells_uploaded, 1,
+            "one changed cell must upload exactly one cell"
+        );
+        assert_eq!(stats.writes, 1);
+    }
+
     let mean = |v: &[std::time::Duration]| {
         v.iter().sum::<std::time::Duration>().as_secs_f64() * 1e6 / v.len() as f64
     };
@@ -603,14 +623,17 @@ fn frame_timing_for_a_full_redraw_and_a_no_change_frame() {
     };
     let full_mean = mean(&full_cpu);
     let idle_mean = mean(&idle_cpu);
+    let one_cell_mean = mean(&one_cell_cpu);
     let full_median = median(&mut full_cpu);
     let idle_median = median(&mut idle_cpu);
+    let one_cell_median = median(&mut one_cell_cpu);
 
     println!("--- vitrum-grid frame timing ({COLS}x{ROWS} = {CELLS} cells) ---");
     println!("adapter:              {}", gpu().describe());
     println!("font:                 {} at {TEST_PX}px", renderer.fonts().family());
     println!("cell size:            {:?} px", renderer.cell_size());
     println!("full redraw (CPU):    mean {full_mean:.1} us, median {full_median:.1} us");
+    println!("one-cell change (CPU):mean {one_cell_mean:.3} us, median {one_cell_median:.3} us");
     println!("no-change frame (CPU):mean {idle_mean:.3} us, median {idle_median:.3} us");
     println!(
         "gpu drain for {ITERATIONS} queued full redraws: {:.1} us total, {:.1} us each",
